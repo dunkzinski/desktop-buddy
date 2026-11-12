@@ -325,7 +325,7 @@ Protocol notes worth keeping: stdout carries **only** JSON-RPC frames (all
 diagnostics go to stderr, or the client's parser breaks), a missing avatar is a
 tool *result*, and a bad line is a JSON-RPC error — the loop always survives.
 
-### `src-tauri/src/bin/char-rig-watcher.rs` (1541 lines)
+### `src-tauri/src/bin/char-rig-watcher.rs` (1738 lines)
 
 The **third binary** (`char-rig-watcher.exe`), built by the same `cargo build`.
 It owns no UI and no state of its own: a headless trigger pump that reads the
@@ -342,31 +342,36 @@ one open SSE response and one small JSON poll every 20 s.
 
 | Section | Responsibility |
 | --- | --- |
-| consts | `DEFAULT_API_URL`, `ENV_API_URL` (`CHAR_RIG_API_URL`), `ENV_HERMES_CMD` (`CHAR_RIG_HERMES_CMD`), `DEFAULT_RULES_FILE`, `DEFAULT_CONTEXT_INTERVAL_SECS` 20, `DEFAULT_INTERACTION_COOLDOWN_SECS` 15, `DEFAULT_CONTEXT_COOLDOWN_SECS` 300, `DEFAULT_IDLE_THRESHOLD_SECS` 900, `DEFAULT_ACK_EMOTE` `thinking`, `ACK_EMOTE_DURATION_MS` 4000, `CONNECT_TIMEOUT` 3 s, `CONTEXT_TIMEOUT` 5 s, backoff 1 s → 30 s, `TRIGGER_QUEUE` 64 |
-| `CliConfig` / `Config` | raw flags vs. resolved runtime config; `Config::resolve` merges **CLI → env → rules file → built-in default** |
+| consts | `DEFAULT_API_URL`, `ENV_API_URL` (`CHAR_RIG_API_URL`), `ENV_HERMES_CMD` (`CHAR_RIG_HERMES_CMD`), `DEFAULT_RULES_FILE`, `DEFAULT_CONTEXT_INTERVAL_SECS` 20, `DEFAULT_INTERACTION_COOLDOWN_SECS` 15, `DEFAULT_CONTEXT_COOLDOWN_SECS` 300, `DEFAULT_IDLE_THRESHOLD_SECS` 900, `DEFAULT_ACK_EMOTE` `thinking`, `ACK_EMOTE_DURATION_MS` 4000, `DEFAULT_HERMES_TIMEOUT_SECS` 120, `HEADLESS_DIRECTIVE`, `CONNECT_TIMEOUT` 3 s, `CONTEXT_TIMEOUT` 5 s, backoff 1 s → 30 s, `TRIGGER_QUEUE` 64 |
+| `CliConfig` / `Config` | raw flags vs. resolved runtime config; `Config::resolve` merges **CLI → env → rules file → built-in default** (`hermes_timeout` = `--hermes-timeout` → `hermes_timeout_secs` → 120; no env var) |
 | `parse_cli` / `usage` | hand-rolled flag parser (`--flag value` and `--flag=value`), `-h/--help`, exit 2 on bad input; env fallbacks applied after the flags |
 | `InteractionRules` / `ContextRules` / `Rules` | serde-defaulted rule model; `Rules::load` (explicit path, else cwd then next to the exe), `from_json`, `interaction_allowed`, `matched_keyword` (case-insensitive substring), `idle_transition` (`was_idle && idle < threshold`) |
 | `Cooldowns` | per-key `HashMap<String, Instant>`; `allow` checks **and** stamps, so a suppressed trigger does not extend the window |
 | `SseParser` | incremental `text/event-stream` parser: `event:`/`data:` fields, multi-line `data`, `:` keep-alive comments, CRLF, and frames split across arbitrary TCP reads; `message` is the default event name |
-| `Trigger` | `{event_type, detail, window_title, idle_secs, kind, keyword, x, y}`; `payload(ts_ms)` builds the webhook / dry-run JSON, `prompt()` builds the one-line Hermes context |
+| `Trigger` | `{event_type, detail, window_title, idle_secs, kind, keyword, x, y}`; `payload(ts_ms)` builds the webhook / dry-run JSON, `prompt()` builds the one-line Hermes context and ends it with `HEADLESS_DIRECTIVE`: no follow-up questions, plus the literal `mcp__char_rig__avatar_speak(text, expression?, duration_ms?)` / `avatar_emote(expression, duration_ms?)` (with the six expressions) / `avatar_wave()` / `avatar_animate(name, loop?)` signatures, so the agent's first turn needs no `tool_describe` |
 | `interaction_trigger` | gate on `interaction_allowed` + cooldown, then format `the user double-clicked the avatar at (x, y)` |
 | `context_triggers` | evaluates one poll: title-change + keyword rule, and the idle→active rule; also maintains `last_title` / `last_idle_secs` / `was_idle`; the **first** poll only sets the baseline (`initialized`) |
 | `Shared` | `Mutex`-guarded snapshot: latest `/context`, `initialized`, `last_title`, `last_idle_secs`, `was_idle`, `cooldowns`; `lock` recovers from poisoning |
-| `split_command` / `command_argv` / `spawn_hermes` | quote-aware argv split (no shell), `{prompt}` substitution or append-as-last-arg, non-blocking spawn whose exit status is logged from a spawned task |
-| `handle_trigger` | dry-run print → ack `POST /emote` → `POST --webhook-url` → spawn `--hermes-cmd`, in that order |
+| `SingleFlight` / `FlightGuard` | one-permit `Arc<AtomicBool>` latch (`compare_exchange`) guarding the whole dispatch; the guard releases the permit on `Drop`, so a panic in a spawned task cannot wedge the watcher |
+| `split_command` / `command_argv` / `spawn_hermes` | quote-aware argv split (no shell), `{prompt}` substitution or append-as-last-arg, then a `tokio::process` spawn with `stdin(Stdio::null())` (an interactive prompt reads EOF instead of hanging), `kill_on_drop`, and `tokio::time::timeout(--hermes-timeout)` around the wait — an expired child is `start_kill`ed and reaped. The `FlightGuard` moves into the spawned task, so the permit covers the process lifetime |
+| `handle_trigger` | dry-run print → take the single-flight permit → ack `POST /emote` → `POST --webhook-url` → spawn `--hermes-cmd`, in that order; a trigger that finds the permit taken is **skipped** with a `debug:` line on stderr instead of stacking another `hermes` process |
 | `build_client` / `fetch_context` | reqwest client with a 3 s connect timeout; `GET /context` → `ContextSnapshot {window_title, idle_secs}` |
 | `handle_frame` | one SSE frame → at most one trigger; ignores `hello`, unparsable data and every frame type except `interaction` |
 | `stream_events` / `sse_loop` | consume `Response::bytes_stream()`, feed the parser, reconnect forever with doubling backoff capped at 30 s (reset on a successful subscribe) |
 | `context_loop` | `tokio::time::interval` with `MissedTickBehavior::Delay`; one warning per offline streak, then silent retries |
-| `dispatcher` | single consumer of the `mpsc` channel, so two triggers can never race their side effects |
+| `dispatcher` | single consumer of the `mpsc` channel plus the `SingleFlight` latch, so two triggers can never race their side effects and a running child is never duplicated |
 | `main` | parse → load rules → spawn `sse_loop`, `context_loop`, `dispatcher` → `tokio::select!`; any task ending stops the process |
-| `tests` | 32 unit tests: SSE parsing (chunk boundaries, comments, CRLF, multi-line data), rule matching, cooldown suppression, trigger payloads/prompts, argv splitting, CLI precedence |
+| `tests` | 37 unit tests: SSE parsing (chunk boundaries, comments, CRLF, multi-line data), rule matching, cooldown suppression, trigger payloads/prompts, argv splitting, CLI precedence, `--hermes-timeout` parsing + default + `hermes_timeout_secs` precedence, the headless directive and its tool signatures, and the single-flight latch |
 
 Protocol notes worth keeping: diagnostics go to **stderr** and stdout carries
 only `--dry-run` payloads (so the binary stays pipeable), the prompt is always a
 single argv entry so it can never be re-interpreted as shell syntax, and the
 first `/context` poll is a baseline — the watcher must not fire on the window it
-starts with.
+starts with. Dispatch is **single-flight and headless**: at most one trigger's
+side effects (including a live `--hermes-cmd` child) run at a time, the child's
+stdin is the null device (`Stdio::null()`, so an interactive prompt reads EOF),
+and a child that outlives `--hermes-timeout` (120 s by default, `hermes_timeout_secs`
+in `watcher_rules.json` to tune it) is killed.
 
 ### `ui/` — modular frontend (no build step)
 
@@ -383,8 +388,8 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/renderer.js` | Canvas pipeline: DPR resize (`initRenderer`, `resizeCanvas`), `drawFace`, `drawShape`, `drawPart`, rig overlay gizmos, `render` |
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
 | `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`) |
-| `ui/js/bridge.js` | Tauri event listeners (`avatar-state-changed`, `emote`, `speak`, `part-patch`, …), `reportState`, `applyRemoteState`, `applyPartPatch`, click-through (`setClickThrough`), import flow (`importFromDialog`, `importImageAs`, chooser) |
-| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts, `window.__avatarDebug`, behaviour loop (`step`, `startWalk`, `wander`), `requestAnimationFrame` driver, and play-mode click / double-click / drag detection that feeds `notify_interaction` |
+| `ui/js/bridge.js` | Tauri event listeners (`avatar-state-changed`, `emote`, `speak`, `part-patch`, …), `reportState`, `applyRemoteState` (ignores frames that would yank a dragged avatar and never adopts a bare `walking` without its segment), `applyPartPatch`, click-through (`setClickThrough`), import flow (`importFromDialog`, `importImageAs`, chooser) |
+| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts, `window.__avatarDebug`, behaviour loop (`step`, `startWalk`, `wander`), `requestAnimationFrame` driver, and play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction` |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
 `ipc, state → rig → animator → {renderer, speech, editor, bridge}; editor → bridge; all → main`.
@@ -415,7 +420,7 @@ window `main` with the flags listed in §2.
 | `tauri-plugin-log` 2 (level Info) | file + stdout logging |
 | `serde` / `serde_json` | state serialization, rig JSON |
 | `log` | logging facade |
-| `tokio` 1 (`rt`, `rt-multi-thread`, `macros`, `sync`, `net`, `time`) | API runtime, `oneshot` shutdown, `broadcast` event bus |
+| `tokio` 1 (`rt`, `rt-multi-thread`, `macros`, `sync`, `net`, `time`, `process`) | API runtime, `oneshot` shutdown, `broadcast` event bus; `process` drives the watcher's `--hermes-cmd` child so its wait can be wrapped in `timeout` and killed |
 | `axum` 0.7 | HTTP API (incl. `response::sse`) |
 | `tokio-stream` 0.1 (`sync`) | `BroadcastStream` adapter feeding the SSE response |
 | `reqwest` 0.12 (`json`, `blocking`, `stream`, **no TLS**) | HTTP client for the MCP bridge binary (blocking) and the watcher (`stream`, for the SSE body and `/emote` + webhook POSTs); localhost-only, so no TLS backend is compiled in |
@@ -647,6 +652,28 @@ Environment variables: `CHAR_RIG_MODELS` (model root), `CHAR_RIG_API_PORT`
 * Empty desktop space is click-through once the page publishes its regions; the
   cursor button toggles it manually.
 * Close = titlebar **X** (stops the tracker and the API) or `POST /shutdown`.
+
+### Moving the avatar (play mode)
+
+Press anywhere inside the avatar's art and drag: it follows the cursor with the
+grab offset preserved (so it does not snap its centre to the pointer), clamped
+so the whole art box stays on screen. The drag parks it in `idle`, pauses idle
+wandering for the gesture and for 15 s after release, and keeps the whole window
+mouse-interactive until the button comes up — otherwise the click-through
+tracker would drop the gesture the moment a fast drag outran the art box.
+Releasing reports `drag_end` on `GET /events` like any other interaction.
+
+A press that never crosses 8 px is still a `click` (or a `double_click` within
+320 ms and 24 px of the last one). Rig Edit Mode is excluded: there the press
+belongs to the gizmos.
+
+Two things make the gesture stick: while `avatar.dragging` is set the page
+publishes a **full-viewport** hit region (`rig.js`), because the 35 ms cursor
+tracker would otherwise flip the overlay click-through the moment a fast drag
+outran the art box; and `applyRemoteState` ignores in-flight
+`avatar-state-changed` frames while the drag is live, plus a bare `walking`
+echo that arrives without the walk segment that goes with it (adopting it used
+to leave `step()` with a stale start and snap the avatar to an old target).
 
 ### Importing
 
@@ -1028,7 +1055,10 @@ skip-forward on lag. Full payload table in `API.md` §
 * **Interaction hit-test is a bounding box.** Clicks are matched against the
   avatar's AABB (the same rectangle used for click-through), not per-part
   pixels, so a click in a transparent corner of a large rig still counts. There
-  is no hover state and no drag-to-move-the-avatar gesture.
+  is no hover state. Dragging moves the avatar's anchor only — there is no
+  per-part manipulation outside Rig Edit Mode and no momentum/inertia, and the
+  drag is clamped to the window, so it cannot push the avatar onto a second
+  monitor.
 * **`interaction` is one-way.** The UI reports the click and does nothing else;
   any reaction (wave, speak) has to come back from an agent over HTTP.
 * **`/context` is shallow.** Only the foreground window *title* and machine-wide

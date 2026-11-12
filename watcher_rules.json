@@ -11,6 +11,7 @@
     "cooldown_secs": 300
   },
   "ack_emote": "thinking",
-  "hermes_cmd": null,
+  "hermes_cmd": "hermes chat -q",
+  "hermes_timeout_secs": 120,
   "webhook_url": null
 }

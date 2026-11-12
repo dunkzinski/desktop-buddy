@@ -61,6 +61,12 @@ export function applyRemoteState(remote) {
   avatar.revision = rev;
   markManual(15);
 
+  // The pointer owns the avatar while it is being dragged: a frame that was
+  // already in flight must not yank it out from under the user's hand. The
+  // revision is still recorded, so nothing is replayed after the release.
+  if (avatar.dragging) return;
+
+  let walkSegment = false;
   if (Array.isArray(remote.target_position)) {
     const tx = Number(remote.target_position[0]);
     const ty = Number(remote.target_position[1]);
@@ -73,12 +79,19 @@ export function applyRemoteState(remote) {
       avatar.targetY = ty;
       avatar.walkPhase = 0;
       if (avatar.mode !== "walking") avatar.mode = "walking";
+      walkSegment = true;
     }
   }
   if (remote.state && remote.state !== avatar.mode) {
-    avatar.mode = remote.state;
-    if (avatar.mode === "waving") avatar.wavePhase = 0;
-    if (avatar.mode === "idle") avatar.idleTimer = 0;
+    // Adopting `walking` without the segment that goes with it would leave
+    // step() with a stale start (and an old target), which snaps the avatar
+    // across the screen — the teleport a drag must never suffer. Rust echoes
+    // the page's own walk state, so a bare `walking` is not an instruction.
+    if (remote.state !== "walking" || walkSegment) {
+      avatar.mode = remote.state;
+      if (avatar.mode === "waving") avatar.wavePhase = 0;
+      if (avatar.mode === "idle") avatar.idleTimer = 0;
+    }
   }
   if (remote.expression && remote.expression !== avatar.expression) setExpression(remote.expression);
   updateStatusUI();

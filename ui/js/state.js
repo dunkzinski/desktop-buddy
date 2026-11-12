@@ -53,6 +53,9 @@ export const avatar = {
   clickThroughUserSet: false,
   clickThroughArmed: false,
   collapsed: false,
+  // true only between the drag threshold being crossed and the pointer release;
+  // while set, the whole viewport stays mouse-interactive (see wireRegions).
+  dragging: false,
 };
 
 /* ---------- rig runtime (model, bones, images, pose, world) ---------- */

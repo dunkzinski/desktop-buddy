@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -56,6 +57,19 @@ const DEFAULT_CONTEXT_COOLDOWN_SECS: u64 = 300;
 const DEFAULT_IDLE_THRESHOLD_SECS: u64 = 900;
 const DEFAULT_ACK_EMOTE: &str = "thinking";
 const ACK_EMOTE_DURATION_MS: u64 = 4000;
+/// How long a spawned `--hermes-cmd` may run before it is killed.
+///
+/// Generous on purpose: a local model answering a trigger often needs well over
+/// a minute before it emits its `avatar_*` tool call.
+const DEFAULT_HERMES_TIMEOUT_SECS: u64 = 120;
+
+/// Appended to every `--hermes-cmd` prompt.
+///
+/// The child gets `Stdio::null()` on stdin, so an agent that asks a follow-up
+/// question reads EOF (or hangs on a Windows console that has no input) instead
+/// of answering. The directive therefore spells out the MCP call signatures,
+/// so a trigger costs one model turn and no `tool_describe` round-trip.
+const HEADLESS_DIRECTIVE: &str = "[Headless desktop avatar trigger -- do not ask follow-up questions or wait for user input. Call one of your char-rig MCP tools directly and exit: mcp__char_rig__avatar_speak(text, expression?, duration_ms?), mcp__char_rig__avatar_emote(expression, duration_ms?) where expression is neutral|happy|sad|surprised|thinking|angry, mcp__char_rig__avatar_wave(), or mcp__char_rig__avatar_animate(name, loop?).]";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTEXT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -77,6 +91,7 @@ struct CliConfig {
     /// `Some("")` disables the ack emote entirely.
     ack_emote: Option<String>,
     hermes_cmd: Option<String>,
+    hermes_timeout: Option<u64>,
     webhook_url: Option<String>,
     dry_run: bool,
 }
@@ -89,6 +104,7 @@ struct Config {
     rules: Rules,
     ack_emote: String,
     hermes_cmd: Option<String>,
+    hermes_timeout: Duration,
     webhook_url: Option<String>,
     dry_run: bool,
 }
@@ -110,13 +126,18 @@ OPTIONS:
                              (default {ack}; pass \"\" or --no-ack-emote to disable)
   --hermes-cmd <CMD>         command spawned with the prompt appended
                              (default ${ENV_HERMES_CMD})
+  --hermes-timeout <SECS>    kill the spawned command after this long (default {timeout})
   --webhook-url <URL>        POST the trigger payload to this endpoint
   --dry-run                  print trigger payloads on stdout, call nothing
   -h, --help                 show this help
 
 The prompt is appended as the last argv entry (or substituted for {{prompt}}).
 The command is split on whitespace with double/single-quote grouping; no shell
-is involved, so use a script if you need pipes or redirection.",
+is involved, so use a script if you need pipes or redirection.
+
+The child runs headless: stdin is /dev/null, and only one dispatch is in flight
+at a time — a trigger that fires while a dispatch is still running is skipped
+(a debug line on stderr) instead of spawning a second process.",
         version = env!("CARGO_PKG_VERSION"),
         ENV_API_URL = ENV_API_URL,
         ENV_HERMES_CMD = ENV_HERMES_CMD,
@@ -124,6 +145,7 @@ is involved, so use a script if you need pipes or redirection.",
         rules = DEFAULT_RULES_FILE,
         interval = DEFAULT_CONTEXT_INTERVAL_SECS,
         ack = DEFAULT_ACK_EMOTE,
+        timeout = DEFAULT_HERMES_TIMEOUT_SECS,
     )
 }
 
@@ -171,6 +193,16 @@ fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Result<Option<CliConfig
             "--ack-emote" => cli.ack_emote = Some(next_value(&mut iter, inline, "--ack-emote")?),
             "--no-ack-emote" => cli.ack_emote = Some(String::new()),
             "--hermes-cmd" => cli.hermes_cmd = Some(next_value(&mut iter, inline, "--hermes-cmd")?),
+            "--hermes-timeout" => {
+                let raw = next_value(&mut iter, inline, "--hermes-timeout")?;
+                let secs: u64 = raw
+                    .parse()
+                    .map_err(|_| format!("--hermes-timeout expects whole seconds, got {raw:?}"))?;
+                if secs == 0 {
+                    return Err("--hermes-timeout must be at least 1 second".to_string());
+                }
+                cli.hermes_timeout = Some(secs);
+            }
             "--webhook-url" => cli.webhook_url = Some(next_value(&mut iter, inline, "--webhook-url")?),
             "--dry-run" => cli.dry_run = true,
             other => return Err(format!("unknown argument {other:?} (try --help)")),
@@ -219,6 +251,12 @@ impl Config {
                 .or_else(|| rules.ack_emote.clone())
                 .unwrap_or_else(|| DEFAULT_ACK_EMOTE.to_string()),
             hermes_cmd: cli.hermes_cmd.or_else(|| rules.hermes_cmd.clone()),
+            hermes_timeout: Duration::from_secs(
+                cli.hermes_timeout
+                    .or(rules.hermes_timeout_secs)
+                    .unwrap_or(DEFAULT_HERMES_TIMEOUT_SECS)
+                    .max(1),
+            ),
             webhook_url: cli.webhook_url.or_else(|| rules.webhook_url.clone()),
             dry_run: cli.dry_run,
             rules,
@@ -281,6 +319,8 @@ struct Rules {
     context: ContextRules,
     ack_emote: Option<String>,
     hermes_cmd: Option<String>,
+    /// Kill the spawned `--hermes-cmd` after this many seconds.
+    hermes_timeout_secs: Option<u64>,
     webhook_url: Option<String>,
 }
 
@@ -497,6 +537,9 @@ impl Trigger {
     }
 
     /// Concise context prompt for `--hermes-cmd`.
+    ///
+    /// Ends with [`HEADLESS_DIRECTIVE`]: the child has no stdin, so a prompt that
+    /// invites a clarifying question would just stall the turn.
     fn prompt(&self) -> String {
         let focus = if self.window_title.is_empty() {
             "no focused window".to_string()
@@ -504,8 +547,8 @@ impl Trigger {
             format!("focused window {:?}", self.window_title)
         };
         format!(
-            "[char-rig {}] {} ({}; idle {}s). Decide whether to react (speak, emote, move) or ignore it.",
-            self.event_type, self.detail, focus, self.idle_secs
+            "[char-rig {}] {} ({}; idle {}s). Decide whether to react (speak, emote, move) or ignore it. {}",
+            self.event_type, self.detail, focus, self.idle_secs, HEADLESS_DIRECTIVE
         )
     }
 }
@@ -730,28 +773,96 @@ fn command_argv(command: &str, prompt: &str) -> Vec<String> {
     argv
 }
 
-/// Spawn the configured command and log how it exited, without blocking.
-fn spawn_hermes(command: &str, prompt: &str) {
+/// One-dispatch-at-a-time latch.
+///
+/// Triggers are already serialised by [`dispatcher`], but a spawned
+/// `--hermes-cmd` child outlives `handle_trigger`: without this guard a burst of
+/// interactions would start one `hermes` process per trigger and they would pile
+/// up (each one an LLM turn, each one competing for the same API). A trigger
+/// that arrives while a dispatch is still running is skipped instead.
+#[derive(Debug, Clone, Default)]
+struct SingleFlight {
+    busy: Arc<AtomicBool>,
+}
+
+impl SingleFlight {
+    /// Take the permit, or `None` when another dispatch already holds it.
+    fn try_enter(&self) -> Option<FlightGuard> {
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            Some(FlightGuard {
+                busy: Arc::clone(&self.busy),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+/// Held for as long as one dispatch is in flight; dropping it releases the
+/// permit, so a panic in the spawned task can never wedge the watcher.
+#[derive(Debug)]
+struct FlightGuard {
+    busy: Arc<AtomicBool>,
+}
+
+impl Drop for FlightGuard {
+    fn drop(&mut self) {
+        self.busy.store(false, Ordering::Release);
+    }
+}
+
+/// Spawn the configured command, wait for it under a timeout, and log the exit.
+///
+/// * `stdin` is `/dev/null` so an interactive prompt reads EOF immediately
+///   instead of hanging on a keyboard that is not attached.
+/// * The wait is wrapped in [`tokio::time::timeout`]; on expiry the child is
+///   killed and reaped, so a wedged agent cannot hold the single-flight permit
+///   forever.
+/// * `flight` moves into the spawned task: the permit is released exactly when
+///   the child is gone.
+fn spawn_hermes(command: &str, prompt: &str, timeout: Duration, flight: FlightGuard) {
     let mut argv = command_argv(command, prompt);
     if argv.is_empty() {
         eprintln!("[watcher] --hermes-cmd is empty; nothing spawned");
         return;
     }
     let program = argv.remove(0);
-    let child = std::process::Command::new(&program)
+    let spawned = tokio::process::Command::new(&program)
         .args(&argv)
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .spawn();
 
-    match child {
+    match spawned {
         Ok(mut child) => {
-            eprintln!("[watcher] spawned {program} (pid {})", child.id());
+            let pid = child
+                .id()
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            eprintln!("[watcher] spawned {program} (pid {pid}, timeout {}s)", timeout.as_secs());
             tokio::spawn(async move {
-                let status = tokio::task::spawn_blocking(move || child.wait()).await;
-                match status {
+                let _flight = flight; // released when this task ends
+                let waited = tokio::time::timeout(timeout, child.wait()).await;
+                match waited {
                     Ok(Ok(status)) => eprintln!("[watcher] {program} exited with {status}"),
                     Ok(Err(err)) => eprintln!("[watcher] waiting for {program} failed: {err}"),
-                    Err(err) => eprintln!("[watcher] join error: {err}"),
+                    Err(_) => {
+                        eprintln!(
+                            "[watcher] {program} (pid {pid}) still running after {}s; killing it",
+                            timeout.as_secs()
+                        );
+                        if let Err(err) = child.start_kill() {
+                            eprintln!("[watcher] cannot kill {program}: {err}");
+                        }
+                        match child.wait().await {
+                            Ok(status) => eprintln!("[watcher] {program} killed ({status})"),
+                            Err(err) => eprintln!("[watcher] cannot reap {program}: {err}"),
+                        }
+                    }
                 }
             });
         }
@@ -760,7 +871,16 @@ fn spawn_hermes(command: &str, prompt: &str) {
 }
 
 /// Deliver one trigger: dry-run print → ack emote → webhook → Hermes command.
-async fn handle_trigger(config: &Config, client: &reqwest::Client, trigger: &Trigger) {
+///
+/// The whole side-effect chain is one flight: a trigger arriving while a
+/// previous dispatch (including a still-running `--hermes-cmd` child) is in
+/// flight is dropped with a debug line rather than queued.
+async fn handle_trigger(
+    config: &Config,
+    client: &reqwest::Client,
+    trigger: &Trigger,
+    flight: &SingleFlight,
+) {
     let payload = trigger.payload(now_ms());
 
     if config.dry_run {
@@ -771,6 +891,14 @@ async fn handle_trigger(config: &Config, client: &reqwest::Client, trigger: &Tri
         let _ = std::io::stdout().flush();
         return;
     }
+
+    let Some(guard) = flight.try_enter() else {
+        eprintln!(
+            "[watcher] debug: dispatch already in flight, skipping {} trigger ({} in flight)",
+            trigger.event_type, trigger.detail
+        );
+        return;
+    };
 
     eprintln!("[watcher] trigger {}: {}", trigger.event_type, trigger.detail);
 
@@ -802,16 +930,18 @@ async fn handle_trigger(config: &Config, client: &reqwest::Client, trigger: &Tri
         }
     }
 
-    // 3. Hermes (or a plain log line when nothing is wired up).
+    // 3. Hermes (or a plain log line when nothing is wired up). The guard moves
+    //    into the child's task so the permit covers the process lifetime.
     match &config.hermes_cmd {
-        Some(command) => spawn_hermes(command, &trigger.prompt()),
+        Some(command) => spawn_hermes(command, &trigger.prompt(), config.hermes_timeout, guard),
         None if config.webhook_url.is_none() => {
+            drop(guard);
             eprintln!(
                 "[watcher] no --hermes-cmd / --webhook-url; payload was {}",
                 payload
             )
         }
-        None => {}
+        None => drop(guard),
     }
 }
 
@@ -983,10 +1113,13 @@ async fn context_loop(
     }
 }
 
-/// Serialise dispatch so triggers never race each other.
+/// Serialise dispatch so triggers never race each other, and hold the
+/// single-flight latch across the whole side-effect chain (including a
+/// `--hermes-cmd` child that outlives this loop).
 async fn dispatcher(config: Config, client: reqwest::Client, mut rx: mpsc::Receiver<Trigger>) {
+    let flight = SingleFlight::default();
     while let Some(trigger) = rx.recv().await {
-        handle_trigger(&config, &client, &trigger).await;
+        handle_trigger(&config, &client, &trigger, &flight).await;
     }
 }
 
@@ -1017,7 +1150,10 @@ async fn main() {
         if config.dry_run { "dry run" } else { "live" }
     );
     match (&config.hermes_cmd, &config.webhook_url) {
-        (Some(cmd), _) => eprintln!("[watcher] dispatch: spawn {cmd:?}"),
+        (Some(cmd), _) => eprintln!(
+            "[watcher] dispatch: spawn {cmd:?} (timeout {}s, one at a time)",
+            config.hermes_timeout.as_secs()
+        ),
         (None, Some(url)) => eprintln!("[watcher] dispatch: webhook {url}"),
         (None, None) if config.dry_run => eprintln!("[watcher] dispatch: stdout only (dry run)"),
         (None, None) => eprintln!("[watcher] dispatch: none configured (triggers are logged only)"),
@@ -1537,5 +1673,98 @@ mod tests {
         };
         let config = Config::resolve(cli, Rules::default());
         assert!(config.rules.interaction_allowed("click"));
+    }
+
+    /* ---------- headless dispatch ---------- */
+
+    #[test]
+    fn prompt_ends_with_the_headless_directive() {
+        let trigger = Trigger {
+            event_type: "interaction".to_string(),
+            detail: "the user double-clicked the avatar at (10, 20)".to_string(),
+            window_title: "Editor".to_string(),
+            idle_secs: 4,
+            kind: Some("double_click".to_string()),
+            keyword: None,
+            x: Some(10.0),
+            y: Some(20.0),
+        };
+        let prompt = trigger.prompt();
+        assert!(
+            prompt.ends_with(HEADLESS_DIRECTIVE),
+            "the directive is the last thing the agent reads: {prompt}"
+        );
+        assert!(prompt.contains("do not ask follow-up questions"), "{prompt}");
+        // The signatures are what saves the model a `tool_describe` round-trip.
+        for signature in [
+            "mcp__char_rig__avatar_speak(text, expression?, duration_ms?)",
+            "mcp__char_rig__avatar_emote(expression, duration_ms?)",
+            "mcp__char_rig__avatar_wave()",
+            "mcp__char_rig__avatar_animate(name, loop?)",
+            "neutral|happy|sad|surprised|thinking|angry",
+        ] {
+            assert!(prompt.contains(signature), "missing {signature:?} in {prompt}");
+        }
+    }
+
+    #[test]
+    fn hermes_timeout_defaults_to_120s_and_is_configurable() {
+        let config = Config::resolve(CliConfig::default(), Rules::default());
+        assert_eq!(config.hermes_timeout, Duration::from_secs(120));
+        assert_eq!(DEFAULT_HERMES_TIMEOUT_SECS, 120);
+
+        // rules file beats the built-in default
+        let from_rules = rules(r#"{"hermes_timeout_secs":300}"#);
+        assert_eq!(from_rules.hermes_timeout_secs, Some(300));
+        let config = Config::resolve(CliConfig::default(), from_rules.clone());
+        assert_eq!(config.hermes_timeout, Duration::from_secs(300));
+
+        // CLI beats the rules file
+        let cli = parse_cli(args(&["--hermes-timeout", "5"])).unwrap().unwrap();
+        assert_eq!(cli.hermes_timeout, Some(5));
+        let config = Config::resolve(cli, from_rules);
+        assert_eq!(config.hermes_timeout, Duration::from_secs(5), "--hermes-timeout wins");
+
+        // `--flag=value` form too
+        let cli = parse_cli(args(&["--hermes-timeout=90"])).unwrap().unwrap();
+        assert_eq!(cli.hermes_timeout, Some(90));
+
+        assert!(parse_cli(args(&["--hermes-timeout", "0"])).is_err(), "zero is not a timeout");
+        assert!(parse_cli(args(&["--hermes-timeout", "soon"])).is_err());
+        assert!(parse_cli(args(&["--hermes-timeout"])).is_err(), "missing value");
+    }
+
+    #[test]
+    fn hermes_timeout_accepts_the_flags_the_docs_show() {
+        // `--help` must advertise the real default, not a hand-maintained copy.
+        let usage = usage();
+        assert!(
+            usage.contains(&format!("(default {DEFAULT_HERMES_TIMEOUT_SECS})")),
+            "usage does not mention the 120 s default: {usage}"
+        );
+    }
+
+    #[test]
+    fn single_flight_admits_one_dispatch_at_a_time() {
+        let flight = SingleFlight::default();
+
+        let first = flight.try_enter().expect("first dispatch gets the permit");
+        assert!(
+            flight.try_enter().is_none(),
+            "a second trigger must not spawn a second hermes process"
+        );
+
+        drop(first);
+        assert!(flight.try_enter().is_some(), "the next trigger is admitted again");
+    }
+
+    #[test]
+    fn single_flight_permits_are_shared_across_clones() {
+        let flight = SingleFlight::default();
+        let clone = flight.clone();
+        let guard = flight.try_enter().expect("permit");
+        assert!(clone.try_enter().is_none(), "clones share the same latch");
+        drop(guard);
+        assert!(clone.try_enter().is_some());
     }
 }

@@ -19,7 +19,7 @@ tauri-plugin-log = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "net", "time"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "net", "time", "process"] }
 axum = "0.7"
 # `GET /events`: BroadcastStream adapts the tokio broadcast channel into the
 # Stream that axum's SSE response consumes.

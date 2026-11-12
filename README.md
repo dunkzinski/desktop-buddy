@@ -102,6 +102,11 @@ Clicking or double-clicking the avatar does not make it react on its own — the
 page reports the interaction to Rust, which pushes an `interaction` frame on
 `GET /events` so your agent can decide what happens (wave back, speak, ignore).
 
+**Moving it:** in play mode, press on the avatar and drag — it follows the
+cursor, clamped to the screen, and idle wandering stays paused for 15 s after
+you let go (the release is reported as a `drag_end` interaction). Rig Edit Mode
+keeps the press for its gizmos, so the two gestures never fight.
+
 ---
 
 ## Pushing vs polling
@@ -155,6 +160,28 @@ the last argument. The command line is split on whitespace with `"`/`'` quote
 grouping and **no shell** is involved, so the prompt can never be re-read as
 shell syntax — use a script if you need pipes or redirection.
 
+Spawning is **single-flight** and headless, because a pile-up of `hermes`
+processes is the one failure mode that actually costs money:
+
+* While a dispatch is in flight (a `--hermes-cmd` child still running, or a
+  webhook POST still open), further triggers are **skipped** with a
+  `[watcher] debug: dispatch already in flight …` line on stderr. One trigger,
+  one agent turn — never a queue of them.
+* The child is spawned with `stdin` on `/dev/null`, so an interactive prompt
+  reads EOF immediately instead of blocking on a keyboard nobody is typing on.
+* The prompt ends with a directive telling the agent this is a headless avatar
+  trigger: **no** follow-up questions, and it spells out the exact MCP call
+  signatures (`mcp__char_rig__avatar_speak(text, expression?, duration_ms?)`,
+  `avatar_emote(expression, duration_ms?)` with the six valid expressions,
+  `avatar_wave()`, `avatar_animate(name, loop?)`) so the very first turn can act
+  without a `tool_describe` round-trip. That matters most on a local model,
+  where every extra round-trip eats the timeout.
+* The wait is wrapped in a timeout (`--hermes-timeout`, default `120` s, also
+  `hermes_timeout_secs` in `watcher_rules.json`); a child that outlives it is
+  killed and reaped, which also releases the flight permit. The default is
+  deliberately generous — a local model usually needs more than a minute to
+  finish its turn.
+
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--api-url <URL>` | `$CHAR_RIG_API_URL` or `http://127.0.0.1:8765` | avatar API base |
@@ -164,14 +191,16 @@ shell syntax — use a script if you need pipes or redirection.
 | `--ack-emote <EXPR>` | `thinking` | expression shown the moment a trigger fires |
 | `--no-ack-emote` | — | disable the ack emote entirely |
 | `--hermes-cmd <CMD>` | `$CHAR_RIG_HERMES_CMD` | command spawned with the prompt |
+| `--hermes-timeout <SECS>` | `120` | kill a spawned `--hermes-cmd` after this long |
 | `--webhook-url <URL>` | *(none)* | `POST` the trigger payload here |
 | `--dry-run` | off | print payloads on stdout and call nothing |
 
 Precedence is **CLI flag → environment → `watcher_rules.json` → built-in
-default**. If the avatar is not running (or restarts), the watcher reconnects
-with exponential backoff from 1 s up to 30 s; a failing context poll logs once
-and keeps trying. Diagnostics go to stderr; stdout carries only `--dry-run`
-payloads, so it stays pipe-friendly.
+default** (`hermes_timeout_secs` follows the same order, minus an env var). If
+the avatar is not running (or restarts), the watcher reconnects with exponential
+backoff from 1 s up to 30 s; a failing context poll logs once and keeps trying.
+Diagnostics go to stderr; stdout carries only `--dry-run` payloads, so it stays
+pipe-friendly.
 
 `watcher_rules.json` (repo root) tunes the rules; a missing or invalid file
 falls back to the built-in defaults shown here:
@@ -191,6 +220,7 @@ falls back to the built-in defaults shown here:
   },
   "ack_emote": "thinking",
   "hermes_cmd": null,
+  "hermes_timeout_secs": 120,
   "webhook_url": null
 }
 ```

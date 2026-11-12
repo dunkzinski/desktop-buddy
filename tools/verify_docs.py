@@ -215,6 +215,7 @@ else:
         "DEFAULT_INTERACTION_COOLDOWN_SECS": const_u64("DEFAULT_INTERACTION_COOLDOWN_SECS"),
         "DEFAULT_CONTEXT_COOLDOWN_SECS": const_u64("DEFAULT_CONTEXT_COOLDOWN_SECS"),
         "DEFAULT_IDLE_THRESHOLD_SECS": const_u64("DEFAULT_IDLE_THRESHOLD_SECS"),
+        "DEFAULT_HERMES_TIMEOUT_SECS": const_u64("DEFAULT_HERMES_TIMEOUT_SECS"),
     }
     for name, value in defaults.items():
         if value is None:
@@ -272,10 +273,19 @@ else:
                     f"{shipped.get('context', {}).get('window_keywords')} vs {default_keywords}"
                 )
             # unknown keys in the rules file would be silently ignored by serde
-            known = {"interactions", "context", "ack_emote", "hermes_cmd", "webhook_url"}
+            known = {"interactions", "context", "ack_emote", "hermes_cmd", "hermes_timeout_secs", "webhook_url"}
             unknown = set(shipped) - known
             if unknown:
                 problems.append(f"watcher_rules.json: unknown keys {sorted(unknown)}")
+
+            shipped_timeout = shipped.get("hermes_timeout_secs")
+            if shipped_timeout is not None:
+                expected_timeout = defaults["DEFAULT_HERMES_TIMEOUT_SECS"]
+                if shipped_timeout != expected_timeout:
+                    problems.append(
+                        f"watcher_rules.json: hermes_timeout_secs = {shipped_timeout}, "
+                        f"but the code default is {expected_timeout}"
+                    )
 
 print("\n" + "=" * 60)
 if problems:

@@ -157,6 +157,8 @@ function frame(now) {
 const DOUBLE_CLICK_MS = 320;
 /** Pointer travel above this turns a press into a drag, not a click. */
 const DRAG_START_PX = 8;
+/** Idle wander stays paused this long after a drag ends, in seconds. */
+const DRAG_HOLD_SECS = 15;
 
 /** Report an interaction with the avatar art; Rust fans it out on `GET /events`. */
 function notifyInteraction(kind, point) {
@@ -173,14 +175,40 @@ function canvasPoint(canvas, event) {
 }
 
 /**
+ * Clamp a proposed avatar anchor so the whole art box stays on screen.
+ *
+ * `avatarBounds()` is measured from the current anchor, so the box's offsets
+ * around the anchor are constant while the pose is held still (a drag parks the
+ * avatar in `idle` first, so that holds).
+ */
+function clampAvatarPosition(x, y) {
+  const box = avatarBounds();
+  const left = box.x - avatar.x;
+  const top = box.y - avatar.y;
+  const minX = -left;
+  const minY = -top;
+  const maxX = viewport.w - (left + box.w);
+  const maxY = viewport.h - (top + box.h);
+  const lo = (min, max) => Math.min(min, max);
+  const hi = (min, max) => Math.max(min, max);
+  return {
+    x: Math.min(Math.max(x, lo(minX, maxX)), hi(minX, maxX)),
+    y: Math.min(Math.max(y, lo(minY, maxY)), hi(minY, maxY)),
+  };
+}
+
+/**
  * Hit-test the avatar's bounding box (the same box that becomes a click-through
- * region) and report click / double_click / drag_end.
+ * region) and report click / double_click / drag_end — and, in play mode, let a
+ * press inside that box drag the avatar across the desktop.
  *
  * Rig Edit Mode is excluded: there a press is a gizmo drag and the editor owns
  * it, so the agent would otherwise get a stream of rig-editing clicks.
  */
 function attachInteractionDetection(canvas) {
   let pressOrigin = null;
+  /** Grab offset while a press inside the avatar could become a drag. */
+  let grab = null;
   let lastClick = { t: 0, x: 0, y: 0 };
 
   const overAvatar = (point) => {
@@ -194,19 +222,77 @@ function attachInteractionDetection(canvas) {
   canvas.addEventListener("mousedown", (event) => {
     if (event.button !== 0 || RT.rigMode) {
       pressOrigin = null;
+      grab = null;
       return;
     }
     const point = canvasPoint(canvas, event);
     pressOrigin = overAvatar(point) ? point : null;
+    // The anchor offset is captured at press time, so the avatar keeps its grip
+    // under the cursor instead of snapping its centre to the pointer.
+    grab = pressOrigin
+      ? { dx: avatar.x - point.x, dy: avatar.y - point.y, active: false }
+      : null;
+  });
+
+  window.addEventListener("mousemove", (event) => {
+    if (!grab || !pressOrigin || RT.rigMode) return;
+    const point = canvasPoint(canvas, event);
+
+    if (!grab.active) {
+      if (Math.hypot(point.x - pressOrigin.x, point.y - pressOrigin.y) <= DRAG_START_PX) return;
+      // Past the threshold: this press is a drag, not a click.
+      grab.active = true;
+      avatar.dragging = true;
+      avatar.mode = "idle";
+      avatar.idleTimer = 0;
+      avatar.walkPhase = 0;
+      avatar.targetX = avatar.x;
+      avatar.targetY = avatar.y;
+      // Pauses idle wander for the gesture and for DRAG_HOLD_SECS after it.
+      markManual(DRAG_HOLD_SECS);
+      updateStatusUI();
+      wireRegions(); // full-viewport hit region for the rest of the gesture
+    }
+
+    const next = clampAvatarPosition(point.x + grab.dx, point.y + grab.dy);
+    avatar.x = next.x;
+    avatar.y = next.y;
+    avatar.targetX = next.x;
+    avatar.targetY = next.y;
+    // The clickable region has to follow the art, or the press-through window
+    // would keep testing the old rectangle.
+    wireRegions();
+  });
+
+  // A drag whose mouseup never arrives (alt-tab, focus stolen) would leave the
+  // overlay permanently interactive; losing focus cancels the gesture.
+  window.addEventListener("blur", () => {
+    if (grab && grab.active) {
+      avatar.dragging = false;
+      markManual(DRAG_HOLD_SECS);
+      updateStatusUI();
+      wireRegions();
+    }
+    pressOrigin = null;
+    grab = null;
   });
 
   window.addEventListener("mouseup", (event) => {
     const origin = pressOrigin;
+    const drag = grab;
     pressOrigin = null;
+    grab = null;
     if (!origin || RT.rigMode || event.button !== 0) return;
 
     const point = canvasPoint(canvas, event);
-    if (Math.hypot(point.x - origin.x, point.y - origin.y) > DRAG_START_PX) {
+    const travelled = Math.hypot(point.x - origin.x, point.y - origin.y);
+    if ((drag && drag.active) || travelled > DRAG_START_PX) {
+      if (avatar.dragging) {
+        avatar.dragging = false;
+        markManual(DRAG_HOLD_SECS);
+        updateStatusUI();
+        wireRegions(); // back to the avatar box only
+      }
       notifyInteraction("drag_end", point);
       return;
     }

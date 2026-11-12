@@ -320,6 +320,11 @@ export function wireRegions() {
   if (RT.rigMode) {
     regions.push({ x: 0, y: 0, w: viewport.w, h: viewport.h });
     push(document.getElementById("inspector"));
+  } else if (avatar.dragging) {
+    // A play-mode drag keeps the whole window interactive: the 35 ms cursor
+    // tracker would otherwise flip the overlay click-through the moment a fast
+    // drag outran the avatar box, and the gesture would lose the mouse.
+    regions.push({ x: 0, y: 0, w: viewport.w, h: viewport.h });
   } else {
     regions.push(avatarBounds());
   }
