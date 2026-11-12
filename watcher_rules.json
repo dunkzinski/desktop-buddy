@@ -1,0 +1,16 @@
+{
+  "interactions": {
+    "double_click": true,
+    "drag_end": true,
+    "click": false,
+    "cooldown_secs": 15
+  },
+  "context": {
+    "window_keywords": ["error", "failed", "exception"],
+    "idle_threshold_secs": 900,
+    "cooldown_secs": 300
+  },
+  "ack_emote": "thinking",
+  "hermes_cmd": null,
+  "webhook_url": null
+}

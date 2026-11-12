@@ -1,0 +1,613 @@
+{
+  "bones": [
+    {
+      "anim": {
+        "bob": 3,
+        "phase": 0,
+        "sway": 0,
+        "walk": 0,
+        "wave": 0
+      },
+      "id": "root",
+      "length": 0,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": null,
+      "parts": [
+        {
+          "color": "#4a90d9",
+          "id": "head",
+          "offset": [
+            65,
+            73
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "ellipse",
+          "size": [
+            116,
+            108
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ffffff",
+          "id": "face",
+          "offset": [
+            7,
+            14
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "face",
+          "size": [
+            116,
+            108
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        0,
+        0
+      ],
+      "rotation": 0,
+      "scale": 1,
+      "z": 10
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 0,
+        "sway": 0.05,
+        "walk": 0.42,
+        "wave": 1.1
+      },
+      "id": "tentacle_1_base",
+      "length": 150,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#e91e63",
+          "id": "seg-e91e63",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            150,
+            34
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        73,
+        8
+      ],
+      "rotation": 0,
+      "scale": 1,
+      "z": 5
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 0.5,
+        "sway": 0.04,
+        "walk": 0.26,
+        "wave": 0.605
+      },
+      "id": "tentacle_1_mid",
+      "length": 150,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "tentacle_1_base",
+      "parts": [
+        {
+          "color": "#e91e63",
+          "id": "seg-e91e63",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            150,
+            34
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        150,
+        0
+      ],
+      "rotation": 0,
+      "scale": 1,
+      "z": 5
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 1,
+        "sway": 0.03,
+        "walk": 0.18,
+        "wave": 0.33
+      },
+      "id": "tentacle_1_tip",
+      "length": 100,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "tentacle_1_mid",
+      "parts": [
+        {
+          "color": "#e91e63",
+          "id": "seg-e91e63",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            100,
+            26
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        150,
+        0
+      ],
+      "rotation": 0,
+      "scale": 1,
+      "z": 6
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 1.571,
+        "sway": 0.05,
+        "walk": 0.42,
+        "wave": 0
+      },
+      "id": "tentacle_2_base",
+      "length": 150,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#9c27b0",
+          "id": "seg-9c27b0",
+          "offset": [
+            1.4,
+            9.9
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            150,
+            34
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        52,
+        60
+      ],
+      "rotation": 0.785,
+      "scale": 1,
+      "z": 5
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 2.071,
+        "sway": 0.04,
+        "walk": 0.26,
+        "wave": 0
+      },
+      "id": "tentacle_2_mid",
+      "length": 150,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "tentacle_2_base",
+      "parts": [
+        {
+          "color": "#9c27b0",
+          "id": "seg-9c27b0",
+          "offset": [
+            5.5,
+            15.5
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            150,
+            34
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        150,
+        0
+      ],
+      "rotation": 0.471,
+      "scale": 1,
+      "z": 5
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 2.571,
+        "sway": 0.03,
+        "walk": 0.18,
+        "wave": 0
+      },
+      "id": "tentacle_2_tip",
+      "length": 100,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "tentacle_2_mid",
+      "parts": [
+        {
+          "color": "#9c27b0",
+          "id": "seg-9c27b0",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            100,
+            26
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        150,
+        0
+      ],
+      "rotation": 0.314,
+      "scale": 1,
+      "z": 6
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 3.142,
+        "sway": 0.05,
+        "walk": 0.42,
+        "wave": 0
+      },
+      "id": "tentacle_3_base",
+      "length": 150,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#673ab7",
+          "id": "seg-673ab7",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            150,
+            34
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -31,
+        96
+      ],
+      "rotation": 1.571,
+      "scale": 1,
+      "z": 5
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 3.642,
+        "sway": 0.04,
+        "walk": 0.26,
+        "wave": 0
+      },
+      "id": "tentacle_3_mid",
+      "length": 150,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "tentacle_3_base",
+      "parts": [
+        {
+          "color": "#673ab7",
+          "id": "seg-673ab7",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            150,
+            34
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        150,
+        0
+      ],
+      "rotation": 0.942,
+      "scale": 1,
+      "z": 5
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 4.142,
+        "sway": 0.03,
+        "walk": 0.18,
+        "wave": 0
+      },
+      "id": "tentacle_3_tip",
+      "length": 100,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "tentacle_3_mid",
+      "parts": [
+        {
+          "color": "#673ab7",
+          "id": "seg-673ab7",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            100,
+            26
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        150,
+        0
+      ],
+      "rotation": 0.942,
+      "scale": 1,
+      "z": 6
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 4.712,
+        "sway": 0.05,
+        "walk": 0.42,
+        "wave": 0
+      },
+      "id": "tentacle_4_base",
+      "length": 150,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#3f51b5",
+          "id": "seg-3f51b5",
+          "offset": [
+            14.1,
+            24.5
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            150,
+            34
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -66,
+        7
+      ],
+      "rotation": 2.8274,
+      "scale": 1,
+      "z": 5
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 5.212,
+        "sway": 0.04,
+        "walk": 0.26,
+        "wave": 0
+      },
+      "id": "tentacle_4_mid",
+      "length": 150,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "tentacle_4_base",
+      "parts": [
+        {
+          "color": "#3f51b5",
+          "id": "seg-3f51b5",
+          "offset": [
+            12.1,
+            18.4
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            150,
+            34
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        157.9,
+        11.5
+      ],
+      "rotation": 1.414,
+      "scale": 1,
+      "z": 5
+    },
+    {
+      "anim": {
+        "bob": 0,
+        "phase": 5.712,
+        "sway": 0.03,
+        "walk": 0.18,
+        "wave": 0
+      },
+      "id": "tentacle_4_tip",
+      "length": 100,
+      "limits": {
+        "max": null,
+        "min": null
+      },
+      "parent": "tentacle_4_mid",
+      "parts": [
+        {
+          "color": "#3f51b5",
+          "id": "seg-3f51b5",
+          "offset": [
+            7,
+            7.5
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "shape": "capsule",
+          "size": [
+            100,
+            26
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        150,
+        0
+      ],
+      "rotation": 0.628,
+      "scale": 1,
+      "z": 6
+    }
+  ],
+  "format": "char-rig/model@1",
+  "label": "Xenomorph-7",
+  "name": "xenomorph-7",
+  "notes": "Built-in model: procedural shapes, no textures. Converted from the original hardcoded renderer."
+}

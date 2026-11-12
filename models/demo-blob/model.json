@@ -1,0 +1,514 @@
+{
+  "format": "char-rig/model@1",
+  "name": "demo-blob",
+  "label": "Demo Blob (sprite parts)",
+  "notes": "Example sprite model: PNG parts on a bone hierarchy. Good starting point for imports.",
+  "animations": {
+    "wave": {
+      "duration_ms": 1400,
+      "loop": false,
+      "keyframes": [
+        {
+          "t": 0.0,
+          "bones": {
+            "arm_r": {
+              "rotation": 0.0,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": 0.0,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            }
+          }
+        },
+        {
+          "t": 0.15,
+          "bones": {
+            "arm_r": {
+              "rotation": -1.9,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": -0.06,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            }
+          }
+        },
+        {
+          "t": 0.4,
+          "bones": {
+            "arm_r": {
+              "rotation": -2.5,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": 0.05,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            }
+          }
+        },
+        {
+          "t": 0.65,
+          "bones": {
+            "arm_r": {
+              "rotation": -1.9,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": 0.05,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            }
+          }
+        },
+        {
+          "t": 0.85,
+          "bones": {
+            "arm_r": {
+              "rotation": -2.5,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": -0.04,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            }
+          }
+        },
+        {
+          "t": 1.0,
+          "bones": {
+            "arm_r": {
+              "rotation": 0.0,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": 0.0,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            }
+          }
+        }
+      ]
+    },
+    "breathe": {
+      "duration_ms": 2400,
+      "loop": true,
+      "keyframes": [
+        {
+          "t": 0.0,
+          "bones": {
+            "root": {
+              "rotation": 0.0,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": 0.0,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            }
+          }
+        },
+        {
+          "t": 0.5,
+          "bones": {
+            "root": {
+              "rotation": 0.0,
+              "x": 0.0,
+              "y": 3.0,
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": 0.04,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            }
+          }
+        },
+        {
+          "t": 1.0,
+          "bones": {
+            "root": {
+              "rotation": 0.0,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": 0.0,
+              "x": 0.0,
+              "y": 0.0,
+              "scale": 1.0
+            }
+          }
+        }
+      ]
+    }
+  },
+  "bones": [
+    {
+      "id": "root",
+      "parent": null,
+      "pos": [
+        0,
+        0
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "length": 0.0,
+      "z": 10,
+      "anim": {
+        "bob": 4.0
+      },
+      "parts": [
+        {
+          "id": "body",
+          "image": "parts/body.png",
+          "size": [
+            150,
+            132
+          ],
+          "pivot": [
+            0.5,
+            0.55
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0,
+          "z": 0
+        }
+      ]
+    },
+    {
+      "id": "head",
+      "parent": "root",
+      "pos": [
+        0,
+        -60
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "length": 0.0,
+      "z": 30,
+      "anim": {
+        "sway": 0.06,
+        "walk": 0.12
+      },
+      "parts": [
+        {
+          "id": "eye_l",
+          "image": "parts/eye.png",
+          "size": [
+            34,
+            34
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "offset": [
+            -28,
+            -14
+          ],
+          "rotation": 0,
+          "z": 1,
+          "tag": "eye"
+        },
+        {
+          "id": "eye_r",
+          "image": "parts/eye.png",
+          "size": [
+            34,
+            34
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "offset": [
+            28,
+            -14
+          ],
+          "rotation": 0,
+          "z": 1,
+          "tag": "eye"
+        },
+        {
+          "id": "pupil_l",
+          "image": "parts/pupil.png",
+          "size": [
+            16,
+            16
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "offset": [
+            -28,
+            -12
+          ],
+          "rotation": 0,
+          "z": 2,
+          "tag": "eye"
+        },
+        {
+          "id": "pupil_r",
+          "image": "parts/pupil.png",
+          "size": [
+            16,
+            16
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "offset": [
+            28,
+            -12
+          ],
+          "rotation": 0,
+          "z": 2,
+          "tag": "eye"
+        },
+        {
+          "id": "mouth",
+          "tag": "mouth",
+          "image": "parts/mouth_closed.png",
+          "size": [
+            128,
+            20
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "offset": [
+            0,
+            22
+          ],
+          "rotation": 0,
+          "scale": 1,
+          "z": 5,
+          "state": "closed",
+          "variants": {
+            "closed": "parts/mouth_closed.png",
+            "open": "parts/mouth_open.png",
+            "smile": "parts/mouth_smile.png"
+          }
+        }
+      ]
+    },
+    {
+      "id": "arm_l",
+      "parent": "root",
+      "pos": [
+        -70,
+        10
+      ],
+      "rotation": 0.5,
+      "scale": 1.0,
+      "length": 96,
+      "z": 16,
+      "anim": {
+        "walk": 0.55,
+        "sway": 0.08,
+        "wave": 1.2,
+        "phase": 0.0
+      },
+      "parts": [
+        {
+          "id": "arm_l_img",
+          "image": "parts/arm.png",
+          "size": [
+            96,
+            22
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0,
+          "z": 0
+        }
+      ]
+    },
+    {
+      "id": "arm_l_hand",
+      "parent": "arm_l",
+      "pos": [
+        96,
+        0
+      ],
+      "rotation": 0.2,
+      "scale": 1.0,
+      "length": 0,
+      "z": 17,
+      "anim": {
+        "walk": 0.3,
+        "wave": 0.8
+      },
+      "parts": [
+        {
+          "id": "hand_l",
+          "image": "parts/pupil.png",
+          "size": [
+            22,
+            22
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0,
+          "z": 0
+        }
+      ]
+    },
+    {
+      "id": "arm_r",
+      "parent": "root",
+      "pos": [
+        70,
+        10
+      ],
+      "rotation": 2.641592653589793,
+      "scale": 1.0,
+      "length": 96,
+      "z": 16,
+      "anim": {
+        "walk": 0.55,
+        "sway": 0.08,
+        "wave": 1.2,
+        "phase": 3.141592653589793
+      },
+      "parts": [
+        {
+          "id": "arm_r_img",
+          "image": "parts/arm.png",
+          "size": [
+            96,
+            22
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0,
+          "z": 0
+        }
+      ]
+    },
+    {
+      "id": "foot_l",
+      "parent": "root",
+      "pos": [
+        -34,
+        58
+      ],
+      "rotation": 0.2,
+      "scale": 1.0,
+      "length": 40,
+      "z": 12,
+      "anim": {
+        "walk": 0.5,
+        "phase": 0.0
+      },
+      "parts": [
+        {
+          "id": "foot_l_img",
+          "image": "parts/foot.png",
+          "size": [
+            40,
+            20
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0,
+          "z": 0
+        }
+      ]
+    },
+    {
+      "id": "foot_r",
+      "parent": "root",
+      "pos": [
+        34,
+        58
+      ],
+      "rotation": -0.2,
+      "scale": 1.0,
+      "length": 40,
+      "z": 12,
+      "anim": {
+        "walk": 0.5,
+        "phase": 3.141592653589793
+      },
+      "parts": [
+        {
+          "id": "foot_r_img",
+          "image": "parts/foot.png",
+          "size": [
+            40,
+            20
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0,
+          "z": 0
+        }
+      ]
+    }
+  ]
+}

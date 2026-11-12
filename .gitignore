@@ -1,0 +1,13 @@
+﻿# Rust build outputs
+src-tauri/target/
+target/
+
+# Legacy multi-GB prototypes
+ai-avatar-bridge/
+avatar-desktop/
+avatar-editor/
+spikes/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

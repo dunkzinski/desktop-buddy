@@ -1,0 +1,1541 @@
+//! `char-rig-watcher` — a headless watcher that wakes an agent when the desktop
+//! or the avatar does something interesting, at **zero idle LLM cost**.
+//!
+//! It is the third binary built by `cargo build` (next to `avatar-desktop.exe`
+//! and `char-rig-mcp.exe`) and it owns no UI: it subscribes to the running
+//! avatar's `GET /events` stream and polls `GET /context`, and only when a
+//! configured rule fires does it reach out — a visual ack on the avatar, an
+//! HTTP webhook, or a Hermes command with a concise prompt.
+//!
+//! ```text
+//!   avatar-desktop.exe ──SSE /events────┐
+//!                        ──GET /context─┴──▶ char-rig-watcher ──▶ POST /emote (ack)
+//!                                                          ──▶ --webhook-url
+//!                                                          ──▶ --hermes-cmd (spawn)
+//! ```
+//!
+//! Design rules that matter:
+//!
+//! * **Idle costs nothing.** With no triggers firing, the process only reads a
+//!   keep-alive SSE stream and one small JSON poll every 20 s. No model is
+//!   called, no tokens are spent.
+//! * **The avatar may be down.** Every connection is retried with exponential
+//!   backoff (1 s → 30 s); a restart reconnects and keeps watching.
+//! * **Rules are data, not code.** `watcher_rules.json` (or `--rules`) tunes
+//!   which interactions matter, the keywords that are worth interrupting for,
+//!   and the cooldowns. A missing file means built-in defaults.
+//! * **Dry runs are side-effect free.** `--dry-run` prints the trigger payloads
+//!   on stdout and touches neither the avatar nor Hermes.
+//!
+//! Diagnostics always go to stderr; stdout carries only `--dry-run` payloads.
+
+use std::collections::HashMap;
+use std::io::Write as _;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
+
+/* ------------------------------------------------------------------ *
+ * constants
+ * ------------------------------------------------------------------ */
+
+const DEFAULT_API_URL: &str = "http://127.0.0.1:8765";
+const ENV_API_URL: &str = "CHAR_RIG_API_URL";
+const ENV_HERMES_CMD: &str = "CHAR_RIG_HERMES_CMD";
+const DEFAULT_RULES_FILE: &str = "watcher_rules.json";
+
+const DEFAULT_CONTEXT_INTERVAL_SECS: u64 = 20;
+const DEFAULT_INTERACTION_COOLDOWN_SECS: u64 = 15;
+const DEFAULT_CONTEXT_COOLDOWN_SECS: u64 = 300;
+const DEFAULT_IDLE_THRESHOLD_SECS: u64 = 900;
+const DEFAULT_ACK_EMOTE: &str = "thinking";
+const ACK_EMOTE_DURATION_MS: u64 = 4000;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const CONTEXT_TIMEOUT: Duration = Duration::from_secs(5);
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+const TRIGGER_QUEUE: usize = 64;
+
+/* ------------------------------------------------------------------ *
+ * CLI configuration
+ * ------------------------------------------------------------------ */
+
+/// Raw flags, before the rules file and built-in defaults are merged in.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct CliConfig {
+    api_url: Option<String>,
+    rules_path: Option<String>,
+    context_interval: Option<u64>,
+    trigger_single_click: bool,
+    /// `Some("")` disables the ack emote entirely.
+    ack_emote: Option<String>,
+    hermes_cmd: Option<String>,
+    webhook_url: Option<String>,
+    dry_run: bool,
+}
+
+/// Everything the watcher needs at runtime.
+#[derive(Debug, Clone, PartialEq)]
+struct Config {
+    api_url: String,
+    context_interval: Duration,
+    rules: Rules,
+    ack_emote: String,
+    hermes_cmd: Option<String>,
+    webhook_url: Option<String>,
+    dry_run: bool,
+}
+
+fn usage() -> String {
+    format!(
+        "\
+char-rig-watcher {version} - wake an agent when the avatar or the desktop does something
+
+USAGE:
+  char-rig-watcher [OPTIONS]
+
+OPTIONS:
+  --api-url <URL>            avatar API base (default ${ENV_API_URL} or {api})
+  --rules <PATH>             rules file (default ./{rules}, then next to the exe)
+  --context-interval <SECS>  how often GET /context is polled (default {interval})
+  --trigger-single-click     also fire on plain `click` interactions
+  --ack-emote <EXPR>         expression shown the moment a trigger fires
+                             (default {ack}; pass \"\" or --no-ack-emote to disable)
+  --hermes-cmd <CMD>         command spawned with the prompt appended
+                             (default ${ENV_HERMES_CMD})
+  --webhook-url <URL>        POST the trigger payload to this endpoint
+  --dry-run                  print trigger payloads on stdout, call nothing
+  -h, --help                 show this help
+
+The prompt is appended as the last argv entry (or substituted for {{prompt}}).
+The command is split on whitespace with double/single-quote grouping; no shell
+is involved, so use a script if you need pipes or redirection.",
+        version = env!("CARGO_PKG_VERSION"),
+        ENV_API_URL = ENV_API_URL,
+        ENV_HERMES_CMD = ENV_HERMES_CMD,
+        api = DEFAULT_API_URL,
+        rules = DEFAULT_RULES_FILE,
+        interval = DEFAULT_CONTEXT_INTERVAL_SECS,
+        ack = DEFAULT_ACK_EMOTE,
+    )
+}
+
+fn next_value(
+    iter: &mut std::iter::Peekable<impl Iterator<Item = String>>,
+    inline: Option<String>,
+    name: &str,
+) -> Result<String, String> {
+    if let Some(value) = inline {
+        return Ok(value);
+    }
+    iter.next()
+        .ok_or_else(|| format!("{name} needs a value (try --help)"))
+}
+
+/// Parse argv into raw flags. `Ok(None)` means `--help` was handled.
+fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Result<Option<CliConfig>, String> {
+    let mut cli = CliConfig::default();
+    let mut iter = args.into_iter().peekable();
+
+    while let Some(arg) = iter.next() {
+        let (flag, inline) = match arg.split_once('=') {
+            Some((name, value)) if name.starts_with("--") => (name.to_string(), Some(value.to_string())),
+            _ => (arg.clone(), None),
+        };
+
+        match flag.as_str() {
+            "-h" | "--help" => {
+                println!("{}", usage());
+                return Ok(None);
+            }
+            "--api-url" => cli.api_url = Some(next_value(&mut iter, inline, "--api-url")?),
+            "--rules" => cli.rules_path = Some(next_value(&mut iter, inline, "--rules")?),
+            "--context-interval" => {
+                let raw = next_value(&mut iter, inline, "--context-interval")?;
+                let secs: u64 = raw
+                    .parse()
+                    .map_err(|_| format!("--context-interval expects whole seconds, got {raw:?}"))?;
+                if secs == 0 {
+                    return Err("--context-interval must be at least 1 second".to_string());
+                }
+                cli.context_interval = Some(secs);
+            }
+            "--trigger-single-click" => cli.trigger_single_click = true,
+            "--ack-emote" => cli.ack_emote = Some(next_value(&mut iter, inline, "--ack-emote")?),
+            "--no-ack-emote" => cli.ack_emote = Some(String::new()),
+            "--hermes-cmd" => cli.hermes_cmd = Some(next_value(&mut iter, inline, "--hermes-cmd")?),
+            "--webhook-url" => cli.webhook_url = Some(next_value(&mut iter, inline, "--webhook-url")?),
+            "--dry-run" => cli.dry_run = true,
+            other => return Err(format!("unknown argument {other:?} (try --help)")),
+        }
+    }
+
+    // Environment fallbacks sit between the flags and the defaults.
+    if cli.api_url.is_none() {
+        cli.api_url = env_non_empty(ENV_API_URL);
+    }
+    if cli.hermes_cmd.is_none() {
+        cli.hermes_cmd = env_non_empty(ENV_HERMES_CMD);
+    }
+    Ok(Some(cli))
+}
+
+fn env_non_empty(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+impl Config {
+    /// Merge flags over the rules file over the built-in defaults.
+    ///
+    /// Precedence, highest first: CLI flag → environment → `watcher_rules.json`
+    /// → built-in default. Pure, so the tests can pin it down.
+    fn resolve(cli: CliConfig, mut rules: Rules) -> Config {
+        if cli.trigger_single_click {
+            rules.interactions.click = true;
+        }
+        let api_url = cli
+            .api_url
+            .unwrap_or_else(|| DEFAULT_API_URL.to_string())
+            .trim_end_matches('/')
+            .to_string();
+
+        Config {
+            api_url,
+            context_interval: Duration::from_secs(
+                cli.context_interval.unwrap_or(DEFAULT_CONTEXT_INTERVAL_SECS).max(1),
+            ),
+            ack_emote: cli
+                .ack_emote
+                .or_else(|| rules.ack_emote.clone())
+                .unwrap_or_else(|| DEFAULT_ACK_EMOTE.to_string()),
+            hermes_cmd: cli.hermes_cmd.or_else(|| rules.hermes_cmd.clone()),
+            webhook_url: cli.webhook_url.or_else(|| rules.webhook_url.clone()),
+            dry_run: cli.dry_run,
+            rules,
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * rules
+ * ------------------------------------------------------------------ */
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+struct InteractionRules {
+    double_click: bool,
+    drag_end: bool,
+    click: bool,
+    cooldown_secs: u64,
+}
+
+impl Default for InteractionRules {
+    fn default() -> Self {
+        Self {
+            double_click: true,
+            drag_end: true,
+            click: false,
+            cooldown_secs: DEFAULT_INTERACTION_COOLDOWN_SECS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+struct ContextRules {
+    /// Case-insensitive substrings that make a window title worth a trigger.
+    window_keywords: Vec<String>,
+    /// Idle time that counts as "away"; dropping below it is a return.
+    idle_threshold_secs: u64,
+    cooldown_secs: u64,
+}
+
+impl Default for ContextRules {
+    fn default() -> Self {
+        Self {
+            window_keywords: vec![
+                "error".to_string(),
+                "failed".to_string(),
+                "exception".to_string(),
+            ],
+            idle_threshold_secs: DEFAULT_IDLE_THRESHOLD_SECS,
+            cooldown_secs: DEFAULT_CONTEXT_COOLDOWN_SECS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
+#[serde(default)]
+struct Rules {
+    interactions: InteractionRules,
+    context: ContextRules,
+    ack_emote: Option<String>,
+    hermes_cmd: Option<String>,
+    webhook_url: Option<String>,
+}
+
+impl Rules {
+    fn from_json(text: &str) -> Result<Rules, String> {
+        serde_json::from_str(text).map_err(|err| err.to_string())
+    }
+
+    /// Read `--rules` (or the default locations); fall back to defaults.
+    fn load(path: Option<&str>) -> Rules {
+        let candidates: Vec<PathBuf> = match path {
+            Some(explicit) => vec![PathBuf::from(explicit)],
+            None => {
+                let mut list = vec![PathBuf::from(DEFAULT_RULES_FILE)];
+                if let Ok(exe) = std::env::current_exe() {
+                    if let Some(dir) = exe.parent() {
+                        list.push(dir.join(DEFAULT_RULES_FILE));
+                    }
+                }
+                list
+            }
+        };
+
+        for candidate in candidates {
+            match std::fs::read_to_string(&candidate) {
+                Ok(text) => match Rules::from_json(&text) {
+                    Ok(rules) => {
+                        eprintln!("[watcher] rules loaded from {}", candidate.display());
+                        return rules;
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "[watcher] {} is not valid rules ({err}); using built-in defaults",
+                            candidate.display()
+                        );
+                        return Rules::default();
+                    }
+                },
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => eprintln!("[watcher] cannot read {}: {err}", candidate.display()),
+            }
+        }
+
+        if let Some(explicit) = path {
+            eprintln!("[watcher] rules file {explicit} not found; using built-in defaults");
+        } else {
+            eprintln!("[watcher] no {DEFAULT_RULES_FILE}; using built-in defaults");
+        }
+        Rules::default()
+    }
+
+    /// Is this interaction kind configured to wake the agent?
+    fn interaction_allowed(&self, kind: &str) -> bool {
+        match kind {
+            "double_click" => self.interactions.double_click,
+            "drag_end" => self.interactions.drag_end,
+            "click" => self.interactions.click,
+            _ => false,
+        }
+    }
+
+    /// First configured keyword contained in `title`, case-insensitively.
+    fn matched_keyword<'a>(&'a self, title: &str) -> Option<&'a str> {
+        let haystack = title.to_lowercase();
+        self.context
+            .window_keywords
+            .iter()
+            .map(|keyword| keyword.trim())
+            .find(|keyword| !keyword.is_empty() && haystack.contains(&keyword.to_lowercase()))
+    }
+
+    /// True when the user just came back from a long idle stretch.
+    fn idle_transition(&self, was_idle: bool, idle_secs: u64) -> bool {
+        was_idle && idle_secs < self.context.idle_threshold_secs
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * cooldowns
+ * ------------------------------------------------------------------ */
+
+/// Per-trigger-kind cooldown table. `allow` both checks and stamps.
+#[derive(Debug, Default)]
+struct Cooldowns {
+    last: HashMap<String, Instant>,
+}
+
+impl Cooldowns {
+    fn allow(&mut self, key: &str, now: Instant, cooldown: Duration) -> bool {
+        if let Some(previous) = self.last.get(key) {
+            if now.saturating_duration_since(*previous) < cooldown {
+                return false;
+            }
+        }
+        self.last.insert(key.to_string(), now);
+        true
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * SSE parsing
+ * ------------------------------------------------------------------ */
+
+/// One dispatched `text/event-stream` frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SseFrame {
+    event: String,
+    data: String,
+}
+
+/// Incremental SSE parser: feed it arbitrary chunks, get whole frames back.
+///
+/// Handles `event:`/`data:` fields, multi-line `data`, `:` comment lines (the
+/// API's 15 s keep-alive), CRLF, and frames split across TCP reads.
+#[derive(Debug, Default)]
+struct SseParser {
+    buffer: String,
+    event: String,
+    data: String,
+    has_data: bool,
+}
+
+impl SseParser {
+    fn feed(&mut self, chunk: &str) -> Vec<SseFrame> {
+        let mut frames = Vec::new();
+        self.buffer.push_str(chunk);
+        while let Some(index) = self.buffer.find('\n') {
+            let mut line = self.buffer[..index].to_string();
+            self.buffer.drain(..=index);
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            self.line(&line, &mut frames);
+        }
+        frames
+    }
+
+    fn line(&mut self, line: &str, frames: &mut Vec<SseFrame>) {
+        if line.is_empty() {
+            if self.has_data {
+                let event = if self.event.is_empty() {
+                    "message".to_string()
+                } else {
+                    std::mem::take(&mut self.event)
+                };
+                let data = std::mem::take(&mut self.data).trim_end().to_string();
+                frames.push(SseFrame { event, data });
+                self.has_data = false;
+            }
+            self.event.clear();
+            self.data.clear();
+            return;
+        }
+        if line.starts_with(':') {
+            return; // comment / keep-alive
+        }
+        let (field, value) = match line.split_once(':') {
+            Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
+            None => (line, ""),
+        };
+        match field {
+            "event" => self.event = value.to_string(),
+            "data" => {
+                if self.has_data {
+                    self.data.push('\n');
+                }
+                self.data.push_str(value);
+                self.has_data = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * triggers
+ * ------------------------------------------------------------------ */
+
+#[derive(Debug, Clone, PartialEq)]
+struct Trigger {
+    /// `interaction` | `window_title` | `idle_return`
+    event_type: String,
+    detail: String,
+    window_title: String,
+    idle_secs: u64,
+    kind: Option<String>,
+    keyword: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+}
+
+impl Trigger {
+    /// JSON handed to `--webhook-url` and printed by `--dry-run`.
+    fn payload(&self, ts_ms: u64) -> Value {
+        let mut map = serde_json::Map::new();
+        map.insert("event_type".to_string(), json!(self.event_type));
+        map.insert("detail".to_string(), json!(self.detail));
+        map.insert("window_title".to_string(), json!(self.window_title));
+        map.insert("idle_secs".to_string(), json!(self.idle_secs));
+        map.insert("ts_ms".to_string(), json!(ts_ms));
+        if let Some(kind) = &self.kind {
+            map.insert("kind".to_string(), json!(kind));
+        }
+        if let Some(keyword) = &self.keyword {
+            map.insert("keyword".to_string(), json!(keyword));
+        }
+        if let Some(x) = self.x {
+            map.insert("x".to_string(), json!(x));
+        }
+        if let Some(y) = self.y {
+            map.insert("y".to_string(), json!(y));
+        }
+        Value::Object(map)
+    }
+
+    /// Concise context prompt for `--hermes-cmd`.
+    fn prompt(&self) -> String {
+        let focus = if self.window_title.is_empty() {
+            "no focused window".to_string()
+        } else {
+            format!("focused window {:?}", self.window_title)
+        };
+        format!(
+            "[char-rig {}] {} ({}; idle {}s). Decide whether to react (speak, emote, move) or ignore it.",
+            self.event_type, self.detail, focus, self.idle_secs
+        )
+    }
+}
+
+fn human_kind(kind: &str) -> &'static str {
+    match kind {
+        "double_click" => "double-clicked",
+        "drag_end" => "dragged",
+        "click" => "clicked",
+        _ => "interacted with",
+    }
+}
+
+/// Turn an `interaction` SSE payload into a trigger, honouring rules + cooldown.
+fn interaction_trigger(
+    rules: &Rules,
+    shared: &mut Shared,
+    kind: &str,
+    payload: &Value,
+    now: Instant,
+) -> Option<Trigger> {
+    if !rules.interaction_allowed(kind) {
+        return None;
+    }
+    let cooldown = Duration::from_secs(rules.interactions.cooldown_secs);
+    if !shared
+        .cooldowns
+        .allow(&format!("interaction:{kind}"), now, cooldown)
+    {
+        return None;
+    }
+
+    let x = payload.get("x").and_then(Value::as_f64);
+    let y = payload.get("y").and_then(Value::as_f64);
+    let where_ = match (x, y) {
+        (Some(x), Some(y)) => format!(" at ({x:.0}, {y:.0})"),
+        _ => String::new(),
+    };
+
+    Some(Trigger {
+        event_type: "interaction".to_string(),
+        detail: format!("the user {} the avatar{}", human_kind(kind), where_),
+        window_title: shared.context.window_title.clone(),
+        idle_secs: shared.context.idle_secs,
+        kind: Some(kind.to_string()),
+        keyword: None,
+        x,
+        y,
+    })
+}
+
+/// Evaluate one `/context` poll: title-keyword rule + idle-return rule.
+///
+/// Always updates the shared snapshot (so interaction triggers can quote the
+/// current window) and the idle state machine; returns the triggers that passed
+/// their cooldown.
+fn context_triggers(
+    rules: &Rules,
+    shared: &mut Shared,
+    context: &ContextSnapshot,
+    now: Instant,
+) -> Vec<Trigger> {
+    let mut triggers = Vec::new();
+    let previous_title = shared.last_title.clone();
+    let previous_idle = shared.last_idle_secs;
+    let was_idle = shared.was_idle;
+
+    shared.context = context.clone();
+    let cooldown = Duration::from_secs(rules.context.cooldown_secs);
+
+    // ---- window title changed into something that matches a keyword ----
+    let title_changed = previous_title.as_deref() != Some(context.window_title.as_str());
+    if shared.initialized && title_changed && !context.window_title.is_empty() {
+        if let Some(keyword) = rules.matched_keyword(&context.window_title) {
+            if shared
+                .cooldowns
+                .allow("context:window_title", now, cooldown)
+            {
+                triggers.push(Trigger {
+                    event_type: "window_title".to_string(),
+                    detail: format!(
+                        "the focused window changed to {:?} (matched {:?})",
+                        context.window_title, keyword
+                    ),
+                    window_title: context.window_title.clone(),
+                    idle_secs: context.idle_secs,
+                    kind: None,
+                    keyword: Some(keyword.to_string()),
+                    x: None,
+                    y: None,
+                });
+            }
+        }
+    }
+
+    // ---- the user came back after a long idle stretch ----
+    if context.idle_secs >= rules.context.idle_threshold_secs {
+        shared.was_idle = true;
+    } else if rules.idle_transition(was_idle, context.idle_secs) {
+        shared.was_idle = false;
+        if shared.cooldowns.allow("context:idle_return", now, cooldown) {
+            triggers.push(Trigger {
+                event_type: "idle_return".to_string(),
+                detail: format!(
+                    "the user came back after about {}s idle",
+                    previous_idle.max(rules.context.idle_threshold_secs)
+                ),
+                window_title: context.window_title.clone(),
+                idle_secs: context.idle_secs,
+                kind: None,
+                keyword: None,
+                x: None,
+                y: None,
+            });
+        }
+    }
+
+    if !context.window_title.is_empty() {
+        shared.last_title = Some(context.window_title.clone());
+    }
+    shared.last_idle_secs = context.idle_secs;
+    shared.initialized = true;
+    triggers
+}
+
+/* ------------------------------------------------------------------ *
+ * shared state
+ * ------------------------------------------------------------------ */
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ContextSnapshot {
+    window_title: String,
+    idle_secs: u64,
+}
+
+#[derive(Debug, Default)]
+struct Shared {
+    /// Latest `/context` reading, quoted in interaction triggers.
+    context: ContextSnapshot,
+    /// False until the first poll has been folded in (the first one is only a
+    /// baseline — the watcher must not fire on the title it starts with).
+    initialized: bool,
+    /// Last non-empty window title seen (drives the keyword rule).
+    last_title: Option<String>,
+    /// Previous poll's idle time (reported by the idle-return trigger).
+    last_idle_secs: u64,
+    /// True while the machine is considered away (idle >= threshold).
+    was_idle: bool,
+    cooldowns: Cooldowns,
+}
+
+fn lock(shared: &Arc<Mutex<Shared>>) -> MutexGuard<'_, Shared> {
+    shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/* ------------------------------------------------------------------ *
+ * dispatch
+ * ------------------------------------------------------------------ */
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Split a command line into argv, honouring single/double quotes.
+///
+/// No shell is involved: the prompt is passed as one argv entry, so it can never
+/// be re-interpreted as shell syntax.
+fn split_command(command: &str) -> Vec<String> {
+    let mut argv = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+
+    for ch in command.chars() {
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {
+                current.push(ch);
+                started = true;
+            }
+            None => match ch {
+                '"' | '\'' => {
+                    quote = Some(ch);
+                    started = true;
+                }
+                c if c.is_whitespace() => {
+                    if started {
+                        argv.push(std::mem::take(&mut current));
+                        started = false;
+                    }
+                }
+                c => {
+                    current.push(c);
+                    started = true;
+                }
+            },
+        }
+    }
+    if started {
+        argv.push(current);
+    }
+    argv
+}
+
+/// argv for the configured command, with the prompt appended (or substituted
+/// into a `{prompt}` placeholder).
+fn command_argv(command: &str, prompt: &str) -> Vec<String> {
+    let mut argv = split_command(command);
+    let mut substituted = false;
+    for arg in argv.iter_mut() {
+        if arg.contains("{prompt}") {
+            *arg = arg.replace("{prompt}", prompt);
+            substituted = true;
+        }
+    }
+    if !substituted && !argv.is_empty() {
+        argv.push(prompt.to_string());
+    }
+    argv
+}
+
+/// Spawn the configured command and log how it exited, without blocking.
+fn spawn_hermes(command: &str, prompt: &str) {
+    let mut argv = command_argv(command, prompt);
+    if argv.is_empty() {
+        eprintln!("[watcher] --hermes-cmd is empty; nothing spawned");
+        return;
+    }
+    let program = argv.remove(0);
+    let child = std::process::Command::new(&program)
+        .args(&argv)
+        .stdin(Stdio::null())
+        .spawn();
+
+    match child {
+        Ok(mut child) => {
+            eprintln!("[watcher] spawned {program} (pid {})", child.id());
+            tokio::spawn(async move {
+                let status = tokio::task::spawn_blocking(move || child.wait()).await;
+                match status {
+                    Ok(Ok(status)) => eprintln!("[watcher] {program} exited with {status}"),
+                    Ok(Err(err)) => eprintln!("[watcher] waiting for {program} failed: {err}"),
+                    Err(err) => eprintln!("[watcher] join error: {err}"),
+                }
+            });
+        }
+        Err(err) => eprintln!("[watcher] cannot spawn {program:?}: {err}"),
+    }
+}
+
+/// Deliver one trigger: dry-run print → ack emote → webhook → Hermes command.
+async fn handle_trigger(config: &Config, client: &reqwest::Client, trigger: &Trigger) {
+    let payload = trigger.payload(now_ms());
+
+    if config.dry_run {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+        );
+        let _ = std::io::stdout().flush();
+        return;
+    }
+
+    eprintln!("[watcher] trigger {}: {}", trigger.event_type, trigger.detail);
+
+    // 1. Immediate visual ack, so the avatar reacts before the agent answers.
+    if !config.ack_emote.is_empty() {
+        let body = json!({
+            "expression": config.ack_emote,
+            "duration_ms": ACK_EMOTE_DURATION_MS,
+            "revert": "neutral",
+        });
+        let url = format!("{}/emote", config.api_url);
+        match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
+            Ok(response) if !response.status().is_success() => {
+                eprintln!("[watcher] ack emote rejected with {}", response.status())
+            }
+            Ok(_) => {}
+            Err(err) => eprintln!("[watcher] ack emote failed: {err}"),
+        }
+    }
+
+    // 2. Webhook.
+    if let Some(url) = &config.webhook_url {
+        match client.post(url).json(&payload).timeout(CONTEXT_TIMEOUT).send().await {
+            Ok(response) if !response.status().is_success() => {
+                eprintln!("[watcher] webhook answered {}", response.status())
+            }
+            Ok(_) => {}
+            Err(err) => eprintln!("[watcher] webhook failed: {err}"),
+        }
+    }
+
+    // 3. Hermes (or a plain log line when nothing is wired up).
+    match &config.hermes_cmd {
+        Some(command) => spawn_hermes(command, &trigger.prompt()),
+        None if config.webhook_url.is_none() => {
+            eprintln!(
+                "[watcher] no --hermes-cmd / --webhook-url; payload was {}",
+                payload
+            )
+        }
+        None => {}
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * HTTP
+ * ------------------------------------------------------------------ */
+
+fn build_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .user_agent(concat!("char-rig-watcher/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// `GET /context` → snapshot. A non-2xx or unparsable body is an error.
+async fn fetch_context(client: &reqwest::Client, api_url: &str) -> Result<ContextSnapshot, String> {
+    let url = format!("{api_url}/context");
+    let response = client
+        .get(&url)
+        .timeout(CONTEXT_TIMEOUT)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("{url} answered {}", response.status()));
+    }
+    let body: Value = response.json().await.map_err(|err| err.to_string())?;
+    Ok(ContextSnapshot {
+        window_title: body
+            .get("window_title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        idle_secs: body.get("idle_secs").and_then(Value::as_u64).unwrap_or(0),
+    })
+}
+
+/* ------------------------------------------------------------------ *
+ * tasks
+ * ------------------------------------------------------------------ */
+
+/// Turn one SSE frame into a queued trigger (only `interaction` frames matter).
+async fn handle_frame(
+    frame: &SseFrame,
+    rules: &Rules,
+    shared: &Arc<Mutex<Shared>>,
+    tx: &mpsc::Sender<Trigger>,
+) {
+    if frame.event == "hello" || frame.data.is_empty() {
+        return;
+    }
+    let value: Value = match serde_json::from_str(&frame.data) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("[watcher] skipping unparsable SSE frame ({err})");
+            return;
+        }
+    };
+    let frame_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or(frame.event.as_str());
+    if frame_type != "interaction" {
+        return;
+    }
+    let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+    let Some(kind) = payload.get("kind").and_then(Value::as_str) else {
+        return;
+    };
+
+    let trigger = {
+        let mut guard = lock(shared);
+        interaction_trigger(rules, &mut guard, kind, &payload, Instant::now())
+    };
+    if let Some(trigger) = trigger {
+        if tx.send(trigger).await.is_err() {
+            eprintln!("[watcher] dispatcher is gone; dropping trigger");
+        }
+    }
+}
+
+/// Subscribe to `GET /events` until the stream ends, then return.
+async fn stream_events(
+    config: &Config,
+    client: &reqwest::Client,
+    shared: &Arc<Mutex<Shared>>,
+    tx: &mpsc::Sender<Trigger>,
+    backoff: &mut Duration,
+) -> Result<(), String> {
+    let url = format!("{}/events", config.api_url);
+    let response = client
+        .get(&url)
+        .header("accept", "text/event-stream")
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!("{url} answered {}", response.status()));
+    }
+    eprintln!("[watcher] subscribed to {url}");
+    *backoff = INITIAL_BACKOFF;
+
+    let mut parser = SseParser::default();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|err| format!("stream error: {err}"))?;
+        let text = String::from_utf8_lossy(&bytes);
+        for frame in parser.feed(&text) {
+            handle_frame(&frame, &config.rules, shared, tx).await;
+        }
+    }
+    Err("event stream closed by the server".to_string())
+}
+
+/// Reconnect forever with exponential backoff.
+async fn sse_loop(
+    config: Config,
+    client: reqwest::Client,
+    shared: Arc<Mutex<Shared>>,
+    tx: mpsc::Sender<Trigger>,
+) {
+    let mut backoff = INITIAL_BACKOFF;
+    loop {
+        match stream_events(&config, &client, &shared, &tx, &mut backoff).await {
+            Ok(()) => {}
+            Err(err) => eprintln!("[watcher] {err}"),
+        }
+        eprintln!("[watcher] reconnecting in {:.0}s", backoff.as_secs_f64());
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(MAX_BACKOFF);
+    }
+}
+
+/// Poll `GET /context` on an interval and evaluate the context rules.
+async fn context_loop(
+    config: Config,
+    client: reqwest::Client,
+    shared: Arc<Mutex<Shared>>,
+    tx: mpsc::Sender<Trigger>,
+) {
+    let mut ticker = tokio::time::interval(config.context_interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut warned = false;
+
+    loop {
+        ticker.tick().await;
+        match fetch_context(&client, &config.api_url).await {
+            Ok(context) => {
+                warned = false;
+                let triggers = {
+                    let mut guard = lock(&shared);
+                    context_triggers(&config.rules, &mut guard, &context, Instant::now())
+                };
+                for trigger in triggers {
+                    if tx.send(trigger).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(err) => {
+                if !warned {
+                    eprintln!("[watcher] context poll failed: {err} (avatar offline?)");
+                    warned = true;
+                }
+            }
+        }
+    }
+}
+
+/// Serialise dispatch so triggers never race each other.
+async fn dispatcher(config: Config, client: reqwest::Client, mut rx: mpsc::Receiver<Trigger>) {
+    while let Some(trigger) = rx.recv().await {
+        handle_trigger(&config, &client, &trigger).await;
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * main
+ * ------------------------------------------------------------------ */
+
+#[tokio::main]
+async fn main() {
+    let cli = match parse_cli(std::env::args().skip(1)) {
+        Ok(Some(cli)) => cli,
+        Ok(None) => return, // --help
+        Err(message) => {
+            eprintln!("char-rig-watcher: {message}");
+            std::process::exit(2);
+        }
+    };
+
+    let rules = Rules::load(cli.rules_path.as_deref());
+    let config = Config::resolve(cli, rules);
+
+    eprintln!(
+        "[watcher] {} ready (api {}, context every {}s, ack {:?}, {})",
+        env!("CARGO_BIN_NAME"),
+        config.api_url,
+        config.context_interval.as_secs(),
+        if config.ack_emote.is_empty() { "<off>" } else { &config.ack_emote },
+        if config.dry_run { "dry run" } else { "live" }
+    );
+    match (&config.hermes_cmd, &config.webhook_url) {
+        (Some(cmd), _) => eprintln!("[watcher] dispatch: spawn {cmd:?}"),
+        (None, Some(url)) => eprintln!("[watcher] dispatch: webhook {url}"),
+        (None, None) if config.dry_run => eprintln!("[watcher] dispatch: stdout only (dry run)"),
+        (None, None) => eprintln!("[watcher] dispatch: none configured (triggers are logged only)"),
+    }
+
+    let client = build_client();
+    let shared = Arc::new(Mutex::new(Shared::default()));
+    let (tx, rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
+
+    let sse = tokio::spawn(sse_loop(config.clone(), client.clone(), Arc::clone(&shared), tx.clone()));
+    let context = tokio::spawn(context_loop(config.clone(), client.clone(), Arc::clone(&shared), tx.clone()));
+    let dispatch = tokio::spawn(dispatcher(config, client, rx));
+
+    // Any task ending means the watcher is useless: stop everything.
+    let _ = tokio::select! {
+        _ = sse => eprintln!("[watcher] sse task stopped"),
+        _ = context => eprintln!("[watcher] context task stopped"),
+        _ = dispatch => eprintln!("[watcher] dispatcher stopped"),
+    };
+    std::process::exit(0);
+}
+
+/* ------------------------------------------------------------------ *
+ * tests
+ * ------------------------------------------------------------------ */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared() -> Shared {
+        Shared::default()
+    }
+
+    fn rules(json_text: &str) -> Rules {
+        Rules::from_json(json_text).expect("valid rules")
+    }
+
+    /* ---------- SSE parsing ---------- */
+
+    #[test]
+    fn sse_parser_reads_event_and_data() {
+        let mut parser = SseParser::default();
+        let frames = parser.feed("event: interaction\ndata: {\"a\":1}\n\n");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event, "interaction");
+        assert_eq!(frames[0].data, "{\"a\":1}");
+    }
+
+    #[test]
+    fn sse_parser_survives_arbitrary_chunk_boundaries() {
+        let mut parser = SseParser::default();
+        let mut frames = Vec::new();
+        for chunk in ["eve", "nt: animate\nda", "ta: {\"name\":\"wave\"}", "\n", "\n"] {
+            frames.extend(parser.feed(chunk));
+        }
+        assert_eq!(frames.len(), 1, "one frame assembled from five chunks");
+        assert_eq!(frames[0].event, "animate");
+        assert_eq!(frames[0].data, "{\"name\":\"wave\"}");
+    }
+
+    #[test]
+    fn sse_parser_ignores_comments_and_keepalives() {
+        let mut parser = SseParser::default();
+        let frames = parser.feed(": keep-alive\n\n: another\n");
+        assert!(frames.is_empty());
+        // a comment between two frames must not merge them
+        let frames = parser.feed("event: a\ndata: 1\n\n: keep-alive\n\nevent: b\ndata: 2\n\n");
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].event, "a");
+        assert_eq!(frames[1].event, "b");
+    }
+
+    #[test]
+    fn sse_parser_joins_multiline_data_and_handles_crlf() {
+        let mut parser = SseParser::default();
+        let frames = parser.feed("event: x\r\ndata: one\r\ndata: two\r\n\r\n");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].data, "one\ntwo");
+    }
+
+    #[test]
+    fn sse_parser_defaults_to_message_and_keeps_two_frames_apart() {
+        let mut parser = SseParser::default();
+        let frames = parser.feed("data: 1\n\ndata: 2\n\n");
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].event, "message");
+        assert_eq!(frames[1].data, "2");
+    }
+
+    /* ---------- rules ---------- */
+
+    #[test]
+    fn rules_defaults_match_the_documented_values() {
+        let default = Rules::default();
+        assert!(default.interactions.double_click);
+        assert!(default.interactions.drag_end);
+        assert!(!default.interactions.click, "single clicks are opt-in");
+        assert_eq!(default.interactions.cooldown_secs, 15);
+        assert_eq!(default.context.cooldown_secs, 300);
+        assert_eq!(default.context.idle_threshold_secs, 900);
+        assert!(default.context.window_keywords.contains(&"error".to_string()));
+    }
+
+    #[test]
+    fn rules_parse_a_partial_file() {
+        let parsed = rules(r#"{"interactions":{"click":true},"context":{"window_keywords":["deploy"]}}"#);
+        assert!(parsed.interactions.click, "explicit value wins");
+        assert!(parsed.interactions.double_click, "missing fields keep defaults");
+        assert_eq!(parsed.interactions.cooldown_secs, 15);
+        assert_eq!(parsed.context.window_keywords, vec!["deploy".to_string()]);
+        assert_eq!(parsed.context.idle_threshold_secs, 900);
+    }
+
+    #[test]
+    fn rules_reject_invalid_json() {
+        assert!(Rules::from_json("{not json").is_err());
+    }
+
+    #[test]
+    fn interaction_rules_gate_each_kind() {
+        let default = Rules::default();
+        assert!(default.interaction_allowed("double_click"));
+        assert!(default.interaction_allowed("drag_end"));
+        assert!(!default.interaction_allowed("click"));
+        assert!(!default.interaction_allowed("hover"), "unknown kinds never fire");
+
+        let with_click = rules(r#"{"interactions":{"click":true}}"#);
+        assert!(with_click.interaction_allowed("click"));
+    }
+
+    #[test]
+    fn window_keywords_match_case_insensitively() {
+        let rules = rules(r#"{"context":{"window_keywords":["Error","Build FAILED"]}}"#);
+        assert_eq!(rules.matched_keyword("TypeError: undefined"), Some("Error"));
+        assert_eq!(rules.matched_keyword("make: build failed"), Some("Build FAILED"));
+        assert_eq!(rules.matched_keyword("Visual Studio Code"), None);
+    }
+
+    #[test]
+    fn blank_keywords_are_ignored() {
+        let rules = rules(r#"{"context":{"window_keywords":["  ","error"]}}"#);
+        assert_eq!(rules.matched_keyword("all good"), None);
+        assert_eq!(rules.matched_keyword("an error"), Some("error"));
+    }
+
+    #[test]
+    fn idle_transition_needs_a_previous_away_state() {
+        let rules = Rules::default();
+        assert!(rules.idle_transition(true, 3), "away -> back fires");
+        assert!(!rules.idle_transition(false, 3), "never away, no trigger");
+        assert!(!rules.idle_transition(true, 950), "still away, no trigger");
+    }
+
+    /* ---------- cooldowns ---------- */
+
+    #[test]
+    fn cooldown_suppresses_repeats_then_allows_again() {
+        let base = Instant::now();
+        let mut cooldowns = Cooldowns::default();
+        let cooldown = Duration::from_secs(15);
+
+        assert!(cooldowns.allow("interaction:double_click", base, cooldown));
+        assert!(!cooldowns.allow("interaction:double_click", base + Duration::from_secs(14), cooldown));
+        assert!(cooldowns.allow("interaction:double_click", base + Duration::from_secs(15), cooldown));
+        assert!(!cooldowns.allow("interaction:double_click", base + Duration::from_secs(20), cooldown));
+        assert!(cooldowns.allow("interaction:double_click", base + Duration::from_secs(31), cooldown));
+    }
+
+    #[test]
+    fn cooldowns_are_per_key() {
+        let base = Instant::now();
+        let mut cooldowns = Cooldowns::default();
+        let cooldown = Duration::from_secs(300);
+        assert!(cooldowns.allow("context:window_title", base, cooldown));
+        assert!(
+            cooldowns.allow("context:idle_return", base + Duration::from_secs(1), cooldown),
+            "a different trigger is not blocked"
+        );
+        assert!(!cooldowns.allow("context:window_title", base + Duration::from_secs(1), cooldown));
+    }
+
+    /* ---------- interaction triggers ---------- */
+
+    #[test]
+    fn interaction_trigger_carries_kind_coordinates_and_context() {
+        let base = Instant::now();
+        let rules = Rules::default();
+        let mut shared = shared();
+        shared.context = ContextSnapshot {
+            window_title: "Visual Studio Code".to_string(),
+            idle_secs: 12,
+        };
+        let payload = json!({ "kind": "double_click", "x": 541.0, "y": 489.0, "state": "idle" });
+
+        let trigger = interaction_trigger(&rules, &mut shared, "double_click", &payload, base)
+            .expect("double click fires");
+        assert_eq!(trigger.event_type, "interaction");
+        assert_eq!(trigger.kind.as_deref(), Some("double_click"));
+        assert_eq!(trigger.x, Some(541.0));
+        assert_eq!(trigger.y, Some(489.0));
+        assert_eq!(trigger.window_title, "Visual Studio Code");
+        assert_eq!(trigger.idle_secs, 12);
+        assert!(trigger.detail.contains("double-clicked"));
+        assert!(trigger.detail.contains("(541, 489)"));
+    }
+
+    #[test]
+    fn interaction_trigger_respects_rules_and_cooldown() {
+        let base = Instant::now();
+        let rules = Rules::default();
+        let mut shared = shared();
+        let payload = json!({ "kind": "click", "x": 1.0, "y": 2.0 });
+
+        assert!(
+            interaction_trigger(&rules, &mut shared, "click", &payload, base).is_none(),
+            "single clicks are off by default"
+        );
+
+        let double = json!({ "kind": "double_click", "x": 1.0, "y": 2.0 });
+        assert!(interaction_trigger(&rules, &mut shared, "double_click", &double, base).is_some());
+        assert!(
+            interaction_trigger(&rules, &mut shared, "double_click", &double, base + Duration::from_secs(5)).is_none(),
+            "second click inside the 15s cooldown is suppressed"
+        );
+        assert!(
+            interaction_trigger(&rules, &mut shared, "double_click", &double, base + Duration::from_secs(16)).is_some(),
+            "after the cooldown it fires again"
+        );
+    }
+
+    #[test]
+    fn single_click_can_be_enabled() {
+        let base = Instant::now();
+        let rules = rules(r#"{"interactions":{"click":true}}"#);
+        let mut shared = shared();
+        let payload = json!({ "kind": "click", "x": 0.0, "y": 0.0 });
+        assert!(interaction_trigger(&rules, &mut shared, "click", &payload, base).is_some());
+    }
+
+    /* ---------- context triggers ---------- */
+
+    #[test]
+    fn first_context_poll_only_sets_the_baseline() {
+        let base = Instant::now();
+        let rules = Rules::default();
+        let mut shared = shared();
+        let context = ContextSnapshot { window_title: "some error log".to_string(), idle_secs: 5 };
+        assert!(
+            context_triggers(&rules, &mut shared, &context, base).is_empty(),
+            "the first poll must not fire on the title it starts with"
+        );
+        assert_eq!(shared.last_title.as_deref(), Some("some error log"));
+    }
+
+    #[test]
+    fn title_change_matching_a_keyword_fires_once() {
+        let base = Instant::now();
+        let rules = Rules::default();
+        let mut shared = shared();
+        context_triggers(&rules, &mut shared, &ContextSnapshot { window_title: "Editor".into(), idle_secs: 1 }, base);
+
+        let triggers = context_triggers(
+            &rules,
+            &mut shared,
+            &ContextSnapshot { window_title: "Build failed - project".into(), idle_secs: 2 },
+            base + Duration::from_secs(20),
+        );
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].event_type, "window_title");
+        assert_eq!(triggers[0].keyword.as_deref(), Some("failed"));
+        assert!(triggers[0].detail.contains("Build failed"));
+
+        // same title again: no change, no trigger
+        let again = context_triggers(
+            &rules,
+            &mut shared,
+            &ContextSnapshot { window_title: "Build failed - project".into(), idle_secs: 3 },
+            base + Duration::from_secs(40),
+        );
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn title_change_without_a_keyword_is_quiet() {
+        let base = Instant::now();
+        let rules = Rules::default();
+        let mut shared = shared();
+        context_triggers(&rules, &mut shared, &ContextSnapshot { window_title: "Editor".into(), idle_secs: 1 }, base);
+        let triggers = context_triggers(
+            &rules,
+            &mut shared,
+            &ContextSnapshot { window_title: "Terminal".into(), idle_secs: 2 },
+            base + Duration::from_secs(20),
+        );
+        assert!(triggers.is_empty());
+    }
+
+    #[test]
+    fn idle_return_fires_when_the_user_comes_back() {
+        let base = Instant::now();
+        let rules = Rules::default();
+        let mut shared = shared();
+
+        // away
+        context_triggers(&rules, &mut shared, &ContextSnapshot { window_title: "Editor".into(), idle_secs: 950 }, base);
+        assert!(shared.was_idle);
+
+        // back
+        let triggers = context_triggers(
+            &rules,
+            &mut shared,
+            &ContextSnapshot { window_title: "Editor".into(), idle_secs: 2 },
+            base + Duration::from_secs(20),
+        );
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].event_type, "idle_return");
+        assert_eq!(triggers[0].idle_secs, 2);
+        assert!(triggers[0].detail.contains("950"));
+        assert!(!shared.was_idle);
+
+        // staying active does not fire again
+        let again = context_triggers(
+            &rules,
+            &mut shared,
+            &ContextSnapshot { window_title: "Editor".into(), idle_secs: 3 },
+            base + Duration::from_secs(40),
+        );
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn context_cooldown_suppresses_a_burst_of_matching_titles() {
+        let base = Instant::now();
+        let rules = rules(r#"{"context":{"cooldown_secs":300}}"#);
+        let mut shared = shared();
+        context_triggers(&rules, &mut shared, &ContextSnapshot { window_title: "Editor".into(), idle_secs: 1 }, base);
+
+        let first = context_triggers(
+            &rules,
+            &mut shared,
+            &ContextSnapshot { window_title: "error one".into(), idle_secs: 1 },
+            base + Duration::from_secs(10),
+        );
+        assert_eq!(first.len(), 1);
+
+        let second = context_triggers(
+            &rules,
+            &mut shared,
+            &ContextSnapshot { window_title: "error two".into(), idle_secs: 1 },
+            base + Duration::from_secs(60),
+        );
+        assert!(second.is_empty(), "inside the 300s cooldown");
+
+        let third = context_triggers(
+            &rules,
+            &mut shared,
+            &ContextSnapshot { window_title: "error three".into(), idle_secs: 1 },
+            base + Duration::from_secs(320),
+        );
+        assert_eq!(third.len(), 1, "after the cooldown");
+    }
+
+    /* ---------- payloads and prompts ---------- */
+
+    #[test]
+    fn payload_contains_the_documented_keys() {
+        let trigger = Trigger {
+            event_type: "interaction".to_string(),
+            detail: "the user double-clicked the avatar".to_string(),
+            window_title: "Visual Studio Code".to_string(),
+            idle_secs: 12,
+            kind: Some("double_click".to_string()),
+            keyword: None,
+            x: Some(541.0),
+            y: Some(489.0),
+        };
+        let payload = trigger.payload(1_700_000_000_000);
+        assert_eq!(payload["event_type"], "interaction");
+        assert_eq!(payload["detail"], "the user double-clicked the avatar");
+        assert_eq!(payload["window_title"], "Visual Studio Code");
+        assert_eq!(payload["idle_secs"], 12);
+        assert_eq!(payload["kind"], "double_click");
+        assert_eq!(payload["x"], 541.0);
+        assert_eq!(payload["ts_ms"], 1_700_000_000_000u64);
+        assert!(payload.get("keyword").is_none(), "absent fields are omitted");
+    }
+
+    #[test]
+    fn prompt_mentions_type_detail_window_and_idle() {
+        let trigger = Trigger {
+            event_type: "window_title".to_string(),
+            detail: "the focused window changed to \"Build failed\" (matched \"failed\")".to_string(),
+            window_title: "Build failed".to_string(),
+            idle_secs: 3,
+            kind: None,
+            keyword: Some("failed".to_string()),
+            x: None,
+            y: None,
+        };
+        let prompt = trigger.prompt();
+        assert!(prompt.starts_with("[char-rig window_title]"), "{prompt}");
+        assert!(prompt.contains("Build failed"), "{prompt}");
+        assert!(prompt.contains("idle 3s"), "{prompt}");
+        assert!(prompt.contains("Decide whether to react"), "{prompt}");
+    }
+
+    /* ---------- command building ---------- */
+
+    #[test]
+    fn split_command_handles_quotes_and_spacing() {
+        assert_eq!(split_command("hermes   chat"), vec!["hermes", "chat"]);
+        assert_eq!(
+            split_command(r#"hermes chat --name "my agent""#),
+            vec!["hermes", "chat", "--name", "my agent"]
+        );
+        assert_eq!(split_command("  "), Vec::<String>::new());
+        assert_eq!(split_command("'a b' c"), vec!["a b", "c"]);
+    }
+
+    #[test]
+    fn command_argv_appends_or_substitutes_the_prompt() {
+        let argv = command_argv("hermes chat", "hello world");
+        assert_eq!(argv, vec!["hermes", "chat", "hello world"]);
+
+        let argv = command_argv("hermes --prompt={prompt}", "hello");
+        assert_eq!(argv, vec!["hermes", "--prompt=hello"]);
+
+        let argv = command_argv("", "hello");
+        assert!(argv.is_empty(), "an empty command yields no argv");
+    }
+
+    #[test]
+    fn prompt_is_one_argv_entry_even_with_shell_characters() {
+        let prompt = "user clicked; rm -rf / && echo hi";
+        let argv = command_argv("agent", prompt);
+        assert_eq!(argv.len(), 2);
+        assert_eq!(argv[1], prompt, "no shell, so nothing is re-interpreted");
+    }
+
+    /* ---------- CLI ---------- */
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn cli_parses_flags_and_defaults() {
+        let cli = parse_cli(args(&["--dry-run", "--context-interval", "5"])).unwrap().unwrap();
+        assert!(cli.dry_run);
+        assert_eq!(cli.context_interval, Some(5));
+        assert_eq!(cli.api_url, None);
+
+        let cli = parse_cli(args(&["--api-url=http://127.0.0.1:9000", "--ack-emote", "happy"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(cli.api_url.as_deref(), Some("http://127.0.0.1:9000"));
+        assert_eq!(cli.ack_emote.as_deref(), Some("happy"));
+    }
+
+    #[test]
+    fn cli_help_and_unknown_flags() {
+        assert!(parse_cli(args(&["--help"])).unwrap().is_none(), "--help stops startup");
+        let err = parse_cli(args(&["--nope"])).unwrap_err();
+        assert!(err.contains("unknown argument"), "{err}");
+        assert!(parse_cli(args(&["--context-interval", "0"])).is_err());
+        assert!(parse_cli(args(&["--context-interval"])).is_err(), "missing value");
+    }
+
+    #[test]
+    fn no_ack_emote_disables_the_ack() {
+        let cli = parse_cli(args(&["--no-ack-emote"])).unwrap().unwrap();
+        assert_eq!(cli.ack_emote.as_deref(), Some(""));
+        let config = Config::resolve(cli, Rules::default());
+        assert!(config.ack_emote.is_empty());
+    }
+
+    #[test]
+    fn config_precedence_is_cli_then_rules_then_default() {
+        let file_rules = rules(r#"{"ack_emote":"surprised","hermes_cmd":"from-rules","webhook_url":"http://127.0.0.1:9/hook"}"#);
+
+        // rules beat the built-in default
+        let config = Config::resolve(CliConfig::default(), file_rules.clone());
+        assert_eq!(config.ack_emote, "surprised");
+        assert_eq!(config.hermes_cmd.as_deref(), Some("from-rules"));
+        assert_eq!(config.webhook_url.as_deref(), Some("http://127.0.0.1:9/hook"));
+        assert_eq!(config.api_url, DEFAULT_API_URL);
+        assert_eq!(config.context_interval, Duration::from_secs(DEFAULT_CONTEXT_INTERVAL_SECS));
+
+        // CLI beats the rules file
+        let cli = CliConfig {
+            ack_emote: Some("angry".to_string()),
+            hermes_cmd: Some("from-cli".to_string()),
+            api_url: Some("http://127.0.0.1:9999/".to_string()),
+            context_interval: Some(3),
+            ..CliConfig::default()
+        };
+        let config = Config::resolve(cli, file_rules);
+        assert_eq!(config.ack_emote, "angry");
+        assert_eq!(config.hermes_cmd.as_deref(), Some("from-cli"));
+        assert_eq!(config.api_url, "http://127.0.0.1:9999", "trailing slash trimmed");
+        assert_eq!(config.context_interval, Duration::from_secs(3));
+
+        // nothing configured: the documented default
+        let config = Config::resolve(CliConfig::default(), Rules::default());
+        assert_eq!(config.ack_emote, DEFAULT_ACK_EMOTE);
+        assert!(config.hermes_cmd.is_none());
+        assert!(config.webhook_url.is_none());
+        assert!(!config.dry_run);
+    }
+
+    #[test]
+    fn trigger_single_click_flag_enables_the_click_rule() {
+        let cli = CliConfig {
+            trigger_single_click: true,
+            ..CliConfig::default()
+        };
+        let config = Config::resolve(cli, Rules::default());
+        assert!(config.rules.interaction_allowed("click"));
+    }
+}

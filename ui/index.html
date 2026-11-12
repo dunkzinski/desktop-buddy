@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI Avatar Desktop</title>
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<div id="stage"><canvas id="canvas"></canvas></div>
+
+<div id="titlebar">
+  <span class="brand" id="brand">Avatar</span>
+  <div class="window-controls">
+    <button class="window-btn" id="btn-rig" title="Rig edit mode (R)" aria-label="Rig edit mode">
+      <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 1 5.4-5.4l-2.6 2.6 2 2 2.6-2.6z"/></svg>
+    </button>
+    <button class="window-btn" id="btn-clickthrough" title="Toggle click-through on empty space" aria-label="Toggle click-through">
+      <svg viewBox="0 0 24 24"><path d="M4 4l7 16 2.2-6.4L20 11 4 4z"/></svg>
+    </button>
+    <button class="window-btn" id="btn-minimize" title="Minimize" aria-label="Minimize">
+      <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+    <button class="window-btn close" id="btn-close" title="Close" aria-label="Close">
+      <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+    </button>
+  </div>
+</div>
+
+<div id="control-panel">
+  <header>
+    <h2>Avatar Control</h2>
+    <button class="toggle-btn" id="btn-collapse" title="Collapse" aria-label="Collapse panel">
+      <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+  </header>
+
+  <div class="status">
+    <div class="status-dot" id="status-dot"></div>
+    <div class="status-text">
+      <div><span class="label">State:</span> <span id="status-state">Idle</span></div>
+      <div><span class="label">Mood:</span> <span id="status-expression">Neutral</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <label>Model</label>
+    <select id="model-select" title="Loaded model"></select>
+    <div class="btn-grid" style="margin-top:7px">
+      <button class="control-btn" id="btn-import" title="Import a model.json from disk">Import…</button>
+      <button class="control-btn" id="btn-rig-panel" title="Open the rig editor (R)">Rig edit</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <label>Expression</label>
+    <div class="btn-grid">
+      <button class="control-btn" data-expression="neutral" title="Neutral">Neutral</button>
+      <button class="control-btn" data-expression="happy" title="Happy">Happy</button>
+      <button class="control-btn" data-expression="sad" title="Sad">Sad</button>
+      <button class="control-btn" data-expression="surprised" title="Surprised">Surprised</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <label>Actions</label>
+    <div class="btn-grid">
+      <button class="control-btn primary" id="btn-wave" title="Wave">Wave</button>
+      <button class="control-btn" id="btn-idle" title="Return to idle">Idle</button>
+      <button class="control-btn" id="btn-walk-random" title="Walk somewhere random">Walk</button>
+      <button class="control-btn danger" id="btn-center" title="Walk back to center">Center</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <label>Walk speed</label>
+    <div class="slider-row">
+      <input type="range" id="walk-speed" min="50" max="400" step="10" value="150" />
+      <span class="slider-value" id="walk-speed-value">150 px/s</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <label>Position</label>
+    <div id="position-display">—</div>
+  </div>
+
+  <div id="api-status">
+    <span id="api-dot" class="api-dot" title="API connection: checking…" aria-live="polite"></span>
+    <span>API: <code id="api-url">offline</code></span>
+  </div>
+</div>
+
+<aside id="inspector" class="hidden">
+  <header>
+    <h2>Rig Inspector</h2>
+    <span id="rig-state">saved</span>
+  </header>
+  <div class="insp-toolbar">
+    <button class="control-btn primary" id="btn-add-bone-quick"
+            title="Add a bone: child of the selected bone, or of the root when nothing is selected">+ Bone</button>
+    <span class="insp-toolbar-hint">adds a child of the selection (or of <b>root</b>)</span>
+  </div>
+  <div id="insp-body">
+    <div id="insp-empty">
+      Click a <b>joint</b> or a <b>part</b> on the canvas to edit it.<br /><br />
+      Drag a joint to move it, drag the ring at the bone tip to rotate.
+    </div>
+    <div id="insp-bone" class="hidden"></div>
+    <div id="insp-part" class="hidden"></div>
+    <div id="insp-content" class="hidden"></div>
+  </div>
+  <footer class="insp-footer">
+    <div class="btn-grid">
+      <button class="control-btn" id="btn-save-rig" title="Write rig.json">Save rig</button>
+      <button class="control-btn" id="btn-reset-rig" title="Drop rig.json and reload model.json">Reset</button>
+      <button class="control-btn" id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button class="control-btn" id="btn-add-bone" title="Add a child bone to the selection">+ Bone</button>
+      <button class="control-btn" id="btn-del-bone" title="Delete selected bone and its children">Delete</button>
+      <button class="control-btn" id="btn-exit-rig" title="Leave rig mode (R)">Done</button>
+    </div>
+  </footer>
+</aside>
+
+<div id="timeline" class="hidden">
+  <div class="tl-row tl-controls">
+    <label class="tl-label" for="anim-clip">clip</label>
+    <select id="anim-clip" title="Animation clip"></select>
+    <input type="text" id="anim-name" placeholder="clip name" spellcheck="false"
+           title="Name the selected clip — press Enter or click away to rename" />
+    <button class="mini-btn" id="btn-anim-add" title="Create a new clip (uses the name field when it is filled in)">+ Clip</button>
+    <button class="mini-btn danger" id="btn-anim-del" title="Delete the selected clip">Del Clip</button>
+    <span class="tl-sep"></span>
+    <label class="tl-label" for="anim-duration">duration</label>
+    <input type="number" id="anim-duration" min="1" step="50" value="1200" title="Clip length in milliseconds" />
+    <span class="tl-unit">ms</span>
+    <label class="tl-check" title="Restart the clip instead of finishing"><input type="checkbox" id="anim-loop" /> loop</label>
+    <button class="mini-btn primary" id="btn-anim-play" title="Preview the clip">Play</button>
+    <span id="anim-readout">no clip</span>
+  </div>
+  <div class="tl-row tl-track">
+    <div id="anim-ticks"></div>
+    <input type="range" id="anim-scrub" min="0" max="1000" step="1" value="0"
+           title="Scrub the clip (0-100%)" />
+  </div>
+  <div class="tl-row tl-actions">
+    <button class="mini-btn" id="btn-anim-key" title="Store the pose on screen at the playhead">+ Keyframe</button>
+    <button class="mini-btn" id="btn-anim-key-del" title="Delete the keyframe on the playhead">- Keyframe</button>
+    <span class="tl-hint">scrub, pose the bones, then <b>+ Keyframe</b> &middot; <b>Save rig</b> persists the clip</span>
+  </div>
+</div>
+
+<div id="editor-hint" class="hidden">
+  <b>drag joint</b> move · <b>drag ring</b> rotate · <b>wheel</b> rotate · <b>shift+wheel</b> scale · <b>Ctrl+Z</b> undo
+</div>
+
+<div id="import-chooser" class="hidden">
+  <h3>Import image</h3>
+  <div class="file" id="chooser-file">file.png</div>
+  <button class="choice" id="chooser-model">
+    New character
+    <small>Create a fresh model with this sprite as its body</small>
+  </button>
+  <button class="choice" id="chooser-part">
+    Attach as part
+    <small>Add it to the current rig (selected bone, or the root)</small>
+  </button>
+  <button class="choice cancel" id="chooser-cancel">Cancel</button>
+</div>
+
+<button id="panel-toggle" title="Show controls" aria-label="Show controls">
+  <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+</button>
+
+<div id="speech" class="hidden">
+  <span id="speech-text"></span>
+  <div id="speech-tail" class="below"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>

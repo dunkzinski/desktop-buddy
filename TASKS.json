@@ -1,0 +1,42 @@
+{
+    "rotation_fix": {
+        "desc": "Rotation gizmo no longer freezes: drag accumulates wrapped atan2 deltas and limits are opt-in (absent = free 360\u00b0); verified 28.6deg -> 748.7deg over two turns with uniform steps",
+        "done": true
+    },
+    "expressions": {
+        "desc": "6 expression presets driving eye/mouth sprite variants with procedural fallback; editor can bind PNGs per expression and preview with one click",
+        "done": true
+    },
+    "blink_talk": {
+        "desc": "Auto-blink every 3-6s for 120ms; talking loop alternates mouth variants while speaking and returns to the expression pose",
+        "done": true
+    },
+    "speech_bubble": {
+        "desc": "Head-anchored bubble with typewriter reveal, word wrap, edge clamping/flip and auto-dismiss tied to the talking state",
+        "done": true
+    },
+    "api": {
+        "desc": "POST /emote, /speak, /clear_speech, GET /speech; page reports talking/speech so the API stays truthful",
+        "done": true
+    },
+    "build_verify": {
+        "desc": "cargo check/build clean; verified blinking, emote revert, speak lifecycle with auto-dismiss, clear_speech, edge clamping",
+        "done": true
+    },
+    "keyframe_animations": {
+        "desc": "Stage 2.5 custom keyframe animation: optional `animations` block on the rig root (duration_ms > 0, t in 0..=1, bone ids verified) validated in models.rs; ui/js/animator.js samples clips with smoothstep easing and composes per-bone deltas into rig.js localRotation/computeWorld; timeline bar in Rig Edit Mode (clip selector, +Clip/Del Clip, duration, loop, play/stop, 0-100% scrubber with keyframe ticks, +Keyframe capture routing canvas drags into the clip pose); POST /animate, POST /animate/stop, GET /animations emit avatar-animate + an `animate` SSE frame; MCP tools avatar_list_animations + avatar_animate (10 tools total). Verified: cargo test 12/12, cargo build clean, tools/verify_docs.py zero drift, tools/mcp_smoke_test.py 75 checks offline and 75 live (clips listed + played), 33 headless animator checks, and a CDP run of the real page (play -> finished -> idle, timeline + keyframe capture)",
+        "done": true
+    },
+    "rig_editor_ux": {
+        "desc": "Five Rig & Animation Editor UX fixes: (1) clip naming — `#anim-name` field next to the selector, +Clip uses it (blank -> `clip 1`, `clip 2`, ...), Enter/blur renames the active clip key in place with toast rejection for blank/duplicate names and keeps it selected (animator.renameClip); (2) editor preview no longer swaps clips — animator.stopPlayback() keeps the clip on Stop and stepAnimation parks the playhead at 0 on a natural end while in rig mode; (3) wheel over a selected/held part rotates the PART (0.05 rad/tick, 4-dp snapped) and shift+wheel scales it, bones keep their old wheel behaviour; (4) prominent + Bone in the inspector toolbar working with no selection (child of selection, else of root, else creates root), auto-selects the new bone so its joint+ring highlight; (5) Lock Bone to Part checkbox + Snap Bone to Part button — locked drags move the parent bone and keep the part offset, snap lands the bone on the part and zeroes the offset (persisted as part.lockBone). Verified: 59 headless animator checks, CDP run of the real page for all five fixes (rename/duplicate/blank rejection, finish keeps clip, part wheel 0->8.594deg with bone unchanged, +Bone root_1 auto-selected, locked drag bone pos [0,-60]->[24,-48] with offset unchanged, snap bone world -> old part world with sprite unmoved), lockBone round-trips through Save rig, cargo test 12/12, cargo build embeds ui/, verify_docs + mcp_smoke_test clean",
+        "done": true
+    },
+    "locked_part_drag_fix": {
+        "desc": "Bug: mouse drags did not move the bone of a locked part. Root cause: hitTest gave the selected bone's rotation ring priority, and the ring sits at the bone tip — which for limb sprites is INSIDE the artwork — so pressing the far end of the sprite started a rotate drag and the bone never translated. Fix: partAt() picks the topmost part box first, and a part that is locked (or already selected) owns the press ahead of the ring/joint tests; a locked part also hands the wheel to its bone (wheel rotates/scales the bone, unlocked parts keep their own rotation/scale). Verified with trusted CDP Input.dispatchMouseEvent on the real page: press on the ring spot inside arm_r_img -> drag.kind=part, bone pos +30/+15 exactly matching the cursor, rotation unchanged, part offset unchanged, 1:1 per-step tracking (243,97 -> 253,102 -> 263,107 -> 273,112); unlocked sprite still drags its offset; wheel locked -> bone rot 0.5->0.52, unlocked -> part rot 0->0.05; ring outside the artwork still rotates; 10/10 checks plus cargo test 12/12, verify_docs, 59 harness checks, mcp_smoke_test 75",
+        "done": true
+    },
+    "watcher": {
+        "desc": "Stage 3 desktop watcher: `char-rig-watcher.exe` (third binary built by cargo build) subscribes to `GET /events` (reqwest `bytes_stream` + an incremental SSE parser that survives arbitrary chunk boundaries, CRLF and keep-alive comments) and polls `GET /context` on a `tokio::time::interval` (default 20 s, `--context-interval`), firing only on rules loaded from `watcher_rules.json` (`--rules`, built-in defaults when missing): `interaction` double_click/drag_end (15 s cooldown, plain click via `--trigger-single-click`), `window_title` changes matching a case-insensitive keyword, and an `idle_return` when idle drops below the 900 s threshold (both 300 s cooldown). A trigger POSTs an ack `/emote` (default `thinking`, 4000 ms, `--no-ack-emote` disables), POSTs the JSON payload to `--webhook-url`, and spawns `--hermes-cmd` (`CHAR_RIG_HERMES_CMD`) with a one-line prompt carrying {event_type, detail, window_title, idle_secs}; `{prompt}` is substituted or appended as one argv entry with no shell. Exponential-backoff reconnect 1 s -> 30 s; `--dry-run` prints payloads on stdout and touches nothing; diagnostics go to stderr. Verified: cargo build clean (zero warnings, all three exes), cargo test 32/32 watcher + 12/12 lib, a live end-to-end run against a scripted fake avatar API (double_click + drag_end fired, plain click ignored, the duplicate inside the cooldown suppressed, keyword title fired once, idle_return fired, 4 ack emotes received with {expression: thinking, duration_ms: 4000, revert: neutral}, 4 webhook payloads received, 4 Hermes prompts spawned as a single argv entry), and an offline -> online run that reconnected at 1 s then 2 s backoff and then triggered normally; tools/verify_docs.py gained watcher checks (flags, constants, trigger types, watcher_rules.json vs built-in defaults) with zero drift",
+        "done": true
+    }
+}
