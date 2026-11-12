@@ -12,6 +12,9 @@
 <div id="titlebar">
   <span class="brand" id="brand">Avatar</span>
   <div class="window-controls">
+    <button class="window-btn" id="btn-chat" title="Ask or task the avatar (Enter or /)" aria-label="Ask or task the avatar">
+      <svg viewBox="0 0 24 24"><path d="M4 5h16v10H9l-5 4V5z"/></svg>
+    </button>
     <button class="window-btn" id="btn-rig" title="Rig edit mode (R)" aria-label="Rig edit mode">
       <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 1 5.4-5.4l-2.6 2.6 2 2 2.6-2.6z"/></svg>
     </button>
@@ -69,6 +72,8 @@
       <button class="control-btn" id="btn-idle" title="Return to idle">Idle</button>
       <button class="control-btn" id="btn-walk-random" title="Walk somewhere random">Walk</button>
       <button class="control-btn danger" id="btn-center" title="Walk back to center">Center</button>
+      <button class="control-btn" id="btn-new-chat" title="Start a new chat: reset the conversation context">New chat ↺</button>
+      <button class="control-btn" id="btn-ask" title="Ask or task the avatar (Enter)">Ask…</button>
     </div>
   </div>
 
@@ -197,6 +202,19 @@
 <button id="panel-toggle" title="Show controls" aria-label="Show controls">
   <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
 </button>
+
+<div id="command-bar" class="hidden" role="group" aria-label="Ask or task the avatar">
+  <form id="command-form" autocomplete="off">
+    <div class="cmd-row">
+      <input type="text" id="command-input" maxlength="500" spellcheck="false"
+             placeholder="Ask or task the avatar…" aria-label="Ask or task the avatar" />
+      <button type="submit" id="command-send" class="cmd-btn primary" title="Send (Enter)">Send</button>
+      <button type="button" id="command-newchat" class="cmd-btn" title="New chat: reset the conversation context" aria-label="New chat">↺</button>
+      <button type="button" id="command-close" class="cmd-btn" title="Close (Esc)" aria-label="Close">✕</button>
+    </div>
+    <div id="command-chips" role="toolbar" aria-label="Quick tasks"></div>
+  </form>
+</div>
 
 <div id="speech" class="hidden">
   <div id="speech-bubble">

@@ -276,6 +276,7 @@ fn router(api: ApiCtx) -> Router {
         .route("/clipboard", get(clipboard))
         .route("/reply", post(reply))
         .route("/alert", post(alert))
+        .route("/session/reset", post(session_reset))
         .route("/events", get(events))
         .route("/state", get(get_state).post(set_state))
         .route("/move", post(move_to))
@@ -422,6 +423,20 @@ async fn alert(
     })))
 }
 
+/// `POST /session/reset` — drop the conversation context.
+///
+/// The app does not own the session; `char-rig-watcher.exe` does. This route
+/// therefore only broadcasts a `session_reset` frame, and the watcher rotates its
+/// `{session}` id when it sees it. The quick-reply box's **↺** and the control
+/// panel's **New chat** call the same core through `reset_session`.
+async fn session_reset(State(api): State<ApiCtx>) -> Json<Value> {
+    let result = crate::do_session_reset(&api.shared, "api");
+    if let Err(err) = api.app.emit("speech-clear", json!({})) {
+        log::warn!("failed to emit speech-clear: {err}");
+    }
+    Json(result)
+}
+
 /// `GET /events` — Server-Sent Events.
 ///
 /// Every frame is `{"seq", "type", "ts_ms", "payload"}` and `type` is repeated
@@ -489,6 +504,7 @@ fn event_name(kind: &str) -> &'static str {
         "interaction" => "interaction",
         "user_reply" => "user_reply",
         "alert" => "alert",
+        "session_reset" => "session_reset",
         "animate" => "animate",
         "watcher" => "watcher",
         "hello" => "hello",

@@ -70,6 +70,27 @@ Rig Edit Mode is excluded: there a press belongs to the gizmo editor. The
 interaction is a *notification only* — it changes no state, so whatever the
 avatar does back (wave, speak, …) is the agent's decision.
 
+### Ask / task (command bar)
+
+You never need a terminal to talk to the avatar:
+
+* **`Enter`** or **`/`** anywhere on the overlay, the **chat icon** in the
+  titlebar, the **Ask…** button in the control panel, or **clicking the speech
+  bubble** all summon a floating command bar under the avatar.
+* Type a prompt or a task and press **`Enter`** — it goes out as a `user_reply`
+  frame (`notify_reply`, the page-side twin of `POST /reply`) and the bubble
+  immediately switches to a **Thinking…** card with the `thinking` face while
+  the model works.
+* **Quick-task chips** under the input fire one canned task each. They come from
+  `quick_tasks` in `watcher_rules.json` (via `GET /watcher`), so you can edit
+  them without rebuilding: summarise the clipboard, ask what window you are in,
+  run a diagnostic, or anything you script.
+* **↺** (in the bar) and **New chat** (control panel) call `reset_session`, i.e.
+  `POST /session/reset`: the conversation context is dropped and the next task
+  starts a fresh session.
+* **`Esc`** closes the bar and the desktop goes back to click-through; the bar
+  publishes its own hit region while open, so it stays typeable.
+
 ## Window controls
 
 * **Minimize** — titlebar middle button (`minimize_window`).
@@ -409,12 +430,22 @@ curl -s localhost:8765/watcher
   "pid": 14320,
   "binary_path": "C:\dev\char-rig\src-tauri\target\debug\char-rig-watcher.exe",
   "rules_path": "C:\dev\char-rig\watcher_rules.json",
-  "logs": ["[22:23:29] started … (pid 14320, rules …watcher_rules.json)", "…"]
+  "logs": ["[22:23:29] started … (pid 14320, rules …watcher_rules.json)", "…"],
+  "quick_tasks": [
+    {"label": "Summarize clipboard", "prompt": "Call avatar_get_clipboard and summarise what I copied …"},
+    {"label": "What am I looking at?", "prompt": "Call avatar_get_context, then tell me …"}
+  ]
 }
 ```
 
 `logs` is a **bounded ring buffer** of the child's stdout+stderr: timestamped
 `[HH:MM:SS]` lines, newest last, capped at **200**.
+
+`quick_tasks` is the command bar's chip list, read straight out of
+`watcher_rules.json` (`[{"label": "...", "prompt": "..."}]`, capped at 6). Edit
+the file, reopen the bar and the chips change — no rebuild. With no `quick_tasks`
+array (or an unreadable file) the app falls back to three built-in chips
+(clipboard summary, active window, quick diagnostic).
 
 ```bash
 curl -s -X POST localhost:8765/watcher -H 'content-type: application/json'      -d '{"enabled": false}'      # kill + reap; the supervisor parks
@@ -553,6 +584,25 @@ The route only validates and broadcasts an `alert` frame — it never calls a
 model itself. `char-rig-watcher.exe` picks the frame up and wakes Hermes under
 its own `alerts.cooldown_secs` throttle, so a `curl` cannot spawn agent turns.
 
+### `POST /session/reset`
+
+Drop the conversation context — the HTTP twin of the command bar's **↺** and the
+control panel's **New chat**.
+
+```bash
+curl -s -X POST localhost:8765/session/reset
+```
+
+```json
+{ "ok": true, "reason": "api", "subscribers": 1 }
+```
+
+The app owns no conversation state: it broadcasts a `session_reset` frame on
+`GET /events` and dismisses the visible bubble, and `char-rig-watcher.exe`
+rotates its `{session}` id when it sees the frame (it logs
+`session reset (api): char-rig-<ts> -> char-rig-<ts>-2`). The next trigger then
+runs in a brand-new Hermes session, so the model starts from a clean context.
+
 ### `GET /events` (Server-Sent Events)
 
 A push stream of everything the avatar does: state transitions, speech, model
@@ -599,6 +649,7 @@ Every `data:` line is one JSON object:
 | `interaction` | the user clicks the avatar (§ Avatar interaction) | `{kind, x, y, state, expression, position}` with `kind` ∈ `click` \| `double_click` \| `drag_end` |
 | `user_reply` | the user submits the bubble's quick-reply box (`notify_reply`) or `POST /reply` | `{text}` |
 | `alert` | `POST /alert` from an external monitor | `{source, summary, severity}` with `severity` ∈ `info` \| `warn` \| `error` |
+| `session_reset` | `POST /session/reset`, the command bar's **↺** or the control panel's **New chat** | `{reason}` with `reason` ∈ `ui` \| `api` |
 | `watcher` | the supervised `char-rig-watcher.exe` starts, stops, or writes a line | full status `{ok, enabled, running, pid, binary_path, rules_path, logs}` on a lifecycle change, or `{kind: "log", line, enabled, running, pid}` for one log line |
 
 Behaviour worth knowing:
@@ -650,7 +701,7 @@ curl -s -X POST localhost:8765/shutdown
 ## Internal (Tauri command) surface
 
 The page talks to Rust through `invoke`; the same mutations are available as
-commands. Arguments are snake_case (`rename_all = "snake_case"`). All 32, in the
+commands. Arguments are snake_case (`rename_all = "snake_case"`). All 33, in the
 order they are registered (ARCHITECTURE.md §6 has the full purpose table):
 
 **State, window & interaction** — `get_avatar_state`, `get_runtime_info`,
@@ -658,8 +709,8 @@ order they are registered (ARCHITECTURE.md §6 has the full purpose table):
 `set_avatar_state(new_state)`, `trigger_wave`, `report_state(position,
 target_position, state, expression, joints?, talking?, speech?)`,
 `update_hit_regions(regions)`, `set_click_through(enabled)`,
-`notify_interaction(kind, x, y)`, `notify_reply(text)`, `close_window`,
-`minimize_window`.
+`notify_interaction(kind, x, y)`, `notify_reply(text)`, `reset_session`,
+`close_window`, `minimize_window`.
 
 **Models, rigs & parts** — `list_models`, `get_model`, `load_model(name)`,
 `pick_import_file`, `import_asset(path, mode?, name?, tag?)`,
@@ -685,6 +736,11 @@ user's text (≤ 500 characters) becomes a `user_reply` frame, the bubble is
 dismissed and `{ok, text, subscribers}` comes back. Its HTTP twin is
 `POST /reply`, and `char-rig-watcher.exe` treats the frame as a direct
 instruction that bypasses the interaction cooldowns.
+
+`reset_session` is the **New chat** button: it broadcasts a `session_reset`
+frame (HTTP twin `POST /session/reset`), dismisses the bubble and returns
+`{ok, reason, subscribers}`. It rotates nothing itself — the watcher owns the
+session id.
 
 Events emitted to the page: `avatar-state-changed` (full state after every
 command/API mutation), `api-status` (bound address or `offline`),

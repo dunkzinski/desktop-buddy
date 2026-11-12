@@ -89,6 +89,8 @@ Run the unit tests with `cd src-tauri && cargo test`.
 | Model dropdown + **Import…** | switch models, import a rig or an image |
 | Expression buttons | neutral / happy / sad / surprised |
 | Wave / Idle / Walk / Center | triggers, with a walk-speed slider |
+| **New chat** | wipe the conversation context (`POST /session/reset`) |
+| **Ask…** | open the command bar (same as `Enter` / `/`) |
 | **Watcher** switch + badge + **Logs ↗** | start/stop `char-rig-watcher.exe` and open the pop-out console (see [Waking Hermes](#waking-hermes-the-watcher)) |
 | API line | live API URL |
 
@@ -115,12 +117,17 @@ Clicking or double-clicking the avatar does not make it react on its own — the
 page reports the interaction to Rust, which pushes an `interaction` frame on
 `GET /events` so your agent can decide what happens (wave back, speak, ignore).
 
-**Talking back:** when a speech bubble is on screen, click it (or just hover) and
-a small quick-reply box slides in under the text — type, `Enter` to send, `Esc`
-to dismiss. The text becomes a `user_reply` frame (`notify_reply` /
-`POST /reply`), the bubble closes, and the watcher wakes Hermes with your exact
-words. The bubble's box is published as a hit region, so the input stays
-clickable while the rest of the desktop is click-through.
+**Talking back:** press `Enter` or `/` (or the chat icon in the titlebar, or
+**Ask…** in the control panel, or just click the speech bubble) and a floating
+command bar opens under the avatar. Type a prompt or a task, `Enter` sends it,
+and the bubble immediately shows **Thinking…** with the `thinking` face while the
+model works. Under the input are one-click **chips** (summarise the clipboard,
+"what am I looking at", a diagnostic, a network scan…) loaded from
+`quick_tasks` in `watcher_rules.json`, and a **↺** button that drops the
+conversation context. `Esc` closes the bar. The text becomes a `user_reply` frame
+(`notify_reply` / `POST /reply`), the watcher wakes Hermes with your exact words,
+and the bubble's box is a published hit region so the input stays clickable while
+the rest of the desktop is click-through.
 
 **Moving it:** in play mode, press on the avatar and drag — it follows the
 cursor, clamped to the screen, and idle wandering stays paused for 15 s after
@@ -136,7 +143,7 @@ executable that owns it, machine-wide idle seconds, plus the last 15 SSE frames
 as a catch-up). `GET /clipboard` reads the last-copied text (2000 chars max).
 `GET /events` is a Server-Sent Events stream of *what the avatar did*: `state`,
 `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`,
-`interaction`, `user_reply`, `alert`. An agent can therefore block on the stream
+`interaction`, `user_reply`, `alert`, `session_reset`. An agent can therefore block on the stream
 instead of polling `/state`:
 
 ```bash
@@ -273,8 +280,15 @@ falls back to the built-in defaults shown here:
     }
   ],
   "alerts": { "enabled": true, "cooldown_secs": 60 },
+  "quick_tasks": [
+    { "label": "Summarize clipboard", "prompt": "Call avatar_get_clipboard and summarise what I copied." },
+    { "label": "Scan the network", "prompt": "Read the Suricata fast.log and report anything new." }
+  ],
+  "max_session_turns": 15,
+  "session_idle_reset_secs": 1800,
+  "session_base": "char-rig",
   "ack_emote": "thinking",
-  "hermes_cmd": "hermes chat --continue char-rig --create-if-missing -Q -q",
+  "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
   "webhook_url": null
 }
@@ -287,12 +301,18 @@ substrings, blank = wildcard, first match wins. A match supplies the ack
 clip) and a `prompt_hint` that is appended to the Hermes prompt as `Context: …`.
 `alerts` throttles `POST /alert` frames from outside (network monitor, cron).
 
-The shipped `hermes_cmd` keeps one conversation across triggers:
-`hermes chat --continue char-rig --create-if-missing -Q -q` resumes the session
-named `char-rig` (creating it on first use) and `-Q` keeps its banner/spinner out
-of the watcher's log. The prompt is appended as the last argv entry, so `-q` must
-stay last in that string. Per-run overrides such as `--run-budget`, `--model` or
-`-t` are rejected on a resumed session — put them in `config.yaml` instead.
+`quick_tasks` is the command bar's chips (`[{label, prompt}]`, at most 6) — edit
+the file, reopen the bar, and the buttons change, no rebuild. `max_session_turns`
+and `session_idle_reset_secs` rotate the conversation automatically (after N
+turns / after a long break), and `session_base` is the id prefix.
+
+The shipped `hermes_cmd` keeps one conversation across triggers and is
+**rotatable**: `hermes chat --continue {session} --create-if-missing -Q -q`.
+`{session}` becomes the watcher's current id (`char-rig-<epoch>`, then `-2`,
+`-3`… after each **New chat**/auto-rotation), `-Q` keeps its banner out of the
+watcher's log, and `-q` must stay **last** because the prompt is appended as the
+final argv entry. Per-run overrides such as `--run-budget`, `--model` or `-t`
+are rejected on a resumed session — put them in `config.yaml` instead.
 
 ---
 

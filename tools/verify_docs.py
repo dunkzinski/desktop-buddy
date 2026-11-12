@@ -283,6 +283,10 @@ else:
                 "context",
                 "app_rules",
                 "alerts",
+                "quick_tasks",
+                "max_session_turns",
+                "session_idle_reset_secs",
+                "session_base",
                 "ack_emote",
                 "hermes_cmd",
                 "hermes_timeout_secs",
@@ -291,6 +295,43 @@ else:
             unknown = set(shipped) - known
             if unknown:
                 problems.append(f"watcher_rules.json: unknown keys {sorted(unknown)}")
+
+            # quick_tasks: the command bar reads these straight out of the file,
+            # so a typo there means a silently missing chip.
+            quick_task_keys = {"label", "prompt"}
+            chips = shipped.get("quick_tasks")
+            if chips is not None:
+                if not isinstance(chips, list):
+                    problems.append("watcher_rules.json: quick_tasks is not an array")
+                    chips = []
+                if len(chips) > 6:
+                    problems.append(
+                        f"watcher_rules.json: quick_tasks has {len(chips)} entries; the bar shows at most 6"
+                    )
+                for index, chip in enumerate(chips):
+                    if not isinstance(chip, dict):
+                        problems.append(f"watcher_rules.json: quick_tasks[{index}] is not an object")
+                        continue
+                    stray = set(chip) - quick_task_keys
+                    if stray:
+                        problems.append(
+                            f"watcher_rules.json: quick_tasks[{index}] has unknown keys {sorted(stray)}"
+                        )
+                    for field in ("label", "prompt"):
+                        value = chip.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            problems.append(
+                                f"watcher_rules.json: quick_tasks[{index}].{field} must be a non-empty string"
+                            )
+
+            # The watcher substitutes {session}; without the placeholder a
+            # rotation (New chat) cannot reach the CLI at all.
+            command = shipped.get("hermes_cmd")
+            if isinstance(command, str) and command.strip() and "{session}" not in command:
+                problems.append(
+                    "watcher_rules.json: hermes_cmd has no {session} placeholder — "
+                    "POST /session/reset would only rotate the watcher's own state"
+                )
 
             # per-app rules: the schema is `{process, title_contains, animation,
             # prompt_hint}` — a typo there would silently never match.

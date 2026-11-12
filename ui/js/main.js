@@ -32,7 +32,11 @@ import {
   playAnimation, stopAnimation, sampleAnimation, listAnimations, isPlaying,
 } from "./animator.js";
 
-import { speak, hideSpeech, updateSpeech, openReply, closeReply, toggleReply } from "./speech.js";
+import {
+  speak, hideSpeech, updateSpeech, openReply, closeReply,
+  beginThinking, showThinking, endThinking, setBubbleHover,
+  commandBarVisible, positionCommandBar,
+} from "./speech.js";
 
 import {
   setClickThrough, setupEventListeners, importFromDialog, importImageAs,
@@ -308,37 +312,151 @@ function attachInteractionDetection(canvas) {
   });
 }
 
-/* ---------- speech bubble quick reply ---------- */
+/* ---------- ask / task (command bar + bubble reply) ---------- */
+
+/** Chips used when `watcher_rules.json` has no `quick_tasks` (mirrors lib.rs). */
+const DEFAULT_QUICK_TASKS = [
+  {
+    label: "Summarize clipboard",
+    prompt: "Call avatar_get_clipboard and summarise what I copied in two sentences: say what it is " +
+      "(code, error, notes, link) and the one thing I most likely want to do with it.",
+  },
+  {
+    label: "What am I looking at?",
+    prompt: "Call avatar_get_context, then tell me which window and process I am in and what I am " +
+      "probably doing. Offer one concrete next step. Keep it under 180 characters.",
+  },
+  {
+    label: "Quick diagnostic",
+    prompt: "Run a quick diagnostic from the desktop context: call avatar_get_context and " +
+      "avatar_get_clipboard, check idle time, the focused process and anything copied that looks " +
+      "like an error, then report only the notable findings (or say everything looks normal).",
+  },
+];
 
 /**
- * Send the user's typed reply to Rust, which fans it out as a `user_reply`
- * frame on `GET /events` (the watcher wakes Hermes with it). The bubble is
- * dismissed either way: a reply answers the question that was on screen.
+ * Send a direct message ("ask" or "task") to Rust, which fans it out as a
+ * `user_reply` frame for the watcher.
+ *
+ * The visual feedback is immediate on purpose: a local model can take a while,
+ * and the user must see that the task was received. `beginThinking` arms the
+ * bubble so the `speech-clear` Rust emits (dismissing the old prompt) becomes a
+ * "Thinking…" card instead of a blank screen.
  */
-async function submitReply(text) {
-  const result = await call("notify_reply", { text: text });
+async function sendUserMessage(text) {
+  const body = String(text == null ? "" : text).trim();
+  if (!body) return false;
+
+  setExpression("thinking");
+  markManual(30);
+  call("set_avatar_expression", { expression: "thinking" });
+  beginThinking("Thinking…");
+
+  const result = await call("notify_reply", { text: body });
   if (result && result.__error) {
-    toast("Reply failed: " + result.__error, true);
-  } else {
-    toast("Reply sent");
+    endThinking();
+    toast("Send failed: " + result.__error, true);
+    return false;
   }
-  hideSpeech();
+  // No speech-clear arrived (not Tauri, or it was coalesced): show it here.
+  if (!speech.thinking) {
+    endThinking();
+    showThinking("Thinking…");
+  }
+  toast("Sent");
+  return true;
+}
+
+/** Open the floating ask/task bar, anchored under the avatar, and focus it. */
+async function openCommandBar(focus = true) {
+  const bar = document.getElementById("command-bar");
+  if (!bar) return;
+  bar.classList.remove("hidden");
+  positionCommandBar();
+  renderQuickTasks();
+  if (focus) {
+    const input = document.getElementById("command-input");
+    if (input) input.focus();
+  }
+  wireRegions();
+  // Refresh the chips from the rules file in the background (no recompile).
+  refreshWatcher().then(renderQuickTasks);
+}
+
+function closeCommandBar() {
+  const bar = document.getElementById("command-bar");
+  if (!bar) return;
+  bar.classList.add("hidden");
+  bar.classList.remove("collapsed");
+  const input = document.getElementById("command-input");
+  if (input) {
+    input.value = "";
+    if (document.activeElement === input) input.blur();
+  }
   wireRegions();
 }
 
-/** Wire the bubble's optional input: click to open, Enter to send, Esc to close. */
+function toggleCommandBar() {
+  return commandBarVisible() ? (closeCommandBar(), false) : (openCommandBar(), true);
+}
+
+/** Render the quick-task chips (rules file → GET /watcher → watcher.quickTasks). */
+function renderQuickTasks() {
+  const host = document.getElementById("command-chips");
+  if (!host) return;
+  const tasks = Array.isArray(watcher.quickTasks) && watcher.quickTasks.length
+    ? watcher.quickTasks
+    : DEFAULT_QUICK_TASKS;
+  host.innerHTML = "";
+  for (const task of tasks) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.textContent = task.label;
+    chip.title = task.prompt;
+    chip.addEventListener("click", () => runQuickTask(task.prompt));
+    host.appendChild(chip);
+  }
+}
+
+/** A chip is one click → one task: close the bar and send it. */
+function runQuickTask(prompt) {
+  closeCommandBar();
+  sendUserMessage(prompt);
+}
+
+/** Wipe the conversation context (the watcher rotates its session id). */
+async function resetSession() {
+  closeCommandBar();
+  // `endThinking` clears the "waiting" guard so the bubble really goes away;
+  // a thinking card deliberately ignores stray clears.
+  endThinking();
+  hideSpeech();
+  const result = await call("reset_session");
+  if (result && result.__error) {
+    toast("Reset failed: " + result.__error, true);
+  } else {
+    toast("New chat — context reset");
+  }
+  wireRegions();
+}
+
+/** Wire the bubble's optional input and the bubble's own hover/click behaviour. */
 function setupQuickReply() {
   const bubble = document.getElementById("speech");
   const form = document.getElementById("speech-reply");
   const input = document.getElementById("speech-reply-input");
   if (!bubble || !form || !input) return;
 
+  // Clicking the bubble summons the full command bar (chips + new chat).
   bubble.addEventListener("click", (event) => {
-    // A click inside the form (typing, the send button) must not close it.
     if (form.contains(event.target)) return;
-    toggleReply();
-    wireRegions();
+    openCommandBar();
   });
+
+  // Hovering the bubble pauses its auto-dismiss timer.
+  bubble.addEventListener("mouseenter", () => setBubbleHover(true));
+  bubble.addEventListener("mouseleave", () => setBubbleHover(false));
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -349,7 +467,7 @@ function setupQuickReply() {
       return;
     }
     input.value = "";
-    submitReply(text);
+    sendUserMessage(text);
   });
 
   input.addEventListener("keydown", (event) => {
@@ -364,6 +482,45 @@ function setupQuickReply() {
   });
 }
 
+/** Wire the floating ask/task bar (input, send, new chat, close). */
+function setupCommandBar() {
+  const bar = document.getElementById("command-bar");
+  const form = document.getElementById("command-form");
+  const input = document.getElementById("command-input");
+  if (!bar || !form || !input) return;
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text) {
+      closeCommandBar();
+      return;
+    }
+    input.value = "";
+    closeCommandBar();
+    sendUserMessage(text);
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeCommandBar();
+    }
+  });
+
+  document.getElementById("command-close").addEventListener("click", closeCommandBar);
+  document.getElementById("command-newchat").addEventListener("click", resetSession);
+
+  // Keep the bar glued under the avatar while it wanders, and re-publish the
+  // region when it moves.
+  setInterval(() => {
+    if (!commandBarVisible()) return;
+    positionCommandBar();
+    wireRegions();
+  }, 250);
+}
+
 /* ---------- UI wiring ---------- */
 
 function setupUI() {
@@ -372,6 +529,10 @@ function setupUI() {
   document.getElementById("btn-close").addEventListener("click", () => call("close_window"));
   document.getElementById("btn-minimize").addEventListener("click", () => call("minimize_window"));
   document.getElementById("btn-clickthrough").addEventListener("click", () => setClickThrough(!avatar.clickThrough));
+  // Ask / task: titlebar icon, control-panel button and the floating bar itself.
+  document.getElementById("btn-chat").addEventListener("click", () => openCommandBar());
+  document.getElementById("btn-ask").addEventListener("click", () => openCommandBar());
+  document.getElementById("btn-new-chat").addEventListener("click", resetSession);
   document.getElementById("btn-rig").addEventListener("click", () => setRigMode(!RT.rigMode));
   document.getElementById("btn-rig-panel").addEventListener("click", () => setRigMode(true));
   document.getElementById("btn-exit-rig").addEventListener("click", () => setRigMode(false));
@@ -466,10 +627,18 @@ function setupUI() {
 
   attachInteractionDetection(canvas);
   setupQuickReply();
+  setupCommandBar();
 
   window.addEventListener("keydown", (event) => {
     if (event.target && (event.target.tagName === "INPUT" || event.target.tagName === "SELECT")) return;
     const key = event.key.toLowerCase();
+    // Enter or "/" anywhere on the overlay summons the ask/task bar — the
+    // fastest way to give the avatar a task without opening a terminal.
+    if (key === "enter" || key === "/") {
+      event.preventDefault();
+      openCommandBar();
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && key === "z") {
       event.preventDefault();
       undo();
@@ -494,7 +663,9 @@ function setupUI() {
         event.preventDefault();
         break;
       case "r": setRigMode(!RT.rigMode); break;
-      case "escape": if (RT.rigMode) setRigMode(false);
+      case "escape":
+        if (commandBarVisible()) closeCommandBar();
+        else if (RT.rigMode) setRigMode(false);
         else if (isWatcherDrawerOpen()) toggleWatcherDrawer(false);
         else toggleCollapsed(!avatar.collapsed); break;
       default: break;
@@ -521,6 +692,23 @@ function installDebugSurface() {
       const box = document.getElementById("speech");
       return !!box && box.classList.contains("reply-open");
     },
+    /** Ask/task bar: open it, close it, or read its state. */
+    openCommandBar: () => openCommandBar(),
+    closeCommandBar: () => closeCommandBar(),
+    commandBar: () => ({
+      open: commandBarVisible(),
+      focused: (document.activeElement || {}).id || null,
+      chips: Array.from(document.querySelectorAll("#command-chips .chip")).map((chip) => chip.textContent),
+    }),
+    /** Send a message exactly as the bar does (Enter in the input). */
+    ask: (text) => sendUserMessage(text),
+    /** One-click New chat. */
+    newChat: () => resetSession(),
+    thinking: () => ({
+      thinking: speech.thinking,
+      visible: speech.visible,
+      text: speech.visible ? speech.full : "",
+    }),
     selectBone: (id, partId) => select(id, partId || null),
     undo: undo,
     /** Same path the canvas uses: notify Rust of a pointer interaction. */
@@ -673,8 +861,8 @@ async function init() {
   // The dot must not lie if the server dies without an event.
   setInterval(() => { refreshApiStatus(); }, 4000);
 
-  // The supervised watcher's switch, badge and log drawer.
-  refreshWatcher();
+  // The supervised watcher's switch, badge, log drawer and command-bar chips.
+  refreshWatcher().then(renderQuickTasks);
 
   if (window.__avatarDebug) window.__avatarDebug.ready = true;
 

@@ -22,19 +22,21 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | Area | What exists |
 | --- | --- |
 | **Desktop windowing** | Transparent, borderless, always-on-top overlay covering the primary monitor; selective click-through so the desktop stays usable; custom titlebar with click-through toggle, minimize and close |
-| **UI controls** | Avatar control panel (state readout, expression buttons, Wave / Idle / Walk / Center, walk-speed slider, live position, API URL), model dropdown, Import…, and a **Watcher** row: on/off switch, `running`/`off`/`missing` badge and a **Logs ↗** pop-out console |
+| **UI controls** | Avatar control panel (state readout, expression buttons, Wave / Idle / Walk / Center, New chat, Ask…, walk-speed slider, live position, API URL), model dropdown, Import…, a **chat icon** in the titlebar, and a **Watcher** row: on/off switch, `running`/`off`/`missing` badge and a **Logs ↗** pop-out console |
+| **Ask / task from the desktop** | Floating command bar under the avatar — `Enter`/`/`, the titlebar chat icon, the **Ask…** button or a click on the bubble opens it; type + `Enter` sends a `user_reply`, `Esc` closes it. Quick-task chips come from `quick_tasks` in `watcher_rules.json`, and **↺ / New chat** drops the conversation context (`POST /session/reset`) |
 | **Model importing** | Rig manifests as `.json` or `.toml`; single images (`.png`, `.jpg`/`.jpeg`, `.webp`, `.svg`) as a **new character** or as a **part attached to the current rig**; native file picker; clear validation errors |
 | **Rig Edit Mode** | Bone/joint/pivot/hitbox overlay; drag joints, drag rotation ring (unlimited multi-turn), wheel rotate / shift+wheel scale; re-parent; add bone, add limb, add part, duplicate/delete; inspector for transforms, limits, z-order and animation channels; undo; save to `rig.json`; reset |
 | **Facial system** | Per-part sprite **variants**, 6 expression presets (`neutral`, `happy`, `surprised`, `thinking`, `sad`, `angry`) mapping to eye/mouth variant names, procedural squash/stretch fallback, expression holds with auto-revert |
 | **Custom animations** | Optional `animations` block on the rig root: named keyframe clips (`duration_ms`, `loop`, `keyframes[]`) whose per-bone deltas are sampled with smoothstep easing and composed into the transform pass; timeline bar in Rig Edit Mode (clip CRUD, duration, loop, play/stop, 0–100 % scrubber with keyframe ticks, `+ Keyframe` capture) |
 | **Life signs** | Auto-blink every 3–6 s (~120 ms), talking mouth loop while a bubble is visible |
 | **Speech bubbles** | Head-anchored DOM card, typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss; an optional **quick-reply box** (click the bubble, or just hover) with `Enter` to send and `Esc` to dismiss |
-| **Agent API** | 31 local HTTP paths (36 method routes): state, movement, expressions, speech, models, rigs, parts, joints, custom animations, desktop context, clipboard, quick replies, external alerts, watcher control, shutdown |
+| **Agent API** | 32 local HTTP paths (37 method routes): state, movement, expressions, speech, models, rigs, parts, joints, custom animations, desktop context, clipboard, quick replies, external alerts, session reset, watcher control, shutdown |
 | **Desktop awareness** | `GET /context` — foreground window title, its owning executable (`process_name`), machine-wide idle seconds (Win32 probes, safe defaults elsewhere) **and** the last 15 SSE frames as the agent's short-term memory; `GET /clipboard` — the last-copied text, capped at 2000 characters |
-| **Event stream** | `GET /events` — Server-Sent Events over a 64-frame `tokio::broadcast` channel: `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`, `animate`, `interaction`, `user_reply`, `alert`, `watcher`; 15 s keep-alive, plus a 15-frame history ring buffer served inside `/context` |
-| **Interactions** | Play-mode click / double-click / drag on the avatar's bounds → `notify_interaction` → `interaction` frame on the event stream; a typed bubble reply → `notify_reply` → `user_reply` frame |
+| **Event stream** | `GET /events` — Server-Sent Events over a 64-frame `tokio::broadcast` channel: `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`, `animate`, `interaction`, `user_reply`, `alert`, `session_reset`, `watcher`; 15 s keep-alive, plus a 15-frame history ring buffer served inside `/context` |
+| **Interactions** | Play-mode click / double-click / drag on the avatar's bounds → `notify_interaction` → `interaction` frame; a typed command-bar message → `notify_reply` → `user_reply` frame |
+| **Sessions** | The watcher owns a mutable `{session}` id (`char-rig-<seed>`, `-2`, `-3`… after each rotation) substituted into `hermes_cmd`; **New chat** / `POST /session/reset` broadcasts `session_reset` and rotates it; `max_session_turns` / `session_idle_reset_secs` rotate automatically |
 | **MCP bridge** | `char-rig-mcp.exe` — a second binary exposing 11 tools (`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_wave`, `avatar_pose`, `avatar_get_context`, `avatar_get_clipboard`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_animate`) to any MCP client over stdio JSON-RPC 2.0; stateless, forwards each call to the HTTP API and reports a down host as a readable tool error |
-| **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword **or a per-app rule**, an `idle_return` after a long idle stretch, a `user_reply` from the bubble (no cooldown — the user asked directly), or an `alert` pushed by `POST /alert` under its own cooldown. Per-trigger cooldowns, an immediate ack (expression or custom clip), an optional webhook, and an optional spawned Hermes command with a one-line prompt on a persistent session. Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Exponential-backoff reconnect; **zero LLM tokens while idle** |
+| **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword **or a per-app rule**, an `idle_return` after a long idle stretch, a `user_reply` from the command bar (no cooldown — the user asked directly), or an `alert` pushed by `POST /alert` under its own cooldown. Per-trigger cooldowns, an immediate ack (expression or custom clip), an optional webhook, and an optional spawned Hermes command with a one-line prompt on a persistent, rotatable session (`{session}`). Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Exponential-backoff reconnect; **zero LLM tokens while idle** |
 | **Persistence** | `models/<name>/model.json` (shipped), `rig.json` (editor override), `models/.state.json` (selected model) |
 
 ### Repository map — what is live vs. legacy
@@ -64,9 +66,9 @@ ui/
     ├── animator.js     # Custom keyframe clips: `playAnimation`, `stopAnimation`, `sampleAnimation`, `seekAnimation`, `stepAnimation`, `captureKeyframe`, clip CRUD, finished listeners
     ├── renderer.js     # Canvas rendering pipeline (`drawFace`, `drawShape`, `drawPart`, `sortedDrawables`, `render`)
     ├── editor.js       # Rig Edit Mode overlay gizmos (`drawEditorOverlay`, `hitTest`, mouse/wheel handlers), inspector rendering/bindings (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `bindExpressionSprite`, `saveRig`, `resetRig`), and the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`)
-    ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`)
+    ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
     ├── bridge.js       # Tauri IPC commands, event listeners (`avatar-state-changed`, `emote`, `speak`, `avatar-animate`, etc.), hit-region publishing (`wireRegions`, `setClickThrough`), state sync (`reportState`, `applyRemoteState`, `applyPartPatch`)
-    └── main.js         # Entry point: DOM bindings, keyboard shortcuts, `window.__avatarDebug`, `requestAnimationFrame` main loop (`step`, `frame`)
+    └── main.js         # Entry point: DOM bindings, keyboard shortcuts, `window.__avatarDebug`, `requestAnimationFrame` main loop (`step`, `frame`), the ask/task command bar (`openCommandBar`, `sendUserMessage`, quick-task chips, `resetSession`)
 ```
 
 > **No Node/npm build step.** `src-tauri/tauri.conf.json` serves `../ui` directly into WebView2 (`frontendDist: ../ui`, `"withGlobalTauri": true`). Native ES modules (`<script type="module">`) load at runtime.
@@ -261,7 +263,7 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 
 | Section | Responsibility |
 | --- | --- |
-| consts | `AVATAR_STATES`, `AVATAR_EXPRESSIONS` (6), `INTERACTION_KINDS` (`click`, `double_click`, `drag_end`), `EVENT_CHANNEL_CAPACITY = 64`, `EVENT_HISTORY_CAPACITY = 15`, `DEFAULT_API_PORT = 8765`, `MAX_SPEECH_CHARS = 2000`, `MAX_CLIPBOARD_CHARS = 2000`, `MAX_REPLY_CHARS = 500` |
+| consts | `AVATAR_STATES`, `AVATAR_EXPRESSIONS` (6), `INTERACTION_KINDS` (`click`, `double_click`, `drag_end`), `EVENT_CHANNEL_CAPACITY = 64`, `EVENT_HISTORY_CAPACITY = 15`, `DEFAULT_API_PORT = 8765`, `MAX_SPEECH_CHARS = 2000`, `MAX_CLIPBOARD_CHARS = 2000`, `MAX_REPLY_CHARS = 500`, `MAX_QUICK_TASKS = 6` |
 | `AvatarState`, `HitRegion` | serialized shared state; region contains-test |
 | `lock_or_recover`, `snapshot` | poisoned-lock recovery (never panic on the UI path) |
 | `AppCtx` + impl | avatar state, regions, `api_port`, `speech` slot, `events` broadcast sender, `recent_events: Mutex<VecDeque<Value>>`, `event_seq`, `speech_seen`, `expression_commanded_at`, `click_through`, `running`, `api_url`, `shutdown_tx`, `watcher: Mutex<WatcherState>`; `emit_event` (which also remembers the frame), `recent_events`, `apply_ignore_cursor`, `request_shutdown` (which calls `stop_watcher`), `watcher_status`, `set_watcher_enabled`, `push_watcher_log`, `spawn_watcher` |
@@ -273,6 +275,8 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `do_animate` | custom keyframe playback: emits `avatar-animate` to the page **and** an `animate` frame on the SSE bus (`clip = None` stops) |
 | `do_notify_interaction` | interaction validation + `interaction` frame; the command is a thin wrapper so it is unit-testable |
 | `do_user_reply`, `notify_reply` | quick-reply validation (non-blank, ≤ `MAX_REPLY_CHARS`), bubble dismissal and the `user_reply` frame; the command adds the page-side `speech-clear` event |
+| `do_session_reset`, `reset_session` | broadcast `session_reset` (`{reason}`) + dismiss the bubble; the watcher does the actual rotation |
+| `quick_tasks`, `default_quick_tasks` | read `quick_tasks` out of `watcher_rules.json` for `GET /watcher` (blank entries skipped, capped at `MAX_QUICK_TASKS`, built-in chips when absent/unreadable) |
 | `desktop_context` | Win32 `GetForegroundWindow`/`GetWindowTextW`, `GetWindowThreadProcessId`/`OpenProcess`/`QueryFullProcessImageNameW` (the `process_name`), `GetLastInputInfo`/`GetTickCount64` behind `GET /context`; safe defaults off Windows |
 | `clipboard_text`, `truncate_chars` | Win32 `OpenClipboard`/`GetClipboardData(CF_UNICODETEXT)`/`GlobalLock` read behind `GET /clipboard`, capped at `MAX_CLIPBOARD_CHARS` on a char boundary; every path balances its handle |
 | `cursor_position`, `spawn_cursor_tracker` | Windows cursor poll (stub returning `None` elsewhere) |
@@ -282,7 +286,7 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `clock_stamp`, `stamped`, `push_log_line`, `log_watcher_event`, `spawn_log_reader` | `[HH:MM:SS]` local-time stamps (`GetLocalTime`), bounded ring-buffer append, and the two pipe readers that echo every line to the app's stderr |
 | `spawn_watcher`, `supervise_watcher`, `watcher_health`, `start_watcher`, `kill_and_reap` | spawn with `--api-url`, `--rules`, null stdin, piped stdout/stderr, `CREATE_NO_WINDOW`, cwd = exe dir; then `try_wait` polling, crash restart with backoff (parked while off), and a store-under-the-lock handshake that cannot orphan a child during shutdown |
 | `api_port`, `run` | startup |
-| `tests` | 27 unit tests over the event envelope, sequence numbers, the 15-frame history ring buffer, interaction validation, quick replies (trim, caps, bubble dismissal, `user_reply` frame), `truncate_chars`, the clipboard contract, the desktop-context shape, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
+| `tests` | 32 unit tests over the event envelope, sequence numbers, the 15-frame history ring buffer, interaction validation, quick replies (trim, caps, bubble dismissal, `user_reply` frame), `session_reset` (frame + bubble dismissal), `quick_tasks` (defaults, file parse, blank-entry filtering, cap, missing/broken fallback), `truncate_chars`, the clipboard contract, the desktop-context shape, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
 
 ### `src-tauri/src/api.rs` (925 lines)
 
@@ -292,7 +296,7 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `watcher_status`, `set_watcher` | `GET /watcher` / `POST /watcher` → `AppCtx::watcher_status` / `set_watcher_enabled` |
 | `start` | bind, spawn thread, Tokio runtime, axum serve, graceful shutdown |
 | `bind_first_available` | port fallback `preferred..preferred+9` |
-| `router` | 30 routes |
+| `router` | 31 routes |
 | request bodies | `SetStateBody`, `MoveBody`, `ExpressionBody`, `ClickThroughBody`, `HitRegionsBody`, `ModelBody`, `RigBody`, `PoseBody`, `ImportBody`, `PartPatchBody`, `MouthBody`, `EmoteBody`, `SpeakBody`, `ReplyBody`, `AlertBody`, `AnimateBody` |
 | `ApiError` | `IntoResponse` → `{"ok":false,"error":…}` + status |
 | `context` | `GET /context` — OS probes, `avatar_state` snapshot and the `recent_events` history |
@@ -391,7 +395,7 @@ one open SSE response and one small JSON poll every 20 s.
 | `context_loop` | `tokio::time::interval` with `MissedTickBehavior::Delay`; one warning per offline streak, then silent retries |
 | `dispatcher` | single consumer of the `mpsc` channel plus the `SingleFlight` latch, so two triggers can never race their side effects and a running child is never duplicated |
 | `main` | parse → load rules → spawn `sse_loop`, `context_loop`, `dispatcher` → `tokio::select!`; any task ending stops the process |
-| `tests` | 48 unit tests: SSE parsing (chunk boundaries, comments, CRLF, multi-line data), rule matching, per-app rule matching (case-insensitive, blank wildcards, `animation`/`prompt_hint` carried onto the trigger), alert parsing/cooldowns/disable switch, the backward-compatible rules schema, cooldown suppression, `user_reply` triggers (no cooldown, quoted text), `handle_frame` routing for `user_reply`/`alert`, `ack_plan` (expression vs. clip vs. none), trigger payloads/prompts, argv splitting, CLI precedence, `--hermes-timeout` parsing + default + `hermes_timeout_secs` precedence, the headless directive (clipboard, context, chaining, 180-char cap) and its tool signatures, and the single-flight latch |
+| `tests` | 58 unit tests: SSE parsing (chunk boundaries, comments, CRLF, multi-line data), rule matching, per-app rule matching (case-insensitive, blank wildcards, `animation`/`prompt_hint` carried onto the trigger), alert parsing/cooldowns/disable switch, the backward-compatible rules schema, cooldown suppression, `user_reply` triggers (no cooldown, quoted text), `handle_frame` routing for `user_reply`/`alert`, `ack_plan` (expression vs. clip vs. none), trigger payloads/prompts, argv splitting, CLI precedence, `--hermes-timeout` parsing + default + `hermes_timeout_secs` precedence, the headless directive (clipboard, context, chaining, 180-char cap) and its tool signatures, the session id/rotation helpers (`{session}` substitution, max-turns, idle reset, reset frames), and the single-flight latch |
 
 Protocol notes worth keeping: diagnostics go to **stderr** and stdout carries
 only `--dry-run` payloads (so the binary stays pipeable), the prompt is always a
@@ -409,17 +413,17 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 
 | File | Responsibility |
 | --- | --- |
-| `ui/index.html` | Lean semantic HTML shell (titlebar, canvas, control panel, inspector container, import chooser, speech bubble with its quick-reply form, toasts) linking `styles.css` and `<script type="module" src="./js/main.js"></script>` |
-| `ui/styles.css` | All CSS rules (titlebar, control panel, rig inspector, import modal, speech bubble + quick reply, toasts) |
+| `ui/index.html` | Lean semantic HTML shell (titlebar with the chat icon, canvas, control panel, inspector container, import chooser, floating command bar, speech bubble with its quick-reply form, toasts) linking `styles.css` and `<script type="module" src="./js/main.js"></script>` |
+| `ui/styles.css` | All CSS rules (titlebar, control panel, rig inspector, import modal, speech bubble + quick reply + thinking state, command bar + chips, toasts) |
 | `ui/js/ipc.js` | **Leaf** Tauri access: `call`, `listen`, `once`, `isTauri`. Reads `window.__TAURI__` lazily on every call (never cached at module scope) |
 | `ui/js/state.js` | **Leaf** shared state objects (`avatar`, `RT`, `speech`, `viewport`), constants (`EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), helpers, `toast`, `updateStatusUI`, `setExpression`, `snapshot`, `setDirty`, `activeState` |
-| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset`, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix`, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble so its quick-reply box is clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
+| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset`, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix`, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
 | `ui/js/animator.js` | Custom keyframe clips: catalogue (`animationClips`, `listAnimations`), transport (`playAnimation`, `stopAnimation`, `stopPlayback`, `seekAnimation`, `stepAnimation`), sampling (`sampleAnimation`), authoring (`setAnimationBone`, `captureKeyframe`, `addClip`, `renameClip`, `deleteClip`, `setClipDuration`, `setClipLoop`) and finished listeners (`onAnimationFinished`) |
 | `ui/js/renderer.js` | Canvas pipeline: DPR resize (`initRenderer`, `resizeCanvas`), `drawFace`, `drawShape`, `drawPart`, rig overlay gizmos, `render` |
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
-| `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`) and the quick-reply box (`isReplyOpen`, `openReply`, `closeReply`, `toggleReply`); the hold timer is suspended while the box is open |
-| `ui/js/bridge.js` | Tauri event listeners (`avatar-state-changed`, `emote`, `speak`, `part-patch`, …), `reportState`, `applyRemoteState` (ignores frames that would yank a dragged avatar and never adopts a bare `walking` without its segment), `applyPartPatch`, click-through (`setClickThrough`), import flow (`importFromDialog`, `importImageAs`, chooser) |
-| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts, `window.__avatarDebug`, behaviour loop (`step`, `startWalk`, `wander`), `requestAnimationFrame` driver, play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the bubble quick reply (`setupQuickReply`, `submitReply` → `notify_reply`) |
+| `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), the quick-reply box (`isReplyOpen`, `openReply`, `closeReply`, `toggleReply`), the "Thinking…" card (`beginThinking`, `showThinking`, `endThinking`) and the command bar's anchor (`commandBarVisible`, `positionCommandBar`); the hold timer is suspended while the box is open, the bubble is hovered or an input has focus |
+| `ui/js/bridge.js` | Tauri event listeners (`avatar-state-changed`, `emote`, `speak`, `part-patch`, …), `reportState`, `applyRemoteState` (ignores frames that would yank a dragged avatar and never adopts a bare `walking` without its segment), `applyPartPatch`, `applyWatcherStatus` (which also mirrors `quick_tasks` for the command bar), click-through (`setClickThrough`), import flow (`importFromDialog`, `importImageAs`, chooser) |
+| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar), `window.__avatarDebug`, behaviour loop (`step`, `startWalk`, `wander`), `requestAnimationFrame` driver, play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, plus the bubble's inline reply) |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
 `ipc, state → rig → animator → {renderer, speech, editor, bridge}; editor → bridge; all → main`.
@@ -706,6 +710,32 @@ outran the art box; and `applyRemoteState` ignores in-flight
 echo that arrives without the walk segment that goes with it (adopting it used
 to leave `step()` with a stale start and snap the avatar to an old target).
 
+### Asking the avatar (command bar)
+
+The avatar is addressable without a terminal. `Enter` or `/` anywhere on the
+overlay (while it has keyboard focus), the **chat icon** in the titlebar, the
+**Ask…** button in the control panel, or a click on the speech bubble all open a
+floating command bar anchored under the avatar:
+
+* Type a prompt or a task, `Enter` sends it (`notify_reply` → `user_reply`), and
+  the bubble immediately shows a **Thinking…** card with the `thinking` face so
+  you can see the task was received before the local model answers.
+* The **chips** under the input are one-click tasks (`quick_tasks` in
+  `watcher_rules.json`, see below) — clipboard summary, "what am I looking at",
+  diagnostics, or anything you script. A click sends the chip's prompt and
+  closes the bar.
+* **↺** in the bar and **New chat** in the control panel drop the conversation
+  context: `reset_session` → `session_reset` → the watcher rotates its
+  `{session}` id, so the next task starts a fresh thread.
+* `Esc` closes the bar. While it is open the page publishes its rectangle
+  (`rig.js::wireRegions`) so it stays clickable over the click-through desktop;
+  closing it returns the region set to just the avatar/titlebar/panel and the
+  desktop becomes click-through again.
+
+The bubble's own inline reply box (hover it) is the same `notify_reply` path in
+miniature, and its auto-dismiss timer is paused while the pointer is over the
+bubble or either input has focus.
+
 ### Watcher console
 
 The **Watcher** row in the control panel drives `char-rig-watcher.exe` without
@@ -745,7 +775,14 @@ keywords and cooldowns it now carries two blocks:
     }
   ],
   "alerts": { "enabled": true, "cooldown_secs": 60 },
-  "hermes_cmd": "hermes chat --continue char-rig --create-if-missing -Q -q"
+  "quick_tasks": [
+    { "label": "Summarize clipboard", "prompt": "Call avatar_get_clipboard and summarise what I copied." },
+    { "label": "Scan the network", "prompt": "Read the Suricata fast.log and report anything new." }
+  ],
+  "max_session_turns": 15,
+  "session_idle_reset_secs": 1800,
+  "session_base": "char-rig",
+  "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q"
 }
 ```
 
@@ -760,17 +797,30 @@ keywords and cooldowns it now carries two blocks:
 * **`alerts`** — the throttle for frames pushed by `POST /alert`:
   `cooldown_secs` defaults to `DEFAULT_ALERT_COOLDOWN_SECS` (60 s) and
   `enabled: false` lets the frames pass without waking Hermes.
+* **`quick_tasks`** — the command bar's chips: `[{label, prompt}]`, at most 6.
+  The app reads them straight from this file and serves them as `quick_tasks` on
+  `GET /watcher`, so editing them needs no rebuild — reopen the bar (or it
+  refreshes on open) and the chips change. A blank `label`/`prompt` is skipped;
+  no array at all falls back to the three built-in chips.
 * **`hermes_cmd`** — the shipped value keeps one conversation across triggers:
-  `hermes chat --continue char-rig --create-if-missing -Q -q` resumes the session
-  named `char-rig`, creating it on first use, so a follow-up click or quick reply
-  shares the previous turn's memory instead of starting cold. `-Q` keeps the
-  banner/spinner out of the watcher's log, and `-q` must stay **last** in the
-  string because the watcher appends the prompt as the final argv entry. The CLI
-  has no `--session` flag: `--continue <name>` (alias `-c`) is the named-session
-  flag, and `--create-if-missing` is what makes it safe to point at a thread that
-  does not exist yet. A resumed session also keeps its launch policy, so per-run
+  `hermes chat --continue {session} --create-if-missing -Q -q`. `{session}` is
+  substituted with the watcher's **current** session id (`char-rig-<epoch>`,
+  `-2`, `-3`… after each rotation); `-Q` keeps the banner/spinner out of the
+  watcher's log, and `-q` must stay **last** in the string because the watcher
+  appends the prompt as the final argv entry. The CLI has no `--session` flag:
+  `--continue <name>` (alias `-c`) is the named-session flag, and
+  `--create-if-missing` is what makes it safe to point at a thread that does not
+  exist yet. A resumed session also keeps its launch policy, so per-run
   overrides (`--run-budget`, `--model`, `-t`) are rejected — configure those in
-  `config.yaml`.
+  `config.yaml`. A template **without** `{session}` still runs, but rotation
+  cannot reach the CLI (the watcher logs a warning at startup and `verify_docs`
+  flags it).
+* **`max_session_turns`** — rotate to a fresh session after this many dispatched
+  turns (absent/0 = off). Checked *before* a spawn, so the turn that trips the
+  limit already runs in the new conversation.
+* **`session_idle_reset_secs`** — rotate after this long without a dispatch
+  (absent/0 = off), so a conversation left overnight does not come back stale.
+* **`session_base`** — prefix for generated ids (default `char-rig`).
 
 ### Importing
 
@@ -856,7 +906,7 @@ offset, rotation, z-order, scale, tag, state, variant.
 
 ## 6. Tauri command surface (page ⇄ Rust)
 
-32 commands, registered in `generate_handler!`. Most take `tauri::State<Arc<AppCtx>>`
+33 commands, registered in `generate_handler!`. Most take `tauri::State<Arc<AppCtx>>`
 and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated ones.
 
 | Command | Purpose |
@@ -872,6 +922,7 @@ and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated o
 | `set_click_through(enabled)` | master switch (also applies immediately when disabled) |
 | `notify_interaction(kind, x, y)` | pointer hit on the avatar art → `interaction` frame; returns `{ok, kind, subscribers}`, changes no state |
 | `notify_reply(text)` | the bubble's quick-reply box was submitted → `user_reply` frame, bubble dismissed; returns `{ok, text, subscribers}`, changes no state beyond `talking` |
+| `reset_session` | **New chat** → `session_reset` frame (the watcher rotates its `{session}`), bubble dismissed; returns `{ok, reason, subscribers}` |
 | `close_window` / `minimize_window` | window controls (close also requests shutdown) |
 | `list_models` / `get_model` / `load_model(name)` | model catalogue + switching (`load_model` broadcasts `model`/`load`) |
 | `pick_import_file` | native picker → `{path, kind, name}` |
@@ -918,6 +969,7 @@ unknown routes are **404**.
 | GET | `/clipboard` | the clipboard's text, capped at 2000 characters |
 | POST | `/reply` | the user's quick reply (`{"text": "…"}`) → `user_reply` frame |
 | POST | `/alert` | an external monitor's alert (`{"source","summary","severity"}`) → `alert` frame |
+| POST | `/session/reset` | drop the conversation context → `session_reset` frame |
 | GET | `/events` | Server-Sent Events stream of every state change (§7.3) |
 | GET | `/state` | full avatar state |
 | POST | `/state` | set state/expression |
@@ -1116,9 +1168,11 @@ curl -s -X POST localhost:8765/watcher -H 'content-type: application/json' \
      -d '{"enabled": true}'                       # or false
 ```
 
-`GET` returns `{ok, enabled, running, pid, binary_path, rules_path, logs}`;
+`GET` returns `{ok, enabled, running, pid, binary_path, rules_path, logs, quick_tasks}`;
 `POST` takes `{"enabled": bool}`, starts or stops the supervised child and
-returns the same object. Start/stop/log changes are pushed as `watcher` SSE
+returns the same object. `quick_tasks` is the command bar's chip list read from
+the rules file (see §5), so editing `watcher_rules.json` changes the UI without
+restarting anything. Start/stop/log changes are pushed as `watcher` SSE
 frames and `watcher-status` Tauri events.
 
 ### `/shutdown`
@@ -1175,6 +1229,17 @@ with `severity` ∈ `info | warn | error` (default `info`) and returns
 `{ok, alert, subscribers}`. Neither route calls a model: the watcher decides
 whether an alert is worth a Hermes turn.
 
+### `/session/reset`
+
+```bash
+curl -s -X POST localhost:8765/session/reset   # -> {"ok":true,"reason":"api","subscribers":1}
+```
+Broadcasts `session_reset` and dismisses the bubble. The app owns no session
+state — `char-rig-watcher.exe` rotates its `{session}` id on the frame and logs
+`session reset (api): char-rig-<ts> -> char-rig-<ts>-2`; the next task runs in a
+clean Hermes conversation. The UI twins are the command bar's **↺** and the
+control panel's **New chat** (both call `reset_session`).
+
 ### `/events`
 
 ```bash
@@ -1183,7 +1248,7 @@ curl -N localhost:8765/events
 Server-Sent Events; frames are `{"seq","type","ts_ms","payload"}` and `type` is
 also the SSE `event:` name. Event types: `hello` (on connect), `state`,
 `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`,
-`animate`, `interaction`, `user_reply`, `alert`, `watcher`. Keep-alive comment
+`animate`, `interaction`, `user_reply`, `alert`, `session_reset`, `watcher`. Keep-alive comment
 every 15 s; channel capacity 64 with skip-forward on lag, plus the 15-frame
 history served in `/context`. Full payload table in `API.md` §
 "Awareness: desktop context & the event stream".
@@ -1208,6 +1273,14 @@ history served in `/context`. Full payload table in `API.md` §
   per-part manipulation outside Rig Edit Mode and no momentum/inertia, and the
   drag is clamped to the window, so it cannot push the avatar onto a second
   monitor.
+* **One conversation at a time.** The watcher holds a single session id; there is
+  no per-task session and no history UI beyond the chat bubble. The id is
+  re-derived at every watcher start (`<prefix>-<timestamp>`), so restarting the
+  watcher or the app starts a fresh thread — "New chat" is only needed mid-run.
+* **The command bar needs keyboard focus.** `Enter`/`/` only reach the page when
+  the overlay window has focus (click the titlebar or the avatar first); a
+  click-through window cannot steal keys from the app you are typing in. That is
+  why the titlebar chat button and the bubble click exist.
 * **`interaction` is one-way.** The UI reports a click and does nothing else;
   any reaction (wave, speak) has to come back from an agent over HTTP. The
   quick-reply box is the other direction: it *sends* text (`user_reply`) but

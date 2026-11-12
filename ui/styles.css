@@ -393,6 +393,52 @@ input[type="range"]::-webkit-slider-thumb {
 }
 #speech-reply button:hover { background: rgba(74, 144, 217, 0.48); color: #fff; }
 #speech.reply-open { cursor: text; }
+/* The "Thinking…" bubble is a status card: no reply box, no text cursor. */
+#speech.thinking { cursor: default; }
+#speech.thinking #speech-reply { display: none !important; }
+
+/* command bar — ask or task the avatar from anywhere on the overlay */
+#command-bar {
+  position: fixed;
+  width: 360px; max-width: min(420px, 62vw);
+  padding: 8px 9px 9px;
+  background: rgba(16, 16, 22, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  z-index: 1060;
+  font-size: 12px;
+}
+#command-bar .cmd-row { display: flex; align-items: center; gap: 6px; }
+#command-input {
+  flex: 1 1 auto; min-width: 0;
+  padding: 7px 9px; font-size: 12.5px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px; color: #f2f2f8;
+}
+#command-input::placeholder { color: #8a8aa0; }
+#command-input:focus { border-color: #4a90d9; }
+.cmd-btn {
+  flex: 0 0 auto; height: 28px; min-width: 28px; padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05); color: #c3c3d4;
+  font-family: inherit; font-size: 11.5px; line-height: 1; cursor: pointer;
+}
+.cmd-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.cmd-btn.primary { background: rgba(74, 144, 217, 0.30); border-color: rgba(74, 144, 217, 0.6); color: #cfe3fb; }
+.cmd-btn.primary:hover { background: rgba(74, 144, 217, 0.48); color: #fff; }
+#command-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+#command-chips:empty { display: none; }
+.chip {
+  padding: 4px 8px; font-size: 10.5px;
+  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05); color: #c3c3d4;
+  font-family: inherit; cursor: pointer; white-space: nowrap;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
+.chip:hover { background: rgba(74, 144, 217, 0.28); border-color: #4a90d9; color: #fff; }
 
 #speech-tail {
   position: absolute; width: 0; height: 0;

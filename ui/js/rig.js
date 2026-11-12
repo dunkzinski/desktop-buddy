@@ -334,6 +334,10 @@ export function wireRegions() {
   if (drawer && !drawer.classList.contains("hidden")) push(drawer);
   const chooser = document.getElementById("import-chooser");
   if (chooser && !chooser.classList.contains("hidden")) push(chooser);
+  // The command bar floats over the desktop too: without its own region the
+  // user could see the input but never focus it.
+  const commandBar = document.getElementById("command-bar");
+  if (commandBar && !commandBar.classList.contains("hidden")) push(commandBar);
   // The speech bubble hosts the quick-reply box: while it is on screen its box
   // must accept clicks, or the user could see the input but not type in it.
   const bubble = document.getElementById("speech");

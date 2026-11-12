@@ -277,6 +277,12 @@ export function applyWatcherStatus(payload) {
     if ("binary_path" in payload) watcher.binary = payload.binary_path || "";
     if ("rules_path" in payload) watcher.rules = payload.rules_path || "";
     if ("pid" in payload) watcher.pid = payload.pid;
+    // The command bar's chips live in watcher_rules.json → GET /watcher.
+    if (Array.isArray(payload.quick_tasks)) {
+      watcher.quickTasks = payload.quick_tasks
+        .filter((task) => task && typeof task.label === "string" && typeof task.prompt === "string")
+        .map((task) => ({ label: task.label, prompt: task.prompt }));
+    }
     watcher.checked = true;
   }
   if (typeof payload.enabled === "boolean") watcher.enabled = payload.enabled;

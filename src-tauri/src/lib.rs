@@ -47,8 +47,13 @@ pub const EVENT_HISTORY_CAPACITY: usize = 15;
 /// Longest clipboard excerpt `GET /clipboard` will hand out.
 pub const MAX_CLIPBOARD_CHARS: usize = 2000;
 
-/// Longest quick-reply text accepted by `POST /reply` and `notify_reply`.
+/// Longest quick-reply / command-bar text accepted by `POST /reply` and
+/// `notify_reply`.
 pub const MAX_REPLY_CHARS: usize = 500;
+
+/// How many quick-task chips the command bar will show (the rules file may
+/// define more; the extras are dropped so the bar stays one row).
+pub const MAX_QUICK_TASKS: usize = 6;
 
 /// Default port for the local HTTP API (override with `CHAR_RIG_API_PORT`).
 const DEFAULT_API_PORT: u16 = 8765;
@@ -814,6 +819,33 @@ fn notify_reply(
 ) -> Result<Value, String> {
     let result = do_user_reply(&ctx, &text)?;
     // The bubble is transient page state: tell the page to drop it.
+    if let Err(err) = app.emit("speech-clear", serde_json::json!({})) {
+        log::warn!("failed to emit speech-clear: {err}");
+    }
+    Ok(result)
+}
+
+/// Core of `POST /session/reset` and [`reset_session`]: ask the watcher to
+/// rotate to a fresh Hermes conversation.
+///
+/// The app owns no conversation state — `char-rig-watcher.exe` holds the current
+/// session id — so this is a broadcast: the `session_reset` frame is the
+/// instruction, and the watcher acknowledges it on its own stderr/log tail. The
+/// bubble is dismissed because the prompt it was showing belongs to the context
+/// that is being thrown away.
+pub fn do_session_reset(ctx: &AppCtx, reason: &str) -> Value {
+    ctx.speech_seen.store(false, Ordering::Relaxed);
+    *lock_or_recover(&ctx.speech) = None;
+    lock_or_recover(&ctx.avatar).talking = false;
+    let subscribers = ctx.emit_event("session_reset", serde_json::json!({ "reason": reason }));
+    serde_json::json!({ "ok": true, "reason": reason, "subscribers": subscribers })
+}
+
+/// Wipe the conversation context: the command bar's **↺** button and the
+/// control panel's **New chat** button both land here.
+#[tauri::command(rename_all = "snake_case")]
+fn reset_session(app: AppHandle, ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<Value, String> {
+    let result = do_session_reset(&ctx, "ui");
     if let Err(err) = app.emit("speech-clear", serde_json::json!({})) {
         log::warn!("failed to emit speech-clear: {err}");
     }
@@ -1639,15 +1671,28 @@ impl WatcherState {
 impl AppCtx {
     /// JSON for `GET /watcher`, `get_watcher_status` and every `watcher` frame.
     pub fn watcher_status(&self) -> Value {
-        let state = lock_or_recover(&self.watcher);
+        // Copy out under the lock, then do the (small) file read outside it: a
+        // status call must never hold the watcher mutex while touching disk.
+        let (enabled, running, pid, binary, rules, logs) = {
+            let state = lock_or_recover(&self.watcher);
+            (
+                state.enabled,
+                state.running(),
+                state.pid(),
+                state.binary.as_ref().map(|path| path.display().to_string()),
+                state.rules.clone(),
+                state.logs.iter().cloned().collect::<Vec<String>>(),
+            )
+        };
         serde_json::json!({
             "ok": true,
-            "enabled": state.enabled,
-            "running": state.running(),
-            "pid": state.pid(),
-            "binary_path": state.binary.as_ref().map(|path| path.display().to_string()),
-            "rules_path": state.rules.as_ref().map(|path| path.display().to_string()),
-            "logs": state.logs.iter().cloned().collect::<Vec<String>>(),
+            "enabled": enabled,
+            "running": running,
+            "pid": pid,
+            "binary_path": binary,
+            "rules_path": rules.as_ref().map(|path| path.display().to_string()),
+            "logs": logs,
+            "quick_tasks": quick_tasks(rules.as_deref()),
         })
     }
 
@@ -1869,6 +1914,74 @@ fn watcher_rules_path(
     watcher_rules_candidates(cwd, exe_dir, repo_root)
         .into_iter()
         .find(|candidate| candidate.is_file())
+}
+
+/// The chips the command bar shows when `watcher_rules.json` has no
+/// `quick_tasks` array.
+///
+/// Each prompt is written for the agent, not for a human: it names the tool it
+/// should call, so one click costs one model turn with no discovery step.
+pub fn default_quick_tasks() -> Vec<Value> {
+    vec![
+        serde_json::json!({
+            "label": "Summarize clipboard",
+            "prompt": "Call avatar_get_clipboard and summarise what I copied in two sentences: \
+say what it is (code, error, notes, link) and the one thing I most likely want to do with it.",
+        }),
+        serde_json::json!({
+            "label": "What am I looking at?",
+            "prompt": "Call avatar_get_context, then tell me which window and process I am in and what \
+I am probably doing. Offer one concrete next step. Keep it under 180 characters.",
+        }),
+        serde_json::json!({
+            "label": "Quick diagnostic",
+            "prompt": "Run a quick diagnostic from the desktop context: call avatar_get_context and \
+avatar_get_clipboard, check idle time, the focused process and anything copied that looks like an \
+error, then report only the notable findings (or say everything looks normal).",
+        }),
+    ]
+}
+
+/// Read `quick_tasks` out of the watcher rules file.
+///
+/// The file is the single place to customise the command bar, so the app reads
+/// it directly (the watcher itself only validates it). Entries missing a `label`
+/// or `prompt` are skipped rather than rendered as blank chips, and the list is
+/// capped at [`MAX_QUICK_TASKS`] so the bar never wraps. No file / no array →
+/// [`default_quick_tasks`].
+pub fn quick_tasks(rules_path: Option<&std::path::Path>) -> Vec<Value> {
+    let mut tasks = Vec::new();
+    if let Some(path) = rules_path {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(document) = serde_json::from_str::<Value>(&text) {
+                if let Some(entries) = document.get("quick_tasks").and_then(Value::as_array) {
+                    for entry in entries {
+                        let label = entry
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim();
+                        let prompt = entry
+                            .get("prompt")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim();
+                        if label.is_empty() || prompt.is_empty() {
+                            continue;
+                        }
+                        tasks.push(serde_json::json!({ "label": label, "prompt": prompt }));
+                        if tasks.len() == MAX_QUICK_TASKS {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if tasks.is_empty() {
+        tasks = default_quick_tasks();
+    }
+    tasks
 }
 
 /// `HH:MM:SS` in the machine's local time (UTC off Windows).
@@ -2117,6 +2230,7 @@ pub fn run() {
             set_click_through,
             notify_interaction,
             notify_reply,
+            reset_session,
             close_window,
             minimize_window,
             list_models,
@@ -2498,6 +2612,7 @@ mod tests {
             "binary_path",
             "rules_path",
             "logs",
+            "quick_tasks",
         ] {
             assert!(status.get(key).is_some(), "missing {key} in {status}");
         }
@@ -2508,6 +2623,105 @@ mod tests {
         assert_eq!(status["binary_path"], Value::Null);
         assert_eq!(status["rules_path"], Value::Null);
         assert!(status["logs"].as_array().unwrap().is_empty());
+        assert_eq!(
+            status["quick_tasks"].as_array().map(Vec::len),
+            Some(3),
+            "no rules file → the built-in chips"
+        );
+    }
+
+    /* ---------- quick tasks ---------- */
+
+    #[test]
+    fn default_quick_tasks_are_well_formed() {
+        let tasks = default_quick_tasks();
+        assert_eq!(tasks.len(), 3);
+        for task in &tasks {
+            let label = task["label"].as_str().unwrap_or("");
+            let prompt = task["prompt"].as_str().unwrap_or("");
+            assert!(!label.is_empty() && !prompt.is_empty(), "blank chip: {task}");
+            assert!(prompt.len() > 20, "a chip prompt should be a real instruction");
+        }
+        // The three documented intents are present.
+        let labels: Vec<&str> = tasks.iter().filter_map(|task| task["label"].as_str()).collect();
+        assert!(labels.iter().any(|label| label.contains("clipboard")));
+        assert!(labels.iter().any(|label| label.contains("looking at")));
+        assert!(labels.iter().any(|label| label.contains("diagnostic")));
+    }
+
+    #[test]
+    fn quick_tasks_are_read_from_the_rules_file() {
+        let root = std::env::temp_dir().join(format!("char-rig-quick-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let path = root.join("watcher_rules.json");
+        std::fs::write(
+            &path,
+            r#"{"quick_tasks":[
+                {"label":"Summarize clipboard","prompt":"call avatar_get_clipboard"},
+                {"label":"","prompt":"skipped: no label"},
+                {"label":"No prompt","prompt":"   "},
+                {"label":"Scan","prompt":"run the scan script"}
+            ]}"#,
+        )
+        .expect("write rules");
+
+        let tasks = quick_tasks(Some(&path));
+        assert_eq!(tasks.len(), 2, "blank entries are dropped: {tasks:?}");
+        assert_eq!(tasks[0]["label"], "Summarize clipboard");
+        assert_eq!(tasks[1]["label"], "Scan");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn quick_tasks_fall_back_when_the_file_is_missing_or_broken() {
+        let missing = std::path::Path::new("Z:/definitely/not/here/watcher_rules.json");
+        assert_eq!(quick_tasks(Some(missing)).len(), default_quick_tasks().len());
+
+        let root = std::env::temp_dir().join(format!("char-rig-broken-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let path = root.join("watcher_rules.json");
+        std::fs::write(&path, "{not json").expect("write rules");
+        assert_eq!(
+            quick_tasks(Some(&path)).len(),
+            default_quick_tasks().len(),
+            "an unparsable file must not empty the command bar"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn quick_tasks_are_capped() {
+        let root = std::env::temp_dir().join(format!("char-rig-many-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let path = root.join("watcher_rules.json");
+        let chips: Vec<String> = (0..(MAX_QUICK_TASKS + 3))
+            .map(|index| format!("{{\"label\":\"chip {index}\",\"prompt\":\"do {index}\"}}"))
+            .collect();
+        std::fs::write(&path, format!("{{\"quick_tasks\":[{}]}}", chips.join(",")))
+            .expect("write rules");
+        assert_eq!(quick_tasks(Some(&path)).len(), MAX_QUICK_TASKS);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /* ---------- session reset ---------- */
+
+    #[test]
+    fn session_reset_is_broadcast_and_dismisses_the_bubble() {
+        let ctx = test_ctx();
+        let mut rx = ctx.events.subscribe();
+        *lock_or_recover(&ctx.speech) = Some(serde_json::json!({ "text": "old prompt" }));
+        lock_or_recover(&ctx.avatar).talking = true;
+
+        let out = do_session_reset(&ctx, "ui");
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["reason"], "ui");
+        assert_eq!(out["subscribers"], 1);
+
+        let frame: Value = serde_json::from_str(&rx.try_recv().expect("session_reset frame")).unwrap();
+        assert_eq!(frame["type"], "session_reset");
+        assert_eq!(frame["payload"]["reason"], "ui");
+        assert!(lock_or_recover(&ctx.speech).is_none(), "the old prompt is gone");
+        assert!(!lock_or_recover(&ctx.avatar).talking);
     }
 
     #[test]

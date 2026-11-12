@@ -58,6 +58,9 @@ const DEFAULT_ALERT_COOLDOWN_SECS: u64 = 60;
 const DEFAULT_IDLE_THRESHOLD_SECS: u64 = 900;
 const DEFAULT_ACK_EMOTE: &str = "thinking";
 const ACK_EMOTE_DURATION_MS: u64 = 4000;
+/// Prefix for generated session ids (`char-rig-<seed>`); override with
+/// `session_base` in the rules file.
+const DEFAULT_SESSION_BASE: &str = "char-rig";
 /// How long a spawned `--hermes-cmd` may run before it is killed.
 ///
 /// Generous on purpose: a local model answering a trigger often needs well over
@@ -392,6 +395,18 @@ impl Default for AlertRules {
     }
 }
 
+/// One quick-task chip, mirrored into `GET /watcher` for the command bar.
+///
+/// The watcher never sends these itself — the desktop app reads them out of the
+/// same rules file — but parsing them here keeps one schema for the whole file
+/// and lets startup log what the UI will show.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+struct QuickTask {
+    label: String,
+    prompt: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 #[serde(default)]
 struct Rules {
@@ -401,9 +416,19 @@ struct Rules {
     app_rules: Vec<AppRule>,
     /// Cooldown / switch for `alert` frames from `POST /alert`.
     alerts: AlertRules,
+    /// Chips for the desktop command bar (`GET /watcher` → `quick_tasks`).
+    quick_tasks: Vec<QuickTask>,
+    /// Rotate to a fresh `{session}` after this many dispatched turns (absent or
+    /// 0 disables the rule).
+    max_session_turns: Option<u64>,
+    /// Rotate to a fresh `{session}` after this long without a dispatch (absent
+    /// or 0 disables the rule).
+    session_idle_reset_secs: Option<u64>,
+    /// Prefix for generated session ids; defaults to `char-rig`.
+    session_base: Option<String>,
     ack_emote: Option<String>,
     hermes_cmd: Option<String>,
-    /// Kill the spawned `--hermes-cmd` after this many seconds.
+    /// Longest `/hermes_cmd` timeout, in seconds.
     hermes_timeout_secs: Option<u64>,
     webhook_url: Option<String>,
 }
@@ -591,6 +616,116 @@ impl SseParser {
 }
 
 /* ------------------------------------------------------------------ *
+ * sessions
+ * ------------------------------------------------------------------ */
+
+/// Which Hermes conversation the next dispatch should use.
+///
+/// `char-rig-watcher.exe` is the only component that knows how the agent is
+/// launched, so it owns the id. The `hermes_cmd` template carries a `{session}`
+/// placeholder that is substituted at spawn time; `POST /session/reset` (and the
+/// `max_session_turns` / `session_idle_reset_secs` rules) swap the id for a
+/// fresh one, which is how "New chat" gets a clean context without restarting
+/// anything.
+#[derive(Debug, Clone, PartialEq)]
+struct SessionState {
+    /// Empty until the first dispatch initialises it.
+    id: String,
+    /// Turns dispatched into the current session.
+    turns: u64,
+    /// When the last turn was dispatched (drives `session_idle_reset_secs`).
+    last_turn: Option<Instant>,
+    /// Seconds since the epoch at process start: the readable part of the id.
+    seed: u64,
+    /// 1 for the initial id, then 2, 3, … per rotation.
+    counter: u64,
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self { id: String::new(), turns: 0, last_turn: None, seed: now_secs(), counter: 1 }
+    }
+}
+
+impl SessionState {
+    /// `char-rig-<seed>` for the first session, `char-rig-<seed>-2` after the
+    /// first rotation, and so on — unique per watcher run, short enough to read
+    /// in the log, and never reused after a reset (so no stale context).
+    fn id_for(&self, base: &str) -> String {
+        if self.counter <= 1 {
+            format!("{base}-{}", self.seed)
+        } else {
+            format!("{base}-{}-{}", self.seed, self.counter)
+        }
+    }
+
+    /// Start a fresh conversation, returning `(previous, current)` ids.
+    fn rotate(&mut self, base: &str) -> (String, String) {
+        let previous = if self.id.is_empty() {
+            "<none>".to_string()
+        } else {
+            self.id.clone()
+        };
+        if !self.id.is_empty() {
+            self.counter = self.counter.saturating_add(1);
+        }
+        self.id = self.id_for(base);
+        self.turns = 0;
+        self.last_turn = None;
+        (previous, self.id.clone())
+    }
+}
+
+fn lock_session(session: &Arc<Mutex<SessionState>>) -> MutexGuard<'_, SessionState> {
+    session.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// `session_base` from the rules, or the documented default.
+fn session_base(rules: &Rules) -> String {
+    rules
+        .session_base
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_SESSION_BASE)
+        .to_string()
+}
+
+/// The session id for the next dispatch, rotating first when an auto-rotation
+/// rule asks for it.
+///
+/// Rotation happens *before* the spawn, so the turn that trips `max_session_turns`
+/// already lands in the new conversation instead of the one being retired.
+fn session_for_dispatch(rules: &Rules, session: &mut SessionState, now: Instant) -> String {
+    let base = session_base(rules);
+    if session.id.is_empty() {
+        session.rotate(&base);
+        eprintln!("[watcher] session: {} (new)", session.id);
+        return session.id.clone();
+    }
+
+    let max_turns = rules.max_session_turns.unwrap_or(0);
+    if max_turns > 0 && session.turns >= max_turns {
+        let (old, new) = session.rotate(&base);
+        eprintln!("[watcher] session rotated after {max_turns} turns: {old} -> {new}");
+        return new;
+    }
+
+    let idle_secs = rules.session_idle_reset_secs.unwrap_or(0);
+    if idle_secs > 0 {
+        if let Some(last) = session.last_turn {
+            if now.saturating_duration_since(last).as_secs() >= idle_secs {
+                let (old, new) = session.rotate(&base);
+                eprintln!("[watcher] session rotated after {idle_secs}s idle: {old} -> {new}");
+                return new;
+            }
+        }
+    }
+
+    session.id.clone()
+}
+
+/* ------------------------------------------------------------------ *
  * triggers
  * ------------------------------------------------------------------ */
 
@@ -669,7 +804,10 @@ impl Trigger {
             self.event_type, self.detail, focus, self.idle_secs
         );
         if let Some(text) = &self.text {
-            prompt.push_str(&format!(" The user replied: {text:?}."));
+            prompt.push_str(&format!(
+                " The user typed this directly in the desktop overlay and is waiting for an answer: {text:?}. \
+Treat it as their task: do what they asked with your tools, then report the outcome with avatar_speak."
+            ));
         }
         if let Some(hint) = &self.hint {
             prompt.push_str(&format!(" Context: {hint}"));
@@ -935,6 +1073,14 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Whole seconds since the epoch; the readable part of a session id.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
 /// Split a command line into argv, honouring single/double quotes.
 ///
 /// No shell is involved: the prompt is passed as one argv entry, so it can never
@@ -976,12 +1122,21 @@ fn split_command(command: &str) -> Vec<String> {
     argv
 }
 
-/// argv for the configured command, with the prompt appended (or substituted
-/// into a `{prompt}` placeholder).
-fn command_argv(command: &str, prompt: &str) -> Vec<String> {
+/// argv for the configured command, with `{session}` and the prompt substituted
+/// (the prompt falls back to being appended as the last argv entry).
+///
+/// Two placeholders are supported:
+/// * `{session}` — the current conversation id (only meaningful inside a
+///   `--continue`-style flag; without it rotation cannot reach the CLI).
+/// * `{prompt}` — the trigger prompt; when absent it is appended last, which is
+///   why a template ending in `-q` works.
+fn command_argv(command: &str, prompt: &str, session: &str) -> Vec<String> {
     let mut argv = split_command(command);
     let mut substituted = false;
     for arg in argv.iter_mut() {
+        if arg.contains("{session}") {
+            *arg = arg.replace("{session}", session);
+        }
         if arg.contains("{prompt}") {
             *arg = arg.replace("{prompt}", prompt);
             substituted = true;
@@ -1037,6 +1192,7 @@ impl Drop for FlightGuard {
 
 /// Spawn the configured command, wait for it under a timeout, and log the exit.
 ///
+/// * `session` is substituted into `{session}` in the command template.
 /// * `stdin` is `/dev/null` so an interactive prompt reads EOF immediately
 ///   instead of hanging on a keyboard that is not attached.
 /// * The wait is wrapped in [`tokio::time::timeout`]; on expiry the child is
@@ -1044,11 +1200,20 @@ impl Drop for FlightGuard {
 ///   forever.
 /// * `flight` moves into the spawned task: the permit is released exactly when
 ///   the child is gone.
-fn spawn_hermes(command: &str, prompt: &str, timeout: Duration, flight: FlightGuard) {
-    let mut argv = command_argv(command, prompt);
+///
+/// Returns `true` when a process was actually started (the caller uses that to
+/// count a turn against the session).
+fn spawn_hermes(
+    command: &str,
+    prompt: &str,
+    session: &str,
+    timeout: Duration,
+    flight: FlightGuard,
+) -> bool {
+    let mut argv = command_argv(command, prompt, session);
     if argv.is_empty() {
         eprintln!("[watcher] --hermes-cmd is empty; nothing spawned");
-        return;
+        return false;
     }
     let program = argv.remove(0);
     let spawned = tokio::process::Command::new(&program)
@@ -1063,7 +1228,10 @@ fn spawn_hermes(command: &str, prompt: &str, timeout: Duration, flight: FlightGu
                 .id()
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| "?".to_string());
-            eprintln!("[watcher] spawned {program} (pid {pid}, timeout {}s)", timeout.as_secs());
+            eprintln!(
+                "[watcher] spawned {program} (pid {pid}, session {session}, timeout {}s)",
+                timeout.as_secs()
+            );
             tokio::spawn(async move {
                 let _flight = flight; // released when this task ends
                 let waited = tokio::time::timeout(timeout, child.wait()).await;
@@ -1085,8 +1253,12 @@ fn spawn_hermes(command: &str, prompt: &str, timeout: Duration, flight: FlightGu
                     }
                 }
             });
+            true
         }
-        Err(err) => eprintln!("[watcher] cannot spawn {program:?}: {err}"),
+        Err(err) => {
+            eprintln!("[watcher] cannot spawn {program:?}: {err}");
+            false
+        }
     }
 }
 
@@ -1136,6 +1308,7 @@ async fn handle_trigger(
     client: &reqwest::Client,
     trigger: &Trigger,
     flight: &SingleFlight,
+    session: &Arc<Mutex<SessionState>>,
 ) {
     let payload = trigger.payload(now_ms());
 
@@ -1206,7 +1379,22 @@ async fn handle_trigger(
     // 3. Hermes (or a plain log line when nothing is wired up). The guard moves
     //    into the child's task so the permit covers the process lifetime.
     match &config.hermes_cmd {
-        Some(command) => spawn_hermes(command, &trigger.prompt(), config.hermes_timeout, guard),
+        Some(command) => {
+            let prompt = trigger.prompt();
+            // Pick (or rotate) the conversation *before* spawning, so a turn
+            // that trips max_session_turns already lands in the new session.
+            let session_id = {
+                let mut state = lock_session(session);
+                session_for_dispatch(&config.rules, &mut state, Instant::now())
+            };
+            let spawned =
+                spawn_hermes(command, &prompt, &session_id, config.hermes_timeout, guard);
+            if spawned {
+                let mut state = lock_session(session);
+                state.turns = state.turns.saturating_add(1);
+                state.last_turn = Some(Instant::now());
+            }
+        }
         None if config.webhook_url.is_none() => {
             drop(guard);
             eprintln!(
@@ -1266,15 +1454,17 @@ async fn fetch_context(client: &reqwest::Client, api_url: &str) -> Result<Contex
 
 /// Turn one SSE frame into a queued trigger.
 ///
-/// Five frame types matter: `interaction` (the user poked the avatar),
-/// `user_reply` (they typed in the bubble), `alert` (`POST /alert` from an
-/// external monitor), plus the context loop's own `window_title` /
-/// `idle_return`. Every other type — `state`, `speech`, `animate`, … — is
-/// ignored so the watcher stays quiet while the page animates.
+/// Six frame types matter: `interaction` (the user poked the avatar),
+/// `user_reply` (they typed in the bubble or command bar), `alert` (`POST
+/// /alert` from an external monitor), `session_reset` (`POST /session/reset` —
+/// rotates the conversation and queues nothing), plus the context loop's own
+/// `window_title` / `idle_return`. Every other type — `state`, `speech`,
+/// `animate`, … — is ignored so the watcher stays quiet while the page animates.
 async fn handle_frame(
     frame: &SseFrame,
     rules: &Rules,
     shared: &Arc<Mutex<Shared>>,
+    session: &Arc<Mutex<SessionState>>,
     tx: &mpsc::Sender<Trigger>,
 ) {
     if frame.event == "hello" || frame.data.is_empty() {
@@ -1292,6 +1482,21 @@ async fn handle_frame(
         .and_then(Value::as_str)
         .unwrap_or(frame.event.as_str());
     let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+
+    // A reset is an instruction, not an event to report: rotate and stay quiet.
+    if frame_type == "session_reset" {
+        let reason = payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let base = session_base(rules);
+        let (old, new) = {
+            let mut state = lock_session(session);
+            state.rotate(&base)
+        };
+        eprintln!("[watcher] session reset ({reason}): {old} -> {new}");
+        return;
+    }
 
     let trigger = match frame_type {
         "interaction" => {
@@ -1324,6 +1529,7 @@ async fn stream_events(
     config: &Config,
     client: &reqwest::Client,
     shared: &Arc<Mutex<Shared>>,
+    session: &Arc<Mutex<SessionState>>,
     tx: &mpsc::Sender<Trigger>,
     backoff: &mut Duration,
 ) -> Result<(), String> {
@@ -1347,7 +1553,7 @@ async fn stream_events(
         let bytes = chunk.map_err(|err| format!("stream error: {err}"))?;
         let text = String::from_utf8_lossy(&bytes);
         for frame in parser.feed(&text) {
-            handle_frame(&frame, &config.rules, shared, tx).await;
+            handle_frame(&frame, &config.rules, shared, session, tx).await;
         }
     }
     Err("event stream closed by the server".to_string())
@@ -1358,11 +1564,12 @@ async fn sse_loop(
     config: Config,
     client: reqwest::Client,
     shared: Arc<Mutex<Shared>>,
+    session: Arc<Mutex<SessionState>>,
     tx: mpsc::Sender<Trigger>,
 ) {
     let mut backoff = INITIAL_BACKOFF;
     loop {
-        match stream_events(&config, &client, &shared, &tx, &mut backoff).await {
+        match stream_events(&config, &client, &shared, &session, &tx, &mut backoff).await {
             Ok(()) => {}
             Err(err) => eprintln!("[watcher] {err}"),
         }
@@ -1411,10 +1618,15 @@ async fn context_loop(
 /// Serialise dispatch so triggers never race each other, and hold the
 /// single-flight latch across the whole side-effect chain (including a
 /// `--hermes-cmd` child that outlives this loop).
-async fn dispatcher(config: Config, client: reqwest::Client, mut rx: mpsc::Receiver<Trigger>) {
+async fn dispatcher(
+    config: Config,
+    client: reqwest::Client,
+    session: Arc<Mutex<SessionState>>,
+    mut rx: mpsc::Receiver<Trigger>,
+) {
     let flight = SingleFlight::default();
     while let Some(trigger) = rx.recv().await {
-        handle_trigger(&config, &client, &trigger, &flight).await;
+        handle_trigger(&config, &client, &trigger, &flight, &session).await;
     }
 }
 
@@ -1445,22 +1657,50 @@ async fn main() {
         if config.dry_run { "dry run" } else { "live" }
     );
     match (&config.hermes_cmd, &config.webhook_url) {
-        (Some(cmd), _) => eprintln!(
-            "[watcher] dispatch: spawn {cmd:?} (timeout {}s, one at a time)",
-            config.hermes_timeout.as_secs()
-        ),
+        (Some(cmd), _) => {
+            eprintln!(
+                "[watcher] dispatch: spawn {cmd:?} (timeout {}s, one at a time)",
+                config.hermes_timeout.as_secs()
+            );
+            if !cmd.contains("{session}") {
+                eprintln!(
+                    "[watcher] hermes_cmd has no {{session}} placeholder: rotation cannot reach the \
+                     CLI (add a --continue {{session}} flag to make New chat effective)"
+                );
+            }
+        }
         (None, Some(url)) => eprintln!("[watcher] dispatch: webhook {url}"),
         (None, None) if config.dry_run => eprintln!("[watcher] dispatch: stdout only (dry run)"),
         (None, None) => eprintln!("[watcher] dispatch: none configured (triggers are logged only)"),
     }
+    if !config.rules.quick_tasks.is_empty() {
+        eprintln!(
+            "[watcher] quick_tasks: {} chips served to the command bar via GET /watcher",
+            config.rules.quick_tasks.len()
+        );
+    }
+    if let Some(turns) = config.rules.max_session_turns.filter(|turns| *turns > 0) {
+        eprintln!("[watcher] session auto-rotates after {turns} turns");
+    }
+    if let Some(secs) = config.rules.session_idle_reset_secs.filter(|secs| *secs > 0) {
+        eprintln!("[watcher] session auto-rotates after {secs}s idle");
+    }
+    eprintln!("[watcher] session base: {:?}", session_base(&config.rules));
 
     let client = build_client();
     let shared = Arc::new(Mutex::new(Shared::default()));
+    let session = Arc::new(Mutex::new(SessionState::default()));
     let (tx, rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
 
-    let sse = tokio::spawn(sse_loop(config.clone(), client.clone(), Arc::clone(&shared), tx.clone()));
+    let sse = tokio::spawn(sse_loop(
+        config.clone(),
+        client.clone(),
+        Arc::clone(&shared),
+        Arc::clone(&session),
+        tx.clone(),
+    ));
     let context = tokio::spawn(context_loop(config.clone(), client.clone(), Arc::clone(&shared), tx.clone()));
-    let dispatch = tokio::spawn(dispatcher(config, client, rx));
+    let dispatch = tokio::spawn(dispatcher(config, client, Arc::clone(&session), rx));
 
     // Any task ending means the watcher is useless: stop everything.
     let _ = tokio::select! {
@@ -1888,20 +2128,20 @@ mod tests {
 
     #[test]
     fn command_argv_appends_or_substitutes_the_prompt() {
-        let argv = command_argv("hermes chat", "hello world");
+        let argv = command_argv("hermes chat", "hello world", "char-rig-1");
         assert_eq!(argv, vec!["hermes", "chat", "hello world"]);
 
-        let argv = command_argv("hermes --prompt={prompt}", "hello");
+        let argv = command_argv("hermes --prompt={prompt}", "hello", "char-rig-1");
         assert_eq!(argv, vec!["hermes", "--prompt=hello"]);
 
-        let argv = command_argv("", "hello");
+        let argv = command_argv("", "hello", "char-rig-1");
         assert!(argv.is_empty(), "an empty command yields no argv");
     }
 
     #[test]
     fn prompt_is_one_argv_entry_even_with_shell_characters() {
         let prompt = "user clicked; rm -rf / && echo hi";
-        let argv = command_argv("agent", prompt);
+        let argv = command_argv("agent", prompt, "char-rig-1");
         assert_eq!(argv.len(), 2);
         assert_eq!(argv[1], prompt, "no shell, so nothing is re-interpreted");
     }
@@ -2235,7 +2475,8 @@ mod tests {
         let prompt = trigger.prompt();
         assert!(prompt.starts_with("[char-rig user_reply]"), "{prompt}");
         assert!(
-            prompt.contains("The user replied: \"what is on my clipboard?\""),
+            prompt.contains("typed this directly in the desktop overlay")
+                && prompt.contains("\"what is on my clipboard?\""),
             "{prompt}"
         );
         assert!(prompt.ends_with(HEADLESS_DIRECTIVE), "{prompt}");
@@ -2356,6 +2597,7 @@ mod tests {
     async fn handle_frame_turns_reply_and_alert_frames_into_triggers() {
         let rules = Rules::default();
         let shared = Arc::new(Mutex::new(Shared::default()));
+        let session = Arc::new(Mutex::new(SessionState::default()));
         let (tx, mut rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
 
         let reply = SseFrame {
@@ -2367,7 +2609,7 @@ mod tests {
             })
             .to_string(),
         };
-        handle_frame(&reply, &rules, &shared, &tx).await;
+        handle_frame(&reply, &rules, &shared, &session, &tx).await;
         let trigger = rx.try_recv().expect("a user_reply frame is a trigger");
         assert_eq!(trigger.event_type, "user_reply");
         assert_eq!(trigger.text.as_deref(), Some("hello there"));
@@ -2381,7 +2623,7 @@ mod tests {
             })
             .to_string(),
         };
-        handle_frame(&alert, &rules, &shared, &tx).await;
+        handle_frame(&alert, &rules, &shared, &session, &tx).await;
         let trigger = rx.try_recv().expect("an alert frame is a trigger");
         assert_eq!(trigger.event_type, "alert");
         assert_eq!(trigger.severity.as_deref(), Some("error"));
@@ -2393,10 +2635,10 @@ mod tests {
             json!({ "type": "interaction", "payload": { "x": 1.0, "y": 2.0 } }),
         ] {
             let frame = SseFrame { event: "message".to_string(), data: data.to_string() };
-            handle_frame(&frame, &rules, &shared, &tx).await;
+            handle_frame(&frame, &rules, &shared, &session, &tx).await;
         }
         let junk = SseFrame { event: "message".to_string(), data: "not json".to_string() };
-        handle_frame(&junk, &rules, &shared, &tx).await;
+        handle_frame(&junk, &rules, &shared, &session, &tx).await;
         assert!(rx.try_recv().is_err(), "nothing else was queued");
     }
 
@@ -2412,5 +2654,191 @@ mod tests {
         ] {
             assert!(prompt.contains(needle), "missing {needle:?} in {prompt}");
         }
+    }
+
+    /* ---------- sessions ---------- */
+
+    #[test]
+    fn session_ids_are_unique_per_rotation() {
+        let mut state = SessionState { seed: 1_700_000_000, ..SessionState::default() };
+        assert_eq!(state.id_for("char-rig"), "char-rig-1700000000");
+
+        let (old, new) = state.rotate("char-rig");
+        assert_eq!(old, "<none>", "the very first id has no predecessor");
+        assert_eq!(new, "char-rig-1700000000");
+
+        let (old, new) = state.rotate("char-rig");
+        assert_eq!(old, "char-rig-1700000000");
+        assert_eq!(new, "char-rig-1700000000-2");
+
+        state.turns = 5;
+        state.rotate("char-rig");
+        assert_eq!(state.id, "char-rig-1700000000-3");
+        assert_eq!(state.turns, 0, "a rotation resets the turn counter");
+        assert_eq!(state.last_turn, None);
+    }
+
+    #[test]
+    fn session_base_is_configurable() {
+        let custom = rules(r#"{"session_base":"desk-buddy"}"#);
+        assert_eq!(session_base(&custom), "desk-buddy");
+        assert_eq!(session_base(&Rules::default()), DEFAULT_SESSION_BASE);
+        assert_eq!(session_base(&rules(r#"{"session_base":"   "}"#)), "char-rig");
+    }
+
+    #[test]
+    fn session_rules_default_to_off() {
+        let default = Rules::default();
+        assert_eq!(default.max_session_turns, None);
+        assert_eq!(default.session_idle_reset_secs, None);
+        assert!(default.quick_tasks.is_empty());
+    }
+
+    #[test]
+    fn session_for_dispatch_initialises_once_and_keeps_the_id() {
+        let settings = Rules::default();
+        let mut state = SessionState { seed: 42, ..SessionState::default() };
+
+        let first = session_for_dispatch(&settings, &mut state, Instant::now());
+        assert_eq!(first, "char-rig-42");
+        assert_eq!(state.turns, 0, "no turn dispatched yet");
+
+        state.turns = 1;
+        assert_eq!(
+            session_for_dispatch(&settings, &mut state, Instant::now()),
+            first,
+            "no rule configured, so the conversation is kept"
+        );
+    }
+
+    #[test]
+    fn session_rotates_after_max_turns() {
+        let settings = rules(r#"{"max_session_turns":2}"#);
+        let now = Instant::now();
+
+        let mut under = SessionState {
+            seed: 42,
+            id: "char-rig-42".to_string(),
+            turns: 1,
+            last_turn: Some(now),
+            ..SessionState::default()
+        };
+        assert_eq!(session_for_dispatch(&settings, &mut under, now), "char-rig-42");
+
+        let mut at = SessionState {
+            seed: 42,
+            id: "char-rig-42".to_string(),
+            turns: 2,
+            last_turn: Some(now),
+            ..SessionState::default()
+        };
+        assert_eq!(
+            session_for_dispatch(&settings, &mut at, now),
+            "char-rig-42-2",
+            "the turn that trips the limit lands in the new session"
+        );
+        assert_eq!(at.turns, 0);
+    }
+
+    #[test]
+    fn session_rotates_after_an_idle_break() {
+        let settings = rules(r#"{"session_idle_reset_secs":600}"#);
+        let now = Instant::now();
+
+        let mut away = SessionState {
+            seed: 42,
+            id: "char-rig-42".to_string(),
+            turns: 3,
+            last_turn: now.checked_sub(Duration::from_secs(900)),
+            ..SessionState::default()
+        };
+        assert_eq!(session_for_dispatch(&settings, &mut away, now), "char-rig-42-2");
+
+        let mut active = SessionState {
+            seed: 42,
+            id: "char-rig-42".to_string(),
+            turns: 3,
+            last_turn: now.checked_sub(Duration::from_secs(60)),
+            ..SessionState::default()
+        };
+        assert_eq!(
+            session_for_dispatch(&settings, &mut active, now),
+            "char-rig-42",
+            "a short pause keeps the conversation"
+        );
+    }
+
+    #[test]
+    fn command_argv_substitutes_the_session_placeholder() {
+        let argv = command_argv(
+            "hermes chat --continue {session} --create-if-missing -Q -q",
+            "hello",
+            "char-rig-7",
+        );
+        assert_eq!(argv[3], "char-rig-7", "the template is expanded: {argv:?}");
+        assert_eq!(argv.last().map(String::as_str), Some("hello"), "prompt is still last");
+        assert!(
+            !argv.iter().any(|arg| arg.contains("{session}")),
+            "no placeholder is left behind: {argv:?}"
+        );
+
+        // A template without {session} is used verbatim (rotation is inert).
+        let plain = command_argv("hermes chat -q", "hi", "char-rig-7");
+        assert_eq!(plain, vec!["hermes", "chat", "-q", "hi"]);
+    }
+
+    #[tokio::test]
+    async fn session_reset_frame_rotates_without_queueing_a_trigger() {
+        let rules = Rules::default();
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let session = Arc::new(Mutex::new(SessionState {
+            seed: 42,
+            id: "char-rig-42".to_string(),
+            turns: 4,
+            ..SessionState::default()
+        }));
+        let (tx, mut rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
+
+        let frame = SseFrame {
+            event: "session_reset".to_string(),
+            data: json!({
+                "seq": 9,
+                "type": "session_reset",
+                "payload": { "reason": "ui" }
+            })
+            .to_string(),
+        };
+        handle_frame(&frame, &rules, &shared, &session, &tx).await;
+
+        let state = lock_session(&session);
+        assert_eq!(state.id, "char-rig-42-2", "the reset rotated the session");
+        assert_eq!(state.turns, 0, "the new session starts at zero turns");
+        drop(state);
+        assert!(rx.try_recv().is_err(), "a reset is an instruction, not a trigger");
+    }
+
+    #[test]
+    fn rules_parse_quick_tasks() {
+        let parsed = rules(
+            r#"{"quick_tasks":[{"label":"Summarize clipboard","prompt":"call avatar_get_clipboard"},{"label":"Scan","prompt":"run it"}]}"#,
+        );
+        assert_eq!(parsed.quick_tasks.len(), 2);
+        assert_eq!(parsed.quick_tasks[0].label, "Summarize clipboard");
+        assert_eq!(parsed.quick_tasks[1].prompt, "run it");
+    }
+
+    #[test]
+    fn user_reply_prompt_marks_a_direct_task() {
+        let trigger = Trigger {
+            event_type: "user_reply".to_string(),
+            detail: "the user replied in the speech bubble: \"summarise my clipboard\"".to_string(),
+            text: Some("summarise my clipboard".to_string()),
+            ..Trigger::default()
+        };
+        let prompt = trigger.prompt();
+        assert!(prompt.contains("typed this directly in the desktop overlay"), "{prompt}");
+        assert!(prompt.contains("Treat it as their task"), "{prompt}");
+        assert!(prompt.contains("report the outcome with avatar_speak"), "{prompt}");
+        assert!(prompt.ends_with(HEADLESS_DIRECTIVE), "{prompt}");
     }
 }

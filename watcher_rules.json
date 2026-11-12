@@ -34,8 +34,29 @@
     "enabled": true,
     "cooldown_secs": 60
   },
+  "quick_tasks": [
+    {
+      "label": "Summarize clipboard",
+      "prompt": "Call avatar_get_clipboard and summarise what I copied in two sentences: say what it is (code, error, notes, link) and the one thing I most likely want to do with it."
+    },
+    {
+      "label": "What am I looking at?",
+      "prompt": "Call avatar_get_context, then tell me which window and process I am in and what I am probably doing. Offer one concrete next step. Keep it under 180 characters."
+    },
+    {
+      "label": "Quick diagnostic",
+      "prompt": "Run a quick diagnostic from the desktop context: call avatar_get_context and avatar_get_clipboard, check idle time, the focused process and anything copied that looks like an error, then report only the notable findings (or say everything looks normal)."
+    },
+    {
+      "label": "Scan the network",
+      "prompt": "Run my usual background check: read the Suricata fast.log on the guardian box and report anything new since my last ask, then say what you would do about it. If you cannot reach it, say so in one sentence."
+    }
+  ],
+  "max_session_turns": 15,
+  "session_idle_reset_secs": 1800,
+  "session_base": "char-rig",
   "ack_emote": "thinking",
-  "hermes_cmd": "hermes chat --continue char-rig --create-if-missing -Q -q",
+  "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
   "webhook_url": null
 }

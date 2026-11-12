@@ -75,6 +75,8 @@ export const watcher = {
   checked: false,
   /** Newest-last tail, capped at WATCHER_LOG_LIMIT. */
   logs: [],
+  /** Chips for the command bar, from `quick_tasks` in watcher_rules.json. */
+  quickTasks: [],
   /** Is the pop-out console open? Kept here so `rig.js` can add its region. */
   drawer: false,
 };
@@ -155,6 +157,10 @@ export const speech = {
   doneFor: 0,
   flipped: false,
   lastLayout: 0,
+  /** True while the bubble is a transient "Thinking…" status card. */
+  thinking: false,
+  /** True while the pointer is over the bubble (the hold timer is paused). */
+  hovered: false,
 };
 
 /* ---------- helpers ---------- */
