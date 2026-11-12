@@ -33,6 +33,17 @@ The console prints `avatar api listening on http://127.0.0.1:8765`. The avatar
 appears at the centre of the primary monitor; empty desktop space is
 click-through.
 
+**The watcher comes with it.** Once the API is bound, `avatar-desktop.exe` starts
+`char-rig-watcher.exe` from its own directory, pointed at the URL it just bound
+(`--api-url http://127.0.0.1:8765`) and at a `watcher_rules.json` it finds beside
+the binaries or up to three directories above (the repo root in a checkout), with
+no console window of its own and its stderr inherited so its log lines land next
+to the app's. A supervisor thread
+restarts it after a crash (2 s, backing off to 30 s), and closing the avatar —
+titlebar **X**, `POST /shutdown`, or an app exit — kills and reaps it, so no
+orphaned watcher is ever left behind. Set `CHAR_RIG_NO_WATCHER=1` to opt out and
+run the watcher by hand.
+
 Verify it responds:
 
 ```bash
@@ -51,6 +62,7 @@ Run the unit tests with `cd src-tauri && cargo test`.
 | --- | --- | --- |
 | `CHAR_RIG_API_PORT` | `8765` | API port (next free port used if busy) |
 | `CHAR_RIG_MODELS` | `<repo>/models` | model root directory |
+| `CHAR_RIG_NO_WATCHER` | *(unset)* | `1`/`true` stops `avatar-desktop` from spawning and supervising `char-rig-watcher.exe` — use it when running the watcher manually in a terminal |
 | `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | *(unset)* | passed straight to WebView2; set to `--remote-debugging-port=9222` to attach DevTools/CDP to the running page |
 
 ### Developer tools
@@ -129,6 +141,11 @@ curl -N localhost:8765/events
 piece that turns the avatar's stream into an agent turn — and it costs **zero
 LLM tokens while idle**: with nothing to report it only reads a keep-alive SSE
 stream and polls `/context` every 20 s.
+
+You normally do not start it yourself: `avatar-desktop.exe` spawns it at startup
+and supervises it (see [Quick start](#quick-start)). Run it by hand — with the
+output in your terminal — by setting `CHAR_RIG_NO_WATCHER=1` on the app, or just
+start it directly against a running avatar:
 
 ```bash
 cd src-tauri

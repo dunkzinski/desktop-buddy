@@ -16,6 +16,7 @@ pub mod models;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -40,6 +41,23 @@ pub const EVENT_CHANNEL_CAPACITY: usize = 64;
 
 /// Default port for the local HTTP API (override with `CHAR_RIG_API_PORT`).
 const DEFAULT_API_PORT: u16 = 8765;
+
+/// Set to `1`/`true` to stop `avatar-desktop` from spawning and supervising
+/// `char-rig-watcher.exe` — handy when running the watcher by hand in a
+/// terminal (its stderr then goes to that terminal, not to the app's log).
+const ENV_NO_WATCHER: &str = "CHAR_RIG_NO_WATCHER";
+/// The supervised binary, resolved next to the running executable.
+const WATCHER_BIN_STEM: &str = "char-rig-watcher";
+/// First restart delay after the watcher dies unexpectedly; doubles up to
+/// [`WATCHER_RESTART_MAX`] so a permanently broken watcher cannot hot-loop.
+const WATCHER_RESTART_DELAY: Duration = Duration::from_secs(2);
+const WATCHER_RESTART_MAX: Duration = Duration::from_secs(30);
+/// How often the supervisor asks the child whether it is still alive.
+const WATCHER_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// `CREATE_NO_WINDOW`: a console-subsystem watcher would otherwise pop a
+/// console window every time the overlay starts.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Shared avatar state, mirrored between the page, the commands and the HTTP API.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -141,6 +159,10 @@ pub struct AppCtx {
     running: AtomicBool,
     api_url: Mutex<String>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// The supervised `char-rig-watcher.exe`, when one is running. The slot is
+    /// the single source of truth: `request_shutdown` takes the child out and
+    /// kills it, so no watcher is ever left behind.
+    pub watcher_child: Mutex<Option<Child>>,
 }
 
 impl AppCtx {
@@ -161,6 +183,7 @@ impl AppCtx {
             running: AtomicBool::new(true),
             api_url: Mutex::new(String::new()),
             shutdown_tx: Mutex::new(None),
+            watcher_child: Mutex::new(None),
         }
     }
 
@@ -229,11 +252,33 @@ impl AppCtx {
         }
     }
 
-    /// Signal the HTTP API to stop and mark the tracker thread as done.
+    /// Signal the HTTP API to stop, mark the tracker thread as done and kill the
+    /// supervised watcher.
+    ///
+    /// Called by the titlebar Close button, `POST /shutdown` and
+    /// `RunEvent::ExitRequested | Exit`; it is idempotent, because all three can
+    /// fire for one exit.
     pub fn request_shutdown(&self) {
         self.running.store(false, Ordering::Relaxed);
+        self.stop_watcher();
         if let Some(tx) = lock_or_recover(&self.shutdown_tx).take() {
             let _ = tx.send(());
+        }
+    }
+
+    /// Kill and reap the supervised watcher, if one is running.
+    ///
+    /// Takes the child out of the slot first, so no other path can wait on it
+    /// twice and a failed kill can never leave the handle dangling.
+    fn stop_watcher(&self) {
+        let child = lock_or_recover(&self.watcher_child).take();
+        let Some(mut child) = child else { return };
+        if let Err(err) = child.kill() {
+            log::warn!("could not kill char-rig-watcher: {err}");
+        }
+        match child.wait() {
+            Ok(status) => log::info!("char-rig-watcher stopped ({status})"),
+            Err(err) => log::warn!("char-rig-watcher did not reap cleanly: {err}"),
         }
     }
 }
@@ -1318,6 +1363,252 @@ fn api_port() -> u16 {
         .unwrap_or(DEFAULT_API_PORT)
 }
 
+/* ------------------------------------------------------------------ *
+ * watcher supervision
+ * ------------------------------------------------------------------ */
+
+/// Is the `CHAR_RIG_NO_WATCHER` escape hatch on?
+///
+/// Pure so the parsing can be pinned down by the tests: `"1"` and `"true"`
+/// (any case, surrounding whitespace ignored) disable auto-supervision;
+/// everything else — including `"0"`, `"false"` and an empty value — keeps it.
+fn watcher_disabled_by(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|raw| raw.trim().to_ascii_lowercase()).as_deref(),
+        Some("1") | Some("true")
+    )
+}
+
+fn watcher_disabled() -> bool {
+    watcher_disabled_by(std::env::var(ENV_NO_WATCHER).ok().as_deref())
+}
+
+/// `char-rig-watcher.exe` on Windows, `char-rig-watcher` elsewhere.
+fn watcher_binary_name() -> String {
+    format!("{WATCHER_BIN_STEM}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// The watcher that sits next to the running executable (same `target/debug` in
+/// development, same install directory for a bundle), if it exists.
+fn watcher_binary_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let candidate = exe.parent()?.join(watcher_binary_name());
+    candidate.is_file().then_some(candidate)
+}
+
+/// Where to look for the watcher's rules file, best first.
+///
+/// Beside the binaries (a shipped/installed layout), then up to three levels up
+/// — `target/debug` → `target` → `src-tauri` → the repo root of a checkout.
+fn watcher_rules_candidates(exe_dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut candidates = vec![exe_dir.join("watcher_rules.json")];
+    let mut dir = exe_dir;
+    for _ in 0..3 {
+        let Some(parent) = dir.parent() else { break };
+        dir = parent;
+        candidates.push(dir.join("watcher_rules.json"));
+    }
+    candidates
+}
+
+fn watcher_rules_path(exe_dir: &std::path::Path) -> Option<PathBuf> {
+    watcher_rules_candidates(exe_dir)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
+/// Spawn one watcher pointed at the live API, with no console window.
+fn spawn_watcher(api_url: &str) -> Option<Child> {
+    let path = watcher_binary_path()?;
+    let mut command = Command::new(&path);
+    // Same working directory as the binary: the watcher's own rules lookup
+    // ("cwd, then next to the exe") then behaves the same whether the avatar was
+    // started from a terminal or from Explorer.
+    if let Some(dir) = path.parent() {
+        command.current_dir(dir);
+        // Point at the rules file explicitly; the watcher would only look beside
+        // the exe, and in a checkout the file lives at the repo root.
+        if let Some(rules) = watcher_rules_path(dir) {
+            log::info!("char-rig-watcher rules: {}", rules.display());
+            command.arg("--rules").arg(rules);
+        }
+    }
+    command
+        .arg("--api-url")
+        .arg(api_url)
+        // EOF on stdin: the watcher must never sit waiting for a keyboard.
+        .stdin(Stdio::null())
+        // Its stdout only carries `--dry-run` payloads, which we never use.
+        .stdout(Stdio::null())
+        // Diagnostics belong next to ours: the app's console (or its log
+        // redirect), so a watcher failure is visible where the avatar logs are.
+        .stderr(Stdio::inherit());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    match command.spawn() {
+        Ok(child) => {
+            log::info!(
+                "char-rig-watcher started (pid {:?}) for {api_url}",
+                child.id()
+            );
+            Some(child)
+        }
+        Err(err) => {
+            log::warn!("could not start {}: {err}", path.display());
+            None
+        }
+    }
+}
+
+/// What the supervisor saw when it looked at the child.
+#[derive(Debug, PartialEq, Eq)]
+enum WatcherHealth {
+    /// Still running.
+    Alive,
+    /// Nothing in the slot (already stopped or killed).
+    Missing,
+    /// The process ended by itself; the string is its exit status.
+    Exited(String),
+    /// Probing failed; the handle is gone.
+    Unpollable(String),
+}
+
+/// Check the child without holding the lock any longer than the probe takes.
+///
+/// A dead child is dropped from the slot here, so the supervisor is the only
+/// writer that can also observe the death.
+fn watcher_health(ctx: &AppCtx) -> WatcherHealth {
+    let mut slot = lock_or_recover(&ctx.watcher_child);
+    if slot.is_none() {
+        return WatcherHealth::Missing;
+    }
+    let probe = slot.as_mut().map(|child| child.try_wait());
+    match probe {
+        Some(Ok(None)) => WatcherHealth::Alive,
+        Some(Ok(Some(status))) => {
+            *slot = None;
+            WatcherHealth::Exited(status.to_string())
+        }
+        Some(Err(err)) => {
+            *slot = None;
+            WatcherHealth::Unpollable(err.to_string())
+        }
+        None => WatcherHealth::Missing,
+    }
+}
+
+/// Sleep `total` in slices so a shutdown interrupts the wait promptly.
+fn sleep_before_restart(ctx: &AppCtx, total: Duration) {
+    let slice = Duration::from_millis(100);
+    let mut left = total;
+    while left > Duration::ZERO {
+        if !ctx.running.load(Ordering::Relaxed) {
+            return;
+        }
+        let step = left.min(slice);
+        std::thread::sleep(step);
+        left -= step;
+    }
+}
+
+/// Kill and reap a child we decided not to keep.
+fn kill_and_reap(mut child: Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Watch the running watcher and restart it when it dies, until shutdown.
+///
+/// The child stays in [`AppCtx::watcher_child`] while it runs (so
+/// `request_shutdown` can always kill it); this thread only probes it with
+/// `try_wait`, which keeps the lock held for microseconds at a time.
+fn supervise_watcher(ctx: Arc<AppCtx>, api_url: String) {
+    let spawned = std::thread::Builder::new()
+        .name("avatar-watcher-supervisor".to_string())
+        .spawn(move || {
+            let mut delay = WATCHER_RESTART_DELAY;
+            loop {
+                if !ctx.running.load(Ordering::Relaxed) {
+                    break;
+                }
+                match watcher_health(&ctx) {
+                    WatcherHealth::Alive => {
+                        std::thread::sleep(WATCHER_POLL_INTERVAL);
+                        continue;
+                    }
+                    // A missing child while still running means it was never
+                    // stored (spawn failed) — treat it like a crash.
+                    WatcherHealth::Missing => {}
+                    WatcherHealth::Exited(status) => log::warn!(
+                        "char-rig-watcher exited ({status}); restarting in {}s",
+                        delay.as_secs()
+                    ),
+                    WatcherHealth::Unpollable(err) => log::warn!(
+                        "cannot poll char-rig-watcher ({err}); restarting in {}s",
+                        delay.as_secs()
+                    ),
+                }
+
+                sleep_before_restart(&ctx, delay);
+                if !ctx.running.load(Ordering::Relaxed) {
+                    // Shutdown started while we were backing off.
+                    break;
+                }
+
+                match spawn_watcher(&api_url) {
+                    Some(child) => {
+                        // Store under the lock and re-check `running` inside it:
+                        // a shutdown that raced us either takes this child and
+                        // kills it, or we kill it ourselves here. No orphan.
+                        let mut slot = lock_or_recover(&ctx.watcher_child);
+                        if !ctx.running.load(Ordering::Relaxed) {
+                            drop(slot);
+                            kill_and_reap(child);
+                            break;
+                        }
+                        *slot = Some(child);
+                        delay = WATCHER_RESTART_DELAY;
+                    }
+                    None => {
+                        // The binary vanished (uninstalled, deleted): keep trying
+                        // at a slower cadence rather than spamming.
+                        delay = (delay * 2).min(WATCHER_RESTART_MAX);
+                    }
+                }
+            }
+            log::info!("watcher supervisor stopped");
+        });
+
+    if let Err(err) = spawned {
+        log::warn!("could not spawn the watcher supervisor: {err}");
+    }
+}
+
+/// Start the watcher for a live API URL and supervise it, unless disabled.
+fn start_watcher(ctx: Arc<AppCtx>, api_url: &str) {
+    if watcher_disabled() {
+        log::info!("{ENV_NO_WATCHER} is set; not starting char-rig-watcher");
+        return;
+    }
+    match spawn_watcher(api_url) {
+        Some(child) => {
+            *lock_or_recover(&ctx.watcher_child) = Some(child);
+            supervise_watcher(Arc::clone(&ctx), api_url.to_string());
+        }
+        None => log::info!(
+            "{} not found next to {}; the avatar runs unsupervised",
+            watcher_binary_name(),
+            std::env::current_exe()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| "the executable".to_string())
+        ),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let ctx = Arc::new(AppCtx::new(api_port()));
@@ -1394,8 +1685,12 @@ pub fn run() {
                 ) {
                     Ok(addr) => {
                         log::info!("avatar api listening on http://{addr}");
-                        *lock_or_recover(&ctx.api_url) = format!("http://{addr}");
+                        let api_url = format!("http://{addr}");
+                        *lock_or_recover(&ctx.api_url) = api_url.clone();
                         let _ = handle.emit("api-status", addr.to_string());
+                        // The watcher polls that exact URL: start it only once
+                        // the API is actually bound, and keep it supervised.
+                        start_watcher(Arc::clone(&ctx), &api_url);
                     }
                     Err(err) => {
                         log::error!("avatar api failed to start: {err}");
@@ -1516,5 +1811,137 @@ mod tests {
         assert_eq!(payload["is_override"], true);
         assert_eq!(payload["reason"], "switch");
         assert_eq!(payload["rig_path"], "C:/models/demo/rig.json");
+    }
+
+    /* ---------- watcher supervision ---------- */
+
+    /// A child that outlives the test unless it is killed.
+    fn sleeper() -> std::io::Result<Child> {
+        #[cfg(windows)]
+        {
+            Command::new("cmd")
+                .args(["/C", "ping", "-n", "30", "127.0.0.1"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        }
+        #[cfg(not(windows))]
+        {
+            Command::new("sleep").arg("30").spawn()
+        }
+    }
+
+    #[cfg(windows)]
+    fn pid_alive(pid: u32) -> bool {
+        let filter = format!("PID eq {pid}");
+        match Command::new("tasklist")
+            .args(["/FI", &filter, "/NH"])
+            .output()
+        {
+            Ok(out) => String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()),
+            Err(_) => false,
+        }
+    }
+
+    #[test]
+    fn watcher_disabled_by_understands_1_and_true() {
+        for on in [Some("1"), Some("true"), Some("TRUE"), Some("  True  ")] {
+            assert!(watcher_disabled_by(on), "{on:?} disables the watcher");
+        }
+        for off in [None, Some(""), Some("0"), Some("false"), Some("no")] {
+            assert!(!watcher_disabled_by(off), "{off:?} keeps the watcher");
+        }
+    }
+
+    #[test]
+    fn watcher_binary_name_matches_the_platform() {
+        let name = watcher_binary_name();
+        assert_eq!(name, format!("char-rig-watcher{}", std::env::consts::EXE_SUFFIX));
+        #[cfg(windows)]
+        assert_eq!(name, "char-rig-watcher.exe");
+        #[cfg(not(windows))]
+        assert_eq!(name, "char-rig-watcher", "no .exe off Windows");
+    }
+
+    #[test]
+    fn watcher_health_reports_missing_and_alive() {
+        let ctx = test_ctx();
+        assert_eq!(watcher_health(&ctx), WatcherHealth::Missing);
+
+        let child = sleeper().expect("spawn a sleeper");
+        *lock_or_recover(&ctx.watcher_child) = Some(child);
+        assert_eq!(watcher_health(&ctx), WatcherHealth::Alive);
+
+        ctx.request_shutdown();
+        assert_eq!(watcher_health(&ctx), WatcherHealth::Missing);
+    }
+
+    #[test]
+    fn request_shutdown_kills_the_supervised_watcher() {
+        let ctx = test_ctx();
+        let child = sleeper().expect("spawn a sleeper");
+        let pid = child.id();
+        *lock_or_recover(&ctx.watcher_child) = Some(child);
+
+        ctx.request_shutdown();
+
+        assert!(!ctx.running.load(Ordering::Relaxed), "running is cleared");
+        assert!(
+            lock_or_recover(&ctx.watcher_child).is_none(),
+            "the child is taken out of the slot"
+        );
+
+        // The whole point: no orphaned process is left behind.
+        #[cfg(windows)]
+        {
+            let mut alive = true;
+            for _ in 0..20 {
+                if !pid_alive(pid) {
+                    alive = false;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(!alive, "pid {pid} is still running after shutdown");
+        }
+    }
+
+    #[test]
+    fn watcher_rules_are_found_next_to_the_exe_or_in_the_repo_root() {
+        let root = std::env::temp_dir().join(format!("char-rig-rules-{}", std::process::id()));
+        let exe_dir = root.join("target").join("debug");
+        std::fs::create_dir_all(&exe_dir).expect("scratch dir");
+        assert_eq!(watcher_rules_path(&exe_dir), None, "nothing to find yet");
+
+        let repo_rules = root.join("watcher_rules.json");
+        std::fs::write(&repo_rules, "{}").expect("write rules");
+        let found = watcher_rules_path(&exe_dir).expect("the repo root copy is found");
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            repo_rules.canonicalize().unwrap(),
+            "two levels up from target/debug"
+        );
+
+        // Beside the binary wins.
+        let beside = exe_dir.join("watcher_rules.json");
+        std::fs::write(&beside, "{}").expect("write beside");
+        assert_eq!(watcher_rules_path(&exe_dir), Some(beside));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn request_shutdown_is_idempotent_for_the_watcher() {
+        let ctx = test_ctx();
+        *lock_or_recover(&ctx.watcher_child) = Some(sleeper().expect("spawn a sleeper"));
+
+        ctx.request_shutdown();
+        // The Close button, POST /shutdown and RunEvent can all fire for one
+        // exit: the second and third call must not panic or block.
+        ctx.request_shutdown();
+        ctx.request_shutdown();
+
+        assert!(lock_or_recover(&ctx.watcher_child).is_none());
     }
 }

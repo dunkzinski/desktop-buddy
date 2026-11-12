@@ -118,6 +118,7 @@ ui/
 | `avatar-api` | `api::start` | until `oneshot` shutdown fires | Owns a 2-worker Tokio runtime running `axum::serve` |
 | `avatar-api-rt` workers | Tokio | runtime lifetime | Request handlers |
 | `avatar-cursor` | `spawn_cursor_tracker` | until `AppCtx::running` is false | Global cursor poll + click-through toggling |
+| `avatar-watcher-supervisor` | `supervise_watcher` | until `AppCtx::running` is false | `try_wait`s the supervised `char-rig-watcher.exe` every 250 ms and respawns it after a crash (2 s, doubling to 30 s) |
 
 Nothing on the API side ever touches the GUI thread directly: handlers mutate
 shared state and emit Tauri events; the page applies them on its next frame.
@@ -132,9 +133,18 @@ shared state and emit Tauri events; the page applies them on its next frame.
    * Resize/move the window to the primary monitor using `Physical` position/size.
    * `model_ctx.ensure_loaded()` (logs a warning and falls back if a model is broken).
    * `api::start(...)` → binds, spawns the API thread, stores the URL, emits `api-status`.
+   * `start_watcher(...)` → resolves `char-rig-watcher.exe` next to the running
+     exe and spawns it with `--api-url <bound url>`, `--rules <found>` (beside the
+     binaries, else up to three directories up — the repo root in a checkout),
+     `stdin(Stdio::null())`, inherited stderr, cwd = the exe's directory and
+     `CREATE_NO_WINDOW`; skipped entirely when `CHAR_RIG_NO_WATCHER` is
+     `1`/`true`. The child handle goes into `AppCtx::watcher_child` and a
+     supervisor thread takes over from there.
    * `spawn_cursor_tracker(...)`.
 6. `app.run(...)` → on `RunEvent::ExitRequested | Exit` call `AppCtx::request_shutdown()`
-   (stops the tracker, fires the oneshot, graceful axum shutdown).
+   (kills and reaps the supervised watcher, stops the tracker, fires the oneshot,
+   graceful axum shutdown). The titlebar **X** and `POST /shutdown` take the same
+   path, and the call is idempotent because all three can fire for one exit.
 
 ### State ownership and data flow
 
@@ -240,14 +250,14 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 
 ## 3. Codebase map
 
-### `src-tauri/src/lib.rs` (1520 lines)
+### `src-tauri/src/lib.rs` (1896 lines)
 
 | Section | Responsibility |
 | --- | --- |
 | consts | `AVATAR_STATES`, `AVATAR_EXPRESSIONS` (6), `INTERACTION_KINDS` (`click`, `double_click`, `drag_end`), `EVENT_CHANNEL_CAPACITY = 64`, `DEFAULT_API_PORT = 8765`, `MAX_SPEECH_CHARS = 2000` |
 | `AvatarState`, `HitRegion` | serialized shared state; region contains-test |
 | `lock_or_recover`, `snapshot` | poisoned-lock recovery (never panic on the UI path) |
-| `AppCtx` + impl | avatar state, regions, `api_port`, `speech` slot, `events` broadcast sender, `event_seq`, `speech_seen`, `expression_commanded_at`, `click_through`, `running`, `api_url`, `shutdown_tx`; `emit_event`, `apply_ignore_cursor`, `request_shutdown` |
+| `AppCtx` + impl | avatar state, regions, `api_port`, `speech` slot, `events` broadcast sender, `event_seq`, `speech_seen`, `expression_commanded_at`, `click_through`, `running`, `api_url`, `shutdown_tx`, `watcher_child`; `emit_event`, `apply_ignore_cursor`, `request_shutdown` (which calls the private `stop_watcher`) |
 | `ModelCtx` + impl | `root`, `current`, `loaded` cache, `pose`, `joints`, `part_patches`, `dialog_open`; `load`, `ensure_loaded`, `invalidate`, `apply_pose`, `parts_snapshot`, `rig_path` |
 | `publish` | bump revision + emit `avatar-state-changed` + broadcast `state` |
 | `model_event_payload` | compact `{name, label, rig_path, is_override, bones, images, reason}` for `model` frames |
@@ -257,8 +267,10 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `do_notify_interaction` | interaction validation + `interaction` frame; the command is a thin wrapper so it is unit-testable |
 | `desktop_context` | Win32 `GetForegroundWindow`/`GetWindowTextW`/`GetLastInputInfo`/`GetTickCount64` behind `GET /context`; safe defaults off Windows |
 | `cursor_position`, `spawn_cursor_tracker` | Windows cursor poll (stub returning `None` elsewhere) |
+| `watcher_disabled_by`, `watcher_binary_name`, `watcher_binary_path` | `CHAR_RIG_NO_WATCHER` parsing; resolves `char-rig-watcher{EXE_SUFFIX}` next to `current_exe()` |
+| `spawn_watcher`, `supervise_watcher`, `watcher_health`, `start_watcher`, `kill_and_reap` | spawn with `--api-url`, null stdin, inherited stderr, `CREATE_NO_WINDOW`, cwd = exe dir; then `try_wait` polling, crash restart with backoff, and a store-under-the-lock handshake that cannot orphan a child during shutdown |
 | `api_port`, `run` | startup |
-| `tests` | 6 unit tests over the event envelope, sequence numbers, interaction validation and `model_event_payload` |
+| `tests` | 17 unit tests over the event envelope, sequence numbers, interaction validation, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, and the shutdown kill (no orphaned pid) |
 
 ### `src-tauri/src/api.rs` (800 lines)
 
@@ -1088,8 +1100,10 @@ skip-forward on lag. Full payload table in `API.md` §
   `interaction` frames (every other SSE type is ignored), window titles are
   plain case-insensitive substring matches with no per-application rules, and a
   burst of triggers inside a cooldown is silently dropped rather than queued.
-  It also has no supervision: nothing restarts it if it exits, and it cannot
-  stop or configure the avatar.
+  It cannot stop or configure the avatar (it only observes), and its rules file
+  is looked up next to the binary/cwd — a checkout that keeps
+  `watcher_rules.json` at the repo root needs `CHAR_RIG_NO_WATCHER=1` plus a
+  manual run, or a copy beside the exe.
 * **The picker is modal.** While the native dialog is open the overlay drops
   always-on-top; if the app is killed mid-dialog the flag is restored only on
   the next launch.
