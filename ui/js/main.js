@@ -9,7 +9,7 @@
  */
 
 import {
-  avatar, RT, speech, PRESET_STATES,
+  avatar, RT, speech, watcher, PRESET_STATES,
   round, num, viewport, updateViewport,
   setExpression, markManual, toast, updateStatusUI, activeState, blinkActive,
 } from "./state.js";
@@ -38,6 +38,8 @@ import {
   setClickThrough, setupEventListeners, importFromDialog, importImageAs,
   showChooser, hideChooser, toggleCollapsed, reportState,
   applyApiStatus, refreshApiStatus,
+  setWatcherEnabled, refreshWatcher, clearWatcherLogs,
+  toggleWatcherDrawer, isWatcherDrawerOpen,
 } from "./bridge.js";
 
 import { call } from "./ipc.js";
@@ -358,6 +360,26 @@ function setupUI() {
   document.getElementById("btn-collapse").addEventListener("click", () => toggleCollapsed(true));
   document.getElementById("panel-toggle").addEventListener("click", () => toggleCollapsed(false));
 
+  // ---- watcher switch + pop-out console ----
+  document.getElementById("watcher-toggle").addEventListener("click", async () => {
+    await setWatcherEnabled(!watcher.enabled);
+  });
+  document.getElementById("btn-watcher-logs").addEventListener("click", () => {
+    toggleWatcherDrawer();
+  });
+  document.getElementById("btn-watcher-close").addEventListener("click", () => {
+    toggleWatcherDrawer(false);
+  });
+  document.getElementById("btn-watcher-clear").addEventListener("click", clearWatcherLogs);
+  document.getElementById("btn-watcher-ping").addEventListener("click", async () => {
+    // One click drives the whole pipeline: the page reports an interaction,
+    // Rust fans it out on GET /events, the watcher wakes and Hermes answers over
+    // MCP. Watch the console for the trigger line and the spawn.
+    await refreshWatcher();
+    await notifyInteraction("double_click", { x: avatar.x, y: avatar.y });
+    toast("Test ping sent (double_click)");
+  });
+
   document.getElementById("model-select").addEventListener("change", async (event) => {
     const model = await call("load_model", { name: event.target.value });
     if (model && !model.__error) {
@@ -415,7 +437,9 @@ function setupUI() {
         event.preventDefault();
         break;
       case "r": setRigMode(!RT.rigMode); break;
-      case "escape": if (RT.rigMode) setRigMode(false); else toggleCollapsed(!avatar.collapsed); break;
+      case "escape": if (RT.rigMode) setRigMode(false);
+        else if (isWatcherDrawerOpen()) toggleWatcherDrawer(false);
+        else toggleCollapsed(!avatar.collapsed); break;
       default: break;
     }
   });
@@ -584,6 +608,9 @@ async function init() {
   if (info) applyApiStatus(info);
   // The dot must not lie if the server dies without an event.
   setInterval(() => { refreshApiStatus(); }, 4000);
+
+  // The supervised watcher's switch, badge and log drawer.
+  refreshWatcher();
 
   if (window.__avatarDebug) window.__avatarDebug.ready = true;
 

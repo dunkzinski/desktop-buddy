@@ -73,6 +73,18 @@
   </div>
 
   <div class="section">
+    <label>Watcher</label>
+    <div class="watcher-row">
+      <button class="switch" id="watcher-toggle" role="switch" aria-checked="true"
+              title="Start / stop char-rig-watcher.exe (no app restart)">
+        <span class="switch-knob"></span>
+      </button>
+      <span class="watcher-badge off" id="watcher-badge">off</span>
+      <button class="log-btn" id="btn-watcher-logs" title="Open the watcher console">Logs ↗</button>
+    </div>
+  </div>
+
+  <div class="section">
     <label>Walk speed</label>
     <div class="slider-row">
       <input type="range" id="walk-speed" min="50" max="400" step="10" value="150" />
@@ -152,6 +164,20 @@
 
 <div id="editor-hint" class="hidden">
   <b>drag joint</b> move · <b>drag ring</b> rotate · <b>wheel</b> rotate · <b>shift+wheel</b> scale · <b>Ctrl+Z</b> undo
+</div>
+
+<div id="watcher-drawer" class="hidden">
+  <header>
+    <h3>Watcher console</h3>
+    <span class="watcher-badge off" id="drawer-badge">off</span>
+    <span class="wd-spacer"></span>
+    <button class="mini-btn" id="btn-watcher-ping"
+            title="Report a double_click: page → SSE → watcher → Hermes → MCP">Test ping</button>
+    <button class="mini-btn" id="btn-watcher-clear" title="Clear the log tail">Clear</button>
+    <button class="mini-btn" id="btn-watcher-close" title="Close (Esc)">✕</button>
+  </header>
+  <div class="wd-meta"><span class="wd-label">rules</span><code id="watcher-rules">—</code></div>
+  <pre id="watcher-log">no output yet</pre>
 </div>
 
 <div id="import-chooser" class="hidden">

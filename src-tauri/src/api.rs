@@ -278,6 +278,7 @@ fn router(api: ApiCtx) -> Router {
         .route("/animations", get(list_animations))
         .route("/animate", post(animate))
         .route("/animate/stop", post(stop_animation))
+        .route("/watcher", get(watcher_status).post(set_watcher))
         .route("/shutdown", post(shutdown_app))
         .with_state(api)
 }
@@ -391,6 +392,7 @@ fn event_name(kind: &str) -> &'static str {
         "part_patch" => "part_patch",
         "interaction" => "interaction",
         "animate" => "animate",
+        "watcher" => "watcher",
         "hello" => "hello",
         _ => "message",
     }
@@ -463,6 +465,31 @@ async fn set_hit_regions(
     let count = body.regions.len();
     *lock_or_recover(&api.shared.regions) = body.regions;
     Json(json!({ "ok": true, "regions": count }))
+}
+
+/* ------------------------------------------------------------------ *
+ * Watcher supervision
+ * ------------------------------------------------------------------ */
+
+/// `GET /watcher` — switch, liveness, paths and the log ring buffer.
+async fn watcher_status(State(api): State<ApiCtx>) -> Json<Value> {
+    Json(api.shared.watcher_status())
+}
+
+#[derive(Debug, Deserialize)]
+struct WatcherBody {
+    enabled: bool,
+}
+
+/// `POST /watcher` — start or stop the watcher without restarting the app.
+async fn set_watcher(
+    State(api): State<ApiCtx>,
+    Json(body): Json<WatcherBody>,
+) -> Result<Json<Value>, ApiError> {
+    api.shared
+        .set_watcher_enabled(&api.app, body.enabled)
+        .map(Json)
+        .map_err(ApiError::bad_request)
 }
 
 async fn shutdown_app(State(api): State<ApiCtx>) -> Json<Value> {

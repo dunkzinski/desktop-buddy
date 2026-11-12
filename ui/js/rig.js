@@ -328,6 +328,10 @@ export function wireRegions() {
   } else {
     regions.push(avatarBounds());
   }
+  // The pop-out watcher console floats over the click-through desktop; without
+  // its own region the buttons under it would never receive a click.
+  const drawer = document.getElementById("watcher-drawer");
+  if (drawer && !drawer.classList.contains("hidden")) push(drawer);
   const chooser = document.getElementById("import-chooser");
   if (chooser && !chooser.classList.contains("hidden")) push(chooser);
 

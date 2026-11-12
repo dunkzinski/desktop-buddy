@@ -403,3 +403,77 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .mini-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
 .mini-btn.danger:hover { background: rgba(232, 17, 35, 0.25); border-color: #e81123; color: #ff8b94; }
+/* ---------- watcher switch, badge and pop-out console ---------- */
+.watcher-row { display: flex; align-items: center; gap: 8px; }
+.switch {
+  position: relative; width: 38px; height: 20px; flex: 0 0 auto; padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08); cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.switch .switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+  border-radius: 50%; background: #9a9ab0;
+  transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1), background 140ms ease;
+}
+.switch:hover { border-color: rgba(255, 255, 255, 0.30); }
+.switch[aria-checked="true"] { background: rgba(61, 220, 132, 0.26); border-color: rgba(61, 220, 132, 0.60); }
+.switch[aria-checked="true"] .switch-knob { transform: translateX(18px); background: #3ddc84; }
+.switch:focus-visible { outline: 2px solid #4a90d9; outline-offset: 2px; }
+
+.watcher-badge {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07); color: #8a8aa0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.watcher-badge.running { background: rgba(61, 220, 132, 0.16); color: #3ddc84; border-color: rgba(61, 220, 132, 0.40); }
+.watcher-badge.missing { background: rgba(232, 17, 35, 0.18); color: #ff6b75; border-color: rgba(232, 17, 35, 0.45); }
+
+.log-btn {
+  margin-left: auto; padding: 5px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.10); border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05); color: #c3c3d4;
+  font-family: inherit; font-size: 11px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.log-btn:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+.log-btn.active { background: rgba(74, 144, 217, 0.28); border-color: #4a90d9; color: #7ab6f0; }
+
+#watcher-drawer {
+  position: fixed; right: 306px; bottom: 18px; width: 430px; height: 286px;
+  display: flex; flex-direction: column;
+  background: rgba(12, 12, 18, 0.94);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.50);
+  z-index: 950;
+  overflow: hidden;
+}
+#watcher-drawer header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+#watcher-drawer h3 {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: #b9b9cc;
+}
+.wd-spacer { flex: 1 1 auto; }
+#watcher-drawer .mini-btn { font-size: 10.5px; padding: 4px 8px; }
+.wd-meta {
+  display: flex; align-items: baseline; gap: 7px;
+  padding: 6px 12px 2px; font-size: 10.5px; color: #6e6e85;
+}
+.wd-label { text-transform: uppercase; letter-spacing: 0.08em; font-size: 9px; color: #5c5c72; }
+.wd-meta code {
+  color: #7ab6f0; font-size: 10.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#watcher-log {
+  flex: 1 1 auto; margin: 0; padding: 4px 12px 10px;
+  overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 10.5px; line-height: 1.45; color: #a9b4a9;
+  user-select: text; cursor: text;
+}

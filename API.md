@@ -392,6 +392,39 @@ without polling `/speech`.
 
 Used by the page; exposed for tooling/debugging.
 
+### `GET /watcher` / `POST /watcher`
+
+The supervised `char-rig-watcher.exe` — the same switch the control panel's
+**Watcher** toggle drives.
+
+```bash
+curl -s localhost:8765/watcher
+```
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "running": true,
+  "pid": 14320,
+  "binary_path": "C:\dev\char-rig\src-tauri\target\debug\char-rig-watcher.exe",
+  "rules_path": "C:\dev\char-rig\watcher_rules.json",
+  "logs": ["[22:23:29] started … (pid 14320, rules …watcher_rules.json)", "…"]
+}
+```
+
+`logs` is a **bounded ring buffer** of the child's stdout+stderr: timestamped
+`[HH:MM:SS]` lines, newest last, capped at **200**.
+
+```bash
+curl -s -X POST localhost:8765/watcher -H 'content-type: application/json'      -d '{"enabled": false}'      # kill + reap; the supervisor parks
+curl -s -X POST localhost:8765/watcher -H 'content-type: application/json'      -d '{"enabled": true}'       # spawn it again, no app restart
+```
+
+Both return the same status object as `GET /watcher`. Every start, stop and log
+line also goes out as a `watcher` frame on `GET /events` and as the
+`watcher-status` Tauri event, so the page never has to poll.
+
 ### `POST /shutdown`
 
 Closes the app (window + API) after flushing the response.
@@ -485,6 +518,7 @@ Every `data:` line is one JSON object:
 | `part_patch` | `POST /part`, `POST /mouth` | `{target, patch}` |
 | `animate` | `POST /animate`, `POST /animate/stop` | `{action, name, duration_ms, loop, keyframes}` with `action` ∈ `play` \| `stop` |
 | `interaction` | the user clicks the avatar (§ Avatar interaction) | `{kind, x, y, state, expression, position}` with `kind` ∈ `click` \| `double_click` \| `drag_end` |
+| `watcher` | the supervised `char-rig-watcher.exe` starts, stops, or writes a line | full status `{ok, enabled, running, pid, binary_path, rules_path, logs}` on a lifecycle change, or `{kind: "log", line, enabled, running, pid}` for one log line |
 
 Behaviour worth knowing:
 
@@ -535,7 +569,7 @@ curl -s -X POST localhost:8765/shutdown
 ## Internal (Tauri command) surface
 
 The page talks to Rust through `invoke`; the same mutations are available as
-commands. Arguments are snake_case (`rename_all = "snake_case"`). All 29, in the
+commands. Arguments are snake_case (`rename_all = "snake_case"`). All 31, in the
 order they are registered (ARCHITECTURE.md §6 has the full purpose table):
 
 **State, window & interaction** — `get_avatar_state`, `get_runtime_info`,
@@ -553,6 +587,10 @@ target_position, state, expression, joints?, talking?, speech?)`,
 **Expressions & speech** — `emote(expression, duration_ms?, revert?)`,
 `speak(text, expression?, duration_ms?, char_ms?)`, `clear_speech`,
 `get_speech`.
+
+**Watcher** — `get_watcher_status`, `set_watcher_enabled(enabled)`. The switch
+and log tail behind the control panel's **Watcher** row and the pop-out console;
+`set_watcher_enabled` returns the same status object as `GET /watcher`.
 
 `notify_interaction` takes `kind` ∈ `click | double_click | drag_end` with `x`,
 `y` in CSS pixels relative to the window, and returns

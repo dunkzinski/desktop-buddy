@@ -22,19 +22,19 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | Area | What exists |
 | --- | --- |
 | **Desktop windowing** | Transparent, borderless, always-on-top overlay covering the primary monitor; selective click-through so the desktop stays usable; custom titlebar with click-through toggle, minimize and close |
-| **UI controls** | Avatar control panel (state readout, expression buttons, Wave / Idle / Walk / Center, walk-speed slider, live position, API URL), model dropdown, Import… |
+| **UI controls** | Avatar control panel (state readout, expression buttons, Wave / Idle / Walk / Center, walk-speed slider, live position, API URL), model dropdown, Import…, and a **Watcher** row: on/off switch, `running`/`off`/`missing` badge and a **Logs ↗** pop-out console |
 | **Model importing** | Rig manifests as `.json` or `.toml`; single images (`.png`, `.jpg`/`.jpeg`, `.webp`, `.svg`) as a **new character** or as a **part attached to the current rig**; native file picker; clear validation errors |
 | **Rig Edit Mode** | Bone/joint/pivot/hitbox overlay; drag joints, drag rotation ring (unlimited multi-turn), wheel rotate / shift+wheel scale; re-parent; add bone, add limb, add part, duplicate/delete; inspector for transforms, limits, z-order and animation channels; undo; save to `rig.json`; reset |
 | **Facial system** | Per-part sprite **variants**, 6 expression presets (`neutral`, `happy`, `surprised`, `thinking`, `sad`, `angry`) mapping to eye/mouth variant names, procedural squash/stretch fallback, expression holds with auto-revert |
 | **Custom animations** | Optional `animations` block on the rig root: named keyframe clips (`duration_ms`, `loop`, `keyframes[]`) whose per-bone deltas are sampled with smoothstep easing and composed into the transform pass; timeline bar in Rig Edit Mode (clip CRUD, duration, loop, play/stop, 0–100 % scrubber with keyframe ticks, `+ Keyframe` capture) |
 | **Life signs** | Auto-blink every 3–6 s (~120 ms), talking mouth loop while a bubble is visible |
 | **Speech bubbles** | Head-anchored DOM card, typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss |
-| **Agent API** | 27 local HTTP paths (31 method routes): state, movement, expressions, speech, models, rigs, parts, joints, custom animations, shutdown |
+| **Agent API** | 28 local HTTP paths (33 method routes): state, movement, expressions, speech, models, rigs, parts, joints, custom animations, watcher control, shutdown |
 | **Desktop awareness** | `GET /context` — foreground window title + machine-wide idle seconds (Win32 probes, safe defaults elsewhere) |
-| **Event stream** | `GET /events` — Server-Sent Events over a 64-frame `tokio::broadcast` channel: `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`, `animate`, `interaction`; 15 s keep-alive |
+| **Event stream** | `GET /events` — Server-Sent Events over a 64-frame `tokio::broadcast` channel: `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`, `animate`, `interaction`, `watcher`; 15 s keep-alive |
 | **Interactions** | Play-mode click / double-click / drag on the avatar's bounds → `notify_interaction` → `interaction` frame on the event stream |
 | **MCP bridge** | `char-rig-mcp.exe` — a second binary exposing 10 tools (`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_wave`, `avatar_pose`, `avatar_get_context`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_animate`) to any MCP client over stdio JSON-RPC 2.0; stateless, forwards each call to the HTTP API and reports a down host as a readable tool error |
-| **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword, or an `idle_return` after a long idle stretch. Per-trigger cooldowns, an immediate `/emote` ack, an optional webhook, and an optional spawned Hermes command with a one-line prompt. Exponential-backoff reconnect; **zero LLM tokens while idle** |
+| **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword, or an `idle_return` after a long idle stretch. Per-trigger cooldowns, an immediate `/emote` ack, an optional webhook, and an optional spawned Hermes command with a one-line prompt. Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Exponential-backoff reconnect; **zero LLM tokens while idle** |
 | **Persistence** | `models/<name>/model.json` (shipped), `rig.json` (editor override), `models/.state.json` (selected model) |
 
 ### Repository map — what is live vs. legacy
@@ -118,7 +118,8 @@ ui/
 | `avatar-api` | `api::start` | until `oneshot` shutdown fires | Owns a 2-worker Tokio runtime running `axum::serve` |
 | `avatar-api-rt` workers | Tokio | runtime lifetime | Request handlers |
 | `avatar-cursor` | `spawn_cursor_tracker` | until `AppCtx::running` is false | Global cursor poll + click-through toggling |
-| `avatar-watcher-supervisor` | `supervise_watcher` | until `AppCtx::running` is false | `try_wait`s the supervised `char-rig-watcher.exe` every 250 ms and respawns it after a crash (2 s, doubling to 30 s) |
+| `avatar-watcher-log` (x2) | `spawn_log_reader` | until the child closes stdout/stderr | Drain the watcher's pipes into the `AppCtx` ring buffer and echo each line to stderr |
+| `avatar-watcher-supervisor` | `supervise_watcher` | until `AppCtx::running` is false | `try_wait`s the supervised `char-rig-watcher.exe` every 250 ms and respawns it after a crash (2 s, doubling to 30 s); parks while the switch is off |
 
 Nothing on the API side ever touches the GUI thread directly: handlers mutate
 shared state and emit Tauri events; the page applies them on its next frame.
@@ -134,12 +135,13 @@ shared state and emit Tauri events; the page applies them on its next frame.
    * `model_ctx.ensure_loaded()` (logs a warning and falls back if a model is broken).
    * `api::start(...)` → binds, spawns the API thread, stores the URL, emits `api-status`.
    * `start_watcher(...)` → resolves `char-rig-watcher.exe` next to the running
-     exe and spawns it with `--api-url <bound url>`, `--rules <found>` (beside the
-     binaries, else up to three directories up — the repo root in a checkout),
-     `stdin(Stdio::null())`, inherited stderr, cwd = the exe's directory and
+     exe and spawns it with `--api-url <bound url>`, `--rules <found>`
+     (`watcher_rules_path`: cwd → beside the binaries → parents up to
+     `models_root()`'s parent), `stdin(Stdio::null())`, `stdout`/`stderr` piped
+     into the log ring buffer, cwd = the exe's directory and
      `CREATE_NO_WINDOW`; skipped entirely when `CHAR_RIG_NO_WATCHER` is
-     `1`/`true`. The child handle goes into `AppCtx::watcher_child` and a
-     supervisor thread takes over from there.
+     `1`/`true`. The child goes into `AppCtx::watcher` (switch + child + paths +
+     log tail), reader threads start, and the supervisor takes over.
    * `spawn_cursor_tracker(...)`.
 6. `app.run(...)` → on `RunEvent::ExitRequested | Exit` call `AppCtx::request_shutdown()`
    (kills and reaps the supervised watcher, stops the tracker, fires the oneshot,
@@ -250,14 +252,14 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 
 ## 3. Codebase map
 
-### `src-tauri/src/lib.rs` (1896 lines)
+### `src-tauri/src/lib.rs` (2255 lines)
 
 | Section | Responsibility |
 | --- | --- |
 | consts | `AVATAR_STATES`, `AVATAR_EXPRESSIONS` (6), `INTERACTION_KINDS` (`click`, `double_click`, `drag_end`), `EVENT_CHANNEL_CAPACITY = 64`, `DEFAULT_API_PORT = 8765`, `MAX_SPEECH_CHARS = 2000` |
 | `AvatarState`, `HitRegion` | serialized shared state; region contains-test |
 | `lock_or_recover`, `snapshot` | poisoned-lock recovery (never panic on the UI path) |
-| `AppCtx` + impl | avatar state, regions, `api_port`, `speech` slot, `events` broadcast sender, `event_seq`, `speech_seen`, `expression_commanded_at`, `click_through`, `running`, `api_url`, `shutdown_tx`, `watcher_child`; `emit_event`, `apply_ignore_cursor`, `request_shutdown` (which calls the private `stop_watcher`) |
+| `AppCtx` + impl | avatar state, regions, `api_port`, `speech` slot, `events` broadcast sender, `event_seq`, `speech_seen`, `expression_commanded_at`, `click_through`, `running`, `api_url`, `shutdown_tx`, `watcher: Mutex<WatcherState>`; `emit_event`, `apply_ignore_cursor`, `request_shutdown` (which calls `stop_watcher`), `watcher_status`, `set_watcher_enabled`, `push_watcher_log`, `spawn_watcher` |
 | `ModelCtx` + impl | `root`, `current`, `loaded` cache, `pose`, `joints`, `part_patches`, `dialog_open`; `load`, `ensure_loaded`, `invalidate`, `apply_pose`, `parts_snapshot`, `rig_path` |
 | `publish` | bump revision + emit `avatar-state-changed` + broadcast `state` |
 | `model_event_payload` | compact `{name, label, rig_path, is_override, bones, images, reason}` for `model` frames |
@@ -267,16 +269,20 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `do_notify_interaction` | interaction validation + `interaction` frame; the command is a thin wrapper so it is unit-testable |
 | `desktop_context` | Win32 `GetForegroundWindow`/`GetWindowTextW`/`GetLastInputInfo`/`GetTickCount64` behind `GET /context`; safe defaults off Windows |
 | `cursor_position`, `spawn_cursor_tracker` | Windows cursor poll (stub returning `None` elsewhere) |
+| `WatcherState`, `watcher_status`, `set_watcher_enabled`, `push_watcher_log` | on/off switch, live `Child`, resolved `binary`/`rules` paths and a 200-line `VecDeque` log tail; the status JSON feeds `GET /watcher`, `get_watcher_status` and every `watcher` frame (Tauri `watcher-status` + SSE) |
 | `watcher_disabled_by`, `watcher_binary_name`, `watcher_binary_path` | `CHAR_RIG_NO_WATCHER` parsing; resolves `char-rig-watcher{EXE_SUFFIX}` next to `current_exe()` |
-| `spawn_watcher`, `supervise_watcher`, `watcher_health`, `start_watcher`, `kill_and_reap` | spawn with `--api-url`, null stdin, inherited stderr, `CREATE_NO_WINDOW`, cwd = exe dir; then `try_wait` polling, crash restart with backoff, and a store-under-the-lock handshake that cannot orphan a child during shutdown |
+| `watcher_rules_candidates`, `watcher_rules_path` | rules lookup order: cwd → beside the binaries → parents up to `models_root()`'s parent |
+| `clock_stamp`, `stamped`, `push_log_line`, `log_watcher_event`, `spawn_log_reader` | `[HH:MM:SS]` local-time stamps (`GetLocalTime`), bounded ring-buffer append, and the two pipe readers that echo every line to the app's stderr |
+| `spawn_watcher`, `supervise_watcher`, `watcher_health`, `start_watcher`, `kill_and_reap` | spawn with `--api-url`, `--rules`, null stdin, piped stdout/stderr, `CREATE_NO_WINDOW`, cwd = exe dir; then `try_wait` polling, crash restart with backoff (parked while off), and a store-under-the-lock handshake that cannot orphan a child during shutdown |
 | `api_port`, `run` | startup |
-| `tests` | 17 unit tests over the event envelope, sequence numbers, interaction validation, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, and the shutdown kill (no orphaned pid) |
+| `tests` | 20 unit tests over the event envelope, sequence numbers, interaction validation, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
 
-### `src-tauri/src/api.rs` (800 lines)
+### `src-tauri/src/api.rs` (827 lines)
 
 | Section | Responsibility |
 | --- | --- |
 | `ApiCtx` | `app`, `shared: Arc<AppCtx>`, `model: Arc<ModelCtx>`, `started` |
+| `watcher_status`, `set_watcher` | `GET /watcher` / `POST /watcher` → `AppCtx::watcher_status` / `set_watcher_enabled` |
 | `start` | bind, spawn thread, Tokio runtime, axum serve, graceful shutdown |
 | `bind_first_available` | port fallback `preferred..preferred+9` |
 | `router` | 27 routes |
@@ -660,7 +666,8 @@ Environment variables: `CHAR_RIG_MODELS` (model root), `CHAR_RIG_API_PORT`
 * The window covers the primary monitor, transparent, always-on-top.
 * Top-right titlebar: **rig mode (wrench)**, **click-through (cursor)**, **minimize**, **close**.
 * Bottom-right panel: state/mood readout, model dropdown + **Import…** / **Rig edit**,
-  expression buttons, Wave/Idle/Walk/Center, walk speed, position, API URL.
+  expression buttons, Wave/Idle/Walk/Center, a **Watcher** row (switch, badge,
+  **Logs ↗**), walk speed, position, API URL.
 * Empty desktop space is click-through once the page publishes its regions; the
   cursor button toggles it manually.
 * Close = titlebar **X** (stops the tracker and the API) or `POST /shutdown`.
@@ -686,6 +693,27 @@ outran the art box; and `applyRemoteState` ignores in-flight
 `avatar-state-changed` frames while the drag is live, plus a bare `walking`
 echo that arrives without the walk segment that goes with it (adopting it used
 to leave `step()` with a stale start and snap the avatar to an old target).
+
+### Watcher console
+
+The **Watcher** row in the control panel drives `char-rig-watcher.exe` without
+restarting the app:
+
+| Control | Effect |
+| --- | --- |
+| switch | `set_watcher_enabled(true/false)` — starts or stops (kills and reaps) the child. The supervisor parks while it is off and resumes when it is on |
+| badge | `running` (green, with the pid in the tooltip), `off`, or `missing` (no `char-rig-watcher.exe` beside the app) |
+| **Logs ↗** | opens the pop-out **Watcher console** |
+
+The console (`#watcher-drawer`, fixed above the panel) shows the live tail of the
+child's **stdout + stderr** — timestamped `[HH:MM:SS]` lines, newest last, capped
+at 200 — plus the `rules_path` the watcher was started with, a **Clear** button
+(log view only; the Rust ring buffer keeps its copy) and a **Test ping** button.
+Test ping fires `notify_interaction("double_click", …)` at the avatar's current
+position, so one click exercises the whole pipeline: page → `interaction` frame on
+`GET /events` → watcher rule → ack `/emote` → `--hermes-cmd` → MCP tool call.
+`Esc` closes the console before it collapses the panel. The drawer publishes its
+own hit region, so its buttons keep working over the click-through desktop.
 
 ### Importing
 
@@ -771,7 +799,7 @@ offset, rotation, z-order, scale, tag, state, variant.
 
 ## 6. Tauri command surface (page ⇄ Rust)
 
-29 commands, registered in `generate_handler!`. Most take `tauri::State<Arc<AppCtx>>`
+31 commands, registered in `generate_handler!`. Most take `tauri::State<Arc<AppCtx>>`
 and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated ones.
 
 | Command | Purpose |
@@ -798,6 +826,8 @@ and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated o
 | `get_parts` | parts snapshot |
 | `save_rig(rig)` / `reset_rig` | persist / discard override (broadcast `rig_saved` / `model`+`reset`) |
 | `set_pose(joints)` / `clear_pose` / `get_joints` | runtime joint posing |
+| `get_watcher_status` | `{ok, enabled, running, pid, binary_path, rules_path, logs}` — the same JSON as `GET /watcher` |
+| `set_watcher_enabled(enabled)` | start/stop `char-rig-watcher.exe` without restarting the app; returns the new status |
 
 Events emitted to the page: `avatar-state-changed`, `api-status`,
 `model-changed`, `rig-pose`, `rig-saved`, `part-patch`, `emote`, `speak`,
@@ -1016,6 +1046,19 @@ only, and answers with the payload it pushed:
 `{"ok":true,"animation":{"action":"stop","name":null}}`. Each call emits the
 Tauri event `avatar-animate` **and** the `animate` SSE frame, so a subscriber can
 mirror playback state without polling.
+
+### `/watcher`
+
+```bash
+curl -s localhost:8765/watcher                    # status (+ 200-line log tail)
+curl -s -X POST localhost:8765/watcher -H 'content-type: application/json' \
+     -d '{"enabled": true}'                       # or false
+```
+
+`GET` returns `{ok, enabled, running, pid, binary_path, rules_path, logs}`;
+`POST` takes `{"enabled": bool}`, starts or stops the supervised child and
+returns the same object. Start/stop/log changes are pushed as `watcher` SSE
+frames and `watcher-status` Tauri events.
 
 ### `/shutdown`
 

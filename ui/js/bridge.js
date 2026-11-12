@@ -6,7 +6,7 @@
  */
 
 import {
-  avatar, RT, speech,
+  avatar, RT, speech, watcher,
   round,
   toast, setExpression, markManual, updateStatusUI,
 } from "./state.js";
@@ -237,6 +237,7 @@ export async function setupEventListeners() {
     });
   });
   await listen("speech-clear", () => hideSpeech());
+  await listen("watcher-status", (event) => applyWatcherStatus(event.payload));
   await listen("avatar-animate", (event) => {
     const payload = event.payload || {};
     const loop = typeof payload.loop === "boolean" ? payload.loop : undefined;
@@ -248,6 +249,120 @@ export async function setupEventListeners() {
     }
     updateTimeline();
   });
+
+  await refreshWatcher();
+}
+
+/* ---------- watcher console (switch, badge, pop-out log) ---------- */
+
+/** Client-side cap; the Rust ring buffer keeps the same 200 lines. */
+export const WATCHER_LOG_LIMIT = 200;
+
+/** Badge text: `running`, `missing` or `off`. */
+export function watcherBadge() {
+  if (watcher.running) return "running";
+  if (watcher.checked && !watcher.binary) return "missing";
+  return "off";
+}
+
+/** Apply one `watcher-status` payload: full status or a single log line. */
+export function applyWatcherStatus(payload) {
+  if (!payload) return;
+  if (payload.kind === "log" && typeof payload.line === "string") {
+    pushWatcherLine(payload.line);
+  } else {
+    if (Array.isArray(payload.logs)) {
+      watcher.logs = payload.logs.slice(-WATCHER_LOG_LIMIT);
+    }
+    if ("binary_path" in payload) watcher.binary = payload.binary_path || "";
+    if ("rules_path" in payload) watcher.rules = payload.rules_path || "";
+    if ("pid" in payload) watcher.pid = payload.pid;
+    watcher.checked = true;
+  }
+  if (typeof payload.enabled === "boolean") watcher.enabled = payload.enabled;
+  if (typeof payload.running === "boolean") watcher.running = payload.running;
+  renderWatcher();
+}
+
+function pushWatcherLine(line) {
+  watcher.logs.push(line);
+  const overflow = watcher.logs.length - WATCHER_LOG_LIMIT;
+  if (overflow > 0) watcher.logs.splice(0, overflow);
+}
+
+/** Push the mirrored state into the panel and the drawer. */
+export function renderWatcher() {
+  const badge = watcherBadge();
+  for (const id of ["watcher-badge", "drawer-badge"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.textContent = badge;
+    el.className = "watcher-badge " + badge;
+  }
+
+  const toggle = document.getElementById("watcher-toggle");
+  if (toggle) {
+    toggle.setAttribute("aria-checked", watcher.enabled ? "true" : "false");
+    toggle.title = watcher.running
+      ? `Watcher running (pid ${watcher.pid})`
+      : watcher.enabled
+        ? "Watcher starting…"
+        : "Watcher stopped — click to start";
+  }
+
+  const rules = document.getElementById("watcher-rules");
+  if (rules) {
+    rules.textContent = watcher.rules || "no watcher_rules.json found";
+    rules.title = watcher.rules || "no watcher_rules.json was found";
+  }
+
+  const log = document.getElementById("watcher-log");
+  if (log) {
+    const pinned = log.scrollTop + log.clientHeight >= log.scrollHeight - 12;
+    log.textContent = watcher.logs.length ? watcher.logs.join("\n") : "no output yet";
+    if (pinned) log.scrollTop = log.scrollHeight;
+  }
+}
+
+/** Start or stop the watcher through the Rust command (no app restart). */
+export async function setWatcherEnabled(enabled) {
+  if (!isTauri()) return null;
+  const status = await call("set_watcher_enabled", { enabled: !!enabled });
+  applyWatcherStatus(status);
+  return status;
+}
+
+/** Ask Rust for the current snapshot (switch, pid, paths, log tail). */
+export async function refreshWatcher() {
+  if (!isTauri()) return null;
+  const status = await call("get_watcher_status");
+  applyWatcherStatus(status);
+  return status;
+}
+
+/** Drop the local tail only; Rust's ring buffer keeps its own copy. */
+export function clearWatcherLogs() {
+  watcher.logs = [];
+  renderWatcher();
+}
+
+export function isWatcherDrawerOpen() {
+  return watcher.drawer;
+}
+
+/** Open/close the pop-out console; keeps its hit region in sync. */
+export function toggleWatcherDrawer(force) {
+  const drawer = document.getElementById("watcher-drawer");
+  if (!drawer) return false;
+  const open = force === undefined ? !watcher.drawer : !!force;
+  watcher.drawer = open;
+  drawer.classList.toggle("hidden", !open);
+  document.getElementById("btn-watcher-logs").classList.toggle("active", open);
+  // The drawer floats over the click-through desktop: publish its region now,
+  // not on the next 200 ms timer, or the first click lands on the window behind.
+  wireRegions();
+  if (open) refreshWatcher();
+  return open;
 }
 
 /* ---------- import flow ---------- */

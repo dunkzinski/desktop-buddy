@@ -89,6 +89,7 @@ Run the unit tests with `cd src-tauri && cargo test`.
 | Model dropdown + **Import…** | switch models, import a rig or an image |
 | Expression buttons | neutral / happy / sad / surprised |
 | Wave / Idle / Walk / Center | triggers, with a walk-speed slider |
+| **Watcher** switch + badge + **Logs ↗** | start/stop `char-rig-watcher.exe` and open the pop-out console (see [Waking Hermes](#waking-hermes-the-watcher)) |
 | API line | live API URL |
 
 **Importing:** pick a `.json`/`.toml` rig, or an image (`.png`, `.jpg`,
@@ -143,9 +144,22 @@ LLM tokens while idle**: with nothing to report it only reads a keep-alive SSE
 stream and polls `/context` every 20 s.
 
 You normally do not start it yourself: `avatar-desktop.exe` spawns it at startup
-and supervises it (see [Quick start](#quick-start)). Run it by hand — with the
-output in your terminal — by setting `CHAR_RIG_NO_WATCHER=1` on the app, or just
-start it directly against a running avatar:
+and supervises it (see [Quick start](#quick-start)). The panel's **Watcher** row
+has the switch (`running` / `off` / `missing`), and **Logs ↗** opens a pop-out
+console with the child's live output — timestamped, 200 lines, plus the rules
+path it was started with, **Clear** and **Test ping** (which fires a
+`double_click` through SSE → watcher → Hermes → MCP in one click). The same two
+things are available over HTTP:
+
+```bash
+curl -s localhost:8765/watcher                         # {enabled, running, pid, paths, logs}
+curl -s -X POST localhost:8765/watcher -H 'content-type: application/json' \
+     -d '{"enabled": false}'                           # stop it, no app restart
+```
+
+Run it by hand — with the output in your terminal — by setting
+`CHAR_RIG_NO_WATCHER=1` on the app, or just start it directly against a running
+avatar:
 
 ```bash
 cd src-tauri

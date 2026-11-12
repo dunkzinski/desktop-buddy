@@ -58,6 +58,27 @@ export const avatar = {
   dragging: false,
 };
 
+/* ---------- watcher (the supervised char-rig-watcher.exe) ---------- */
+/**
+ * Mirror of `get_watcher_status` / `GET /watcher`. Written only by `bridge.js`
+ * (status events, commands and the drawer), read by the panel and the drawer.
+ */
+export const watcher = {
+  enabled: true,
+  running: false,
+  pid: null,
+  /** Resolved binary path ("" when the status says it is missing). */
+  binary: "",
+  /** Rules file the child was pointed at ("" when none was found). */
+  rules: "",
+  /** True once a full status (not just a log line) has been applied. */
+  checked: false,
+  /** Newest-last tail, capped at WATCHER_LOG_LIMIT. */
+  logs: [],
+  /** Is the pop-out console open? Kept here so `rig.js` can add its region. */
+  drawer: false,
+};
+
 /* ---------- rig runtime (model, bones, images, pose, world) ---------- */
 export const RT = {
   model: null,
