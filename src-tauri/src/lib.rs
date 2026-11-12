@@ -39,6 +39,17 @@ pub const INTERACTION_KINDS: [&str; 3] = ["click", "double_click", "drag_end"];
 /// than this is skipped forward instead of stalling the state machine.
 pub const EVENT_CHANNEL_CAPACITY: usize = 64;
 
+/// How many recent SSE frames are remembered for the agent's short-term memory
+/// (`avatar_get_context`). Bounded on purpose: the point is "what just
+/// happened", not a replay log.
+pub const EVENT_HISTORY_CAPACITY: usize = 15;
+
+/// Longest clipboard excerpt `GET /clipboard` will hand out.
+pub const MAX_CLIPBOARD_CHARS: usize = 2000;
+
+/// Longest quick-reply text accepted by `POST /reply` and `notify_reply`.
+pub const MAX_REPLY_CHARS: usize = 500;
+
 /// Default port for the local HTTP API (override with `CHAR_RIG_API_PORT`).
 const DEFAULT_API_PORT: u16 = 8765;
 
@@ -146,6 +157,10 @@ pub struct AppCtx {
     /// Fan-out for `GET /events` (SSE). Capacity is [`EVENT_CHANNEL_CAPACITY`];
     /// sending with no subscribers is a no-op, never an error.
     pub events: broadcast::Sender<String>,
+    /// The last [`EVENT_HISTORY_CAPACITY`] frames, oldest first. Gives an agent
+    /// short-term awareness of what the avatar and the user just did without a
+    /// replay buffer on the wire.
+    pub recent_events: Mutex<VecDeque<Value>>,
     /// Monotonic sequence stamped on every event frame.
     event_seq: AtomicU64,
     /// True once the page has shown the current bubble (guards against the
@@ -174,6 +189,7 @@ impl AppCtx {
             api_port,
             speech: Mutex::new(None),
             events,
+            recent_events: Mutex::new(VecDeque::with_capacity(EVENT_HISTORY_CAPACITY)),
             event_seq: AtomicU64::new(0),
             speech_seen: AtomicBool::new(false),
             expression_commanded_at: Mutex::new(None),
@@ -216,7 +232,26 @@ impl AppCtx {
             "ts_ms": ts_ms,
             "payload": payload,
         });
+        self.remember_event(frame.clone());
         self.events.send(frame.to_string()).unwrap_or(0)
+    }
+
+    /// Keep the newest [`EVENT_HISTORY_CAPACITY`] frames for `GET /context`.
+    ///
+    /// Bounded `VecDeque`: the oldest frame is evicted, so a chatty page cannot
+    /// grow this without limit. The lock is only ever held for the push/pop —
+    /// never across a send — so a slow subscriber cannot stall an emitter.
+    fn remember_event(&self, frame: Value) {
+        let mut history = lock_or_recover(&self.recent_events);
+        if history.len() == EVENT_HISTORY_CAPACITY {
+            history.pop_front();
+        }
+        history.push_back(frame);
+    }
+
+    /// The remembered frames, oldest first, as a JSON array.
+    pub fn recent_events(&self) -> Vec<Value> {
+        lock_or_recover(&self.recent_events).iter().cloned().collect()
     }
 
     pub fn set_click_through(&self, enabled: bool) {
@@ -735,6 +770,56 @@ fn notify_interaction(
     do_notify_interaction(&ctx, &kind, x, y)
 }
 
+/// Core of [`notify_reply`] and `POST /reply`, callable without an `AppHandle`.
+///
+/// A quick reply is the *user* talking to the agent, so it ends the prompt that
+/// was on screen: the stored bubble is dropped and the talking flag cleared
+/// before the `user_reply` frame goes out (an agent that answers instantly must
+/// not race a stale bubble). The frame carries the trimmed text only — no
+/// window title — because the watcher quotes it straight into a Hermes prompt.
+pub fn do_user_reply(ctx: &AppCtx, text: &str) -> Result<Value, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("text must not be empty".to_string());
+    }
+    let chars = text.chars().count();
+    if chars > MAX_REPLY_CHARS {
+        return Err(format!(
+            "reply is limited to {MAX_REPLY_CHARS} characters (got {chars})"
+        ));
+    }
+
+    ctx.speech_seen.store(false, Ordering::Relaxed);
+    *lock_or_recover(&ctx.speech) = None;
+    lock_or_recover(&ctx.avatar).talking = false;
+
+    let subscribers = ctx.emit_event("user_reply", serde_json::json!({ "text": text }));
+    Ok(serde_json::json!({
+        "ok": true,
+        "text": text,
+        "subscribers": subscribers,
+    }))
+}
+
+/// The user typed a reply into the speech bubble's quick-reply box.
+///
+/// Like `notify_interaction` this is a notification: it changes no avatar state
+/// beyond dismissing the bubble, and it is the page-side twin of
+/// `POST /reply`. Both end up as a `user_reply` frame on `GET /events`.
+#[tauri::command(rename_all = "snake_case")]
+fn notify_reply(
+    app: AppHandle,
+    text: String,
+    ctx: tauri::State<'_, Arc<AppCtx>>,
+) -> Result<Value, String> {
+    let result = do_user_reply(&ctx, &text)?;
+    // The bubble is transient page state: tell the page to drop it.
+    if let Err(err) = app.emit("speech-clear", serde_json::json!({})) {
+        log::warn!("failed to emit speech-clear: {err}");
+    }
+    Ok(result)
+}
+
 /// Snapshot of the supervised watcher: switch, liveness, paths and log tail.
 #[tauri::command(rename_all = "snake_case")]
 fn get_watcher_status(ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<Value, String> {
@@ -1210,6 +1295,9 @@ fn get_joints(ctx: tauri::State<'_, Arc<ModelCtx>>) -> Value {
 pub struct DesktopContext {
     /// Title of the foreground window (empty when there is none / off Windows).
     pub window_title: String,
+    /// Executable file name of the process that owns the foreground window
+    /// (e.g. `"Code.exe"`); empty when it cannot be read / off Windows.
+    pub process_name: String,
     /// Seconds since the last keyboard or mouse input anywhere on the machine.
     pub idle_secs: u64,
     /// Which probe produced the values: `"win32"` or `"unsupported"`.
@@ -1219,6 +1307,9 @@ pub struct DesktopContext {
 /// Longest window title we copy out of the foreground window.
 #[cfg(windows)]
 const MAX_TITLE_CHARS: usize = 512;
+/// Longest image path we accept from `QueryFullProcessImageNameW` (UTF-16 units).
+#[cfg(windows)]
+const MAX_PROCESS_PATH_CHARS: usize = 1024;
 
 #[cfg(windows)]
 pub fn desktop_context() -> DesktopContext {
@@ -1228,12 +1319,14 @@ pub fn desktop_context() -> DesktopContext {
         GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
     };
 
-    // SAFETY: all four calls are read-only queries of process/OS state. The
+    // SAFETY: every call below is a read-only query of process/OS state. The
     // buffers we hand over are owned by this function and sized before use;
-    // GetWindowTextW is told exactly how many UTF-16 units it may write.
+    // GetWindowTextW and QueryFullProcessImageNameW are told exactly how many
+    // UTF-16 units they may write. The process handle is closed in all paths.
     unsafe {
+        let hwnd = GetForegroundWindow();
+
         let window_title = {
-            let hwnd = GetForegroundWindow();
             let length = GetWindowTextLengthW(hwnd);
             if length <= 0 {
                 String::new()
@@ -1246,6 +1339,8 @@ pub fn desktop_context() -> DesktopContext {
                 String::from_utf16_lossy(&buffer)
             }
         };
+
+        let process_name = foreground_process_name(hwnd);
 
         let idle_secs = {
             let mut info = LASTINPUTINFO {
@@ -1263,17 +1358,154 @@ pub fn desktop_context() -> DesktopContext {
             }
         };
 
-        DesktopContext { window_title, idle_secs, source: "win32" }
+        DesktopContext { window_title, process_name, idle_secs, source: "win32" }
     }
+}
+
+/// `GetWindowThreadProcessId` → `OpenProcess` → `QueryFullProcessImageNameW`,
+/// reduced to the executable's file name.
+///
+/// Returns `""` for the desktop/secure windows (no owning process), for a
+/// protected process (access denied) — the caller only ever needs the
+/// *name*, so nothing here is allowed to fail loudly. `PROCESS_QUERY_LIMITED_INFORMATION`
+/// is used instead of `PROCESS_QUERY_INFORMATION` because it also works on
+/// elevated and AppContainer processes.
+#[cfg(windows)]
+unsafe fn foreground_process_name(hwnd: windows::Win32::Foundation::HWND) -> String {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 {
+        return String::new();
+    }
+
+    let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+        return String::new();
+    };
+
+    let mut buffer = vec![0u16; MAX_PROCESS_PATH_CHARS];
+    let mut size = buffer.len() as u32;
+    let queried = QueryFullProcessImageNameW(
+        handle,
+        PROCESS_NAME_WIN32,
+        PWSTR(buffer.as_mut_ptr()),
+        &mut size,
+    )
+    .is_ok();
+    let _ = CloseHandle(handle);
+
+    if !queried {
+        return String::new();
+    }
+    let path = String::from_utf16_lossy(&buffer[..size as usize]);
+    path.rsplit(['\\', '/']).next().unwrap_or("").to_string()
 }
 
 #[cfg(not(windows))]
 pub fn desktop_context() -> DesktopContext {
     DesktopContext {
         window_title: String::new(),
+        process_name: String::new(),
         idle_secs: 0,
         source: "unsupported",
     }
+}
+
+/* ------------------------------------------------------------------ *
+ * Clipboard
+ * ------------------------------------------------------------------ */
+
+/// A clipboard excerpt, already capped at [`MAX_CLIPBOARD_CHARS`].
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ClipboardText {
+    pub text: String,
+    /// True when the clipboard was longer and had to be cut.
+    pub truncated: bool,
+}
+
+/// Cut `text` to at most `max` **characters** (not bytes), reporting whether
+/// anything was dropped. Shared by the clipboard reader and its tests.
+pub fn truncate_chars(text: &str, max: usize) -> (String, bool) {
+    match text.char_indices().nth(max) {
+        Some((byte_index, _)) => (text[..byte_index].to_string(), true),
+        None => (text.to_string(), false),
+    }
+}
+
+/// Read the clipboard's text (`CF_UNICODETEXT`), capped at
+/// [`MAX_CLIPBOARD_CHARS`].
+///
+/// The clipboard is a machine-wide singleton: another app may hold it open for
+/// a few milliseconds, so the open is retried a handful of times before giving
+/// up. Every path balances `OpenClipboard` with `CloseClipboard` and
+/// `GlobalLock` with `GlobalUnlock`; a format that is not there is simply empty
+/// text, never an error — `GET /clipboard` always answers `ok: true`.
+#[cfg(windows)]
+pub fn clipboard_text() -> ClipboardText {
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    };
+    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows::Win32::System::Ole::CF_UNICODETEXT;
+
+    // SAFETY: OpenClipboard/CloseClipboard are balanced below; the HGLOBAL we
+    // lock is owned by the clipboard and only read while it is locked.
+    unsafe {
+        let mut opened = false;
+        for _ in 0..5 {
+            if OpenClipboard(None).is_ok() {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        if !opened {
+            return ClipboardText::default();
+        }
+
+        let text = if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_ok() {
+            match GetClipboardData(CF_UNICODETEXT.0 as u32) {
+                Ok(handle) if !handle.is_invalid() => {
+                    let global = windows::Win32::Foundation::HGLOBAL(handle.0);
+                    let pointer = GlobalLock(global) as *const u16;
+                    if pointer.is_null() {
+                        String::new()
+                    } else {
+                        let units = (GlobalSize(global) / std::mem::size_of::<u16>()).max(1);
+                        // The buffer is NUL-terminated; stop at the terminator
+                        // so a stale tail can never leak into the excerpt.
+                        let mut length = 0usize;
+                        while length < units && *pointer.add(length) != 0 {
+                            length += 1;
+                        }
+                        let slice = std::slice::from_raw_parts(pointer, length);
+                        let decoded = String::from_utf16_lossy(slice);
+                        let _ = GlobalUnlock(global);
+                        decoded
+                    }
+                }
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
+        let _ = CloseClipboard();
+        let (text, truncated) = truncate_chars(&text, MAX_CLIPBOARD_CHARS);
+        ClipboardText { text, truncated }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn clipboard_text() -> ClipboardText {
+    ClipboardText::default()
 }
 
 /* ------------------------------------------------------------------ *
@@ -1884,6 +2116,7 @@ pub fn run() {
             update_hit_regions,
             set_click_through,
             notify_interaction,
+            notify_reply,
             close_window,
             minimize_window,
             list_models,
@@ -2041,6 +2274,117 @@ mod tests {
         assert!(rx.try_recv().is_err());
         do_notify_interaction(&ctx, "click", 1.0, 2.0).unwrap();
         assert!(rx.try_recv().is_ok());
+    }
+
+    /* ---------- event history ring buffer ---------- */
+
+    #[test]
+    fn event_history_keeps_the_newest_frames() {
+        let ctx = test_ctx();
+        assert!(ctx.recent_events().is_empty(), "starts empty");
+
+        for index in 0..(EVENT_HISTORY_CAPACITY + 5) {
+            ctx.emit_event("state", serde_json::json!({ "index": index }));
+        }
+
+        let history = ctx.recent_events();
+        assert_eq!(
+            history.len(),
+            EVENT_HISTORY_CAPACITY,
+            "bounded ring buffer, not an unbounded log"
+        );
+        assert_eq!(history[0]["payload"]["index"], 5, "oldest five were evicted");
+        let newest = EVENT_HISTORY_CAPACITY + 4;
+        assert_eq!(history[history.len() - 1]["payload"]["index"], newest);
+        // Frames keep the documented envelope even in the history copy.
+        assert_eq!(history[0]["type"], "state");
+        assert_eq!(history[0]["seq"], 6);
+        assert!(history[0]["ts_ms"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn event_history_records_every_documented_type() {
+        let ctx = test_ctx();
+        ctx.emit_event("interaction", serde_json::json!({ "kind": "click" }));
+        ctx.emit_event("user_reply", serde_json::json!({ "text": "hi" }));
+        let history = ctx.recent_events();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0]["type"], "interaction");
+        assert_eq!(history[1]["type"], "user_reply");
+        assert_eq!(history[1]["payload"]["text"], "hi");
+    }
+
+    /* ---------- user replies ---------- */
+
+    #[test]
+    fn user_reply_is_broadcast_and_clears_the_bubble() {
+        let ctx = test_ctx();
+        let mut rx = ctx.events.subscribe();
+        *lock_or_recover(&ctx.speech) = Some(serde_json::json!({ "text": "prompt" }));
+        lock_or_recover(&ctx.avatar).talking = true;
+
+        let out = do_user_reply(&ctx, "  yes please  ").unwrap();
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["text"], "yes please", "text is trimmed");
+        assert_eq!(out["subscribers"], 1);
+
+        let frame: Value = serde_json::from_str(&rx.try_recv().expect("user_reply frame")).unwrap();
+        assert_eq!(frame["type"], "user_reply");
+        assert_eq!(frame["payload"]["text"], "yes please");
+
+        assert!(lock_or_recover(&ctx.speech).is_none(), "the prompt is dismissed");
+        assert!(!lock_or_recover(&ctx.avatar).talking, "the mouth stops");
+    }
+
+    #[test]
+    fn user_reply_rejects_empty_and_overlong_text() {
+        let ctx = test_ctx();
+        assert!(do_user_reply(&ctx, "   ").is_err(), "blank replies are rejected");
+        let long = "x".repeat(MAX_REPLY_CHARS + 1);
+        assert!(do_user_reply(&ctx, &long).is_err(), "overlong replies are rejected");
+        assert!(do_user_reply(&ctx, &"x".repeat(MAX_REPLY_CHARS)).is_ok());
+
+        // Nothing was broadcast by the rejected calls.
+        let history = ctx.recent_events();
+        assert_eq!(history.len(), 1, "only the accepted reply is remembered");
+    }
+
+    /* ---------- clipboard excerpt ---------- */
+
+    #[test]
+    fn truncate_chars_counts_characters_not_bytes() {
+        assert_eq!(truncate_chars("hello", 10), ("hello".to_string(), false));
+        assert_eq!(truncate_chars("hello", 5), ("hello".to_string(), false));
+        assert_eq!(truncate_chars("hello", 4), ("hell".to_string(), true));
+        // Multi-byte characters are never split mid-codepoint.
+        let (cut, truncated) = truncate_chars("héllo", 2);
+        assert_eq!(cut, "hé");
+        assert!(truncated);
+        assert_eq!(truncate_chars("", 10), (String::new(), false));
+    }
+
+    #[test]
+    fn clipboard_snapshot_is_always_well_formed() {
+        // Reading the real clipboard depends on the machine, so this only pins
+        // the contract the route relies on: never longer than the cap.
+        let clip = clipboard_text();
+        assert!(clip.text.chars().count() <= MAX_CLIPBOARD_CHARS);
+        if clip.truncated {
+            assert_eq!(clip.text.chars().count(), MAX_CLIPBOARD_CHARS);
+        }
+    }
+
+    #[test]
+    fn desktop_context_always_reports_the_documented_keys() {
+        let desktop = desktop_context();
+        // Values depend on the machine; the shape does not.
+        assert!(desktop.idle_secs < u64::MAX);
+        assert!(matches!(desktop.source, "win32" | "unsupported"));
+        #[cfg(not(windows))]
+        {
+            assert!(desktop.window_title.is_empty());
+            assert!(desktop.process_name.is_empty());
+        }
     }
 
     #[test]

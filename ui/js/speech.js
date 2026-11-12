@@ -94,7 +94,9 @@ export function updateSpeech(dt) {
 
   if (chars >= speech.full.length) {
     speech.doneFor += dt;
-    if (speech.doneFor * 1000 >= speech.holdMs) hideSpeech();
+    // An open reply box outranks the hold timer: the bubble must not vanish
+    // while the user is typing into it.
+    if (speech.doneFor * 1000 >= speech.holdMs && !isReplyOpen()) hideSpeech();
     return;
   }
 
@@ -114,9 +116,54 @@ export function hideSpeech() {
   speech.elapsed = 0;
   speech.doneFor = 0;
   avatar.talk = false;
+  closeReply();
 
   const el = document.getElementById("speech");
   el.classList.remove("show");
   el.classList.add("hidden");
   if (wasVisible) updateStatusUI();
+}
+
+/* ---------- quick reply ---------- */
+
+/**
+ * Is the reply box pinned open? (Hover alone shows it without this class.)
+ *
+ * The box lives inside the bubble so it travels with the avatar; the bubble's
+ * bounding box is published as a hit region while visible (`wireRegions`), which
+ * is what lets the user click into it while the rest of the desktop stays
+ * click-through.
+ */
+export function isReplyOpen() {
+  const el = document.getElementById("speech");
+  return !!el && el.classList.contains("reply-open");
+}
+
+/** Pin the box open and focus the input. Returns false when there is no bubble. */
+export function openReply() {
+  const el = document.getElementById("speech");
+  if (!el || !speech.visible) return false;
+  el.classList.add("reply-open");
+  // The box makes the card taller: re-anchor it above the head.
+  positionBubble();
+  const input = document.getElementById("speech-reply-input");
+  if (input) input.focus();
+  return true;
+}
+
+/** Un-pin the box, drop anything typed and stop capturing keys. */
+export function closeReply() {
+  const el = document.getElementById("speech");
+  if (el) el.classList.remove("reply-open");
+  const input = document.getElementById("speech-reply-input");
+  if (input) {
+    input.value = "";
+    if (document.activeElement === input) input.blur();
+  }
+  if (speech.visible) positionBubble();
+}
+
+/** Click on the bubble: open the box, or close it if it was already pinned. */
+export function toggleReply() {
+  return isReplyOpen() ? (closeReply(), false) : openReply();
 }

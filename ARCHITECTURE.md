@@ -28,13 +28,13 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | **Facial system** | Per-part sprite **variants**, 6 expression presets (`neutral`, `happy`, `surprised`, `thinking`, `sad`, `angry`) mapping to eye/mouth variant names, procedural squash/stretch fallback, expression holds with auto-revert |
 | **Custom animations** | Optional `animations` block on the rig root: named keyframe clips (`duration_ms`, `loop`, `keyframes[]`) whose per-bone deltas are sampled with smoothstep easing and composed into the transform pass; timeline bar in Rig Edit Mode (clip CRUD, duration, loop, play/stop, 0–100 % scrubber with keyframe ticks, `+ Keyframe` capture) |
 | **Life signs** | Auto-blink every 3–6 s (~120 ms), talking mouth loop while a bubble is visible |
-| **Speech bubbles** | Head-anchored DOM card, typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss |
-| **Agent API** | 28 local HTTP paths (33 method routes): state, movement, expressions, speech, models, rigs, parts, joints, custom animations, watcher control, shutdown |
-| **Desktop awareness** | `GET /context` — foreground window title + machine-wide idle seconds (Win32 probes, safe defaults elsewhere) |
-| **Event stream** | `GET /events` — Server-Sent Events over a 64-frame `tokio::broadcast` channel: `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`, `animate`, `interaction`, `watcher`; 15 s keep-alive |
-| **Interactions** | Play-mode click / double-click / drag on the avatar's bounds → `notify_interaction` → `interaction` frame on the event stream |
-| **MCP bridge** | `char-rig-mcp.exe` — a second binary exposing 10 tools (`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_wave`, `avatar_pose`, `avatar_get_context`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_animate`) to any MCP client over stdio JSON-RPC 2.0; stateless, forwards each call to the HTTP API and reports a down host as a readable tool error |
-| **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword, or an `idle_return` after a long idle stretch. Per-trigger cooldowns, an immediate `/emote` ack, an optional webhook, and an optional spawned Hermes command with a one-line prompt. Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Exponential-backoff reconnect; **zero LLM tokens while idle** |
+| **Speech bubbles** | Head-anchored DOM card, typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss; an optional **quick-reply box** (click the bubble, or just hover) with `Enter` to send and `Esc` to dismiss |
+| **Agent API** | 31 local HTTP paths (36 method routes): state, movement, expressions, speech, models, rigs, parts, joints, custom animations, desktop context, clipboard, quick replies, external alerts, watcher control, shutdown |
+| **Desktop awareness** | `GET /context` — foreground window title, its owning executable (`process_name`), machine-wide idle seconds (Win32 probes, safe defaults elsewhere) **and** the last 15 SSE frames as the agent's short-term memory; `GET /clipboard` — the last-copied text, capped at 2000 characters |
+| **Event stream** | `GET /events` — Server-Sent Events over a 64-frame `tokio::broadcast` channel: `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`, `animate`, `interaction`, `user_reply`, `alert`, `watcher`; 15 s keep-alive, plus a 15-frame history ring buffer served inside `/context` |
+| **Interactions** | Play-mode click / double-click / drag on the avatar's bounds → `notify_interaction` → `interaction` frame on the event stream; a typed bubble reply → `notify_reply` → `user_reply` frame |
+| **MCP bridge** | `char-rig-mcp.exe` — a second binary exposing 11 tools (`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_wave`, `avatar_pose`, `avatar_get_context`, `avatar_get_clipboard`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_animate`) to any MCP client over stdio JSON-RPC 2.0; stateless, forwards each call to the HTTP API and reports a down host as a readable tool error |
+| **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword **or a per-app rule**, an `idle_return` after a long idle stretch, a `user_reply` from the bubble (no cooldown — the user asked directly), or an `alert` pushed by `POST /alert` under its own cooldown. Per-trigger cooldowns, an immediate ack (expression or custom clip), an optional webhook, and an optional spawned Hermes command with a one-line prompt on a persistent session. Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Exponential-backoff reconnect; **zero LLM tokens while idle** |
 | **Persistence** | `models/<name>/model.json` (shipped), `rig.json` (editor override), `models/.state.json` (selected model) |
 
 ### Repository map — what is live vs. legacy
@@ -45,7 +45,7 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | `ui/` | **live** | Modular frontend (see structure below) |
 | `models/` | **live** | Model folders + `models/.state.json` |
 | [`API.md`](API.md), [`MODEL_FORMAT.md`](MODEL_FORMAT.md), [`README.md`](README.md) | **live docs** | Endpoint reference, manifest guide, quick start (this file is the design overview) |
-| `watcher_rules.json` | **live config** | Optional rules for `char-rig-watcher.exe` (interaction kinds, title keywords, idle threshold, cooldowns, ack emote, Hermes command, webhook); built-in defaults when absent |
+| `watcher_rules.json` | **live config** | Optional rules for `char-rig-watcher.exe` (interaction kinds, title keywords, **per-app `app_rules`**, alert cooldown, idle threshold, cooldowns, ack emote, Hermes command/session, webhook); built-in defaults when absent |
 | `avatar-editor/`, `avatar-desktop/` | legacy prototypes | Standalone HTML prototypes from earlier phases; not loaded by the app |
 | `ai-avatar-bridge/` | legacy workspace | Earlier multi-crate experiment (`avatar-api`, `avatar-core`, …); separate `Cargo.toml`, not built or referenced by `src-tauri` |
 | `spikes/` | legacy | Throwaway experiments (format loading, auto-rigging, wgpu mesh, ws api, llm) |
@@ -239,6 +239,11 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 
 * `emit_event` stamps a monotonic `seq` (`AtomicU64`) and `ts_ms`, then
   `send`s — a send with zero receivers is a no-op, not an error.
+* Every frame is also appended to `AppCtx.recent_events`, a bounded
+  `VecDeque<Value>` of length `EVENT_HISTORY_CAPACITY = 15` (oldest evicted).
+  `GET /context` serves that buffer as `recent_events`, which is how an agent
+  that only polls gets short-term memory of what just happened — there is no
+  `Last-Event-ID` replay on the wire.
 * `GET /events` subscribes on connect, yields a `hello` frame with the current
   snapshot, then adapts the receiver with `tokio_stream::wrappers::BroadcastStream`
   into `Sse<impl Stream<Item = Result<Event, Infallible>>>`. Keep-alive is 15 s.
@@ -252,14 +257,14 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 
 ## 3. Codebase map
 
-### `src-tauri/src/lib.rs` (2255 lines)
+### `src-tauri/src/lib.rs` (2599 lines)
 
 | Section | Responsibility |
 | --- | --- |
-| consts | `AVATAR_STATES`, `AVATAR_EXPRESSIONS` (6), `INTERACTION_KINDS` (`click`, `double_click`, `drag_end`), `EVENT_CHANNEL_CAPACITY = 64`, `DEFAULT_API_PORT = 8765`, `MAX_SPEECH_CHARS = 2000` |
+| consts | `AVATAR_STATES`, `AVATAR_EXPRESSIONS` (6), `INTERACTION_KINDS` (`click`, `double_click`, `drag_end`), `EVENT_CHANNEL_CAPACITY = 64`, `EVENT_HISTORY_CAPACITY = 15`, `DEFAULT_API_PORT = 8765`, `MAX_SPEECH_CHARS = 2000`, `MAX_CLIPBOARD_CHARS = 2000`, `MAX_REPLY_CHARS = 500` |
 | `AvatarState`, `HitRegion` | serialized shared state; region contains-test |
 | `lock_or_recover`, `snapshot` | poisoned-lock recovery (never panic on the UI path) |
-| `AppCtx` + impl | avatar state, regions, `api_port`, `speech` slot, `events` broadcast sender, `event_seq`, `speech_seen`, `expression_commanded_at`, `click_through`, `running`, `api_url`, `shutdown_tx`, `watcher: Mutex<WatcherState>`; `emit_event`, `apply_ignore_cursor`, `request_shutdown` (which calls `stop_watcher`), `watcher_status`, `set_watcher_enabled`, `push_watcher_log`, `spawn_watcher` |
+| `AppCtx` + impl | avatar state, regions, `api_port`, `speech` slot, `events` broadcast sender, `recent_events: Mutex<VecDeque<Value>>`, `event_seq`, `speech_seen`, `expression_commanded_at`, `click_through`, `running`, `api_url`, `shutdown_tx`, `watcher: Mutex<WatcherState>`; `emit_event` (which also remembers the frame), `recent_events`, `apply_ignore_cursor`, `request_shutdown` (which calls `stop_watcher`), `watcher_status`, `set_watcher_enabled`, `push_watcher_log`, `spawn_watcher` |
 | `ModelCtx` + impl | `root`, `current`, `loaded` cache, `pose`, `joints`, `part_patches`, `dialog_open`; `load`, `ensure_loaded`, `invalidate`, `apply_pose`, `parts_snapshot`, `rig_path` |
 | `publish` | bump revision + emit `avatar-state-changed` + broadcast `state` |
 | `model_event_payload` | compact `{name, label, rig_path, is_override, bones, images, reason}` for `model` frames |
@@ -267,7 +272,9 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `do_emote`, `do_speak`, `do_clear_speech` | shared logic used by both commands and HTTP routes (each broadcasts its frame) |
 | `do_animate` | custom keyframe playback: emits `avatar-animate` to the page **and** an `animate` frame on the SSE bus (`clip = None` stops) |
 | `do_notify_interaction` | interaction validation + `interaction` frame; the command is a thin wrapper so it is unit-testable |
-| `desktop_context` | Win32 `GetForegroundWindow`/`GetWindowTextW`/`GetLastInputInfo`/`GetTickCount64` behind `GET /context`; safe defaults off Windows |
+| `do_user_reply`, `notify_reply` | quick-reply validation (non-blank, ≤ `MAX_REPLY_CHARS`), bubble dismissal and the `user_reply` frame; the command adds the page-side `speech-clear` event |
+| `desktop_context` | Win32 `GetForegroundWindow`/`GetWindowTextW`, `GetWindowThreadProcessId`/`OpenProcess`/`QueryFullProcessImageNameW` (the `process_name`), `GetLastInputInfo`/`GetTickCount64` behind `GET /context`; safe defaults off Windows |
+| `clipboard_text`, `truncate_chars` | Win32 `OpenClipboard`/`GetClipboardData(CF_UNICODETEXT)`/`GlobalLock` read behind `GET /clipboard`, capped at `MAX_CLIPBOARD_CHARS` on a char boundary; every path balances its handle |
 | `cursor_position`, `spawn_cursor_tracker` | Windows cursor poll (stub returning `None` elsewhere) |
 | `WatcherState`, `watcher_status`, `set_watcher_enabled`, `push_watcher_log` | on/off switch, live `Child`, resolved `binary`/`rules` paths and a 200-line `VecDeque` log tail; the status JSON feeds `GET /watcher`, `get_watcher_status` and every `watcher` frame (Tauri `watcher-status` + SSE) |
 | `watcher_disabled_by`, `watcher_binary_name`, `watcher_binary_path` | `CHAR_RIG_NO_WATCHER` parsing; resolves `char-rig-watcher{EXE_SUFFIX}` next to `current_exe()` |
@@ -275,9 +282,9 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `clock_stamp`, `stamped`, `push_log_line`, `log_watcher_event`, `spawn_log_reader` | `[HH:MM:SS]` local-time stamps (`GetLocalTime`), bounded ring-buffer append, and the two pipe readers that echo every line to the app's stderr |
 | `spawn_watcher`, `supervise_watcher`, `watcher_health`, `start_watcher`, `kill_and_reap` | spawn with `--api-url`, `--rules`, null stdin, piped stdout/stderr, `CREATE_NO_WINDOW`, cwd = exe dir; then `try_wait` polling, crash restart with backoff (parked while off), and a store-under-the-lock handshake that cannot orphan a child during shutdown |
 | `api_port`, `run` | startup |
-| `tests` | 20 unit tests over the event envelope, sequence numbers, interaction validation, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
+| `tests` | 27 unit tests over the event envelope, sequence numbers, the 15-frame history ring buffer, interaction validation, quick replies (trim, caps, bubble dismissal, `user_reply` frame), `truncate_chars`, the clipboard contract, the desktop-context shape, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
 
-### `src-tauri/src/api.rs` (827 lines)
+### `src-tauri/src/api.rs` (925 lines)
 
 | Section | Responsibility |
 | --- | --- |
@@ -285,10 +292,12 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `watcher_status`, `set_watcher` | `GET /watcher` / `POST /watcher` → `AppCtx::watcher_status` / `set_watcher_enabled` |
 | `start` | bind, spawn thread, Tokio runtime, axum serve, graceful shutdown |
 | `bind_first_available` | port fallback `preferred..preferred+9` |
-| `router` | 27 routes |
-| request bodies | `SetStateBody`, `MoveBody`, `ExpressionBody`, `ClickThroughBody`, `HitRegionsBody`, `ModelBody`, `RigBody`, `PoseBody`, `ImportBody`, `PartPatchBody`, `MouthBody`, `EmoteBody`, `SpeakBody`, `AnimateBody` |
+| `router` | 30 routes |
+| request bodies | `SetStateBody`, `MoveBody`, `ExpressionBody`, `ClickThroughBody`, `HitRegionsBody`, `ModelBody`, `RigBody`, `PoseBody`, `ImportBody`, `PartPatchBody`, `MouthBody`, `EmoteBody`, `SpeakBody`, `ReplyBody`, `AlertBody`, `AnimateBody` |
 | `ApiError` | `IntoResponse` → `{"ok":false,"error":…}` + status |
-| `context` | `GET /context` — OS probes + `avatar_state` snapshot |
+| `context` | `GET /context` — OS probes, `avatar_state` snapshot and the `recent_events` history |
+| `clipboard`, `reply`, `alert` | `GET /clipboard` (never fails: empty text for a non-text clipboard), `POST /reply` (`user_reply` frame + bubble dismissal) and `POST /alert` (severity validation → `alert` frame) |
+| `ALERT_SEVERITIES` | `info` \| `warn` \| `error`, the only values `POST /alert` accepts |
 | `events` | `GET /events` — SSE from `BroadcastStream`, `hello` frame, 15 s keep-alive |
 | `event_name` | maps a frame `type` onto the SSE `event:` field (`&'static str`) |
 | `list_animations`, `animate`, `stop_animation` | `GET /animations` (clip catalogue from the loaded rig) and the two stop/play spellings for `POST /animate` |
@@ -322,7 +331,7 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 
 Calls `avatar_desktop_lib::run()`; sets `windows_subsystem = "windows"` in release builds.
 
-### `src-tauri/src/bin/char-rig-mcp.rs` (831 lines)
+### `src-tauri/src/bin/char-rig-mcp.rs` (900 lines)
 
 The **second binary** (`char-rig-mcp.exe`), built by the same `cargo build`. It is
 independent of the Tauri lib: a stdio MCP server that owns no state and forwards
@@ -334,8 +343,8 @@ each tool call to the HTTP API with `reqwest::blocking`.
 | `ApiError` / `Api` | blocking client + error taxonomy: `Unreachable`, `Timeout`, `Transport`, `Http{status,message}`, `Decode`; `get`/`post`/`send`/`classify` |
 | argument helpers | `req_str`, `opt_str`, `opt_expression`, `opt_u64`, `opt_bool`, `req_number`, `req_object` — each failure is a model-readable message |
 | `tool_content` / `tool_failure` | build the MCP result envelope (`content[]`, `isError`) and the `{ok:false, kind, error, hint, details}` payload |
-| `TOOL_NAMES` / `tools()` | the 10 tool definitions with JSON Schemas and descriptions |
-| `tool_*` | one function per tool; `tool_get_context` merges `GET /context` + `GET /state`, `tool_animate` maps `stop`/`null` onto `POST /animate {"name": null}` |
+| `TOOL_NAMES` / `tools()` | the 11 tool definitions with JSON Schemas and descriptions |
+| `tool_*` | one function per tool; `tool_get_context` merges `GET /context` + `GET /state` and adds `process_name` + the `recent_events` history (summarised as `type: hint` pairs), `tool_get_clipboard` forwards `GET /clipboard`, `tool_animate` maps `stop`/`null` onto `POST /animate {"name": null}` |
 | `handle_message` | JSON-RPC dispatch: `initialize`, `ping`, `tools/list`, `tools/call`, notifications, `-32601`/`-32602`/`-32700` |
 | `main` | read stdin line-by-line, one JSON frame per line out, flush, clean exit on EOF |
 
@@ -343,7 +352,7 @@ Protocol notes worth keeping: stdout carries **only** JSON-RPC frames (all
 diagnostics go to stderr, or the client's parser breaks), a missing avatar is a
 tool *result*, and a bad line is a JSON-RPC error — the loop always survives.
 
-### `src-tauri/src/bin/char-rig-watcher.rs` (1738 lines)
+### `src-tauri/src/bin/char-rig-watcher.rs` (2416 lines)
 
 The **third binary** (`char-rig-watcher.exe`), built by the same `cargo build`.
 It owns no UI and no state of its own: a headless trigger pump that reads the
@@ -360,26 +369,29 @@ one open SSE response and one small JSON poll every 20 s.
 
 | Section | Responsibility |
 | --- | --- |
-| consts | `DEFAULT_API_URL`, `ENV_API_URL` (`CHAR_RIG_API_URL`), `ENV_HERMES_CMD` (`CHAR_RIG_HERMES_CMD`), `DEFAULT_RULES_FILE`, `DEFAULT_CONTEXT_INTERVAL_SECS` 20, `DEFAULT_INTERACTION_COOLDOWN_SECS` 15, `DEFAULT_CONTEXT_COOLDOWN_SECS` 300, `DEFAULT_IDLE_THRESHOLD_SECS` 900, `DEFAULT_ACK_EMOTE` `thinking`, `ACK_EMOTE_DURATION_MS` 4000, `DEFAULT_HERMES_TIMEOUT_SECS` 120, `HEADLESS_DIRECTIVE`, `CONNECT_TIMEOUT` 3 s, `CONTEXT_TIMEOUT` 5 s, backoff 1 s → 30 s, `TRIGGER_QUEUE` 64 |
+| consts | `DEFAULT_API_URL`, `ENV_API_URL` (`CHAR_RIG_API_URL`), `ENV_HERMES_CMD` (`CHAR_RIG_HERMES_CMD`), `DEFAULT_RULES_FILE`, `DEFAULT_CONTEXT_INTERVAL_SECS` 20, `DEFAULT_INTERACTION_COOLDOWN_SECS` 15, `DEFAULT_CONTEXT_COOLDOWN_SECS` 300, `DEFAULT_ALERT_COOLDOWN_SECS` 60, `DEFAULT_IDLE_THRESHOLD_SECS` 900, `DEFAULT_ACK_EMOTE` `thinking`, `ACK_EMOTE_DURATION_MS` 4000, `DEFAULT_HERMES_TIMEOUT_SECS` 120, `EXPRESSIONS` (mirrors `AVATAR_EXPRESSIONS`, decides emote vs. clip ack), `HEADLESS_DIRECTIVE`, `CONNECT_TIMEOUT` 3 s, `CONTEXT_TIMEOUT` 5 s, backoff 1 s → 30 s, `TRIGGER_QUEUE` 64 |
 | `CliConfig` / `Config` | raw flags vs. resolved runtime config; `Config::resolve` merges **CLI → env → rules file → built-in default** (`hermes_timeout` = `--hermes-timeout` → `hermes_timeout_secs` → 120; no env var) |
 | `parse_cli` / `usage` | hand-rolled flag parser (`--flag value` and `--flag=value`), `-h/--help`, exit 2 on bad input; env fallbacks applied after the flags |
-| `InteractionRules` / `ContextRules` / `Rules` | serde-defaulted rule model; `Rules::load` (explicit path, else cwd then next to the exe), `from_json`, `interaction_allowed`, `matched_keyword` (case-insensitive substring), `idle_transition` (`was_idle && idle < threshold`) |
+| `InteractionRules` / `ContextRules` / `AppRule` / `AlertRules` / `Rules` | serde-defaulted rule model (`app_rules` and `alerts` optional, so the old schema still parses); `Rules::load` (explicit path, else cwd then next to the exe), `from_json`, `interaction_allowed`, `matched_keyword` (case-insensitive substring), `matched_app_rule` (process + title, first match wins, blank matcher = wildcard), `idle_transition` (`was_idle && idle < threshold`) |
 | `Cooldowns` | per-key `HashMap<String, Instant>`; `allow` checks **and** stamps, so a suppressed trigger does not extend the window |
 | `SseParser` | incremental `text/event-stream` parser: `event:`/`data:` fields, multi-line `data`, `:` keep-alive comments, CRLF, and frames split across arbitrary TCP reads; `message` is the default event name |
-| `Trigger` | `{event_type, detail, window_title, idle_secs, kind, keyword, x, y}`; `payload(ts_ms)` builds the webhook / dry-run JSON, `prompt()` builds the one-line Hermes context and ends it with `HEADLESS_DIRECTIVE`: no follow-up questions, plus the literal `mcp__char_rig__avatar_speak(text, expression?, duration_ms?)` / `avatar_emote(expression, duration_ms?)` (with the six expressions) / `avatar_wave()` / `avatar_animate(name, loop?)` signatures, so the agent's first turn needs no `tool_describe` |
+| `Trigger` | `{event_type, detail, window_title, idle_secs, kind, keyword, x, y, animation, hint, text, severity}`; `payload(ts_ms)` builds the webhook / dry-run JSON (absent fields omitted), `prompt()` builds the one-line Hermes context — quoting a `user_reply`'s text verbatim and appending an `app_rules` `prompt_hint` as `Context:` — and ends with `HEADLESS_DIRECTIVE`: no follow-up questions, the literal `mcp__char_rig__avatar_speak(text, expression?, duration_ms?)` / `avatar_emote(expression, duration_ms?)` (with the six expressions) / `avatar_wave()` / `avatar_animate(name, loop?)` / `avatar_get_context()` / `avatar_get_clipboard()` signatures, an explicit invitation to chain several calls in one turn, and the **under-180-characters** bubble rule so a bubble never overflows the screen |
 | `interaction_trigger` | gate on `interaction_allowed` + cooldown, then format `the user double-clicked the avatar at (x, y)` |
-| `context_triggers` | evaluates one poll: title-change + keyword rule, and the idle→active rule; also maintains `last_title` / `last_idle_secs` / `was_idle`; the **first** poll only sets the baseline (`initialized`) |
+| `user_reply_trigger` | `user_reply` frame → trigger with the user's trimmed text; **no cooldown and no interaction gate** — the user asked directly |
+| `alert_trigger` | `alert` frame → trigger with `source`/`summary`/`severity`; honours `alerts.enabled` and the `alert` cooldown |
+| `ack_plan` | picks the immediate ack: a matched `app_rules[].animation` (an expression name → `Ack::Emote`, anything else → `Ack::Animate` clip) or the generic `--ack-emote`; `""` disables it |
+| `context_triggers` | evaluates one poll: title-change matching `keyword OR app_rule` (the app rule wins when both match and supplies `animation`/`hint`), and the idle→active rule; also maintains `last_title` / `last_idle_secs` / `was_idle`; the **first** poll only sets the baseline (`initialized`) |
 | `Shared` | `Mutex`-guarded snapshot: latest `/context`, `initialized`, `last_title`, `last_idle_secs`, `was_idle`, `cooldowns`; `lock` recovers from poisoning |
 | `SingleFlight` / `FlightGuard` | one-permit `Arc<AtomicBool>` latch (`compare_exchange`) guarding the whole dispatch; the guard releases the permit on `Drop`, so a panic in a spawned task cannot wedge the watcher |
 | `split_command` / `command_argv` / `spawn_hermes` | quote-aware argv split (no shell), `{prompt}` substitution or append-as-last-arg, then a `tokio::process` spawn with `stdin(Stdio::null())` (an interactive prompt reads EOF instead of hanging), `kill_on_drop`, and `tokio::time::timeout(--hermes-timeout)` around the wait — an expired child is `start_kill`ed and reaped. The `FlightGuard` moves into the spawned task, so the permit covers the process lifetime |
-| `handle_trigger` | dry-run print → take the single-flight permit → ack `POST /emote` → `POST --webhook-url` → spawn `--hermes-cmd`, in that order; a trigger that finds the permit taken is **skipped** with a `debug:` line on stderr instead of stacking another `hermes` process |
-| `build_client` / `fetch_context` | reqwest client with a 3 s connect timeout; `GET /context` → `ContextSnapshot {window_title, idle_secs}` |
-| `handle_frame` | one SSE frame → at most one trigger; ignores `hello`, unparsable data and every frame type except `interaction` |
+| `handle_trigger` | dry-run print → take the single-flight permit → the ack (`ack_plan`: `POST /emote` or `POST /animate`) → `POST --webhook-url` → spawn `--hermes-cmd`, in that order; a trigger that finds the permit taken is **skipped** with a `debug:` line on stderr instead of stacking another `hermes` process |
+| `build_client` / `fetch_context` | reqwest client with a 3 s connect timeout; `GET /context` → `ContextSnapshot {window_title, process_name, idle_secs}` (an older avatar without `process_name` still works) |
+| `handle_frame` | one SSE frame → at most one trigger; routes `interaction`, `user_reply` and `alert`, ignores `hello`, unparsable data and every other frame type |
 | `stream_events` / `sse_loop` | consume `Response::bytes_stream()`, feed the parser, reconnect forever with doubling backoff capped at 30 s (reset on a successful subscribe) |
 | `context_loop` | `tokio::time::interval` with `MissedTickBehavior::Delay`; one warning per offline streak, then silent retries |
 | `dispatcher` | single consumer of the `mpsc` channel plus the `SingleFlight` latch, so two triggers can never race their side effects and a running child is never duplicated |
 | `main` | parse → load rules → spawn `sse_loop`, `context_loop`, `dispatcher` → `tokio::select!`; any task ending stops the process |
-| `tests` | 37 unit tests: SSE parsing (chunk boundaries, comments, CRLF, multi-line data), rule matching, cooldown suppression, trigger payloads/prompts, argv splitting, CLI precedence, `--hermes-timeout` parsing + default + `hermes_timeout_secs` precedence, the headless directive and its tool signatures, and the single-flight latch |
+| `tests` | 48 unit tests: SSE parsing (chunk boundaries, comments, CRLF, multi-line data), rule matching, per-app rule matching (case-insensitive, blank wildcards, `animation`/`prompt_hint` carried onto the trigger), alert parsing/cooldowns/disable switch, the backward-compatible rules schema, cooldown suppression, `user_reply` triggers (no cooldown, quoted text), `handle_frame` routing for `user_reply`/`alert`, `ack_plan` (expression vs. clip vs. none), trigger payloads/prompts, argv splitting, CLI precedence, `--hermes-timeout` parsing + default + `hermes_timeout_secs` precedence, the headless directive (clipboard, context, chaining, 180-char cap) and its tool signatures, and the single-flight latch |
 
 Protocol notes worth keeping: diagnostics go to **stderr** and stdout carries
 only `--dry-run` payloads (so the binary stays pipeable), the prompt is always a
@@ -397,17 +409,17 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 
 | File | Responsibility |
 | --- | --- |
-| `ui/index.html` | Lean semantic HTML shell (titlebar, canvas, control panel, inspector container, import chooser, speech bubble, toasts) linking `styles.css` and `<script type="module" src="./js/main.js"></script>` |
-| `ui/styles.css` | All CSS rules (titlebar, control panel, rig inspector, import modal, speech bubble, toasts) |
+| `ui/index.html` | Lean semantic HTML shell (titlebar, canvas, control panel, inspector container, import chooser, speech bubble with its quick-reply form, toasts) linking `styles.css` and `<script type="module" src="./js/main.js"></script>` |
+| `ui/styles.css` | All CSS rules (titlebar, control panel, rig inspector, import modal, speech bubble + quick reply, toasts) |
 | `ui/js/ipc.js` | **Leaf** Tauri access: `call`, `listen`, `once`, `isTauri`. Reads `window.__TAURI__` lazily on every call (never cached at module scope) |
 | `ui/js/state.js` | **Leaf** shared state objects (`avatar`, `RT`, `speech`, `viewport`), constants (`EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), helpers, `toast`, `updateStatusUI`, `setExpression`, `snapshot`, `setDirty`, `activeState` |
-| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset`, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix`, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions`), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
+| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset`, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix`, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble so its quick-reply box is clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
 | `ui/js/animator.js` | Custom keyframe clips: catalogue (`animationClips`, `listAnimations`), transport (`playAnimation`, `stopAnimation`, `stopPlayback`, `seekAnimation`, `stepAnimation`), sampling (`sampleAnimation`), authoring (`setAnimationBone`, `captureKeyframe`, `addClip`, `renameClip`, `deleteClip`, `setClipDuration`, `setClipLoop`) and finished listeners (`onAnimationFinished`) |
 | `ui/js/renderer.js` | Canvas pipeline: DPR resize (`initRenderer`, `resizeCanvas`), `drawFace`, `drawShape`, `drawPart`, rig overlay gizmos, `render` |
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
-| `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`) |
+| `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`) and the quick-reply box (`isReplyOpen`, `openReply`, `closeReply`, `toggleReply`); the hold timer is suspended while the box is open |
 | `ui/js/bridge.js` | Tauri event listeners (`avatar-state-changed`, `emote`, `speak`, `part-patch`, …), `reportState`, `applyRemoteState` (ignores frames that would yank a dragged avatar and never adopts a bare `walking` without its segment), `applyPartPatch`, click-through (`setClickThrough`), import flow (`importFromDialog`, `importImageAs`, chooser) |
-| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts, `window.__avatarDebug`, behaviour loop (`step`, `startWalk`, `wander`), `requestAnimationFrame` driver, and play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction` |
+| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts, `window.__avatarDebug`, behaviour loop (`step`, `startWalk`, `wander`), `requestAnimationFrame` driver, play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the bubble quick reply (`setupQuickReply`, `submitReply` → `notify_reply`) |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
 `ipc, state → rig → animator → {renderer, speech, editor, bridge}; editor → bridge; all → main`.
@@ -715,6 +727,51 @@ position, so one click exercises the whole pipeline: page → `interaction` fram
 `Esc` closes the console before it collapses the panel. The drawer publishes its
 own hit region, so its buttons keep working over the click-through desktop.
 
+### Watcher rules (`watcher_rules.json`)
+
+The rules file is plain JSON and every key is optional, so an older file keeps
+working and a missing/broken one falls back to the built-in defaults
+(`README.md` shows the shipped file). On top of the interaction kinds, title
+keywords and cooldowns it now carries two blocks:
+
+```json
+{
+  "app_rules": [
+    {
+      "process": "Code.exe",
+      "title_contains": "error",
+      "animation": "surprised",
+      "prompt_hint": "This is a compile error; name the file from the title."
+    }
+  ],
+  "alerts": { "enabled": true, "cooldown_secs": 60 },
+  "hermes_cmd": "hermes chat --continue char-rig --create-if-missing -Q -q"
+}
+```
+
+* **`app_rules`** — evaluated when the focused window *changes*. `process` is
+  matched against `/context`'s `process_name` and `title_contains` against the
+  window title, both case-insensitive substrings; a blank matcher is a wildcard,
+  and the first matching rule wins (so put specific rules first). A matched rule
+  can name an `animation` — an expression (`neutral`, `happy`, `sad`,
+  `surprised`, `thinking`, `angry`) is posted to `/emote`, anything else is
+  treated as a custom keyframe clip and played with `/animate` — and a
+  `prompt_hint`, which is appended to the Hermes prompt as `Context: …`.
+* **`alerts`** — the throttle for frames pushed by `POST /alert`:
+  `cooldown_secs` defaults to `DEFAULT_ALERT_COOLDOWN_SECS` (60 s) and
+  `enabled: false` lets the frames pass without waking Hermes.
+* **`hermes_cmd`** — the shipped value keeps one conversation across triggers:
+  `hermes chat --continue char-rig --create-if-missing -Q -q` resumes the session
+  named `char-rig`, creating it on first use, so a follow-up click or quick reply
+  shares the previous turn's memory instead of starting cold. `-Q` keeps the
+  banner/spinner out of the watcher's log, and `-q` must stay **last** in the
+  string because the watcher appends the prompt as the final argv entry. The CLI
+  has no `--session` flag: `--continue <name>` (alias `-c`) is the named-session
+  flag, and `--create-if-missing` is what makes it safe to point at a thread that
+  does not exist yet. A resumed session also keeps its launch policy, so per-run
+  overrides (`--run-budget`, `--model`, `-t`) are rejected — configure those in
+  `config.yaml`.
+
 ### Importing
 
 1. **Import…** opens a native picker (JSON, TOML, PNG, JPG/JPEG, WEBP, SVG).
@@ -799,7 +856,7 @@ offset, rotation, z-order, scale, tag, state, variant.
 
 ## 6. Tauri command surface (page ⇄ Rust)
 
-31 commands, registered in `generate_handler!`. Most take `tauri::State<Arc<AppCtx>>`
+32 commands, registered in `generate_handler!`. Most take `tauri::State<Arc<AppCtx>>`
 and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated ones.
 
 | Command | Purpose |
@@ -814,6 +871,7 @@ and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated o
 | `update_hit_regions(regions)` | interactive rectangles |
 | `set_click_through(enabled)` | master switch (also applies immediately when disabled) |
 | `notify_interaction(kind, x, y)` | pointer hit on the avatar art → `interaction` frame; returns `{ok, kind, subscribers}`, changes no state |
+| `notify_reply(text)` | the bubble's quick-reply box was submitted → `user_reply` frame, bubble dismissed; returns `{ok, text, subscribers}`, changes no state beyond `talking` |
 | `close_window` / `minimize_window` | window controls (close also requests shutdown) |
 | `list_models` / `get_model` / `load_model(name)` | model catalogue + switching (`load_model` broadcasts `model`/`load`) |
 | `pick_import_file` | native picker → `{path, kind, name}` |
@@ -835,12 +893,12 @@ Events emitted to the page: `avatar-state-changed`, `api-status`,
 
 The same mutations are mirrored onto the HTTP event bus (`GET /events`) as
 `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`,
-`part_patch`, `animate` and `interaction` frames — see §7.
+`part_patch`, `animate`, `interaction` and `user_reply` frames — see §7.
 
 Custom keyframe playback has **no Tauri command**: the page owns the clock, so
 `POST /animate` only emits `avatar-animate` with `{action, name, duration_ms,
 loop, keyframes}` and the page's `bridge.js` calls `playAnimation` /
-`stopAnimation`. That keeps the 29-command surface unchanged.
+`stopAnimation`. That keeps the command surface unchanged.
 
 ---
 
@@ -856,7 +914,10 @@ unknown routes are **404**.
 | Method | Route | Purpose |
 | --- | --- | --- |
 | GET | `/health` | liveness + uptime |
-| GET | `/context` | desktop context: foreground window title + machine idle time |
+| GET | `/context` | desktop context: foreground window title, its `process_name`, machine idle time + the last 15 SSE frames |
+| GET | `/clipboard` | the clipboard's text, capped at 2000 characters |
+| POST | `/reply` | the user's quick reply (`{"text": "…"}`) → `user_reply` frame |
+| POST | `/alert` | an external monitor's alert (`{"source","summary","severity"}`) → `alert` frame |
 | GET | `/events` | Server-Sent Events stream of every state change (§7.3) |
 | GET | `/state` | full avatar state |
 | POST | `/state` | set state/expression |
@@ -1073,14 +1134,46 @@ Response flushes, then the app exits after ~120 ms (graceful API shutdown).
 curl -s localhost:8765/context
 ```
 ```json
-{"ok":true,"window_title":"Visual Studio Code","idle_secs":12,
+{"ok":true,"window_title":"main.rs - visual-studio-code","process_name":"Code.exe","idle_secs":12,
  "avatar_state":{"position":[700.0,500.0],"target_position":[700.0,500.0],
                  "state":"idle","expression":"neutral","revision":7,"talking":false},
+ "recent_events":[{"seq":6,"type":"speech","ts_ms":1794405560000,"payload":{"text":"Build finished."}}],
  "source":"win32"}
 ```
 `window_title` is `GetForegroundWindow` + `GetWindowTextW` (truncated to 512
-UTF-16 units); `idle_secs` is `(GetTickCount64() - GetLastInputInfo().dwTime)/1000`.
-Off Windows both are empty/`0` and `source` is `"unsupported"`.
+UTF-16 units); `process_name` is `GetWindowThreadProcessId` + `OpenProcess` +
+`QueryFullProcessImageNameW` reduced to the file name (e.g. `Code.exe`, empty
+when the process is protected or absent); `idle_secs` is
+`(GetTickCount64() - GetLastInputInfo().dwTime)/1000`. `recent_events` is the
+last `EVENT_HISTORY_CAPACITY` (15) SSE frames, oldest first. Off Windows the
+values are empty/`0` and `source` is `"unsupported"`.
+
+### `/clipboard`
+
+```bash
+curl -s localhost:8765/clipboard
+```
+```json
+{"ok":true,"text":"fn main() {}","truncated":false}
+```
+Win32 `OpenClipboard` → `GetClipboardData(CF_UNICODETEXT)` → `GlobalLock` read,
+capped at `MAX_CLIPBOARD_CHARS` (2000) on a char boundary. It always answers
+`ok: true`; an empty, non-text or busy clipboard yields `text: ""`.
+`truncated` says the source was longer.
+
+### `/reply` and `/alert`
+
+```bash
+curl -s -X POST localhost:8765/reply -H 'content-type: application/json' \
+     -d '{"text":"yes, do that"}'                    # -> user_reply frame
+curl -s -X POST localhost:8765/alert -H 'content-type: application/json' \
+     -d '{"source":"suricata","summary":"port sweep","severity":"warn"}'   # -> alert frame
+```
+`/reply` takes `{"text"}` (non-blank, ≤ 500 chars), dismisses the bubble and
+returns `{ok, text, subscribers}`. `/alert` takes `{source, summary, severity}`
+with `severity` ∈ `info | warn | error` (default `info`) and returns
+`{ok, alert, subscribers}`. Neither route calls a model: the watcher decides
+whether an alert is worth a Hermes turn.
 
 ### `/events`
 
@@ -1090,8 +1183,9 @@ curl -N localhost:8765/events
 Server-Sent Events; frames are `{"seq","type","ts_ms","payload"}` and `type` is
 also the SSE `event:` name. Event types: `hello` (on connect), `state`,
 `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`,
-`animate`, `interaction`. Keep-alive comment every 15 s; channel capacity 64 with
-skip-forward on lag. Full payload table in `API.md` §
+`animate`, `interaction`, `user_reply`, `alert`, `watcher`. Keep-alive comment
+every 15 s; channel capacity 64 with skip-forward on lag, plus the 15-frame
+history served in `/context`. Full payload table in `API.md` §
 "Awareness: desktop context & the event stream".
 
 ---
@@ -1114,14 +1208,20 @@ skip-forward on lag. Full payload table in `API.md` §
   per-part manipulation outside Rig Edit Mode and no momentum/inertia, and the
   drag is clamped to the window, so it cannot push the avatar onto a second
   monitor.
-* **`interaction` is one-way.** The UI reports the click and does nothing else;
-  any reaction (wave, speak) has to come back from an agent over HTTP.
-* **`/context` is shallow.** Only the foreground window *title* and machine-wide
-  idle seconds are exposed — no process name, no per-window activity, no
-  clipboard/selection, and no "what app is this" classification.
+* **`interaction` is one-way.** The UI reports a click and does nothing else;
+  any reaction (wave, speak) has to come back from an agent over HTTP. The
+  quick-reply box is the other direction: it *sends* text (`user_reply`) but
+  renders no reply of its own — the bubble only changes when the agent speaks.
+* **`/context` is shallow by design.** It exposes the foreground window title,
+  the owning executable's *name*, machine-wide idle seconds and the last 15 SSE
+  frames — no per-window activity, no other process list, and no clipboard on
+  `/context` itself (`GET /clipboard` is a separate, explicit call). The
+  clipboard read is text-only (`CF_UNICODETEXT`): images, files and rich
+  formats come back empty, and the cap is 2000 characters.
 * **SSE is unauthenticated and un-persisted.** Any local process can subscribe;
   there is no replay buffer (`Last-Event-ID` is ignored), so a reconnecting
-  client resumes from the next `state` frame.
+  client resumes from the next `state` frame — the 15-frame history exposed in
+  `/context` is the closest thing to a catch-up.
 * **One bubble at a time.** No queue, no history, plain text only (max 2000
   chars); dismissal is page-side, so `/speech` follows the page's reports.
 * **Expression variants are optional.** Missing variants fall back to
@@ -1139,14 +1239,18 @@ skip-forward on lag. Full payload table in `API.md` §
   renamed in place from the same field.
 * **One override per model.** `rig.json` is a single alternative; there are no
   named rig variants or migration/versioning beyond `format`.
-* **Watcher triggers are coarse.** `char-rig-watcher.exe` only inspects
-  `interaction` frames (every other SSE type is ignored), window titles are
-  plain case-insensitive substring matches with no per-application rules, and a
-  burst of triggers inside a cooldown is silently dropped rather than queued.
-  It cannot stop or configure the avatar (it only observes), and its rules file
-  is looked up next to the binary/cwd — a checkout that keeps
-  `watcher_rules.json` at the repo root needs `CHAR_RIG_NO_WATCHER=1` plus a
-  manual run, or a copy beside the exe.
+* **Watcher triggers are rule-shaped, not semantic.** `char-rig-watcher.exe`
+  reacts to `interaction`, `user_reply` and `alert` frames plus window-title and
+  idle changes; `app_rules` match a process name against the title with plain
+  case-insensitive substrings (no regex, no path, no other window's context),
+  and a burst of triggers inside a cooldown is silently dropped rather than
+  queued. A `user_reply` bypasses cooldowns entirely, but it still shares the
+  single-flight latch with everything else — a reply that lands while a Hermes
+  turn is running is dropped (the debug line on stderr says so). It cannot stop
+  or configure the avatar (it only observes), and its rules file is looked up
+  next to the binary/cwd — a checkout that keeps `watcher_rules.json` at the
+  repo root needs `CHAR_RIG_NO_WATCHER=1` plus a manual run, or a copy beside
+  the exe.
 * **The picker is modal.** While the native dialog is open the overlay drops
   always-on-top; if the app is killed mid-dialog the flag is restored only on
   the next launch.

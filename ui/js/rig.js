@@ -334,6 +334,10 @@ export function wireRegions() {
   if (drawer && !drawer.classList.contains("hidden")) push(drawer);
   const chooser = document.getElementById("import-chooser");
   if (chooser && !chooser.classList.contains("hidden")) push(chooser);
+  // The speech bubble hosts the quick-reply box: while it is on screen its box
+  // must accept clicks, or the user could see the input but not type in it.
+  const bubble = document.getElementById("speech");
+  if (bubble && !bubble.classList.contains("hidden")) push(bubble);
 
   call("update_hit_regions", { regions: regions });
 

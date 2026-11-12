@@ -10,8 +10,32 @@
     "idle_threshold_secs": 900,
     "cooldown_secs": 300
   },
+  "app_rules": [
+    {
+      "process": "Code.exe",
+      "title_contains": "error",
+      "animation": "surprised",
+      "prompt_hint": "This is a compile/build error in the user's editor: name the file from the title if it has one, suggest the likely cause in one sentence, and only call avatar_get_clipboard when the title implies the error text was copied."
+    },
+    {
+      "process": "Code.exe",
+      "title_contains": "",
+      "animation": "thinking",
+      "prompt_hint": "The user is coding in Visual Studio Code; keep any reaction short and technical."
+    },
+    {
+      "process": "WindowsTerminal.exe",
+      "title_contains": "",
+      "animation": "thinking",
+      "prompt_hint": "The user is in a terminal. Prefer a one-line observation over a question."
+    }
+  ],
+  "alerts": {
+    "enabled": true,
+    "cooldown_secs": 60
+  },
   "ack_emote": "thinking",
-  "hermes_cmd": "hermes chat -q",
+  "hermes_cmd": "hermes chat --continue char-rig --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
   "webhook_url": null
 }

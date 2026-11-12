@@ -433,15 +433,18 @@ Closes the app (window + API) after flushing the response.
 
 ## Awareness: desktop context & the event stream
 
-These two endpoints exist so an agent can stop polling: one asks "what is the
-user doing?", the other pushes "what did the avatar do?".
+These endpoints exist so an agent can stop polling: one asks "what is the
+user doing?", the others push "what did the avatar (or an external monitor)
+just do?".
 
 ### `GET /context`
 
 A cheap snapshot of the user's desktop. On Windows it reads
-`GetForegroundWindow` + `GetWindowTextW` for the focused window title and
-`GetLastInputInfo` + `GetTickCount64` for machine-wide idle time; on other
-platforms it returns empty/zero values and says so in `source`.
+`GetForegroundWindow` + `GetWindowTextW` for the focused window title,
+`GetWindowThreadProcessId` + `OpenProcess` + `QueryFullProcessImageNameW` for
+the executable that owns it, and `GetLastInputInfo` + `GetTickCount64` for
+machine-wide idle time; on other platforms it returns empty/zero values and
+says so in `source`.
 
 ```bash
 curl -s localhost:8765/context
@@ -450,7 +453,8 @@ curl -s localhost:8765/context
 ```json
 {
   "ok": true,
-  "window_title": "Visual Studio Code",
+  "window_title": "main.rs - visual-studio-code",
+  "process_name": "Code.exe",
   "idle_secs": 12,
   "avatar_state": {
     "position": [700.0, 500.0],
@@ -460,6 +464,10 @@ curl -s localhost:8765/context
     "revision": 7,
     "talking": false
   },
+  "recent_events": [
+    {"seq": 6, "type": "speech", "ts_ms": 1794405560000, "payload": {"text": "Build finished.", "expression": "happy", "duration_ms": 6000, "char_ms": 26}},
+    {"seq": 7, "type": "interaction", "ts_ms": 1794405567002, "payload": {"kind": "double_click", "x": 541, "y": 489, "state": "idle", "expression": "neutral", "position": [760.0, 520.0]}}
+  ],
   "source": "win32"
 }
 ```
@@ -467,18 +475,89 @@ curl -s localhost:8765/context
 | Key | Meaning |
 | --- | --- |
 | `window_title` | title of the foreground window (`""` when there is none) |
+| `process_name` | executable that owns the foreground window, e.g. `"Code.exe"` (`""` when it cannot be read, and always `""` off Windows) |
 | `idle_secs` | seconds since the last keyboard/mouse input anywhere on the machine |
 | `avatar_state` | identical shape to `GET /state` |
+| `recent_events` | the last **15** SSE frames, oldest first, in the same `{seq, type, ts_ms, payload}` envelope `GET /events` pushes — the agent's short-term memory of what just happened |
 | `source` | `win32` when the Win32 probes ran, `unsupported` elsewhere |
 
 The handler queries the OS directly and never touches the avatar state machine,
-so it is safe to poll at any rate.
+so it is safe to poll at any rate. `process_name` is best-effort: a protected
+process or the desktop/secure window yields `""` rather than an error.
+
+### `GET /clipboard`
+
+The clipboard's text (`CF_UNICODETEXT`), capped at **2000 characters**.
+
+```bash
+curl -s localhost:8765/clipboard
+```
+
+```json
+{ "ok": true, "text": "fn main() { println!(\"hi\"); }", "truncated": false }
+```
+
+| Key | Meaning |
+| --- | --- |
+| `text` | the clipboard text, or `""` when the clipboard is empty / not text |
+| `truncated` | `true` when the source was longer than 2000 characters and had to be cut |
+
+It always answers `ok: true`: an empty clipboard, a non-text clipboard and a
+clipboard another process is holding open all read as `""`. The read is
+best-effort (the clipboard is a machine-wide singleton, so the open is retried a
+few times) and never blocks the API thread for long.
+
+### `POST /reply`
+
+The user's answer, typed into the speech bubble's quick-reply box.
+
+```bash
+curl -s -X POST localhost:8765/reply -H 'content-type: application/json' \
+     -d '{"text":"yes, do that"}'
+```
+
+```json
+{ "ok": true, "text": "yes, do that", "subscribers": 1 }
+```
+
+It broadcasts a `user_reply` frame on `GET /events` and dismisses the bubble.
+`text` must not be blank and is capped at 500 characters (**400** otherwise).
+The page-side twin is the `notify_reply` command, so a reply behaves identically
+whichever end sent it.
+
+### `POST /alert`
+
+Let an external monitor — a Suricata instance, a cron job, a build script —
+reach the user through the avatar.
+
+```bash
+curl -s -X POST localhost:8765/alert -H 'content-type: application/json' \
+     -d '{"source":"suricata","summary":"ET SCAN port sweep from 192.168.0.9","severity":"warn"}'
+```
+
+```json
+{
+  "ok": true,
+  "alert": { "source": "suricata", "summary": "ET SCAN port sweep from 192.168.0.9", "severity": "warn" },
+  "subscribers": 1
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `source` | who is reporting (required, non-blank) |
+| `summary` | one sentence about what happened (required, non-blank) |
+| `severity` | `info` \| `warn` \| `error`; defaults to `info`, anything else is **400** |
+
+The route only validates and broadcasts an `alert` frame — it never calls a
+model itself. `char-rig-watcher.exe` picks the frame up and wakes Hermes under
+its own `alerts.cooldown_secs` throttle, so a `curl` cannot spawn agent turns.
 
 ### `GET /events` (Server-Sent Events)
 
 A push stream of everything the avatar does: state transitions, speech, model
-switches, rig saves, pose updates, part patches, custom animations, and pointer
-interactions.
+switches, rig saves, pose updates, part patches, custom animations, pointer
+interactions, quick replies and external alerts.
 
 ```bash
 curl -N localhost:8765/events
@@ -518,6 +597,8 @@ Every `data:` line is one JSON object:
 | `part_patch` | `POST /part`, `POST /mouth` | `{target, patch}` |
 | `animate` | `POST /animate`, `POST /animate/stop` | `{action, name, duration_ms, loop, keyframes}` with `action` ∈ `play` \| `stop` |
 | `interaction` | the user clicks the avatar (§ Avatar interaction) | `{kind, x, y, state, expression, position}` with `kind` ∈ `click` \| `double_click` \| `drag_end` |
+| `user_reply` | the user submits the bubble's quick-reply box (`notify_reply`) or `POST /reply` | `{text}` |
+| `alert` | `POST /alert` from an external monitor | `{source, summary, severity}` with `severity` ∈ `info` \| `warn` \| `error` |
 | `watcher` | the supervised `char-rig-watcher.exe` starts, stops, or writes a line | full status `{ok, enabled, running, pid, binary_path, rules_path, logs}` on a lifecycle change, or `{kind: "log", line, enabled, running, pid}` for one log line |
 
 Behaviour worth knowing:
@@ -569,7 +650,7 @@ curl -s -X POST localhost:8765/shutdown
 ## Internal (Tauri command) surface
 
 The page talks to Rust through `invoke`; the same mutations are available as
-commands. Arguments are snake_case (`rename_all = "snake_case"`). All 31, in the
+commands. Arguments are snake_case (`rename_all = "snake_case"`). All 32, in the
 order they are registered (ARCHITECTURE.md §6 has the full purpose table):
 
 **State, window & interaction** — `get_avatar_state`, `get_runtime_info`,
@@ -577,7 +658,8 @@ order they are registered (ARCHITECTURE.md §6 has the full purpose table):
 `set_avatar_state(new_state)`, `trigger_wave`, `report_state(position,
 target_position, state, expression, joints?, talking?, speech?)`,
 `update_hit_regions(regions)`, `set_click_through(enabled)`,
-`notify_interaction(kind, x, y)`, `close_window`, `minimize_window`.
+`notify_interaction(kind, x, y)`, `notify_reply(text)`, `close_window`,
+`minimize_window`.
 
 **Models, rigs & parts** — `list_models`, `get_model`, `load_model(name)`,
 `pick_import_file`, `import_asset(path, mode?, name?, tag?)`,
@@ -598,6 +680,12 @@ and log tail behind the control panel's **Watcher** row and the pop-out console;
 received the frame. It is a pure notification — unlike every other command it
 does not change `AvatarState`.
 
+`notify_reply(text)` is the mirror image for the bubble's quick-reply box: the
+user's text (≤ 500 characters) becomes a `user_reply` frame, the bubble is
+dismissed and `{ok, text, subscribers}` comes back. Its HTTP twin is
+`POST /reply`, and `char-rig-watcher.exe` treats the frame as a direct
+instruction that bypasses the interaction cooldowns.
+
 Events emitted to the page: `avatar-state-changed` (full state after every
 command/API mutation), `api-status` (bound address or `offline`),
 `model-changed`, `rig-pose`, `rig-saved`, `part-patch`, `emote`, `speak`,
@@ -613,8 +701,8 @@ see *Awareness: desktop context & the event stream* for the frame list.
 
 `src-tauri/src/bin/char-rig-mcp.rs` builds a **second binary**,
 `src-tauri/target/debug/char-rig-mcp.exe`, that exposes the avatar to any MCP
-client (Hermes, Claude Desktop, …) over **stdio JSON-RPC 2.0** as ten tools. It
-is a thin, stateless bridge: each tool call becomes one HTTP request to the
+client (Hermes, Claude Desktop, …) over **stdio JSON-RPC 2.0** as eleven tools.
+It is a thin, stateless bridge: each tool call becomes one HTTP request to the
 *running* `avatar-desktop.exe`.
 
 ```
@@ -631,6 +719,7 @@ Base URL: `CHAR_RIG_API_URL`, default `http://127.0.0.1:8765`.
 | `avatar_wave` | — | `POST /wave` |
 | `avatar_pose` | `joints` (required; `{boneId: {rotation?, scale?, x?, y?}}`, `null` clears a bone) | `POST /pose` |
 | `avatar_get_context` | — | `GET /context` **and** `GET /state` |
+| `avatar_get_clipboard` | — | `GET /clipboard` |
 | `avatar_list_models` | — | `GET /models` |
 | `avatar_switch_model` | `name` (required) | `POST /model` |
 | `avatar_list_animations` | — | `GET /animations` |
@@ -645,9 +734,16 @@ request is sent.
 of starting a clip, and `loop: true` together with a stop is rejected locally.
 
 `avatar_get_context` returns a single text block: a one-line human summary, then
-JSON with `window_title`, `idle_secs`, `source`, `avatar_state` and
+JSON with `window_title`, `process_name`, `idle_secs`, `source`, `avatar_state`,
 `state_source` (`"state"` when the fresh `/state` read answered, `"context"`
-when it fell back to the copy embedded in `/context`).
+when it fell back to the copy embedded in `/context`) and `recent_events` (the
+last 15 SSE frames, oldest first). The summary names the focused app — e.g.
+`User is in "main.rs - visual-studio-code" (Code.exe), idle for 12s.` — and
+lists the recent events as `type: hint` pairs.
+
+`avatar_get_clipboard` returns the `GET /clipboard` body as text:
+`{ok: true, text, truncated}`. Read it only when the trigger refers to copied
+content; it is the user's data.
 
 ### Error behaviour
 

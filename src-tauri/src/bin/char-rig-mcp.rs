@@ -52,11 +52,14 @@ const DEFAULT_PROTOCOL: &str = "2025-06-18";
 const INSTRUCTIONS: &str = "Tools that drive a 2D avatar living on the user's Windows desktop. \
 The avatar is a separate process (`avatar-desktop.exe`) that must already be running; if a call reports \
 that it cannot reach the avatar, tell the user to start it instead of retrying blindly. \
-`avatar_get_context` is the cheapest way to see what the user is doing (foreground window title and \
-machine-wide idle seconds) together with the avatar's current state. Speech bubbles are transient: \
-`avatar_speak` returns as soon as the bubble is scheduled, not when it has finished. \
+`avatar_get_context` is the cheapest way to see what the user is doing (foreground window title, the \
+owning process name such as `Code.exe`, and machine-wide idle seconds) together with the avatar's current \
+state and the last few events, so it is the right first call before interrupting anyone. \
+`avatar_get_clipboard` returns whatever text the user last copied (capped at 2000 characters) — useful when \
+a trigger mentions \"this\" or \"what I copied\". Speech bubbles are transient: `avatar_speak` returns as soon \
+as the bubble is scheduled, not when it has finished, and reads best at 1-2 sentences. \
 Custom keyframe animations are authored in the rig editor; `avatar_list_animations` lists them and \
-`avatar_animate` plays one.";
+`avatar_animate` plays one. Chain calls freely in a single turn (e.g. `avatar_emote` then `avatar_speak`).";
 
 /* ------------------------------------------------------------------ *
  * HTTP client
@@ -342,13 +345,14 @@ fn api_base_for_error() -> String {
  * ------------------------------------------------------------------ */
 
 /// Tool names, in the order they appear in `tools/list`.
-const TOOL_NAMES: [&str; 10] = [
+const TOOL_NAMES: [&str; 11] = [
     "avatar_speak",
     "avatar_emote",
     "avatar_move",
     "avatar_wave",
     "avatar_pose",
     "avatar_get_context",
+    "avatar_get_clipboard",
     "avatar_list_models",
     "avatar_switch_model",
     "avatar_list_animations",
@@ -453,9 +457,18 @@ until cleared.",
         },
         {
             "name": "avatar_get_context",
-            "description": "Read the user's desktop context and the avatar state in one call: the title of the \
-foreground window, how many seconds the machine has been idle (no keyboard or mouse anywhere), and where the \
-avatar is and what it is doing. Use this before deciding whether to interrupt the user.",
+            "description": "Read the user's desktop context, the avatar state and the last few events in one call: the \
+title of the foreground window, the executable that owns it (e.g. `Code.exe`), how many seconds the machine has been \
+idle (no keyboard or mouse anywhere), where the avatar is and what it is doing, plus the most recent SSE frames \
+(interactions, speech, animations…) — i.e. short-term memory of what just happened. Use this before deciding \
+whether to interrupt the user.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "avatar_get_clipboard",
+            "description": "Read the text the user last copied to the Windows clipboard (CF_UNICODETEXT), capped at \
+2000 characters. Returns `{ok, text, truncated}`; an empty or non-text clipboard is an empty string, never an error. \
+Only read it when the trigger actually refers to copied content — it is the user's data.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -565,8 +578,18 @@ fn tool_get_context(api: &Api, _args: &Map<String, Value>) -> Result<Value, Tool
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    let process_name = context
+        .get("process_name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let idle_secs = context.get("idle_secs").and_then(Value::as_u64).unwrap_or(0);
     let source = context.get("source").and_then(Value::as_str).unwrap_or("unknown");
+    let recent_events: Vec<Value> = context
+        .get("recent_events")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
 
     // Prefer the freshly read `/state`; fall back to the copy inside `/context`.
     let (avatar_state, state_source) = match live_state.clone() {
@@ -577,31 +600,76 @@ fn tool_get_context(api: &Api, _args: &Map<String, Value>) -> Result<Value, Tool
         ),
     };
 
-    let focused = if window_title.is_empty() {
-        "(nothing focused / desktop)"
-    } else {
-        window_title.as_str()
+    let focused = match (window_title.is_empty(), process_name.is_empty()) {
+        (true, _) => "(nothing focused / desktop)".to_string(),
+        (false, true) => format!("\"{window_title}\""),
+        (false, false) => format!("\"{window_title}\" ({process_name})"),
     };
     let mode = avatar_state.get("state").and_then(Value::as_str).unwrap_or("unknown");
     let expression = avatar_state.get("expression").and_then(Value::as_str).unwrap_or("unknown");
     let (px, py) = position_of(&avatar_state);
+    let recent = summarise_events(&recent_events);
     let summary = format!(
-        "User is in \"{focused}\", idle for {idle_secs}s. \
-Avatar is {mode} ({expression}) at ({px:.0}, {py:.0}). Context source: {source}."
+        "User is in {focused}, idle for {idle_secs}s. \
+Avatar is {mode} ({expression}) at ({px:.0}, {py:.0}). Context source: {source}. \
+Recent events ({n}): {recent}",
+        n = recent_events.len()
     );
 
     let body = json!({
         "ok": context.get("ok").cloned().unwrap_or(json!(true)),
         "window_title": window_title,
+        "process_name": process_name,
         "idle_secs": idle_secs,
         "source": source,
         "avatar_state": avatar_state,
         "state_source": state_source,
+        "recent_events": recent_events,
     });
     Ok(Value::String(format!(
         "{summary}\n\n{}",
         serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string())
     )))
+}
+
+/// One short phrase per remembered frame: `type(seq): payload hint`.
+///
+/// The payload is already small, but a 15-frame dump would bury the summary, so
+/// each frame is reduced to the field that identifies it (`kind`, `text`,
+/// `name`, `expression`, …). Unknown payloads degrade to just the type.
+fn summarise_events(events: &[Value]) -> String {
+    if events.is_empty() {
+        return "none".to_string();
+    }
+    events
+        .iter()
+        .map(|frame| {
+            let kind = frame.get("type").and_then(Value::as_str).unwrap_or("event");
+            let payload = frame.get("payload").unwrap_or(&Value::Null);
+            let hint = ["kind", "text", "name", "expression", "mode", "reason", "summary"]
+                .iter()
+                .filter_map(|key| payload.get(*key))
+                .find_map(Value::as_str)
+                .map(|value| truncate(value, 48));
+            match hint {
+                Some(hint) => format!("{kind}: {hint}"),
+                None => kind.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// Cut `text` to at most `max` characters, on a char boundary.
+fn truncate(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((index, _)) => format!("{}…", &text[..index]),
+        None => text.to_string(),
+    }
+}
+
+fn tool_get_clipboard(api: &Api, _args: &Map<String, Value>) -> Result<Value, ToolError> {
+    api.get("/clipboard").map_err(ToolError::Api)
 }
 
 fn position_of(state: &Value) -> (f64, f64) {
@@ -666,6 +734,7 @@ fn run_tool(api: &Api, name: &str, args: &Map<String, Value>) -> Result<Value, T
         "avatar_wave" => tool_wave(api, args),
         "avatar_pose" => tool_pose(api, args),
         "avatar_get_context" => tool_get_context(api, args),
+        "avatar_get_clipboard" => tool_get_clipboard(api, args),
         "avatar_list_models" => tool_list_models(api, args),
         "avatar_switch_model" => tool_switch_model(api, args),
         "avatar_list_animations" => tool_list_animations(api, args),

@@ -34,14 +34,23 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 # desktop-context probes behind `GET /context`
 #   * GetTickCount64    -> Win32_System_SystemInformation
 #   * GetLastInputInfo  -> Win32_UI_Input_KeyboardAndMouse
-#   * GetForegroundWindow / GetWindowTextW / GetCursorPos
+#   * GetForegroundWindow / GetWindowTextW / GetCursorPos / GetWindowThreadProcessId
 #                       -> Win32_UI_WindowsAndMessaging
+#   * OpenProcess / QueryFullProcessImageNameW
+#                       -> Win32_System_Threading  (process_name in /context)
+#   * OpenClipboard / GetClipboardData / CF_UNICODETEXT / GlobalLock
+#                       -> Win32_System_DataExchange + Win32_System_Ole + Win32_System_Memory
+#                          (`GET /clipboard`)
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_SystemInformation",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
 ] }
 
 # Model importing / rig editor

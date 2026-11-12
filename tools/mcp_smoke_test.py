@@ -30,12 +30,13 @@ EXPECTED_TOOLS = {
     "avatar_wave": [],
     "avatar_pose": ["joints"],
     "avatar_get_context": [],
+    "avatar_get_clipboard": [],
     "avatar_list_models": [],
     "avatar_switch_model": ["name"],
     "avatar_list_animations": [],
     "avatar_animate": ["name"],
 }
-EXPECTED_TOOL_COUNT = 10
+EXPECTED_TOOL_COUNT = 11
 
 failures = []
 checks = 0
@@ -220,6 +221,7 @@ def main():
             ("avatar_emote", {"expression": "surprised", "duration_ms": 1500}),
             ("avatar_pose", {"joints": {"root": {"rotation": 0.1}}}),
             ("avatar_get_context", {}),
+            ("avatar_get_clipboard", {}),
             ("avatar_list_models", {}),
             ("avatar_list_animations", {}),
             ("avatar_animate", {"name": "stop"}),
@@ -270,9 +272,20 @@ def main():
             print("\ncontext payload")
             context_body = text_of(mcp.call("avatar_get_context", {}))
             check("window_title" in context_body, "context includes window_title")
+            check("process_name" in context_body, "context includes process_name")
             check("idle_secs" in context_body, "context includes idle_secs")
             check("avatar_state" in context_body, "context includes avatar_state")
+            check("recent_events" in context_body, "context includes the recent event buffer")
+            check("Recent events" in context_body, "context summary mentions the recent events")
             check(context_body.startswith("User is in"), "context opens with a human summary")
+
+            print("\nclipboard payload")
+            clipboard_body = text_of(mcp.call("avatar_get_clipboard", {}))
+            clipboard = json.loads(clipboard_body)
+            check(clipboard.get("ok") is True, "clipboard reports ok")
+            check(isinstance(clipboard.get("text"), str), "clipboard text is a string")
+            check("truncated" in clipboard, "clipboard reports truncation")
+            check(len(clipboard["text"]) <= 2000, "clipboard text is capped at 2000 chars")
 
         print("\nshutdown")
         code = mcp.close()

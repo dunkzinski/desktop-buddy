@@ -54,6 +54,7 @@ const DEFAULT_RULES_FILE: &str = "watcher_rules.json";
 const DEFAULT_CONTEXT_INTERVAL_SECS: u64 = 20;
 const DEFAULT_INTERACTION_COOLDOWN_SECS: u64 = 15;
 const DEFAULT_CONTEXT_COOLDOWN_SECS: u64 = 300;
+const DEFAULT_ALERT_COOLDOWN_SECS: u64 = 60;
 const DEFAULT_IDLE_THRESHOLD_SECS: u64 = 900;
 const DEFAULT_ACK_EMOTE: &str = "thinking";
 const ACK_EMOTE_DURATION_MS: u64 = 4000;
@@ -63,13 +64,30 @@ const ACK_EMOTE_DURATION_MS: u64 = 4000;
 /// a minute before it emits its `avatar_*` tool call.
 const DEFAULT_HERMES_TIMEOUT_SECS: u64 = 120;
 
+/// Expressions the avatar understands — mirrors `AVATAR_EXPRESSIONS` in
+/// `lib.rs`. A rule's `animation` naming one of these is shown with `POST
+/// /emote`; anything else is treated as a custom keyframe clip name and played
+/// with `POST /animate`.
+const EXPRESSIONS: [&str; 6] = ["neutral", "happy", "sad", "surprised", "thinking", "angry"];
+
 /// Appended to every `--hermes-cmd` prompt.
 ///
 /// The child gets `Stdio::null()` on stdin, so an agent that asks a follow-up
 /// question reads EOF (or hangs on a Windows console that has no input) instead
 /// of answering. The directive therefore spells out the MCP call signatures,
-/// so a trigger costs one model turn and no `tool_describe` round-trip.
-const HEADLESS_DIRECTIVE: &str = "[Headless desktop avatar trigger -- do not ask follow-up questions or wait for user input. Call one of your char-rig MCP tools directly and exit: mcp__char_rig__avatar_speak(text, expression?, duration_ms?), mcp__char_rig__avatar_emote(expression, duration_ms?) where expression is neutral|happy|sad|surprised|thinking|angry, mcp__char_rig__avatar_wave(), or mcp__char_rig__avatar_animate(name, loop?).]";
+/// so a trigger costs one model turn and no `tool_describe` round-trip. It also
+/// tells the model that chaining calls in one turn is expected, and caps the
+/// bubble text: the avatar's bubble is a fixed-width card, so a paragraph would
+/// run off the screen.
+const HEADLESS_DIRECTIVE: &str = "[Headless desktop avatar trigger -- do not ask follow-up questions or wait for user input. \
+Call your char-rig MCP tools directly and exit: mcp__char_rig__avatar_speak(text, expression?, duration_ms?), \
+mcp__char_rig__avatar_emote(expression, duration_ms?) where expression is neutral|happy|sad|surprised|thinking|angry, \
+mcp__char_rig__avatar_wave(), mcp__char_rig__avatar_animate(name, loop?), \
+mcp__char_rig__avatar_get_context() for the foreground window title, the owning process_name (e.g. Code.exe), \
+idle_secs and the recent events, and mcp__char_rig__avatar_get_clipboard() for the text the user last copied. \
+Chain several calls in one turn when it helps: an avatar_emote or avatar_animate for the feeling plus an \
+avatar_speak for the words, then exit. Keep the speech bubble under 180 characters (1-2 sentences) so it never \
+overflows the screen; put detail in your expression or animation, not in the bubble.]";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTEXT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -312,11 +330,77 @@ impl Default for ContextRules {
     }
 }
 
+/// One per-application rule: "when *this* app's window title contains *that*,
+/// react like *this*".
+///
+/// Both matchers are case-insensitive substrings, and an empty matcher means
+/// "any" — so `{"process": "Code.exe"}` reacts to any VS Code window, while
+/// `{"title_contains": "error"}` reacts to any app whose title mentions an
+/// error. The rule only fires when the focused window *changes*, exactly like
+/// the keyword rule, so it cannot machine-gun a live title.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+struct AppRule {
+    /// Executable file name from `/context`'s `process_name`, e.g. `Code.exe`.
+    process: String,
+    /// Substring of the window title.
+    title_contains: String,
+    /// Expression name (`alert` is *not* one — that would be a clip) or a
+    /// custom keyframe clip name, used as the ack animation.
+    animation: Option<String>,
+    /// Extra context appended to the Hermes prompt for this app.
+    prompt_hint: Option<String>,
+}
+
+impl AppRule {
+    /// Does this rule match the focused window? Empty matchers are wildcards.
+    fn matches(&self, process: &str, title: &str) -> bool {
+        let process_ok = self.process.trim().is_empty()
+            || (!process.is_empty()
+                && process.eq_ignore_ascii_case(self.process.trim()));
+        let title_ok = self.title_contains.trim().is_empty()
+            || title.to_lowercase().contains(&self.title_contains.trim().to_lowercase());
+        process_ok && title_ok
+    }
+
+    /// One-line description for the trigger detail.
+    fn describe(&self) -> String {
+        match (self.process.trim(), self.title_contains.trim()) {
+            ("", "") => "a per-app rule".to_string(),
+            ("", title) => format!("title contains {title:?}"),
+            (process, "") => format!("{process} is focused"),
+            (process, title) => format!("{process} with a title containing {title:?}"),
+        }
+    }
+}
+
+/// Rule for `alert` frames pushed by external monitors (`POST /alert`).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+struct AlertRules {
+    /// Set false to let `POST /alert` frames pass without waking Hermes.
+    enabled: bool,
+    cooldown_secs: u64,
+}
+
+impl Default for AlertRules {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_secs: DEFAULT_ALERT_COOLDOWN_SECS,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 #[serde(default)]
 struct Rules {
     interactions: InteractionRules,
     context: ContextRules,
+    /// Per-application overrides evaluated when the focused window changes.
+    app_rules: Vec<AppRule>,
+    /// Cooldown / switch for `alert` frames from `POST /alert`.
+    alerts: AlertRules,
     ack_emote: Option<String>,
     hermes_cmd: Option<String>,
     /// Kill the spawned `--hermes-cmd` after this many seconds.
@@ -390,6 +474,17 @@ impl Rules {
             .iter()
             .map(|keyword| keyword.trim())
             .find(|keyword| !keyword.is_empty() && haystack.contains(&keyword.to_lowercase()))
+    }
+
+    /// First `app_rules` entry that matches the focused window.
+    ///
+    /// Order matters: the first match wins, so a specific
+    /// `{process, title_contains}` rule listed before a broad `{process}` one
+    /// takes precedence.
+    fn matched_app_rule<'a>(&'a self, process: &str, title: &str) -> Option<&'a AppRule> {
+        self.app_rules
+            .iter()
+            .find(|rule| rule.matches(process, title))
     }
 
     /// True when the user just came back from a long idle stretch.
@@ -499,9 +594,9 @@ impl SseParser {
  * triggers
  * ------------------------------------------------------------------ */
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct Trigger {
-    /// `interaction` | `window_title` | `idle_return`
+    /// `interaction` | `window_title` | `idle_return` | `user_reply` | `alert`
     event_type: String,
     detail: String,
     window_title: String,
@@ -510,6 +605,14 @@ struct Trigger {
     keyword: Option<String>,
     x: Option<f64>,
     y: Option<f64>,
+    /// Expression or keyframe clip a matched `app_rules` entry asked for.
+    animation: Option<String>,
+    /// Tailored context for the prompt (`app_rules[].prompt_hint`).
+    hint: Option<String>,
+    /// The user's own words, from a `user_reply` frame.
+    text: Option<String>,
+    /// `info` | `warn` | `error`, from an `alert` frame.
+    severity: Option<String>,
 }
 
 impl Trigger {
@@ -527,6 +630,18 @@ impl Trigger {
         if let Some(keyword) = &self.keyword {
             map.insert("keyword".to_string(), json!(keyword));
         }
+        if let Some(animation) = &self.animation {
+            map.insert("animation".to_string(), json!(animation));
+        }
+        if let Some(hint) = &self.hint {
+            map.insert("hint".to_string(), json!(hint));
+        }
+        if let Some(text) = &self.text {
+            map.insert("text".to_string(), json!(text));
+        }
+        if let Some(severity) = &self.severity {
+            map.insert("severity".to_string(), json!(severity));
+        }
         if let Some(x) = self.x {
             map.insert("x".to_string(), json!(x));
         }
@@ -539,17 +654,29 @@ impl Trigger {
     /// Concise context prompt for `--hermes-cmd`.
     ///
     /// Ends with [`HEADLESS_DIRECTIVE`]: the child has no stdin, so a prompt that
-    /// invites a clarifying question would just stall the turn.
+    /// invites a clarifying question would just stall the turn. A `user_reply`
+    /// puts the user's words verbatim in the middle — that text is the whole
+    /// reason the turn exists — and an `app_rules` hint is appended as
+    /// "Context:" so the tailored advice reaches the model.
     fn prompt(&self) -> String {
         let focus = if self.window_title.is_empty() {
             "no focused window".to_string()
         } else {
             format!("focused window {:?}", self.window_title)
         };
-        format!(
-            "[char-rig {}] {} ({}; idle {}s). Decide whether to react (speak, emote, move) or ignore it. {}",
-            self.event_type, self.detail, focus, self.idle_secs, HEADLESS_DIRECTIVE
-        )
+        let mut prompt = format!(
+            "[char-rig {}] {} ({}; idle {}s).",
+            self.event_type, self.detail, focus, self.idle_secs
+        );
+        if let Some(text) = &self.text {
+            prompt.push_str(&format!(" The user replied: {text:?}."));
+        }
+        if let Some(hint) = &self.hint {
+            prompt.push_str(&format!(" Context: {hint}"));
+        }
+        prompt.push_str(" Decide whether to react (speak, emote, move) or ignore it. ");
+        prompt.push_str(HEADLESS_DIRECTIVE);
+        prompt
     }
 }
 
@@ -594,17 +721,95 @@ fn interaction_trigger(
         window_title: shared.context.window_title.clone(),
         idle_secs: shared.context.idle_secs,
         kind: Some(kind.to_string()),
-        keyword: None,
         x,
         y,
+        ..Trigger::default()
     })
 }
 
-/// Evaluate one `/context` poll: title-keyword rule + idle-return rule.
+/// Turn a `user_reply` SSE payload into a trigger.
+///
+/// A reply is the user talking *to* the agent, so it never consults a cooldown
+/// and never consults the interaction rules: any cooldown that suppressed it
+/// would look like the avatar ignoring the user. The dispatcher's single-flight
+/// latch still applies.
+fn user_reply_trigger(shared: &Shared, payload: &Value, now: Instant) -> Option<Trigger> {
+    let text = payload.get("text").and_then(Value::as_str)?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    // Keep the surface honest: a reply is a direct address, not a scheduled
+    // event, so the only thing recorded is that it happened.
+    let _ = now;
+    Some(Trigger {
+        event_type: "user_reply".to_string(),
+        detail: format!("the user replied in the speech bubble: {text:?}"),
+        window_title: shared.context.window_title.clone(),
+        idle_secs: shared.context.idle_secs,
+        text: Some(text.to_string()),
+        ..Trigger::default()
+    })
+}
+
+/// Turn an `alert` SSE payload (from `POST /alert`) into a trigger.
+///
+/// Unlike a user reply this *is* rate-limited: a network monitor can burst, and
+/// each alert costs a model turn. `rules.alerts.cooldown_secs` bounds that, and
+/// `alerts.enabled = false` silences the path entirely.
+fn alert_trigger(
+    rules: &Rules,
+    shared: &mut Shared,
+    payload: &Value,
+    now: Instant,
+) -> Option<Trigger> {
+    if !rules.alerts.enabled {
+        return None;
+    }
+    let summary = payload.get("summary").and_then(Value::as_str)?.trim();
+    if summary.is_empty() {
+        return None;
+    }
+    let source = payload
+        .get("source")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("an external monitor");
+    let severity = payload
+        .get("severity")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("info");
+    let cooldown = Duration::from_secs(rules.alerts.cooldown_secs);
+    if !shared.cooldowns.allow("alert", now, cooldown) {
+        return None;
+    }
+
+    Some(Trigger {
+        event_type: "alert".to_string(),
+        detail: format!("{source} reported a {severity} alert: {summary}"),
+        window_title: shared.context.window_title.clone(),
+        idle_secs: shared.context.idle_secs,
+        text: None,
+        severity: Some(severity.to_string()),
+        hint: Some(format!(
+            "This came from {source} over POST /alert, not from the user's own actions; \
+say what happened and why it matters in one or two sentences."
+        )),
+        ..Trigger::default()
+    })
+}
+
+/// Evaluate one `/context` poll: title rules (keyword + per-app) + idle-return.
 ///
 /// Always updates the shared snapshot (so interaction triggers can quote the
 /// current window) and the idle state machine; returns the triggers that passed
 /// their cooldown.
+///
+/// Title matching is `keyword OR app_rule`, and a per-app rule wins when both
+/// match: it is the more specific statement of intent, and its `animation` /
+/// `prompt_hint` are what the user configured for that app.
 fn context_triggers(
     rules: &Rules,
     shared: &mut Shared,
@@ -619,28 +824,43 @@ fn context_triggers(
     shared.context = context.clone();
     let cooldown = Duration::from_secs(rules.context.cooldown_secs);
 
-    // ---- window title changed into something that matches a keyword ----
+    // ---- window title changed into something worth a trigger ----
     let title_changed = previous_title.as_deref() != Some(context.window_title.as_str());
     if shared.initialized && title_changed && !context.window_title.is_empty() {
-        if let Some(keyword) = rules.matched_keyword(&context.window_title) {
-            if shared
-                .cooldowns
-                .allow("context:window_title", now, cooldown)
-            {
-                triggers.push(Trigger {
-                    event_type: "window_title".to_string(),
-                    detail: format!(
-                        "the focused window changed to {:?} (matched {:?})",
-                        context.window_title, keyword
-                    ),
-                    window_title: context.window_title.clone(),
-                    idle_secs: context.idle_secs,
-                    kind: None,
-                    keyword: Some(keyword.to_string()),
-                    x: None,
-                    y: None,
-                });
-            }
+        let keyword = rules.matched_keyword(&context.window_title);
+        let app_rule = rules.matched_app_rule(&context.process_name, &context.window_title);
+
+        if (keyword.is_some() || app_rule.is_some())
+            && shared.cooldowns.allow("context:window_title", now, cooldown)
+        {
+            let detail = match (app_rule, keyword) {
+                (Some(rule), Some(keyword)) => format!(
+                    "the focused window changed to {:?} ({}; matched {:?})",
+                    context.window_title,
+                    rule.describe(),
+                    keyword
+                ),
+                (Some(rule), None) => format!(
+                    "the focused window changed to {:?} (matched {})",
+                    context.window_title,
+                    rule.describe()
+                ),
+                (None, Some(keyword)) => format!(
+                    "the focused window changed to {:?} (matched {:?})",
+                    context.window_title, keyword
+                ),
+                (None, None) => unreachable!("a trigger needs a match"),
+            };
+            triggers.push(Trigger {
+                event_type: "window_title".to_string(),
+                detail,
+                window_title: context.window_title.clone(),
+                idle_secs: context.idle_secs,
+                keyword: keyword.map(str::to_string),
+                animation: app_rule.and_then(|rule| rule.animation.clone()),
+                hint: app_rule.and_then(|rule| rule.prompt_hint.clone()),
+                ..Trigger::default()
+            });
         }
     }
 
@@ -658,10 +878,7 @@ fn context_triggers(
                 ),
                 window_title: context.window_title.clone(),
                 idle_secs: context.idle_secs,
-                kind: None,
-                keyword: None,
-                x: None,
-                y: None,
+                ..Trigger::default()
             });
         }
     }
@@ -681,6 +898,9 @@ fn context_triggers(
 #[derive(Debug, Clone, Default, PartialEq)]
 struct ContextSnapshot {
     window_title: String,
+    /// Executable that owns the foreground window (e.g. `Code.exe`); empty on
+    /// older avatar builds and off Windows.
+    process_name: String,
     idle_secs: u64,
 }
 
@@ -870,6 +1090,42 @@ fn spawn_hermes(command: &str, prompt: &str, timeout: Duration, flight: FlightGu
     }
 }
 
+/// The immediate visual ack for a trigger.
+#[derive(Debug, Clone, PartialEq)]
+enum Ack {
+    /// `POST /emote` with an expression name.
+    Emote(String),
+    /// `POST /animate` with a custom keyframe clip name.
+    Animate(String),
+}
+
+/// Decide what the avatar does the moment a trigger fires.
+///
+/// A matched `app_rules` entry's `animation` wins over the generic
+/// `--ack-emote`: the whole point of the per-app rule is a tailored reaction.
+/// The value is an expression when it names one (six known names) and a clip
+/// name otherwise, so `"animation": "alert"` plays a clip called `alert` while
+/// `"animation": "thinking"` emotes.
+fn ack_plan(trigger: &Trigger, config: &Config) -> Option<Ack> {
+    if let Some(animation) = trigger
+        .animation
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(if EXPRESSIONS.contains(&animation) {
+            Ack::Emote(animation.to_string())
+        } else {
+            Ack::Animate(animation.to_string())
+        });
+    }
+    if config.ack_emote.is_empty() {
+        None
+    } else {
+        Some(Ack::Emote(config.ack_emote.clone()))
+    }
+}
+
 /// Deliver one trigger: dry-run print → ack emote → webhook → Hermes command.
 ///
 /// The whole side-effect chain is one flight: a trigger arriving while a
@@ -903,20 +1159,37 @@ async fn handle_trigger(
     eprintln!("[watcher] trigger {}: {}", trigger.event_type, trigger.detail);
 
     // 1. Immediate visual ack, so the avatar reacts before the agent answers.
-    if !config.ack_emote.is_empty() {
-        let body = json!({
-            "expression": config.ack_emote,
-            "duration_ms": ACK_EMOTE_DURATION_MS,
-            "revert": "neutral",
-        });
-        let url = format!("{}/emote", config.api_url);
-        match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
-            Ok(response) if !response.status().is_success() => {
-                eprintln!("[watcher] ack emote rejected with {}", response.status())
+    match ack_plan(trigger, config) {
+        Some(Ack::Emote(expression)) => {
+            let body = json!({
+                "expression": expression,
+                "duration_ms": ACK_EMOTE_DURATION_MS,
+                "revert": "neutral",
+            });
+            let url = format!("{}/emote", config.api_url);
+            match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
+                Ok(response) if !response.status().is_success() => {
+                    eprintln!("[watcher] ack emote rejected with {}", response.status())
+                }
+                Ok(_) => {}
+                Err(err) => eprintln!("[watcher] ack emote failed: {err}"),
             }
-            Ok(_) => {}
-            Err(err) => eprintln!("[watcher] ack emote failed: {err}"),
         }
+        Some(Ack::Animate(name)) => {
+            let body = json!({ "name": name, "loop": true });
+            let url = format!("{}/animate", config.api_url);
+            match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
+                Ok(response) if !response.status().is_success() => {
+                    eprintln!(
+                        "[watcher] ack animation {name:?} rejected with {} (is it a clip on this rig?)",
+                        response.status()
+                    )
+                }
+                Ok(_) => {}
+                Err(err) => eprintln!("[watcher] ack animation failed: {err}"),
+            }
+        }
+        None => {}
     }
 
     // 2. Webhook.
@@ -976,6 +1249,13 @@ async fn fetch_context(client: &reqwest::Client, api_url: &str) -> Result<Contex
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        // `/context` grew `process_name` after the first release; an older
+        // avatar build simply leaves it empty and the title rules still work.
+        process_name: body
+            .get("process_name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         idle_secs: body.get("idle_secs").and_then(Value::as_u64).unwrap_or(0),
     })
 }
@@ -984,7 +1264,13 @@ async fn fetch_context(client: &reqwest::Client, api_url: &str) -> Result<Contex
  * tasks
  * ------------------------------------------------------------------ */
 
-/// Turn one SSE frame into a queued trigger (only `interaction` frames matter).
+/// Turn one SSE frame into a queued trigger.
+///
+/// Five frame types matter: `interaction` (the user poked the avatar),
+/// `user_reply` (they typed in the bubble), `alert` (`POST /alert` from an
+/// external monitor), plus the context loop's own `window_title` /
+/// `idle_return`. Every other type — `state`, `speech`, `animate`, … — is
+/// ignored so the watcher stays quiet while the page animates.
 async fn handle_frame(
     frame: &SseFrame,
     rules: &Rules,
@@ -1005,18 +1291,27 @@ async fn handle_frame(
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or(frame.event.as_str());
-    if frame_type != "interaction" {
-        return;
-    }
     let payload = value.get("payload").cloned().unwrap_or(Value::Null);
-    let Some(kind) = payload.get("kind").and_then(Value::as_str) else {
-        return;
+
+    let trigger = match frame_type {
+        "interaction" => {
+            let Some(kind) = payload.get("kind").and_then(Value::as_str) else {
+                return;
+            };
+            let mut guard = lock(shared);
+            interaction_trigger(rules, &mut guard, kind, &payload, Instant::now())
+        }
+        "user_reply" => {
+            let guard = lock(shared);
+            user_reply_trigger(&guard, &payload, Instant::now())
+        }
+        "alert" => {
+            let mut guard = lock(shared);
+            alert_trigger(rules, &mut guard, &payload, Instant::now())
+        }
+        _ => return,
     };
 
-    let trigger = {
-        let mut guard = lock(shared);
-        interaction_trigger(rules, &mut guard, kind, &payload, Instant::now())
-    };
     if let Some(trigger) = trigger {
         if tx.send(trigger).await.is_err() {
             eprintln!("[watcher] dispatcher is gone; dropping trigger");
@@ -1192,6 +1487,24 @@ mod tests {
         Rules::from_json(json_text).expect("valid rules")
     }
 
+    /// A `/context` reading with no owning process (title-keyword rules only).
+    fn snap(title: &str, idle_secs: u64) -> ContextSnapshot {
+        ContextSnapshot {
+            window_title: title.to_string(),
+            process_name: String::new(),
+            idle_secs,
+        }
+    }
+
+    /// A `/context` reading from a specific executable (`app_rules` tests).
+    fn snap_app(title: &str, process: &str, idle_secs: u64) -> ContextSnapshot {
+        ContextSnapshot {
+            window_title: title.to_string(),
+            process_name: process.to_string(),
+            idle_secs,
+        }
+    }
+
     /* ---------- SSE parsing ---------- */
 
     #[test]
@@ -1345,6 +1658,7 @@ mod tests {
         let mut shared = shared();
         shared.context = ContextSnapshot {
             window_title: "Visual Studio Code".to_string(),
+            process_name: "Code.exe".to_string(),
             idle_secs: 12,
         };
         let payload = json!({ "kind": "double_click", "x": 541.0, "y": 489.0, "state": "idle" });
@@ -1401,7 +1715,7 @@ mod tests {
         let base = Instant::now();
         let rules = Rules::default();
         let mut shared = shared();
-        let context = ContextSnapshot { window_title: "some error log".to_string(), idle_secs: 5 };
+        let context = snap("some error log", 5);
         assert!(
             context_triggers(&rules, &mut shared, &context, base).is_empty(),
             "the first poll must not fire on the title it starts with"
@@ -1414,12 +1728,12 @@ mod tests {
         let base = Instant::now();
         let rules = Rules::default();
         let mut shared = shared();
-        context_triggers(&rules, &mut shared, &ContextSnapshot { window_title: "Editor".into(), idle_secs: 1 }, base);
+        context_triggers(&rules, &mut shared, &snap("Editor", 1), base);
 
         let triggers = context_triggers(
             &rules,
             &mut shared,
-            &ContextSnapshot { window_title: "Build failed - project".into(), idle_secs: 2 },
+            &snap("Build failed - project", 2),
             base + Duration::from_secs(20),
         );
         assert_eq!(triggers.len(), 1);
@@ -1431,7 +1745,7 @@ mod tests {
         let again = context_triggers(
             &rules,
             &mut shared,
-            &ContextSnapshot { window_title: "Build failed - project".into(), idle_secs: 3 },
+            &snap("Build failed - project", 3),
             base + Duration::from_secs(40),
         );
         assert!(again.is_empty());
@@ -1442,11 +1756,11 @@ mod tests {
         let base = Instant::now();
         let rules = Rules::default();
         let mut shared = shared();
-        context_triggers(&rules, &mut shared, &ContextSnapshot { window_title: "Editor".into(), idle_secs: 1 }, base);
+        context_triggers(&rules, &mut shared, &snap("Editor", 1), base);
         let triggers = context_triggers(
             &rules,
             &mut shared,
-            &ContextSnapshot { window_title: "Terminal".into(), idle_secs: 2 },
+            &snap("Terminal", 2),
             base + Duration::from_secs(20),
         );
         assert!(triggers.is_empty());
@@ -1459,14 +1773,14 @@ mod tests {
         let mut shared = shared();
 
         // away
-        context_triggers(&rules, &mut shared, &ContextSnapshot { window_title: "Editor".into(), idle_secs: 950 }, base);
+        context_triggers(&rules, &mut shared, &snap("Editor", 950), base);
         assert!(shared.was_idle);
 
         // back
         let triggers = context_triggers(
             &rules,
             &mut shared,
-            &ContextSnapshot { window_title: "Editor".into(), idle_secs: 2 },
+            &snap("Editor", 2),
             base + Duration::from_secs(20),
         );
         assert_eq!(triggers.len(), 1);
@@ -1479,7 +1793,7 @@ mod tests {
         let again = context_triggers(
             &rules,
             &mut shared,
-            &ContextSnapshot { window_title: "Editor".into(), idle_secs: 3 },
+            &snap("Editor", 3),
             base + Duration::from_secs(40),
         );
         assert!(again.is_empty());
@@ -1490,12 +1804,12 @@ mod tests {
         let base = Instant::now();
         let rules = rules(r#"{"context":{"cooldown_secs":300}}"#);
         let mut shared = shared();
-        context_triggers(&rules, &mut shared, &ContextSnapshot { window_title: "Editor".into(), idle_secs: 1 }, base);
+        context_triggers(&rules, &mut shared, &snap("Editor", 1), base);
 
         let first = context_triggers(
             &rules,
             &mut shared,
-            &ContextSnapshot { window_title: "error one".into(), idle_secs: 1 },
+            &snap("error one", 1),
             base + Duration::from_secs(10),
         );
         assert_eq!(first.len(), 1);
@@ -1503,7 +1817,7 @@ mod tests {
         let second = context_triggers(
             &rules,
             &mut shared,
-            &ContextSnapshot { window_title: "error two".into(), idle_secs: 1 },
+            &snap("error two", 1),
             base + Duration::from_secs(60),
         );
         assert!(second.is_empty(), "inside the 300s cooldown");
@@ -1511,7 +1825,7 @@ mod tests {
         let third = context_triggers(
             &rules,
             &mut shared,
-            &ContextSnapshot { window_title: "error three".into(), idle_secs: 1 },
+            &snap("error three", 1),
             base + Duration::from_secs(320),
         );
         assert_eq!(third.len(), 1, "after the cooldown");
@@ -1527,9 +1841,9 @@ mod tests {
             window_title: "Visual Studio Code".to_string(),
             idle_secs: 12,
             kind: Some("double_click".to_string()),
-            keyword: None,
             x: Some(541.0),
             y: Some(489.0),
+            ..Trigger::default()
         };
         let payload = trigger.payload(1_700_000_000_000);
         assert_eq!(payload["event_type"], "interaction");
@@ -1549,10 +1863,8 @@ mod tests {
             detail: "the focused window changed to \"Build failed\" (matched \"failed\")".to_string(),
             window_title: "Build failed".to_string(),
             idle_secs: 3,
-            kind: None,
             keyword: Some("failed".to_string()),
-            x: None,
-            y: None,
+            ..Trigger::default()
         };
         let prompt = trigger.prompt();
         assert!(prompt.starts_with("[char-rig window_title]"), "{prompt}");
@@ -1685,9 +1997,9 @@ mod tests {
             window_title: "Editor".to_string(),
             idle_secs: 4,
             kind: Some("double_click".to_string()),
-            keyword: None,
             x: Some(10.0),
             y: Some(20.0),
+            ..Trigger::default()
         };
         let prompt = trigger.prompt();
         assert!(
@@ -1766,5 +2078,339 @@ mod tests {
         assert!(clone.try_enter().is_none(), "clones share the same latch");
         drop(guard);
         assert!(clone.try_enter().is_some());
+    }
+
+    /* ---------- per-app rules & alerts ---------- */
+
+    #[test]
+    fn rules_parse_app_rules_and_alert_settings() {
+        let parsed = rules(
+            r#"{
+                "app_rules": [
+                    {
+                        "process": "Code.exe",
+                        "title_contains": "error",
+                        "animation": "alert",
+                        "prompt_hint": "This is a compile error in the user's editor."
+                    }
+                ],
+                "alerts": { "cooldown_secs": 30 }
+            }"#,
+        );
+        assert_eq!(parsed.app_rules.len(), 1);
+        let rule = &parsed.app_rules[0];
+        assert_eq!(rule.process, "Code.exe");
+        assert_eq!(rule.title_contains, "error");
+        assert_eq!(rule.animation.as_deref(), Some("alert"));
+        assert!(rule.prompt_hint.as_deref().unwrap().contains("compile error"));
+        assert_eq!(parsed.alerts.cooldown_secs, 30);
+        assert!(parsed.alerts.enabled, "a partial alerts block keeps the switch on");
+    }
+
+    #[test]
+    fn the_old_rules_schema_still_parses() {
+        // The shipped pre-app_rules file: every new key must be optional.
+        let legacy = rules(
+            r#"{
+                "interactions": { "double_click": true, "drag_end": true, "click": false, "cooldown_secs": 15 },
+                "context": { "window_keywords": ["error"], "idle_threshold_secs": 900, "cooldown_secs": 300 },
+                "ack_emote": "thinking",
+                "hermes_cmd": "hermes chat -q",
+                "hermes_timeout_secs": 120,
+                "webhook_url": null
+            }"#,
+        );
+        assert!(legacy.app_rules.is_empty(), "no app rules configured");
+        assert!(legacy.alerts.enabled, "alerts are on by default");
+        assert_eq!(legacy.alerts.cooldown_secs, DEFAULT_ALERT_COOLDOWN_SECS);
+        assert_eq!(legacy.alerts.cooldown_secs, 60);
+    }
+
+    #[test]
+    fn app_rule_matching_is_case_insensitive_with_blank_wildcards() {
+        let any_code = AppRule {
+            process: "code.EXE".to_string(),
+            ..AppRule::default()
+        };
+        assert!(any_code.matches("Code.exe", "anything at all"));
+        assert!(!any_code.matches("explorer.exe", "anything at all"));
+        assert!(
+            !any_code.matches("", "anything at all"),
+            "empty process_name never matches a process rule"
+        );
+
+        let any_error = AppRule {
+            title_contains: "ERROR".to_string(),
+            ..AppRule::default()
+        };
+        assert!(any_error.matches("chrome.exe", "a TypeError occurred"));
+        assert!(!any_error.matches("chrome.exe", "all good"));
+
+        // An all-blank rule matches everything: useful as a catch-all.
+        assert!(AppRule::default().matches("", ""));
+    }
+
+    #[test]
+    fn app_rule_beats_the_keyword_and_carries_animation_and_hint() {
+        let base = Instant::now();
+        let rules = rules(
+            r#"{
+                "context": { "window_keywords": ["error"] },
+                "app_rules": [{
+                    "process": "Code.exe",
+                    "title_contains": "error",
+                    "animation": "alert",
+                    "prompt_hint": "This is a compile error in the user's editor."
+                }]
+            }"#,
+        );
+        let mut shared = shared();
+        context_triggers(&rules, &mut shared, &snap("Editor", 1), base);
+
+        let triggers = context_triggers(
+            &rules,
+            &mut shared,
+            &snap_app("main.rs - error", "Code.exe", 2),
+            base + Duration::from_secs(20),
+        );
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].event_type, "window_title");
+        assert_eq!(triggers[0].animation.as_deref(), Some("alert"));
+        assert_eq!(
+            triggers[0].hint.as_deref(),
+            Some("This is a compile error in the user's editor.")
+        );
+        assert_eq!(triggers[0].keyword.as_deref(), Some("error"));
+        assert!(triggers[0].detail.contains("Code.exe"), "{}", triggers[0].detail);
+        assert!(triggers[0].detail.contains("error"), "{}", triggers[0].detail);
+    }
+
+    #[test]
+    fn an_app_rule_fires_without_any_keyword_match() {
+        let base = Instant::now();
+        let rules = rules(
+            r#"{"app_rules":[{"process":"Code.exe","animation":"thinking","prompt_hint":"They are coding."}]}"#,
+        );
+        let mut shared = shared();
+        context_triggers(&rules, &mut shared, &snap("Desktop", 1), base);
+
+        let triggers = context_triggers(
+            &rules,
+            &mut shared,
+            &snap_app("main.rs - Visual Studio Code", "Code.exe", 1),
+            base + Duration::from_secs(20),
+        );
+        assert_eq!(triggers.len(), 1, "the process alone is enough");
+        assert_eq!(triggers[0].keyword, None);
+        assert_eq!(triggers[0].hint.as_deref(), Some("They are coding."));
+
+        // A different process with a quiet title stays quiet.
+        let quiet = context_triggers(
+            &rules,
+            &mut shared,
+            &snap_app("Inbox - Outlook", "OUTLOOK.EXE", 1),
+            base + Duration::from_secs(400),
+        );
+        assert!(quiet.is_empty());
+    }
+
+    #[test]
+    fn user_reply_trigger_bypasses_cooldowns_and_quotes_the_text() {
+        let base = Instant::now();
+        let mut shared = shared();
+        shared.context = ContextSnapshot {
+            window_title: "Editor".to_string(),
+            process_name: "Code.exe".to_string(),
+            idle_secs: 7,
+        };
+        let payload = json!({ "text": "  what is on my clipboard?  " });
+
+        let trigger = user_reply_trigger(&shared, &payload, base).expect("a reply always fires");
+        assert_eq!(trigger.event_type, "user_reply");
+        assert_eq!(trigger.text.as_deref(), Some("what is on my clipboard?"));
+        assert!(trigger.detail.contains("what is on my clipboard?"));
+        assert_eq!(trigger.window_title, "Editor");
+        assert_eq!(trigger.idle_secs, 7);
+
+        let prompt = trigger.prompt();
+        assert!(prompt.starts_with("[char-rig user_reply]"), "{prompt}");
+        assert!(
+            prompt.contains("The user replied: \"what is on my clipboard?\""),
+            "{prompt}"
+        );
+        assert!(prompt.ends_with(HEADLESS_DIRECTIVE), "{prompt}");
+
+        // No cooldown: the second reply one second later still fires.
+        assert!(
+            user_reply_trigger(&shared, &payload, base + Duration::from_secs(1)).is_some(),
+            "direct user replies are never rate-limited"
+        );
+        // Blank text is not a trigger.
+        assert!(user_reply_trigger(&shared, &json!({ "text": "   " }), base).is_none());
+        assert!(user_reply_trigger(&shared, &json!({}), base).is_none());
+    }
+
+    #[test]
+    fn alert_frames_are_rate_limited_and_configurable() {
+        let base = Instant::now();
+        let settings = rules(r#"{"alerts":{"cooldown_secs":60}}"#);
+        let mut current = shared();
+        let payload = json!({
+            "source": "suricata",
+            "summary": "ET SCAN port sweep from 192.168.0.9",
+            "severity": "warn"
+        });
+
+        let trigger = alert_trigger(&settings, &mut current, &payload, base).expect("alert fires");
+        assert_eq!(trigger.event_type, "alert");
+        assert_eq!(trigger.severity.as_deref(), Some("warn"));
+        assert!(trigger.detail.contains("suricata"));
+        assert!(trigger.detail.contains("port sweep"));
+        let prompt = trigger.prompt();
+        assert!(prompt.starts_with("[char-rig alert]"), "{prompt}");
+        assert!(prompt.contains("Context: This came from suricata"), "{prompt}");
+
+        assert!(
+            alert_trigger(&settings, &mut current, &payload, base + Duration::from_secs(30)).is_none(),
+            "inside the 60s cooldown"
+        );
+        assert!(
+            alert_trigger(&settings, &mut current, &payload, base + Duration::from_secs(61)).is_some(),
+            "after the cooldown"
+        );
+
+        // Switched off: the frame is ignored entirely.
+        let disabled = rules(r#"{"alerts":{"enabled":false}}"#);
+        let mut muted = shared();
+        assert!(alert_trigger(&disabled, &mut muted, &payload, base).is_none());
+
+        // Minimal payload: severity defaults to info, a blank source is named.
+        let mut fresh = shared();
+        let minimal = alert_trigger(&settings, &mut fresh, &json!({ "summary": "disk full" }), base)
+            .expect("summary is the only requirement");
+        assert_eq!(minimal.severity.as_deref(), Some("info"));
+        assert!(minimal.detail.contains("an external monitor"));
+        let mut blank = shared();
+        assert!(alert_trigger(&settings, &mut blank, &json!({ "summary": "  " }), base).is_none());
+    }
+
+    #[test]
+    fn ack_plan_prefers_the_per_app_animation() {
+        let config = Config::resolve(CliConfig::default(), rules(r#"{"ack_emote":"surprised"}"#));
+
+        let mut trigger = Trigger {
+            animation: Some("alert".to_string()),
+            ..Trigger::default()
+        };
+        assert_eq!(
+            ack_plan(&trigger, &config),
+            Some(Ack::Animate("alert".to_string())),
+            "a non-expression name is a keyframe clip"
+        );
+
+        trigger.animation = Some("happy".to_string());
+        assert_eq!(ack_plan(&trigger, &config), Some(Ack::Emote("happy".to_string())));
+
+        trigger.animation = Some("   ".to_string());
+        assert_eq!(
+            ack_plan(&trigger, &config),
+            Some(Ack::Emote("surprised".to_string())),
+            "a blank animation falls back to the generic ack"
+        );
+
+        trigger.animation = None;
+        assert_eq!(ack_plan(&trigger, &config), Some(Ack::Emote("surprised".to_string())));
+
+        let quiet = Config::resolve(
+            CliConfig {
+                ack_emote: Some(String::new()),
+                ..CliConfig::default()
+            },
+            Rules::default(),
+        );
+        assert_eq!(ack_plan(&trigger, &quiet), None, "--no-ack-emote wins");
+    }
+
+    #[test]
+    fn payload_exposes_the_rule_fields_and_omits_empty_ones() {
+        let trigger = Trigger {
+            event_type: "window_title".to_string(),
+            detail: "the focused window changed to \"main.rs - error\"".to_string(),
+            window_title: "main.rs - error".to_string(),
+            idle_secs: 4,
+            keyword: Some("error".to_string()),
+            animation: Some("alert".to_string()),
+            hint: Some("This is a compile error in the user's editor.".to_string()),
+            ..Trigger::default()
+        };
+        let payload = trigger.payload(1_700_000_000_000);
+        assert_eq!(payload["keyword"], "error");
+        assert_eq!(payload["animation"], "alert");
+        assert_eq!(payload["hint"], "This is a compile error in the user's editor.");
+        assert!(payload.get("text").is_none(), "no reply text on a title trigger");
+        assert!(payload.get("severity").is_none());
+        assert!(trigger.prompt().contains("Context: This is a compile error"));
+    }
+
+    #[tokio::test]
+    async fn handle_frame_turns_reply_and_alert_frames_into_triggers() {
+        let rules = Rules::default();
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let (tx, mut rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
+
+        let reply = SseFrame {
+            event: "user_reply".to_string(),
+            data: json!({
+                "seq": 1,
+                "type": "user_reply",
+                "payload": { "text": "hello there" }
+            })
+            .to_string(),
+        };
+        handle_frame(&reply, &rules, &shared, &tx).await;
+        let trigger = rx.try_recv().expect("a user_reply frame is a trigger");
+        assert_eq!(trigger.event_type, "user_reply");
+        assert_eq!(trigger.text.as_deref(), Some("hello there"));
+
+        let alert = SseFrame {
+            event: "alert".to_string(),
+            data: json!({
+                "seq": 2,
+                "type": "alert",
+                "payload": { "source": "cron", "summary": "backup failed", "severity": "error" }
+            })
+            .to_string(),
+        };
+        handle_frame(&alert, &rules, &shared, &tx).await;
+        let trigger = rx.try_recv().expect("an alert frame is a trigger");
+        assert_eq!(trigger.event_type, "alert");
+        assert_eq!(trigger.severity.as_deref(), Some("error"));
+        assert!(trigger.detail.contains("backup failed"));
+
+        // Everything else stays quiet, as does a malformed frame.
+        for data in [
+            json!({ "type": "speech", "payload": { "text": "hi" } }),
+            json!({ "type": "interaction", "payload": { "x": 1.0, "y": 2.0 } }),
+        ] {
+            let frame = SseFrame { event: "message".to_string(), data: data.to_string() };
+            handle_frame(&frame, &rules, &shared, &tx).await;
+        }
+        let junk = SseFrame { event: "message".to_string(), data: "not json".to_string() };
+        handle_frame(&junk, &rules, &shared, &tx).await;
+        assert!(rx.try_recv().is_err(), "nothing else was queued");
+    }
+
+    #[test]
+    fn headless_directive_documents_the_new_tools_and_brevity() {
+        let prompt = Trigger::default().prompt();
+        for needle in [
+            "mcp__char_rig__avatar_get_clipboard()",
+            "mcp__char_rig__avatar_get_context()",
+            "process_name",
+            "Chain several calls in one turn",
+            "under 180 characters",
+        ] {
+            assert!(prompt.contains(needle), "missing {needle:?} in {prompt}");
+        }
     }
 }

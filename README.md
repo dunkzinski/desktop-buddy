@@ -115,6 +115,13 @@ Clicking or double-clicking the avatar does not make it react on its own — the
 page reports the interaction to Rust, which pushes an `interaction` frame on
 `GET /events` so your agent can decide what happens (wave back, speak, ignore).
 
+**Talking back:** when a speech bubble is on screen, click it (or just hover) and
+a small quick-reply box slides in under the text — type, `Enter` to send, `Esc`
+to dismiss. The text becomes a `user_reply` frame (`notify_reply` /
+`POST /reply`), the bubble closes, and the watcher wakes Hermes with your exact
+words. The bubble's box is published as a hit region, so the input stays
+clickable while the rest of the desktop is click-through.
+
 **Moving it:** in play mode, press on the avatar and drag — it follows the
 cursor, clamped to the screen, and idle wandering stays paused for 15 s after
 you let go (the release is reported as a `drag_end` interaction). Rig Edit Mode
@@ -124,11 +131,13 @@ keeps the press for its gizmos, so the two gestures never fight.
 
 ## Pushing vs polling
 
-`GET /context` answers *what is the user doing* (foreground window title,
-machine-wide idle seconds). `GET /events` is a Server-Sent Events stream of
-*what the avatar did*: `state`, `speech`, `speech_cleared`, `model`,
-`rig_saved`, `pose`, `part_patch`, `interaction`. An agent can therefore block
-on the stream instead of polling `/state`:
+`GET /context` answers *what is the user doing* (foreground window title, the
+executable that owns it, machine-wide idle seconds, plus the last 15 SSE frames
+as a catch-up). `GET /clipboard` reads the last-copied text (2000 chars max).
+`GET /events` is a Server-Sent Events stream of *what the avatar did*: `state`,
+`speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`,
+`interaction`, `user_reply`, `alert`. An agent can therefore block on the stream
+instead of polling `/state`:
 
 ```bash
 curl -N localhost:8765/events
@@ -174,8 +183,10 @@ rule matches:
 | Trigger | Fires when | Default cooldown |
 | --- | --- | --- |
 | `interaction` | the avatar is double-clicked or a drag ends (plain `click` only with `--trigger-single-click`) | 15 s |
-| `window_title` | the focused window *changes* to a title containing one of `window_keywords` (case-insensitive substring) | 300 s |
+| `window_title` | the focused window *changes* to a title containing one of `window_keywords` (case-insensitive substring) **or** matching an `app_rules` entry | 300 s |
 | `idle_return` | idle seconds drop back below `idle_threshold_secs` after having exceeded it | 300 s |
+| `user_reply` | the user types into the speech bubble's quick-reply box (or a client calls `POST /reply`) — **no cooldown**, the user spoke directly | — |
+| `alert` | `POST /alert` from an external monitor (Suricata, cron, a build script) | 60 s (`alerts.cooldown_secs`) |
 
 The first `/context` poll is only a baseline: the watcher never fires on the
 window it starts with. A trigger then does three things, in order:
@@ -204,9 +215,13 @@ processes is the one failure mode that actually costs money:
   trigger: **no** follow-up questions, and it spells out the exact MCP call
   signatures (`mcp__char_rig__avatar_speak(text, expression?, duration_ms?)`,
   `avatar_emote(expression, duration_ms?)` with the six valid expressions,
-  `avatar_wave()`, `avatar_animate(name, loop?)`) so the very first turn can act
-  without a `tool_describe` round-trip. That matters most on a local model,
-  where every extra round-trip eats the timeout.
+  `avatar_wave()`, `avatar_animate(name, loop?)`, plus `avatar_get_context()`
+  for the focused window / `process_name` / recent events and
+  `avatar_get_clipboard()` for the last-copied text) so the very first turn can
+  act without a `tool_describe` round-trip. It also tells the model to **chain
+  calls** in one turn (an emote or clip *and* a line of speech) and to keep the
+  bubble **under 180 characters** so it never overflows the screen. That matters
+  most on a local model, where every extra round-trip eats the timeout.
 * The wait is wrapped in a timeout (`--hermes-timeout`, default `120` s, also
   `hermes_timeout_secs` in `watcher_rules.json`); a child that outlives it is
   killed and reaped, which also releases the flight permit. The default is
@@ -249,22 +264,48 @@ falls back to the built-in defaults shown here:
     "idle_threshold_secs": 900,
     "cooldown_secs": 300
   },
+  "app_rules": [
+    {
+      "process": "Code.exe",
+      "title_contains": "error",
+      "animation": "surprised",
+      "prompt_hint": "This is a compile/build error in the user's editor."
+    }
+  ],
+  "alerts": { "enabled": true, "cooldown_secs": 60 },
   "ack_emote": "thinking",
-  "hermes_cmd": null,
+  "hermes_cmd": "hermes chat --continue char-rig --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
   "webhook_url": null
 }
 ```
+
+`app_rules` entries match the focused window on `process` (`/context`'s
+`process_name`, e.g. `Code.exe`) and `title_contains` — both case-insensitive
+substrings, blank = wildcard, first match wins. A match supplies the ack
+`animation` (an expression name emotes, anything else is played as a keyframe
+clip) and a `prompt_hint` that is appended to the Hermes prompt as `Context: …`.
+`alerts` throttles `POST /alert` frames from outside (network monitor, cron).
+
+The shipped `hermes_cmd` keeps one conversation across triggers:
+`hermes chat --continue char-rig --create-if-missing -Q -q` resumes the session
+named `char-rig` (creating it on first use) and `-Q` keeps its banner/spinner out
+of the watcher's log. The prompt is appended as the last argv entry, so `-q` must
+stay last in that string. Per-run overrides such as `--run-budget`, `--model` or
+`-t` are rejected on a resumed session — put them in `config.yaml` instead.
 
 ---
 
 ## Hermes / MCP
 
 `cargo build` also produces a second binary, **`char-rig-mcp.exe`** — a stdio MCP
-server that exposes the avatar to Hermes (or any MCP client) as ten tools:
+server that exposes the avatar to Hermes (or any MCP client) as eleven tools:
 `avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_wave`, `avatar_pose`,
-`avatar_get_context`, `avatar_list_models`, `avatar_switch_model`,
-`avatar_list_animations`, `avatar_animate`.
+`avatar_get_context`, `avatar_get_clipboard`, `avatar_list_models`,
+`avatar_switch_model`, `avatar_list_animations`, `avatar_animate`.
+`avatar_get_context` carries the window title, the owning `process_name`, idle
+seconds and the last 15 events; `avatar_get_clipboard` returns the last-copied
+text (2000 chars max).
 
 It is a stateless bridge: each tool call is one HTTP request to the running
 `avatar-desktop.exe`, so **start the avatar first**. If it is not running, the
@@ -283,7 +324,7 @@ mcp_servers:
       CHAR_RIG_API_URL: http://127.0.0.1:8765
 ```
 
-Then restart Hermes (or reconnect the server) — the ten `avatar_*` tools show
+Then restart Hermes (or reconnect the server) — the eleven `avatar_*` tools show
 up in the tool list. Verify the bridge on its own with:
 
 ```bash
@@ -326,7 +367,7 @@ ui/                   modular frontend (native ES modules, no build step)
     animator.js       custom keyframe clips: sampling, playback, authoring, finished state
     renderer.js       canvas rendering pipeline
     editor.js         rig editor gizmos, inspector, bone/part authoring, undo
-    speech.js         speech bubble lifecycle
+    speech.js         speech bubble lifecycle + quick-reply box
     bridge.js         Tauri events, state reports, import flow, click-through
     main.js           entry point: DOM bindings, shortcuts, __avatarDebug, main loop, click detection
 models/               rigs + sprites (+ .state.json remembering the selection)

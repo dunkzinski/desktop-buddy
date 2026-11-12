@@ -32,7 +32,7 @@ import {
   playAnimation, stopAnimation, sampleAnimation, listAnimations, isPlaying,
 } from "./animator.js";
 
-import { speak, hideSpeech, updateSpeech } from "./speech.js";
+import { speak, hideSpeech, updateSpeech, openReply, closeReply, toggleReply } from "./speech.js";
 
 import {
   setClickThrough, setupEventListeners, importFromDialog, importImageAs,
@@ -308,6 +308,62 @@ function attachInteractionDetection(canvas) {
   });
 }
 
+/* ---------- speech bubble quick reply ---------- */
+
+/**
+ * Send the user's typed reply to Rust, which fans it out as a `user_reply`
+ * frame on `GET /events` (the watcher wakes Hermes with it). The bubble is
+ * dismissed either way: a reply answers the question that was on screen.
+ */
+async function submitReply(text) {
+  const result = await call("notify_reply", { text: text });
+  if (result && result.__error) {
+    toast("Reply failed: " + result.__error, true);
+  } else {
+    toast("Reply sent");
+  }
+  hideSpeech();
+  wireRegions();
+}
+
+/** Wire the bubble's optional input: click to open, Enter to send, Esc to close. */
+function setupQuickReply() {
+  const bubble = document.getElementById("speech");
+  const form = document.getElementById("speech-reply");
+  const input = document.getElementById("speech-reply-input");
+  if (!bubble || !form || !input) return;
+
+  bubble.addEventListener("click", (event) => {
+    // A click inside the form (typing, the send button) must not close it.
+    if (form.contains(event.target)) return;
+    toggleReply();
+    wireRegions();
+  });
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text) {
+      closeReply();
+      wireRegions();
+      return;
+    }
+    input.value = "";
+    submitReply(text);
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      // Keep Esc from also collapsing the panel (the global handler ignores
+      // INPUT targets, but stop it here so the intent is explicit).
+      event.preventDefault();
+      event.stopPropagation();
+      closeReply();
+      wireRegions();
+    }
+  });
+}
+
 /* ---------- UI wiring ---------- */
 
 function setupUI() {
@@ -409,6 +465,7 @@ function setupUI() {
   });
 
   attachInteractionDetection(canvas);
+  setupQuickReply();
 
   window.addEventListener("keydown", (event) => {
     if (event.target && (event.target.tagName === "INPUT" || event.target.tagName === "SELECT")) return;
@@ -457,6 +514,13 @@ function installDebugSurface() {
     setExpression: setExpression,
     speak: speak,
     hideSpeech: hideSpeech,
+    /** Open the bubble's quick-reply box (CDP tests can drive it from here). */
+    openReply: () => openReply(),
+    /** Is the quick-reply box pinned open right now? */
+    replyBox: () => {
+      const box = document.getElementById("speech");
+      return !!box && box.classList.contains("reply-open");
+    },
     selectBone: (id, partId) => select(id, partId || null),
     undo: undo,
     /** Same path the canvas uses: notify Rust of a pointer interaction. */

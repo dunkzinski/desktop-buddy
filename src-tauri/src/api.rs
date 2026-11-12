@@ -25,8 +25,9 @@ use tokio::sync::oneshot;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 
 use crate::{
-    desktop_context, lock_or_recover, model_event_payload, models, publish as publish_state,
-    snapshot, validate_expression, validate_state, AppCtx, AvatarState, HitRegion, ModelCtx,
+    clipboard_text, desktop_context, lock_or_recover, model_event_payload, models,
+    publish as publish_state, snapshot, validate_expression, validate_state, AppCtx, AvatarState,
+    HitRegion, ModelCtx,
 };
 
 /// Everything a request handler needs. Cheap to clone.
@@ -125,6 +126,24 @@ struct SpeakBody {
     #[serde(default)]
     char_ms: Option<u64>,
 }
+
+/// `POST /reply`: the user's answer to whatever is in the bubble.
+#[derive(Debug, Deserialize)]
+struct ReplyBody {
+    text: String,
+}
+
+/// `POST /alert`: an external monitor (network, cron, script) waking the user.
+#[derive(Debug, Deserialize)]
+struct AlertBody {
+    source: String,
+    summary: String,
+    #[serde(default)]
+    severity: Option<String>,
+}
+
+/// Severities `POST /alert` accepts, most specific to loudest.
+const ALERT_SEVERITIES: [&str; 3] = ["info", "warn", "error"];
 
 /// `POST /animate`: `{"name": "wave", "loop": true}`.
 ///
@@ -254,6 +273,9 @@ fn router(api: ApiCtx) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/context", get(context))
+        .route("/clipboard", get(clipboard))
+        .route("/reply", post(reply))
+        .route("/alert", post(alert))
         .route("/events", get(events))
         .route("/state", get(get_state).post(set_state))
         .route("/move", post(move_to))
@@ -313,17 +335,91 @@ async fn get_state(State(api): State<ApiCtx>) -> Json<AvatarState> {
 /// `GET /context` — a cheap snapshot of what the user is doing right now.
 ///
 /// Windows probes: `GetForegroundWindow` + `GetWindowTextW` for the focused
-/// window title, `GetLastInputInfo` + `GetTickCount64` for machine-wide idle
-/// time. Off Windows both values are safe defaults and `source` says so.
+/// window title, `GetWindowThreadProcessId` + `OpenProcess` +
+/// `QueryFullProcessImageNameW` for the owning executable (e.g. `"Code.exe"`),
+/// and `GetLastInputInfo` + `GetTickCount64` for machine-wide idle time. Off
+/// Windows the values are safe defaults and `source` says so.
+///
+/// `recent_events` is the last 15 SSE frames (`EVENT_HISTORY_CAPACITY`),
+/// oldest first — the same envelope `GET /events` pushes, so an agent that only
+/// polls this route still knows what just happened.
 async fn context(State(api): State<ApiCtx>) -> Json<Value> {
     let desktop = desktop_context();
     Json(json!({
         "ok": true,
         "window_title": desktop.window_title,
+        "process_name": desktop.process_name,
         "idle_secs": desktop.idle_secs,
         "avatar_state": snapshot(&api.shared.avatar),
+        "recent_events": api.shared.recent_events(),
         "source": desktop.source,
     }))
+}
+
+/// `GET /clipboard` — the clipboard's text, capped at `MAX_CLIPBOARD_CHARS`.
+///
+/// Always `ok: true`: an empty clipboard, a non-text clipboard and a clipboard
+/// another process is holding open all read as `text: ""` rather than an error,
+/// so an agent can call this without a failure branch. `truncated` says the
+/// source was longer than the cap.
+async fn clipboard() -> Json<Value> {
+    let clip = clipboard_text();
+    Json(json!({
+        "ok": true,
+        "text": clip.text,
+        "truncated": clip.truncated,
+    }))
+}
+
+/// `POST /reply {"text": "..."}` — the user's answer, typed in the bubble.
+///
+/// Broadcasts a `user_reply` frame and dismisses the bubble. The page-side twin
+/// is the `notify_reply` command, so a reply is identical whichever end sent it.
+async fn reply(
+    State(api): State<ApiCtx>,
+    Json(body): Json<ReplyBody>,
+) -> Result<Json<Value>, ApiError> {
+    let result = crate::do_user_reply(&api.shared, &body.text).map_err(ApiError::bad_request)?;
+    if let Err(err) = api.app.emit("speech-clear", json!({})) {
+        log::warn!("failed to emit speech-clear: {err}");
+    }
+    Ok(Json(result))
+}
+
+/// `POST /alert {"source": "...", "summary": "...", "severity": "warn"}` —
+/// let an external monitor (Suricata, a cron job, a build script) reach the
+/// user through the avatar.
+///
+/// The route is deliberately dumb: it validates and broadcasts an `alert`
+/// frame. What happens next is the watcher's business (it wakes Hermes with a
+/// configurable cooldown), so `curl` can never spawn a model turn by itself.
+async fn alert(
+    State(api): State<ApiCtx>,
+    Json(body): Json<AlertBody>,
+) -> Result<Json<Value>, ApiError> {
+    let source = body.source.trim();
+    let summary = body.summary.trim();
+    if source.is_empty() {
+        return Err(ApiError::bad_request("source must not be empty"));
+    }
+    if summary.is_empty() {
+        return Err(ApiError::bad_request("summary must not be empty"));
+    }
+    let severity = body.severity.as_deref().unwrap_or("info");
+    if !ALERT_SEVERITIES.contains(&severity) {
+        return Err(ApiError::bad_request(format!(
+            "invalid severity {severity:?}; expected one of {ALERT_SEVERITIES:?}"
+        )));
+    }
+    let subscribers = api.shared.emit_event(
+        "alert",
+        json!({ "source": source, "summary": summary, "severity": severity }),
+    );
+    Ok(Json(json!({
+        "ok": true,
+        "alert": { "source": source, "summary": summary, "severity": severity },
+        "subscribers": subscribers,
+    })))
 }
 
 /// `GET /events` — Server-Sent Events.
@@ -391,6 +487,8 @@ fn event_name(kind: &str) -> &'static str {
         "pose" => "pose",
         "part_patch" => "part_patch",
         "interaction" => "interaction",
+        "user_reply" => "user_reply",
+        "alert" => "alert",
         "animate" => "animate",
         "watcher" => "watcher",
         "hello" => "hello",

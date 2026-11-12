@@ -21,6 +21,10 @@ readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
 problems = []
 
+# Filled in by the MCP section (9); declared here so the rules-file checks can
+# use it even if the bridge source is missing.
+lib_expressions = []
+
 # ---------- 1. routes ----------
 routes = set(re.findall(r'\.route\(\s*"([^"]+)"', api_rs))
 print(f"routes in api.rs ({len(routes)}): {', '.join(sorted(routes))}")
@@ -139,8 +143,8 @@ else:
     tool_block = re.search(r"const TOOL_NAMES: \[&str; \d+\] = \[(.*?)\];", mcp_rs, re.S)
     tool_names = set(re.findall(r'"([a-z_]+)"', tool_block.group(1))) if tool_block else set()
     print(f"\nMCP tools ({len(tool_names)}): {', '.join(sorted(tool_names))}")
-    if len(tool_names) != 10:
-        problems.append(f"char-rig-mcp.rs: expected 10 tools, found {len(tool_names)}")
+    if len(tool_names) != 11:
+        problems.append(f"char-rig-mcp.rs: expected 11 tools, found {len(tool_names)}")
 
     # every declared tool must have a schema entry in tools()
     for name in sorted(tool_names):
@@ -176,8 +180,8 @@ else:
     unknown_paths = {p for p in mcp_paths if p not in routes}
     if unknown_paths:
         problems.append(f"char-rig-mcp.rs calls non-existent routes: {sorted(unknown_paths)}")
-    if len(mcp_paths) < 11:
-        problems.append(f"char-rig-mcp.rs only maps {len(mcp_paths)} routes; expected 11")
+    if len(mcp_paths) < 12:
+        problems.append(f"char-rig-mcp.rs only maps {len(mcp_paths)} routes; expected 12")
 
     # the documented Windows path must match where cargo puts the binary
     if r"src-tauri\target\debug\char-rig-mcp.exe" not in readme:
@@ -214,6 +218,7 @@ else:
         "DEFAULT_CONTEXT_INTERVAL_SECS": const_u64("DEFAULT_CONTEXT_INTERVAL_SECS"),
         "DEFAULT_INTERACTION_COOLDOWN_SECS": const_u64("DEFAULT_INTERACTION_COOLDOWN_SECS"),
         "DEFAULT_CONTEXT_COOLDOWN_SECS": const_u64("DEFAULT_CONTEXT_COOLDOWN_SECS"),
+        "DEFAULT_ALERT_COOLDOWN_SECS": const_u64("DEFAULT_ALERT_COOLDOWN_SECS"),
         "DEFAULT_IDLE_THRESHOLD_SECS": const_u64("DEFAULT_IDLE_THRESHOLD_SECS"),
         "DEFAULT_HERMES_TIMEOUT_SECS": const_u64("DEFAULT_HERMES_TIMEOUT_SECS"),
     }
@@ -273,10 +278,53 @@ else:
                     f"{shipped.get('context', {}).get('window_keywords')} vs {default_keywords}"
                 )
             # unknown keys in the rules file would be silently ignored by serde
-            known = {"interactions", "context", "ack_emote", "hermes_cmd", "hermes_timeout_secs", "webhook_url"}
+            known = {
+                "interactions",
+                "context",
+                "app_rules",
+                "alerts",
+                "ack_emote",
+                "hermes_cmd",
+                "hermes_timeout_secs",
+                "webhook_url",
+            }
             unknown = set(shipped) - known
             if unknown:
                 problems.append(f"watcher_rules.json: unknown keys {sorted(unknown)}")
+
+            # per-app rules: the schema is `{process, title_contains, animation,
+            # prompt_hint}` — a typo there would silently never match.
+            app_rule_keys = {"process", "title_contains", "animation", "prompt_hint"}
+            for index, rule in enumerate(shipped.get("app_rules") or []):
+                if not isinstance(rule, dict):
+                    problems.append(f"watcher_rules.json: app_rules[{index}] is not an object")
+                    continue
+                stray = set(rule) - app_rule_keys
+                if stray:
+                    problems.append(f"watcher_rules.json: app_rules[{index}] has unknown keys {sorted(stray)}")
+                if not rule.get("process") and not rule.get("title_contains"):
+                    problems.append(
+                        f"watcher_rules.json: app_rules[{index}] matches every window "
+                        "(both matchers are blank)"
+                    )
+                animation = rule.get("animation")
+                if animation and animation not in lib_expressions and animation not in arch_md:
+                    problems.append(
+                        f"watcher_rules.json: app_rules[{index}].animation {animation!r} is neither an "
+                        "expression nor documented as a clip name"
+                    )
+
+            # alerts: only `enabled` + `cooldown_secs`, and the cooldown must be
+            # the documented default unless deliberately tuned.
+            alerts = shipped.get("alerts") or {}
+            stray_alerts = set(alerts) - {"enabled", "cooldown_secs"}
+            if stray_alerts:
+                problems.append(f"watcher_rules.json: alerts has unknown keys {sorted(stray_alerts)}")
+            if alerts.get("cooldown_secs") != defaults["DEFAULT_ALERT_COOLDOWN_SECS"]:
+                problems.append(
+                    f"watcher_rules.json: alerts.cooldown_secs = {alerts.get('cooldown_secs')}, "
+                    f"but the code default is {defaults['DEFAULT_ALERT_COOLDOWN_SECS']}"
+                )
 
             shipped_timeout = shipped.get("hermes_timeout_secs")
             if shipped_timeout is not None:

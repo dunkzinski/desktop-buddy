@@ -199,7 +199,15 @@
 </button>
 
 <div id="speech" class="hidden">
-  <span id="speech-text"></span>
+  <div id="speech-bubble">
+    <span id="speech-text"></span>
+    <form id="speech-reply" autocomplete="off"
+          title="Reply to the avatar — Enter sends, Esc dismisses">
+      <input type="text" id="speech-reply-input" maxlength="500" spellcheck="false"
+             placeholder="Reply…" aria-label="Reply to the avatar" />
+      <button type="submit" id="speech-reply-send" title="Send (Enter)" aria-label="Send reply">↑</button>
+    </form>
+  </div>
   <div id="speech-tail" class="below"></div>
 </div>
 

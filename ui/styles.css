@@ -345,13 +345,17 @@ input[type="range"]::-webkit-slider-thumb {
   font-size: 13px; line-height: 1.45;
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
   white-space: pre-wrap; word-wrap: break-word;
-  pointer-events: none;
+  /* The bubble is a published hit region while visible (rig.js::wireRegions),
+     so it can accept the click that opens the quick-reply box. */
+  pointer-events: auto;
+  cursor: pointer;
   z-index: 1050;
   opacity: 0;
   transform: translateY(4px);
   transition: opacity 140ms ease, transform 140ms ease;
 }
 #speech.show { opacity: 1; transform: translateY(0); }
+#speech-bubble { display: block; }
 #speech .caret {
   display: inline-block; width: 2px; height: 12px;
   background: #7ab6f0; margin-left: 1px;
@@ -359,6 +363,37 @@ input[type="range"]::-webkit-slider-thumb {
   vertical-align: -1px;
 }
 @keyframes caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
+/* quick reply: unobtrusive by default, revealed on hover / click / focus */
+#speech-reply {
+  display: none;
+  align-items: center; gap: 6px;
+  margin-top: 8px; padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+#speech:hover #speech-reply,
+#speech.reply-open #speech-reply,
+#speech:focus-within #speech-reply { display: flex; }
+#speech-reply input[type="text"] {
+  flex: 1 1 auto; width: auto; min-width: 0;
+  padding: 5px 7px; font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px; color: #f2f2f8;
+  cursor: text;
+}
+#speech-reply input[type="text"]::placeholder { color: #8a8aa0; }
+#speech-reply input[type="text"]:focus { border-color: #4a90d9; }
+#speech-reply button {
+  flex: 0 0 auto; width: 26px; height: 26px; padding: 0;
+  border: 1px solid rgba(74, 144, 217, 0.5); border-radius: 8px;
+  background: rgba(74, 144, 217, 0.28); color: #cfe3fb;
+  font-family: inherit; font-size: 13px; line-height: 1;
+  cursor: pointer;
+}
+#speech-reply button:hover { background: rgba(74, 144, 217, 0.48); color: #fff; }
+#speech.reply-open { cursor: text; }
+
 #speech-tail {
   position: absolute; width: 0; height: 0;
   border: 8px solid transparent;
