@@ -7,6 +7,8 @@ switch to it from the model dropdown or `POST /model`.
 models/
   xenomorph-7/            shipped, procedural shapes (no textures)
     model.json
+  nebulon-9/              shipped alien: procedural shapes, tagged face parts,
+    model.json            four keyframe clips (wave/breathe/scan/alert)
   demo-blob/              shipped example, PNG sprite parts
     model.json
     rig.json              <- written by the rig editor (optional override)
@@ -83,6 +85,16 @@ Several bones may share a parent; the avatar's position is the world position of
 the root bone(s). The window origin is the top-left of the primary monitor, and
 positions are CSS pixels.
 
+#### Fitting the monitor
+
+The app walks the root around the screen (its wander margin is 120 px), and it
+does **not** clamp the artwork to the screen, so whatever a rig paints above its
+root is what gets clipped when the avatar wanders near the top. For reference,
+`demo-blob` sits 46 px above its root and `xenomorph-7` 168 px; treat ~170 px as
+the practical budget. A taller character should be scaled down on the **root
+bone** (`"scale": 0.55`) rather than by renumbering every position and size —
+child `pos`, part offsets and part sizes all inherit it.
+
 ### Parts
 
 | field | meaning |
@@ -92,7 +104,7 @@ positions are CSS pixels.
 | `shape` | alternative to `image`: `ellipse`, `circle`, `capsule`, `face` |
 | `color` | fill colour for `shape` parts |
 | `size` | `[w, h]` in px (omit for images and the natural size is adopted) |
-| `pivot` | normalised `[x, y]` anchor inside the image (0..1) — this is the pivot point |
+| `pivot` | normalised `[x, y]` anchor (0..1). For **images** it is the anchor inside the sprite; for `ellipse`/`circle` it shifts the artwork by `-size · pivot` instead — author shapes with `[0, 0]` (see below) |
 | `offset` | px offset from the bone origin, applied before the pivot |
 | `rotation` | part rotation relative to its bone, radians |
 | `scale` | part scale |
@@ -101,6 +113,27 @@ positions are CSS pixels.
 
 `shape: "face"` draws the procedural eyes/brows/mouth driven by the current
 expression, so a custom head can keep the built-in expressions.
+
+#### Where shape artwork actually lands
+
+`pivot` is normalised inside an **image** rect, but shapes are not images: after
+the same `-size · pivot` pre-translate the renderer draws them relative to the
+part origin, which gives the three cases below. Only the `face` shape behaves
+like an image.
+
+| shape | painted area, in the part's own frame | authoring form |
+| --- | --- | --- |
+| `ellipse` / `circle` | circle of `size` **centred on the part origin**, so the pre-translate moves it to `-size · pivot` | `pivot: [0, 0]` and `offset` = the intended **centre** |
+| `capsule` | always spans `[-h/2, w - h/2]` on x and `±h/2` on y; `pivot` cancels out | `pivot: [0, 0.5]` and `offset` = the joint it hangs from |
+| `face` | the full `size` rect, exactly like an image | `pivot: [0.5, 0.5]` |
+
+A `[0.5, 0.5]` pivot on an ellipse therefore throws the circle half a size up and
+left of where the numbers read — the commonest way a hand-written shape rig ends
+up looking scrambled. The editor's selection box already accounts for all three
+cases, so a part authored this way still selects where it paints.
+
+Bone rotation follows screen space: `0` points along **+x (right)** and `+π/2`
+points **down**, since y grows downward.
 
 ### Animation channels (`anim`)
 
@@ -409,6 +442,10 @@ Facial parts are driven by their **tag** and their **variants**:
 
 * Missing variants fall back to procedural animation: mouths squash/stretch with
   the expression blend shapes, eyes blink by vertical scaling.
+* Tags work on **shape** parts too — an `ellipse` tagged `eye` blinks by
+  squashing and a shape tagged `mouth` stretches with the expression, so a
+  character can be built with no sprites at all (`models/nebulon-9` does exactly
+  that: shape eyes with pupils, a shape mouth, plus a third eye).
 * **Auto-blink** runs every 3–6 s for ~120 ms; if the eye part has a `blink`
   variant it is used, otherwise the sprite is squashed.
 * **Talking** alternates `open`/`closed` (or squashes the mouth) while a speech
