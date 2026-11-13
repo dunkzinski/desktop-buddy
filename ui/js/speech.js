@@ -11,6 +11,7 @@
 import {
   avatar, RT, speech,
   clamp, viewport, updateStatusUI,
+  setExpression, toast,
 } from "./state.js";
 
 import { call } from "./ipc.js";
@@ -119,6 +120,8 @@ export function speak(text, opts) {
     hideSpeech();
     return;
   }
+  // An answer landed: the waiting card (and its safety timer) is over.
+  clearThinkingTimeout();
   speech.thinking = false;
   speech.full = body;
   speech.shown = -1;
@@ -194,6 +197,7 @@ export function hideSpeech() {
 /** Dismiss the bubble unconditionally (timer, reset, explicit end). */
 function hideSpeechNow() {
   const wasVisible = speech.visible;
+  clearThinkingTimeout();
   speech.visible = false;
   speech.thinking = false;
   speech.full = "";
@@ -349,6 +353,44 @@ let expectingThinking = false;
 let thinkingLabel = "Thinking…";
 
 /**
+ * How long a "Thinking…" card may sit there before the page gives up on it.
+ *
+ * Belt *and* braces: Rust kills a wedged `--hermes-cmd` child at
+ * `--hermes-timeout` (120 s) and the watcher then posts its own sad bubble, so
+ * this only fires when that path is unavailable too (watcher off, API down, a
+ * resumed session that never dispatched). A card that says "Thinking…" forever
+ * is the worst state the overlay can be in — it looks alive and never answers —
+ * so the timer always wins.
+ */
+export const THINKING_TIMEOUT_MS = 125000;
+let thinkingTimer = 0;
+
+function clearThinkingTimeout() {
+  if (thinkingTimer) {
+    clearTimeout(thinkingTimer);
+    thinkingTimer = 0;
+  }
+}
+
+/**
+ * (Re)arm the safety net.
+ *
+ * Armed by both `beginThinking` and `showThinking`, because a card can also be
+ * shown directly (the non-Tauri fallback in `main.js`).
+ */
+function armThinkingTimeout() {
+  clearThinkingTimeout();
+  thinkingTimer = setTimeout(() => {
+    thinkingTimer = 0;
+    // An answer (`speak`) or an explicit end already cleared the card.
+    if (!speech.thinking) return;
+    endThinking();
+    setExpression("neutral");
+    toast("No answer came back — cleared the thinking card.", true);
+  }, THINKING_TIMEOUT_MS);
+}
+
+/**
  * Mark the next `speech-clear` as our own submit echo.
  *
  * Rust dismisses the old prompt when it accepts a reply, and the page hears that
@@ -358,6 +400,7 @@ let thinkingLabel = "Thinking…";
 export function beginThinking(label) {
   expectingThinking = true;
   thinkingLabel = String(label || "Thinking…");
+  armThinkingTimeout();
 }
 
 /** Show the transient "Thinking…" card (safe to call twice). */
@@ -367,11 +410,15 @@ export function showThinking(label) {
   speech.thinking = true;
   const el = document.getElementById("speech");
   if (el) el.classList.add("thinking");
+  // `speak` just cleared the timer (it is an answer path); a waiting card is
+  // the one case that must keep it.
+  armThinkingTimeout();
 }
 
 /** Cancel a pending or visible thinking card (e.g. the submit failed). */
 export function endThinking() {
   expectingThinking = false;
+  clearThinkingTimeout();
   if (speech.thinking) {
     speech.thinking = false;
     hideSpeech();

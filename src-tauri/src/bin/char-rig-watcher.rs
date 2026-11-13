@@ -67,6 +67,19 @@ const DEFAULT_SESSION_BASE: &str = "char-rig";
 /// a minute before it emits its `avatar_*` tool call.
 const DEFAULT_HERMES_TIMEOUT_SECS: u64 = 120;
 
+/// The bubble the watcher posts **itself** when a `--hermes-cmd` child dies,
+/// hangs, or never starts.
+///
+/// The spawned agent would normally clear "Thinking…" with an `avatar_speak`
+/// call, so a wedged child leaves the overlay waiting forever — the page's
+/// safety timer (125 s) is the last resort, this is the fast one. The wording
+/// is deliberately vague: the watcher cannot know what the agent was doing.
+const FALLBACK_SPEECH_TEXT: &str = "Sorry, I hit a snag or timed out.";
+/// Expression the failure bubble wears: alarmed but not accusatory.
+const FALLBACK_SPEECH_EXPRESSION: &str = "sad";
+/// How long the failure bubble stays on screen (`POST /speak`'s `duration_ms`).
+const FALLBACK_SPEECH_DURATION_MS: u64 = 4000;
+
 /// Expressions the avatar understands — mirrors `AVATAR_EXPRESSIONS` in
 /// `lib.rs`. A rule's `animation` naming one of these is shown with `POST
 /// /emote`; anything else is treated as a custom keyframe clip name and played
@@ -83,8 +96,23 @@ const EXPRESSIONS: [&str; 6] = ["neutral", "happy", "sad", "surprised", "thinkin
 /// bubble text: the avatar's bubble is a fixed-width card, so a paragraph would
 /// run off the screen — long output goes to `details` (a drawer) or the
 /// clipboard instead.
+///
+/// **`tool_search` comes first.** Hermes defers MCP server tools until
+/// `tool_search` is called in a session, so on a fresh (or resumed) session the
+/// `mcp__char_rig__avatar_*` names are not callable yet. A model that goes
+/// straight at them gets `deferred tools must be invoked through tool_call by
+/// the exact name tool_search returns` and retries until `--hermes-timeout`
+/// kills it — the UI then sits on "Thinking…" forever. Spelling out the one
+/// `tool_search(query="avatar_")` call (plus `tool_call` for every later
+/// invocation) is what keeps a local model out of that loop; the fallback
+/// `POST /speak` in [`spawn_hermes`] is the second line of defence.
 const HEADLESS_DIRECTIVE: &str = "[Headless desktop avatar trigger -- do not ask follow-up questions or wait for user input. \
-Call your char-rig MCP tools directly and exit: mcp__char_rig__avatar_speak(text, expression?, duration_ms?, details?) where \
+FIRST TOOL CALL IN THIS SESSION: the char-rig tools are DEFERRED MCP tools. Calling mcp__char_rig__avatar_* before they \
+are loaded fails with \"deferred tools must be invoked through tool_call by the exact name tool_search returns\", and \
+retrying never loads them. So call tool_search(query=\"avatar_\") once (tool_search(query=\"char-rig\") works too), \
+take the mcp__char_rig__avatar_* names it returns, invoke them through tool_call with exactly those names, then exit. \
+Already loaded this session? Skip the search and just call the tools. The signatures: \
+mcp__char_rig__avatar_speak(text, expression?, duration_ms?, details?) where \
 `text` is the short spoken bubble and the optional `details` is a long code/diff/log block rendered in a scrollable drawer, \
 mcp__char_rig__avatar_emote(expression, duration_ms?) where expression is neutral|happy|sad|surprised|thinking|angry, \
 mcp__char_rig__avatar_wave(), mcp__char_rig__avatar_animate(name, loop?), \
@@ -1268,6 +1296,83 @@ impl Drop for FlightGuard {
     }
 }
 
+/// How one `--hermes-cmd` child ended.
+///
+/// Kept as data (not just an `eprintln!`) so the failure path is testable and
+/// so every non-success outcome funnels into the same fallback bubble: a child
+/// that exits 0 without ever calling `avatar_speak` is the only case the
+/// watcher trusts to have cleared "Thinking…" itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunOutcome {
+    /// Exited cleanly — the agent had its turn and answered (or chose not to).
+    Succeeded,
+    /// Exited with a non-zero status (bad args, crash, model error).
+    Failed,
+    /// Still running after `--hermes-timeout`; killed by the watcher.
+    TimedOut,
+    /// The wait itself failed (the handle, not the child, broke).
+    WaitFailed,
+    /// `Command::spawn` failed — wrong path, not executable, permission.
+    SpawnFailed,
+}
+
+impl RunOutcome {
+    /// Does the overlay still need to be unstuck by hand?
+    fn is_failure(self) -> bool {
+        !matches!(self, RunOutcome::Succeeded)
+    }
+
+    /// Short word for the log line.
+    fn label(self) -> &'static str {
+        match self {
+            RunOutcome::Succeeded => "ok",
+            RunOutcome::Failed => "non-zero exit",
+            RunOutcome::TimedOut => "timeout",
+            RunOutcome::WaitFailed => "wait failed",
+            RunOutcome::SpawnFailed => "spawn failed",
+        }
+    }
+}
+
+/// `POST /speak` body that clears a stuck "Thinking…" card.
+///
+/// Same shape the MCP `avatar_speak` tool posts, so the page needs no special
+/// case: an ordinary speech event replaces the waiting card.
+fn fallback_speech_body() -> Value {
+    json!({
+        "text": FALLBACK_SPEECH_TEXT,
+        "expression": FALLBACK_SPEECH_EXPRESSION,
+        "duration_ms": FALLBACK_SPEECH_DURATION_MS,
+    })
+}
+
+/// The bubble to post for this outcome (`None` when the agent answered).
+///
+/// Pure so the decision is unit-tested without spawning anything.
+fn fallback_speech_for(outcome: RunOutcome) -> Option<Value> {
+    outcome.is_failure().then(fallback_speech_body)
+}
+
+/// Post the failure bubble, logging rather than propagating: the avatar being
+/// unreachable must never turn into another error path.
+async fn deliver_fallback(client: &reqwest::Client, api_url: &str, outcome: RunOutcome) {
+    let Some(body) = fallback_speech_for(outcome) else {
+        return;
+    };
+    eprintln!(
+        "[watcher] dispatch ended with {}; posting the fallback speech bubble",
+        outcome.label()
+    );
+    let url = format!("{api_url}/speak");
+    match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
+        Ok(response) if !response.status().is_success() => {
+            eprintln!("[watcher] fallback speech rejected with {}", response.status())
+        }
+        Ok(_) => {}
+        Err(err) => eprintln!("[watcher] fallback speech failed: {err}"),
+    }
+}
+
 /// Spawn the configured command, wait for it under a timeout, and log the exit.
 ///
 /// * `session` is substituted into `{session}` in the command template.
@@ -1278,19 +1383,25 @@ impl Drop for FlightGuard {
 ///   forever.
 /// * `flight` moves into the spawned task: the permit is released exactly when
 ///   the child is gone.
+/// * **Any non-clean ending posts the fallback bubble** (`POST /speak`), so the
+///   UI's "Thinking…" card cannot outlive the dispatch that produced it — a
+///   deferred-MCP retry loop, a crash, or a model error all end visibly.
 ///
 /// Returns `true` when a process was actually started (the caller uses that to
 /// count a turn against the session).
-fn spawn_hermes(
+async fn spawn_hermes(
     command: &str,
     prompt: &str,
     session: &str,
     timeout: Duration,
+    client: &reqwest::Client,
+    api_url: &str,
     flight: FlightGuard,
 ) -> bool {
     let mut argv = command_argv(command, prompt, session);
     if argv.is_empty() {
         eprintln!("[watcher] --hermes-cmd is empty; nothing spawned");
+        deliver_fallback(client, api_url, RunOutcome::SpawnFailed).await;
         return false;
     }
     let program = argv.remove(0);
@@ -1310,12 +1421,24 @@ fn spawn_hermes(
                 "[watcher] spawned {program} (pid {pid}, session {session}, timeout {}s)",
                 timeout.as_secs()
             );
+            let client = client.clone();
+            let api_url = api_url.to_string();
             tokio::spawn(async move {
                 let _flight = flight; // released when this task ends
                 let waited = tokio::time::timeout(timeout, child.wait()).await;
-                match waited {
-                    Ok(Ok(status)) => eprintln!("[watcher] {program} exited with {status}"),
-                    Ok(Err(err)) => eprintln!("[watcher] waiting for {program} failed: {err}"),
+                let outcome = match waited {
+                    Ok(Ok(status)) => {
+                        eprintln!("[watcher] {program} exited with {status}");
+                        if status.success() {
+                            RunOutcome::Succeeded
+                        } else {
+                            RunOutcome::Failed
+                        }
+                    }
+                    Ok(Err(err)) => {
+                        eprintln!("[watcher] waiting for {program} failed: {err}");
+                        RunOutcome::WaitFailed
+                    }
                     Err(_) => {
                         eprintln!(
                             "[watcher] {program} (pid {pid}) still running after {}s; killing it",
@@ -1328,13 +1451,18 @@ fn spawn_hermes(
                             Ok(status) => eprintln!("[watcher] {program} killed ({status})"),
                             Err(err) => eprintln!("[watcher] cannot reap {program}: {err}"),
                         }
+                        RunOutcome::TimedOut
                     }
-                }
+                };
+                // Before the guard drops, so the fallback bubble lands before a
+                // queued trigger is dispatched.
+                deliver_fallback(&client, &api_url, outcome).await;
             });
             true
         }
         Err(err) => {
             eprintln!("[watcher] cannot spawn {program:?}: {err}");
+            deliver_fallback(client, api_url, RunOutcome::SpawnFailed).await;
             false
         }
     }
@@ -1465,8 +1593,16 @@ async fn handle_trigger(
                 let mut state = lock_session(session);
                 session_for_dispatch(&config.rules, &mut state, Instant::now())
             };
-            let spawned =
-                spawn_hermes(command, &prompt, &session_id, config.hermes_timeout, guard);
+            let spawned = spawn_hermes(
+                command,
+                &prompt,
+                &session_id,
+                config.hermes_timeout,
+                client,
+                &config.api_url,
+                guard,
+            )
+            .await;
             if spawned {
                 let mut state = lock_session(session);
                 state.turns = state.turns.saturating_add(1);
@@ -2837,6 +2973,38 @@ mod tests {
     }
 
     #[test]
+    fn headless_directive_teaches_the_deferred_tool_search() {
+        let prompt = Trigger::default().prompt();
+
+        // Hermes defers MCP tools per session: without this the model calls
+        // `mcp__char_rig__avatar_*` directly, gets "deferred tools must be
+        // invoked through tool_call ...", retries until --hermes-timeout kills
+        // it, and the UI is left on "Thinking…".
+        for needle in [
+            "FIRST TOOL CALL IN THIS SESSION",
+            "DEFERRED MCP tools",
+            "deferred tools must be invoked through tool_call by the exact name tool_search returns",
+            "tool_search(query=\"avatar_\")",
+            "tool_search(query=\"char-rig\")",
+            "tool_call",
+        ] {
+            assert!(prompt.contains(needle), "missing {needle:?} in {prompt}");
+        }
+
+        // The search must be taught *before* the first signature, or a model
+        // that stops reading at the first tool name still retries blindly.
+        let search_at = prompt.find("tool_search(query=\"avatar_\")").expect("search hint");
+        let speak_at = prompt.find("mcp__char_rig__avatar_speak(").expect("speak signature");
+        assert!(search_at < speak_at, "tool_search must come first: {prompt}");
+
+        // The exact tool names Hermes exposes keep their underscore spelling.
+        assert!(
+            prompt.contains("mcp__char_rig__avatar_") && !prompt.contains("mcp__char-rig__"),
+            "tool names must match the registered MCP server: {prompt}"
+        );
+    }
+
+    #[test]
     fn headless_directive_documents_the_new_tools_and_brevity() {
         let prompt = Trigger::default().prompt();
         for needle in [
@@ -3042,5 +3210,131 @@ mod tests {
         assert!(prompt.contains("Treat it as their task"), "{prompt}");
         assert!(prompt.contains("report the outcome with avatar_speak"), "{prompt}");
         assert!(prompt.ends_with(HEADLESS_DIRECTIVE), "{prompt}");
+    }
+
+    /* ---------- timeout / failure recovery ---------- */
+
+    #[test]
+    fn only_a_clean_exit_skips_the_fallback_bubble() {
+        assert_eq!(
+            fallback_speech_for(RunOutcome::Succeeded),
+            None,
+            "a child that exited 0 answered (or chose to stay quiet) itself"
+        );
+
+        for outcome in [
+            RunOutcome::Failed,
+            RunOutcome::TimedOut,
+            RunOutcome::WaitFailed,
+            RunOutcome::SpawnFailed,
+        ] {
+            assert!(outcome.is_failure(), "{} must count as a failure", outcome.label());
+            let body = fallback_speech_for(outcome).expect("every failure unsticks the UI");
+            assert_eq!(body["text"], "Sorry, I hit a snag or timed out.");
+            assert_eq!(body["expression"], "sad");
+            assert_eq!(body["duration_ms"], 4000);
+            assert_eq!(
+                body.as_object().map(|map| map.len()),
+                Some(3),
+                "the body is exactly POST /speak's three keys: {body}"
+            );
+            // The expression has to be one the avatar understands, or /speak
+            // rejects the whole bubble.
+            let expression = body["expression"].as_str().expect("string");
+            assert!(EXPRESSIONS.contains(&expression), "{expression} is not an expression");
+        }
+        assert!(!RunOutcome::Succeeded.is_failure());
+    }
+
+    /// Bind a throwaway HTTP endpoint that captures the **first** request and
+    /// answers 200. Returns the URL and a handle to the captured raw request.
+    fn capture_one_request() -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a test port");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            socket.set_read_timeout(Some(Duration::from_secs(10))).ok();
+            let mut request = String::new();
+            let mut buf = [0u8; 4096];
+            while !request.contains("duration_ms") {
+                match socket.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(read) => request.push_str(&String::from_utf8_lossy(&buf[..read])),
+                    Err(_) => break,
+                }
+            }
+            let _ = socket.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
+            );
+            request
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// Join the capture thread without blocking the runtime.
+    async fn captured(request: std::thread::JoinHandle<String>) -> String {
+        tokio::task::spawn_blocking(move || request.join().expect("capture thread"))
+            .await
+            .expect("join task")
+    }
+
+    #[tokio::test]
+    async fn a_failed_dispatch_posts_the_fallback_bubble() {
+        let (api_url, request) = capture_one_request();
+        let client = build_client();
+        deliver_fallback(&client, &api_url, RunOutcome::TimedOut).await;
+        let request = captured(request).await;
+
+        assert!(request.starts_with("POST /speak "), "wrong route: {request}");
+        assert!(request.contains(FALLBACK_SPEECH_TEXT), "missing text: {request}");
+        assert!(request.contains("\"expression\":\"sad\""), "{request}");
+        assert!(request.contains("\"duration_ms\":4000"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn a_successful_dispatch_posts_nothing() {
+        // No server at all: if `Succeeded` posted, the call would fail loudly
+        // and slowly instead of returning immediately.
+        let client = build_client();
+        let started = Instant::now();
+        deliver_fallback(&client, "http://127.0.0.1:1", RunOutcome::Succeeded).await;
+        assert!(started.elapsed() < Duration::from_secs(1), "no request was attempted");
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_child_still_posts_the_fallback_bubble() {
+        // `python -c` ignores the prompt the watcher appends, so this is a
+        // child that starts, never answers, and must be killed. (If python is
+        // missing the spawn fails instead — the same fallback is posted.)
+        let (api_url, request) = capture_one_request();
+        let client = build_client();
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        let spawned = spawn_hermes(
+            "python -c \"import time; time.sleep(30)\"",
+            "hello",
+            "char-rig-test",
+            Duration::from_secs(1),
+            &client,
+            &api_url,
+            guard,
+        )
+        .await;
+        assert!(spawned, "the child process started");
+
+        let request = captured(request).await;
+        assert!(request.starts_with("POST /speak "), "wrong route: {request}");
+        assert!(request.contains(FALLBACK_SPEECH_TEXT), "{request}");
+
+        // The permit comes back once the child is killed and reaped.
+        for _ in 0..50 {
+            if !flight.is_busy() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!flight.is_busy(), "the killed child must release the dispatch permit");
     }
 }
