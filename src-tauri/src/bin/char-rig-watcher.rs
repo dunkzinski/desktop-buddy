@@ -39,7 +39,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio_stream::StreamExt;
 
 /* ------------------------------------------------------------------ *
@@ -81,16 +81,20 @@ const EXPRESSIONS: [&str; 6] = ["neutral", "happy", "sad", "surprised", "thinkin
 /// so a trigger costs one model turn and no `tool_describe` round-trip. It also
 /// tells the model that chaining calls in one turn is expected, and caps the
 /// bubble text: the avatar's bubble is a fixed-width card, so a paragraph would
-/// run off the screen.
+/// run off the screen — long output goes to `details` (a drawer) or the
+/// clipboard instead.
 const HEADLESS_DIRECTIVE: &str = "[Headless desktop avatar trigger -- do not ask follow-up questions or wait for user input. \
-Call your char-rig MCP tools directly and exit: mcp__char_rig__avatar_speak(text, expression?, duration_ms?), \
+Call your char-rig MCP tools directly and exit: mcp__char_rig__avatar_speak(text, expression?, duration_ms?, details?) where \
+`text` is the short spoken bubble and the optional `details` is a long code/diff/log block rendered in a scrollable drawer, \
 mcp__char_rig__avatar_emote(expression, duration_ms?) where expression is neutral|happy|sad|surprised|thinking|angry, \
 mcp__char_rig__avatar_wave(), mcp__char_rig__avatar_animate(name, loop?), \
+mcp__char_rig__avatar_set_clipboard(text) to put a full snippet, command or log on the user's clipboard, \
 mcp__char_rig__avatar_get_context() for the foreground window title, the owning process_name (e.g. Code.exe), \
 idle_secs and the recent events, and mcp__char_rig__avatar_get_clipboard() for the text the user last copied. \
 Chain several calls in one turn when it helps: an avatar_emote or avatar_animate for the feeling plus an \
 avatar_speak for the words, then exit. Keep the speech bubble under 180 characters (1-2 sentences) so it never \
-overflows the screen; put detail in your expression or animation, not in the bubble.]";
+overflows the screen; put multi-line code, diffs or logs in avatar_speak's `details` or on the clipboard with \
+avatar_set_clipboard, never in the bubble text.]";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTEXT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -157,8 +161,9 @@ The command is split on whitespace with double/single-quote grouping; no shell
 is involved, so use a script if you need pipes or redirection.
 
 The child runs headless: stdin is /dev/null, and only one dispatch is in flight
-at a time — a trigger that fires while a dispatch is still running is skipped
-(a debug line on stderr) instead of spawning a second process.",
+at a time. A `user_reply` or `alert` that arrives mid-turn waits in a one-slot
+pending queue and is dispatched when that turn ends (the newest one wins);
+routine interaction/title/idle triggers are dropped while busy.",
         version = env!("CARGO_PKG_VERSION"),
         ENV_API_URL = ENV_API_URL,
         ENV_HERMES_CMD = ENV_HERMES_CMD,
@@ -1148,16 +1153,36 @@ fn command_argv(command: &str, prompt: &str, session: &str) -> Vec<String> {
     argv
 }
 
-/// One-dispatch-at-a-time latch.
+/// Outcome of offering a trigger to [`SingleFlight`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Offer {
+    /// Nothing is in flight: the caller dispatches it now.
+    Immediate,
+    /// A dispatch is running; the trigger is in the pending slot.
+    Queued,
+    /// A dispatch is running and this kind never queues (routine noise).
+    Dropped,
+}
+
+/// Single-flight latch with a **one-slot pending queue**.
 ///
 /// Triggers are already serialised by [`dispatcher`], but a spawned
 /// `--hermes-cmd` child outlives `handle_trigger`: without this guard a burst of
 /// interactions would start one `hermes` process per trigger and they would pile
-/// up (each one an LLM turn, each one competing for the same API). A trigger
-/// that arrives while a dispatch is still running is skipped instead.
+/// up (each one an LLM turn, each one competing for the same API).
+///
+/// While a dispatch is in flight the latch holds **at most one** pending
+/// trigger, and only for the kinds the user is actually waiting on
+/// (`user_reply`, `alert`): a reply or an alert that lands mid-turn must not be
+/// silently lost. A newer one replaces the older pending one — only the latest
+/// matters. Routine triggers (`interaction`, `window_title`, `idle_return`)
+/// are dropped so background noise never queues up behind a task.
 #[derive(Debug, Clone, Default)]
 struct SingleFlight {
     busy: Arc<AtomicBool>,
+    pending: Arc<Mutex<Option<Trigger>>>,
+    /// Woken when a flight ends so the dispatcher can drain `pending`.
+    finished: Arc<Notify>,
 }
 
 impl SingleFlight {
@@ -1170,23 +1195,76 @@ impl SingleFlight {
         {
             Some(FlightGuard {
                 busy: Arc::clone(&self.busy),
+                finished: Arc::clone(&self.finished),
             })
         } else {
             None
         }
     }
+
+    fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::Acquire)
+    }
+
+    /// The pending slot, recovering from a poisoned lock like the rest of the
+    /// watcher (`Shared`/`SessionState` do the same).
+    fn lock_pending(&self) -> MutexGuard<'_, Option<Trigger>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Offer a trigger to the latch (see [`Offer`]).
+    fn offer(&self, trigger: Trigger) -> Offer {
+        if !self.is_busy() {
+            return Offer::Immediate;
+        }
+        if !queues_while_busy(&trigger.event_type) {
+            eprintln!(
+                "[watcher] debug: dispatch in flight, dropping routine {} trigger ({})",
+                trigger.event_type, trigger.detail
+            );
+            return Offer::Dropped;
+        }
+        // Replace, never stack: one slot means the newest trigger wins.
+        let replaced = { self.lock_pending().replace(trigger) };
+        eprintln!("[watcher] queued pending trigger (1 slot)");
+        if let Some(older) = replaced {
+            eprintln!(
+                "[watcher] replaced the older pending {} trigger (only the latest is kept)",
+                older.event_type
+            );
+        }
+        Offer::Queued
+    }
+
+    /// Take the queued trigger, if any. Called once a flight is over.
+    fn take_pending(&self) -> Option<Trigger> {
+        self.lock_pending().take()
+    }
+}
+
+/// Kinds that deserve the single pending slot: the user asked, or a monitor
+/// reported something. Everything else is ambient noise and is dropped.
+fn queues_while_busy(event_type: &str) -> bool {
+    matches!(event_type, "user_reply" | "alert")
 }
 
 /// Held for as long as one dispatch is in flight; dropping it releases the
-/// permit, so a panic in the spawned task can never wedge the watcher.
+/// permit, so a panic in the spawned task can never wedge the watcher — and
+/// wakes the dispatcher so a queued trigger is dispatched immediately.
 #[derive(Debug)]
 struct FlightGuard {
     busy: Arc<AtomicBool>,
+    finished: Arc<Notify>,
 }
 
 impl Drop for FlightGuard {
     fn drop(&mut self) {
         self.busy.store(false, Ordering::Release);
+        // `notify_one` stores a permit when no waiter is registered, so a
+        // dispatcher that is between `select!` arms still sees it.
+        self.finished.notify_one();
     }
 }
 
@@ -1618,6 +1696,12 @@ async fn context_loop(
 /// Serialise dispatch so triggers never race each other, and hold the
 /// single-flight latch across the whole side-effect chain (including a
 /// `--hermes-cmd` child that outlives this loop).
+///
+/// Triggers that arrive while a flight is running are not simply dropped: the
+/// latch keeps **one** pending trigger for the kinds the user is waiting on
+/// (`user_reply`, `alert`) and this loop dispatches it as soon as the flight's
+/// `FlightGuard` drops — which is exactly when the spawned child exits (or is
+/// killed by `--hermes-timeout`). Routine triggers are dropped as before.
 async fn dispatcher(
     config: Config,
     client: reqwest::Client,
@@ -1625,8 +1709,30 @@ async fn dispatcher(
     mut rx: mpsc::Receiver<Trigger>,
 ) {
     let flight = SingleFlight::default();
-    while let Some(trigger) = rx.recv().await {
-        handle_trigger(&config, &client, &trigger, &flight, &session).await;
+    loop {
+        tokio::select! {
+            incoming = rx.recv() => {
+                let Some(trigger) = incoming else { break };
+                // `offer` decides queue-vs-drop from the latch state; when it
+                // says `Immediate` nothing is running and we dispatch here.
+                if flight.offer(trigger.clone()) == Offer::Immediate {
+                    handle_trigger(&config, &client, &trigger, &flight, &session).await;
+                }
+            }
+            // A flight ended: fall through and drain the pending slot.
+            _ = flight.finished.notified() => {}
+        }
+
+        // Only one loop owns the latch, so a `!is_busy` check here is exact:
+        // either the flight above finished, or a child exited and woke us.
+        while !flight.is_busy() {
+            let Some(next) = flight.take_pending() else { break };
+            eprintln!(
+                "[watcher] dispatching the queued {} trigger ({})",
+                next.event_type, next.detail
+            );
+            handle_trigger(&config, &client, &next, &flight, &session).await;
+        }
     }
 }
 
@@ -2249,10 +2355,11 @@ mod tests {
         assert!(prompt.contains("do not ask follow-up questions"), "{prompt}");
         // The signatures are what saves the model a `tool_describe` round-trip.
         for signature in [
-            "mcp__char_rig__avatar_speak(text, expression?, duration_ms?)",
+            "mcp__char_rig__avatar_speak(text, expression?, duration_ms?, details?)",
             "mcp__char_rig__avatar_emote(expression, duration_ms?)",
             "mcp__char_rig__avatar_wave()",
             "mcp__char_rig__avatar_animate(name, loop?)",
+            "mcp__char_rig__avatar_set_clipboard(text)",
             "neutral|happy|sad|surprised|thinking|angry",
         ] {
             assert!(prompt.contains(signature), "missing {signature:?} in {prompt}");
@@ -2318,6 +2425,93 @@ mod tests {
         assert!(clone.try_enter().is_none(), "clones share the same latch");
         drop(guard);
         assert!(clone.try_enter().is_some());
+    }
+
+    /* ---------- one-slot pending queue ---------- */
+
+    fn trigger_of(event_type: &str) -> Trigger {
+        Trigger {
+            event_type: event_type.to_string(),
+            detail: format!("a {event_type} happened"),
+            ..Trigger::default()
+        }
+    }
+
+    #[test]
+    fn an_idle_latch_asks_the_caller_to_dispatch_immediately() {
+        let flight = SingleFlight::default();
+        assert_eq!(flight.offer(trigger_of("user_reply")), Offer::Immediate);
+        assert!(flight.take_pending().is_none(), "nothing was queued");
+    }
+
+    #[test]
+    fn a_reply_waits_in_the_pending_slot_while_a_flight_is_in_flight() {
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        assert_eq!(flight.offer(trigger_of("user_reply")), Offer::Queued);
+        let queued = flight.take_pending().expect("the reply is waiting");
+        assert_eq!(queued.event_type, "user_reply");
+        assert!(flight.take_pending().is_none(), "the slot is empty again");
+        drop(guard);
+    }
+
+    #[test]
+    fn an_alert_also_uses_the_pending_slot() {
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        assert_eq!(flight.offer(trigger_of("alert")), Offer::Queued);
+        assert_eq!(flight.take_pending().map(|t| t.event_type), Some("alert".to_string()));
+        drop(guard);
+    }
+
+    #[test]
+    fn routine_triggers_are_dropped_while_busy_instead_of_queuing() {
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        for routine in ["interaction", "window_title", "idle_return"] {
+            assert_eq!(
+                flight.offer(trigger_of(routine)),
+                Offer::Dropped,
+                "{routine} must never queue behind a task"
+            );
+        }
+        assert!(
+            flight.take_pending().is_none(),
+            "background noise left the pending slot empty"
+        );
+        drop(guard);
+    }
+
+    #[test]
+    fn only_the_latest_pending_trigger_is_kept() {
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+
+        assert_eq!(flight.offer(trigger_of("alert")), Offer::Queued);
+        let newer = Trigger {
+            text: Some("second, newer question".to_string()),
+            ..trigger_of("user_reply")
+        };
+        assert_eq!(flight.offer(newer), Offer::Queued, "the newer trigger replaces the older one");
+
+        let pending = flight.take_pending().expect("one trigger survives");
+        assert_eq!(pending.event_type, "user_reply");
+        assert_eq!(pending.text.as_deref(), Some("second, newer question"));
+        assert!(flight.take_pending().is_none(), "still exactly one slot");
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn a_finished_flight_wakes_the_dispatcher() {
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        // `notify_one` stores a permit even with no waiter registered yet, so
+        // dropping the guard before the dispatcher waits still wakes it.
+        drop(guard);
+        tokio::time::timeout(Duration::from_millis(250), flight.finished.notified())
+            .await
+            .expect("a finished flight must wake the dispatcher");
+        assert!(!flight.is_busy());
     }
 
     /* ---------- per-app rules & alerts ---------- */
@@ -2648,12 +2842,20 @@ mod tests {
         for needle in [
             "mcp__char_rig__avatar_get_clipboard()",
             "mcp__char_rig__avatar_get_context()",
+            "mcp__char_rig__avatar_set_clipboard(text)",
+            "avatar_speak(text, expression?, duration_ms?, details?)",
+            "details",
             "process_name",
             "Chain several calls in one turn",
             "under 180 characters",
         ] {
             assert!(prompt.contains(needle), "missing {needle:?} in {prompt}");
         }
+        // The long output has to be routed away from the bubble, not into it.
+        assert!(
+            prompt.contains("never in the bubble text"),
+            "the directive must say where long output goes: {prompt}"
+        );
     }
 
     /* ---------- sessions ---------- */

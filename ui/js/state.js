@@ -157,6 +157,10 @@ export const speech = {
   doneFor: 0,
   flipped: false,
   lastLayout: 0,
+  /** The long half of the bubble (code/diff/log), shown in a drawer. */
+  details: "",
+  /** Is the details drawer expanded? An open drawer holds the bubble up. */
+  detailsOpen: false,
   /** True while the bubble is a transient "Thinking…" status card. */
   thinking: false,
   /** True while the pointer is over the bubble (the hold timer is paused). */

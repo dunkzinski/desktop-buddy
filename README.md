@@ -213,21 +213,26 @@ Spawning is **single-flight** and headless, because a pile-up of `hermes`
 processes is the one failure mode that actually costs money:
 
 * While a dispatch is in flight (a `--hermes-cmd` child still running, or a
-  webhook POST still open), further triggers are **skipped** with a
-  `[watcher] debug: dispatch already in flight …` line on stderr. One trigger,
-  one agent turn — never a queue of them.
+  webhook POST still open), only one trigger may wait: a `user_reply` or an
+  `alert` is parked in a **one-slot pending queue** (log line
+  `[watcher] queued pending trigger (1 slot)`; a newer one replaces the older)
+  and runs the moment that turn ends. Routine `interaction`/`window_title`/
+  `idle_return` triggers are still **skipped** with a
+  `[watcher] debug: dispatch in flight …` line, so background noise never queues
+  up behind a task.
 * The child is spawned with `stdin` on `/dev/null`, so an interactive prompt
   reads EOF immediately instead of blocking on a keyboard nobody is typing on.
 * The prompt ends with a directive telling the agent this is a headless avatar
   trigger: **no** follow-up questions, and it spells out the exact MCP call
-  signatures (`mcp__char_rig__avatar_speak(text, expression?, duration_ms?)`,
+  signatures (`mcp__char_rig__avatar_speak(text, expression?, duration_ms?, details?)`,
   `avatar_emote(expression, duration_ms?)` with the six valid expressions,
-  `avatar_wave()`, `avatar_animate(name, loop?)`, plus `avatar_get_context()`
-  for the focused window / `process_name` / recent events and
-  `avatar_get_clipboard()` for the last-copied text) so the very first turn can
-  act without a `tool_describe` round-trip. It also tells the model to **chain
-  calls** in one turn (an emote or clip *and* a line of speech) and to keep the
-  bubble **under 180 characters** so it never overflows the screen. That matters
+  `avatar_wave()`, `avatar_animate(name, loop?)`, `avatar_set_clipboard(text)`,
+  plus `avatar_get_context()` for the focused window / `process_name` / recent
+  events and `avatar_get_clipboard()` for the last-copied text) so the very first
+  turn can act without a `tool_describe` round-trip. It also tells the model to
+  **chain calls** in one turn (an emote or clip *and* a line of speech), to keep
+  the bubble **under 180 characters**, and to put multi-line code, diffs or logs
+  in `details` (a scrollable drawer with a Copy button) or on the clipboard. That matters
   most on a local model, where every extra round-trip eats the timeout.
 * The wait is wrapped in a timeout (`--hermes-timeout`, default `120` s, also
   `hermes_timeout_secs` in `watcher_rules.json`); a child that outlives it is
@@ -319,13 +324,17 @@ are rejected on a resumed session — put them in `config.yaml` instead.
 ## Hermes / MCP
 
 `cargo build` also produces a second binary, **`char-rig-mcp.exe`** — a stdio MCP
-server that exposes the avatar to Hermes (or any MCP client) as eleven tools:
+server that exposes the avatar to Hermes (or any MCP client) as twelve tools:
 `avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_wave`, `avatar_pose`,
-`avatar_get_context`, `avatar_get_clipboard`, `avatar_list_models`,
-`avatar_switch_model`, `avatar_list_animations`, `avatar_animate`.
+`avatar_get_context`, `avatar_get_clipboard`, `avatar_set_clipboard`,
+`avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`,
+`avatar_animate`.
 `avatar_get_context` carries the window title, the owning `process_name`, idle
 seconds and the last 15 events; `avatar_get_clipboard` returns the last-copied
-text (2000 chars max).
+text (2000 chars max) and `avatar_set_clipboard` puts up to 32000 characters
+back on it — the way to hand over a full snippet, patch or log.
+`avatar_speak` takes an optional `details` string (8000 chars) that the bubble
+renders behind a **Details ▾** toggle with its own **Copy** button.
 
 It is a stateless bridge: each tool call is one HTTP request to the running
 `avatar-desktop.exe`, so **start the avatar first**. If it is not running, the
@@ -344,7 +353,7 @@ mcp_servers:
       CHAR_RIG_API_URL: http://127.0.0.1:8765
 ```
 
-Then restart Hermes (or reconnect the server) — the eleven `avatar_*` tools show
+Then restart Hermes (or reconnect the server) — the twelve `avatar_*` tools show
 up in the tool list. Verify the bridge on its own with:
 
 ```bash

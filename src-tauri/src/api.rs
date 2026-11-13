@@ -125,6 +125,15 @@ struct SpeakBody {
     duration_ms: Option<u64>,
     #[serde(default)]
     char_ms: Option<u64>,
+    /// The long half of the bubble (code/diff/log), shown in a drawer.
+    #[serde(default)]
+    details: Option<String>,
+}
+
+/// `POST /clipboard`: put text on the user's clipboard.
+#[derive(Debug, Deserialize)]
+struct ClipboardBody {
+    text: String,
 }
 
 /// `POST /reply`: the user's answer to whatever is in the bubble.
@@ -273,7 +282,7 @@ fn router(api: ApiCtx) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/context", get(context))
-        .route("/clipboard", get(clipboard))
+        .route("/clipboard", get(clipboard).post(set_clipboard))
         .route("/reply", post(reply))
         .route("/alert", post(alert))
         .route("/session/reset", post(session_reset))
@@ -370,6 +379,22 @@ async fn clipboard() -> Json<Value> {
         "text": clip.text,
         "truncated": clip.truncated,
     }))
+}
+
+/// `POST /clipboard {"text": "..."}` — put text on the user's clipboard.
+///
+/// The write half of `GET /clipboard`, and the way an agent hands over
+/// something too big for a bubble: a whole file, a diff, a command, a log tail.
+/// Capped at `MAX_CLIPBOARD_WRITE_CHARS` (32 000); an empty string clears the
+/// clipboard. A clipboard another process is holding open is a **400** the
+/// caller can retry — this route is the only one where that is worth surfacing.
+async fn set_clipboard(Json(body): Json<ClipboardBody>) -> Result<Json<Value>, ApiError> {
+    let written = crate::write_clipboard_text(&body.text).map_err(ApiError::bad_request)?;
+    Ok(Json(json!({
+        "ok": true,
+        "chars": written.chars,
+        "truncated": written.truncated,
+    })))
 }
 
 /// `POST /reply {"text": "..."}` — the user's answer, typed in the bubble.
@@ -910,7 +935,7 @@ async fn emote(
     Ok(Json(result))
 }
 
-/// `POST /speak {"text": "Hello!", "expression": "happy", "duration_ms": 4000}`
+/// `POST /speak {"text": "Hello!", "expression": "happy", "duration_ms": 4000, "details": "…"}`
 async fn speak(
     State(api): State<ApiCtx>,
     Json(body): Json<SpeakBody>,
@@ -922,6 +947,7 @@ async fn speak(
         body.expression.as_deref().unwrap_or("neutral"),
         body.duration_ms.unwrap_or(6000),
         body.char_ms.unwrap_or(26),
+        body.details.as_deref(),
     )
     .map_err(ApiError::bad_request)?;
     Ok(Json(result))

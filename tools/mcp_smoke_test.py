@@ -31,12 +31,13 @@ EXPECTED_TOOLS = {
     "avatar_pose": ["joints"],
     "avatar_get_context": [],
     "avatar_get_clipboard": [],
+    "avatar_set_clipboard": ["text"],
     "avatar_list_models": [],
     "avatar_switch_model": ["name"],
     "avatar_list_animations": [],
     "avatar_animate": ["name"],
 }
-EXPECTED_TOOL_COUNT = 11
+EXPECTED_TOOL_COUNT = 12
 
 failures = []
 checks = 0
@@ -194,6 +195,8 @@ def main():
         check(json.loads(text_of(no_clip))["kind"] == "invalid_arguments", "animate without a clip name rejected locally")
         bad_loop = mcp.call("avatar_animate", {"name": "stop", "loop": True})
         check(json.loads(text_of(bad_loop))["kind"] == "invalid_arguments", "loop overrides rejected when stopping")
+        no_text = mcp.call("avatar_set_clipboard", {})
+        check(json.loads(text_of(no_text))["kind"] == "invalid_arguments", "set_clipboard without text rejected locally")
 
         print("\nprotocol errors")
         unknown = mcp.call("avatar_teleport", {})
@@ -243,6 +246,17 @@ def main():
                 check(bool(payload.get("hint")), f"{name} includes a hint")
 
         if online:
+            print("\nclipboard write round-trip")
+            marker = "char-rig clipboard round-trip\n  line two"
+            wrote = mcp.call("avatar_set_clipboard", {"text": marker})
+            check(wrote["result"].get("isError") is False, "set_clipboard succeeded", text_of(wrote)[:200])
+            if wrote["result"].get("isError") is False:
+                body = json.loads(text_of(wrote))
+                check(body.get("chars") == len(marker), "set_clipboard reports the character count", body.get("chars"))
+                check(body.get("truncated") is False, "a short clipboard text is not truncated")
+                read_back = json.loads(text_of(mcp.call("avatar_get_clipboard")))
+                check(read_back.get("text") == marker, "GET /clipboard reads back what was written", read_back.get("text"))
+
             print("\nmodel switching")
             models = json.loads(text_of(mcp.call("avatar_list_models")))
             check(bool(models.get("models")), "list_models returns entries")

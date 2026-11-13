@@ -56,8 +56,10 @@ that it cannot reach the avatar, tell the user to start it instead of retrying b
 owning process name such as `Code.exe`, and machine-wide idle seconds) together with the avatar's current \
 state and the last few events, so it is the right first call before interrupting anyone. \
 `avatar_get_clipboard` returns whatever text the user last copied (capped at 2000 characters) — useful when \
-a trigger mentions \"this\" or \"what I copied\". Speech bubbles are transient: `avatar_speak` returns as soon \
-as the bubble is scheduled, not when it has finished, and reads best at 1-2 sentences. \
+a trigger mentions \"this\" or \"what I copied\"; `avatar_set_clipboard` is the reverse and is how you hand over \
+a full snippet, command or log without stuffing it into a bubble. Speech bubbles are transient: `avatar_speak` returns \
+as soon as the bubble is scheduled, not when it has finished, and reads best at 1-2 sentences — put multi-line code, \
+diffs or logs into its optional `details` field (a scrollable drawer with a Copy button) or on the clipboard. \
 Custom keyframe animations are authored in the rig editor; `avatar_list_animations` lists them and \
 `avatar_animate` plays one. Chain calls freely in a single turn (e.g. `avatar_emote` then `avatar_speak`).";
 
@@ -345,7 +347,7 @@ fn api_base_for_error() -> String {
  * ------------------------------------------------------------------ */
 
 /// Tool names, in the order they appear in `tools/list`.
-const TOOL_NAMES: [&str; 11] = [
+const TOOL_NAMES: [&str; 12] = [
     "avatar_speak",
     "avatar_emote",
     "avatar_move",
@@ -353,6 +355,7 @@ const TOOL_NAMES: [&str; 11] = [
     "avatar_pose",
     "avatar_get_context",
     "avatar_get_clipboard",
+    "avatar_set_clipboard",
     "avatar_list_models",
     "avatar_switch_model",
     "avatar_list_animations",
@@ -365,13 +368,15 @@ fn tools() -> Value {
             "name": "avatar_speak",
             "description": "Make the desktop avatar say something: shows a speech bubble anchored above its head, \
 types the text out, animates the mouth, then dismisses the bubble after `duration_ms`. Returns immediately — \
-it does not wait for the bubble to finish.",
+it does not wait for the bubble to finish. Keep `text` to 1-2 sentences (under 180 characters): anything \
+longer — a code snippet, a diff, a log tail — belongs in `details`, which renders as a collapsible drawer with \
+a Copy button under the bubble.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "text": {
                         "type": "string",
-                        "description": "What the avatar says. 1–2000 characters, must not be only whitespace."
+                        "description": "What the avatar says. 1–2000 characters, must not be only whitespace. Keep it under 180 characters so the bubble fits on screen."
                     },
                     "expression": {
                         "type": "string",
@@ -383,6 +388,11 @@ it does not wait for the bubble to finish.",
                         "minimum": 500,
                         "maximum": 600000,
                         "description": "How long the finished text stays on screen, in milliseconds. Default 6000, clamped to 500–600000."
+                    },
+                    "details": {
+                        "type": "string",
+                        "maxLength": 8000,
+                        "description": "Optional long-form text hidden behind a \"Details ▾\" toggle in the bubble: multi-line code, a diff, or a log tail. Monospace and scrollable; the bubble's hold timer pauses while it is open. Capped at 8000 characters."
                     }
                 },
                 "required": ["text"]
@@ -472,6 +482,23 @@ Only read it when the trigger actually refers to copied content — it is the us
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
+            "name": "avatar_set_clipboard",
+            "description": "Put text on the user's Windows clipboard — the way to hand over something that must not \
+be squeezed into a speech bubble: a whole file, a patch, a shell command, a log tail. Capped at 32000 characters \
+(truncation is reported, not an error). Prefer `avatar_speak` for a short answer, and use this plus a one-line \
+`avatar_speak` when the user needs the full text to paste somewhere.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The exact text to place on the clipboard (newlines kept). An empty string clears the clipboard. Capped at 32000 characters."
+                    }
+                },
+                "required": ["text"]
+            }
+        },
+        {
             "name": "avatar_list_models",
             "description": "List the character models installed for the avatar, with bone/part counts and whether \
 the model currently has an unsaved editor override (`rig.json`).",
@@ -526,10 +553,16 @@ fn tool_speak(api: &Api, args: &Map<String, Value>) -> Result<Value, ToolError> 
     let text = req_str(args, "text")?;
     let expression = opt_expression(args, "expression")?.unwrap_or_else(|| "neutral".to_string());
     let duration = opt_u64(args, "duration_ms")?;
+    let details = opt_str(args, "details")?.filter(|value| !value.trim().is_empty());
 
     let mut body = json!({ "text": text, "expression": expression });
     if let Some(duration) = duration {
         body["duration_ms"] = json!(duration);
+    }
+    // The avatar caps `details` at 8000 characters itself; sending it verbatim
+    // means the drawer shows exactly what the model authored.
+    if let Some(details) = details {
+        body["details"] = json!(details);
     }
     api.post("/speak", body).map_err(ToolError::Api)
 }
@@ -672,6 +705,28 @@ fn tool_get_clipboard(api: &Api, _args: &Map<String, Value>) -> Result<Value, To
     api.get("/clipboard").map_err(ToolError::Api)
 }
 
+/// `avatar_set_clipboard`: put `text` on the user's clipboard.
+///
+/// Empty text is allowed on purpose (it clears the clipboard); only a missing
+/// or non-string `text` is an argument error, and `req_str` already reports
+/// those with a message the model can fix.
+fn tool_set_clipboard(api: &Api, args: &Map<String, Value>) -> Result<Value, ToolError> {
+    let text = match args.get("text") {
+        Some(Value::String(text)) => text.clone(),
+        Some(_) => {
+            return Err(ToolError::Invalid(
+                "`text` must be a string (use \"\" to clear the clipboard)".to_string(),
+            ))
+        }
+        None => {
+            return Err(ToolError::Invalid(
+                "missing required argument `text` (string; pass the exact text to copy)".to_string(),
+            ))
+        }
+    };
+    api.post("/clipboard", json!({ "text": text })).map_err(ToolError::Api)
+}
+
 fn position_of(state: &Value) -> (f64, f64) {
     let array = state.get("position").and_then(Value::as_array);
     match array {
@@ -735,6 +790,7 @@ fn run_tool(api: &Api, name: &str, args: &Map<String, Value>) -> Result<Value, T
         "avatar_pose" => tool_pose(api, args),
         "avatar_get_context" => tool_get_context(api, args),
         "avatar_get_clipboard" => tool_get_clipboard(api, args),
+        "avatar_set_clipboard" => tool_set_clipboard(api, args),
         "avatar_list_models" => tool_list_models(api, args),
         "avatar_switch_model" => tool_switch_model(api, args),
         "avatar_list_animations" => tool_list_animations(api, args),

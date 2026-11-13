@@ -55,6 +55,23 @@ pub const MAX_REPLY_CHARS: usize = 500;
 /// define more; the extras are dropped so the bar stays one row).
 pub const MAX_QUICK_TASKS: usize = 6;
 
+/// Longest free-text `details` block a bubble can carry.
+///
+/// The bubble's *text* is a one-glance summary (the headless prompt asks for
+/// under 180 characters); `details` is the long half — a code snippet, a diff,
+/// a log tail — folded into a scrollable drawer with its own **Copy** button.
+pub const MAX_SPEECH_DETAILS_CHARS: usize = 8_000;
+
+/// Longest text `POST /clipboard` will put on the clipboard.
+///
+/// Larger than [`MAX_CLIPBOARD_CHARS`] on purpose: the reader is a summary
+/// probe, the writer is how a full snippet or log actually reaches the user.
+pub const MAX_CLIPBOARD_WRITE_CHARS: usize = 32_000;
+
+/// System-wide hotkey that summons the command bar when `watcher_rules.json`
+/// has no `hotkey` key.
+const DEFAULT_HOTKEY: &str = "Alt+Space";
+
 /// Default port for the local HTTP API (override with `CHAR_RIG_API_PORT`).
 const DEFAULT_API_PORT: u16 = 8765;
 
@@ -177,6 +194,9 @@ pub struct AppCtx {
     expression_commanded_at: Mutex<Option<std::time::Instant>>,
     click_through: AtomicBool,
     running: AtomicBool,
+    /// True while the global hotkey is registered; `request_shutdown` waits for
+    /// the listener thread to clear it so `UnregisterHotKey` really runs.
+    hotkey_registered: AtomicBool,
     api_url: Mutex<String>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     /// The supervised `char-rig-watcher.exe`: on/off switch, live child, ring
@@ -202,6 +222,7 @@ impl AppCtx {
             // blind — that is exactly how the window became unusable before.
             click_through: AtomicBool::new(false),
             running: AtomicBool::new(true),
+            hotkey_registered: AtomicBool::new(false),
             api_url: Mutex::new(String::new()),
             shutdown_tx: Mutex::new(None),
             watcher: Mutex::new(WatcherState::new()),
@@ -301,6 +322,14 @@ impl AppCtx {
     pub fn request_shutdown(&self) {
         self.running.store(false, Ordering::Relaxed);
         self.stop_watcher();
+        // Give the hotkey thread a moment to run its `UnregisterHotKey`: some
+        // shutdown paths (`POST /shutdown`) call `app.exit(0)` immediately after
+        // this, which would otherwise kill the thread mid-cleanup.
+        let mut waited = Duration::ZERO;
+        while self.hotkey_registered.load(Ordering::Relaxed) && waited < Duration::from_millis(150) {
+            std::thread::sleep(Duration::from_millis(5));
+            waited += Duration::from_millis(5);
+        }
         if let Some(tx) = lock_or_recover(&self.shutdown_tx).take() {
             let _ = tx.send(());
         }
@@ -925,6 +954,11 @@ pub fn do_emote(
 }
 
 /// Show a speech bubble and start the talking mouth animation.
+///
+/// `details` is the optional long half of the bubble: a code snippet, a diff or
+/// a log tail that does not fit the 180-character summary. It is capped at
+/// [`MAX_SPEECH_DETAILS_CHARS`] (truncated, never rejected) and travels to the
+/// page inside the same `speak` payload, where it becomes a collapsible drawer.
 pub fn do_speak(
     app: &AppHandle,
     ctx: &AppCtx,
@@ -932,6 +966,7 @@ pub fn do_speak(
     expression: &str,
     duration_ms: u64,
     char_ms: u64,
+    details: Option<&str>,
 ) -> Result<Value, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -945,6 +980,11 @@ pub fn do_speak(
 
     let duration = duration_ms.clamp(500, 600_000);
     let char_ms = char_ms.clamp(6, 200);
+    let details = details
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| truncate_chars(value, MAX_SPEECH_DETAILS_CHARS).0);
+    let details_chars = details.as_ref().map(|value| value.chars().count()).unwrap_or(0);
 
     ctx.mark_expression_command();
     {
@@ -953,40 +993,30 @@ pub fn do_speak(
         avatar.talking = true;
     }
     ctx.speech_seen.store(false, Ordering::Relaxed);
-    *lock_or_recover(&ctx.speech) = Some(serde_json::json!({
+
+    // One payload for all three consumers (the stored slot, the Tauri event and
+    // the SSE frame) so they can never disagree about the drawer contents.
+    let mut payload = serde_json::json!({
         "text": text,
         "expression": expression,
         "duration_ms": duration,
         "char_ms": char_ms,
-    }));
+    });
+    if let Some(details) = &details {
+        payload["details"] = Value::String(details.clone());
+    }
+    *lock_or_recover(&ctx.speech) = Some(payload.clone());
 
     publish(app, ctx);
-    let _ = app.emit(
-        "speak",
-        serde_json::json!({
-            "text": text,
-            "expression": expression,
-            "duration_ms": duration,
-            "char_ms": char_ms,
-        }),
-    );
-    ctx.emit_event(
-        "speech",
-        serde_json::json!({
-            "text": text,
-            "expression": expression,
-            "duration_ms": duration,
-            "char_ms": char_ms,
-        }),
-    );
+    if let Err(err) = app.emit("speak", payload.clone()) {
+        log::warn!("failed to emit speak: {err}");
+    }
+    ctx.emit_event("speech", payload.clone());
 
-    Ok(serde_json::json!({
-        "ok": true,
-        "text": text,
-        "expression": expression,
-        "duration_ms": duration,
-        "char_ms": char_ms,
-    }))
+    let mut response = payload;
+    response["ok"] = Value::Bool(true);
+    response["details_chars"] = serde_json::json!(details_chars);
+    Ok(response)
 }
 
 /// Hide the bubble and stop the talking animation.
@@ -1228,6 +1258,7 @@ fn speak(
     expression: Option<String>,
     duration_ms: Option<u64>,
     char_ms: Option<u64>,
+    details: Option<String>,
     ctx: tauri::State<'_, Arc<AppCtx>>,
 ) -> Result<Value, String> {
     do_speak(
@@ -1237,7 +1268,20 @@ fn speak(
         expression.as_deref().unwrap_or("neutral"),
         duration_ms.unwrap_or(6000),
         char_ms.unwrap_or(26),
+        details.as_deref(),
     )
+}
+
+/// Put text on the Windows clipboard — the page's **Copy** button and any
+/// caller that wants the full snippet without a round trip through HTTP.
+#[tauri::command]
+fn set_clipboard(text: String) -> Result<Value, String> {
+    let written = write_clipboard_text(&text)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "chars": written.chars,
+        "truncated": written.truncated,
+    }))
 }
 
 #[tauri::command]
@@ -1538,6 +1582,308 @@ pub fn clipboard_text() -> ClipboardText {
 #[cfg(not(windows))]
 pub fn clipboard_text() -> ClipboardText {
     ClipboardText::default()
+}
+
+/// What a clipboard write actually stored.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ClipboardWrite {
+    /// Characters written (after the [`MAX_CLIPBOARD_WRITE_CHARS`] cap).
+    pub chars: usize,
+    /// True when the caller's text was longer than the cap and was cut.
+    pub truncated: bool,
+}
+
+/// Put `text` on the clipboard as `CF_UNICODETEXT`, capped at
+/// [`MAX_CLIPBOARD_WRITE_CHARS`].
+///
+/// This is the write half of [`clipboard_text`], and it is how an agent hands
+/// over something too big for a bubble (a full file, a diff, a log tail). The
+/// clipboard is a machine-wide singleton, so the open is retried; every path
+/// balances `OpenClipboard` with `CloseClipboard`, and ownership of the
+/// `GMEM_MOVEABLE` block passes to the system only on a successful
+/// `SetClipboardData` (a failure frees it here instead of leaking).
+#[cfg(windows)]
+pub fn write_clipboard_text(text: &str) -> Result<ClipboardWrite, String> {
+    use windows::Win32::Foundation::{GlobalFree, HANDLE};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::Ole::CF_UNICODETEXT;
+
+    let (text, truncated) = truncate_chars(text, MAX_CLIPBOARD_WRITE_CHARS);
+    let chars = text.chars().count();
+    // NUL-terminated UTF-16, as CF_UNICODETEXT requires.
+    let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let bytes = units.len() * std::mem::size_of::<u16>();
+
+    // SAFETY: the open/close pair is balanced on every path below, the HGLOBAL
+    // we lock is the one we allocated, and the buffer we copy from is a Vec we
+    // own for the duration of the copy.
+    unsafe {
+        let mut opened = false;
+        for _ in 0..8 {
+            if OpenClipboard(None).is_ok() {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !opened {
+            return Err("the clipboard is held open by another process; try again".to_string());
+        }
+
+        let outcome = (|| -> Result<(), String> {
+            EmptyClipboard().map_err(|err| format!("cannot empty the clipboard: {err}"))?;
+
+            let global = GlobalAlloc(GMEM_MOVEABLE, bytes)
+                .map_err(|err| format!("cannot allocate {bytes} bytes for the clipboard: {err}"))?;
+            if global.is_invalid() {
+                return Err("cannot allocate memory for the clipboard".to_string());
+            }
+
+            let pointer = GlobalLock(global) as *mut u16;
+            if pointer.is_null() {
+                let _ = GlobalFree(global);
+                return Err("cannot lock the clipboard buffer".to_string());
+            }
+            std::ptr::copy_nonoverlapping(units.as_ptr(), pointer, units.len());
+            let _ = GlobalUnlock(global);
+
+            // On success the system owns the block, so freeing it afterwards
+            // would corrupt the clipboard.
+            if let Err(err) = SetClipboardData(CF_UNICODETEXT.0 as u32, HANDLE(global.0)) {
+                let _ = GlobalFree(global);
+                return Err(format!("cannot set the clipboard text: {err}"));
+            }
+            Ok(())
+        })();
+
+        let _ = CloseClipboard();
+        outcome.map(|()| ClipboardWrite { chars, truncated })
+    }
+}
+
+#[cfg(not(windows))]
+pub fn write_clipboard_text(_text: &str) -> Result<ClipboardWrite, String> {
+    Err("clipboard writes are only supported on Windows".to_string())
+}
+
+/* ------------------------------------------------------------------ *
+ * Global hotkey
+ * ------------------------------------------------------------------ */
+
+/// Win32 modifier bits, spelled out locally so [`parse_hotkey`] stays pure and
+/// unit-testable on every platform (and so the parser is the one place that
+/// knows the `"Ctrl+Shift+A"` grammar).
+const HOTKEY_MOD_ALT: u32 = 0x0001;
+const HOTKEY_MOD_CONTROL: u32 = 0x0002;
+const HOTKEY_MOD_SHIFT: u32 = 0x0004;
+const HOTKEY_MOD_WIN: u32 = 0x0008;
+/// `MOD_NOREPEAT`: holding the key must not machine-gun the command bar.
+const HOTKEY_MOD_NOREPEAT: u32 = 0x4000;
+/// Windows requires a per-window/thread id for a registered hotkey; any value
+/// not used elsewhere in this process is fine, and it is what `UnregisterHotKey`
+/// is given on the way out.
+const HOTKEY_ID: i32 = 0xC0DE;
+/// How often the listener wakes to notice that the app is shutting down.
+///
+/// Tight on purpose: `request_shutdown` only gives the process ~120 ms before
+/// `app.exit(0)`, and the `UnregisterHotKey` on the way out has to land inside
+/// that window. A `PeekMessageW` + `sleep` at 25 ms costs nothing.
+const HOTKEY_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// A parsed hotkey spec: Win32 modifier bits plus a virtual-key code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hotkey {
+    pub modifiers: u32,
+    pub vk: u32,
+}
+
+/// Parse `"Alt+Space"`, `"Ctrl+Shift+A"`, `"F9"`, `"Win+Shift+Enter"`, …
+///
+/// The grammar is `modifier(+modifier)*+key`, where the key is one letter, one
+/// digit, `Space`/`Enter`/`Tab`/`Esc`/`Backspace`/the arrows, or `F1`…`F24`.
+/// Parsing is separate from registration so a bad value in `watcher_rules.json`
+/// is a logged warning instead of a dead app.
+pub fn parse_hotkey(spec: &str) -> Result<Hotkey, String> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return Err("the hotkey is empty".to_string());
+    }
+    let parts: Vec<&str> = trimmed.split('+').map(str::trim).collect();
+    let (key, modifier_parts) = parts
+        .split_last()
+        .ok_or_else(|| format!("{spec:?} is not a hotkey"))?;
+
+    let mut modifiers = 0u32;
+    for part in modifier_parts {
+        modifiers |= match part.to_ascii_lowercase().as_str() {
+            "alt" => HOTKEY_MOD_ALT,
+            "ctrl" | "control" => HOTKEY_MOD_CONTROL,
+            "shift" => HOTKEY_MOD_SHIFT,
+            "win" | "super" | "meta" => HOTKEY_MOD_WIN,
+            "" => return Err(format!("hotkey {spec:?} has an empty modifier")),
+            other => {
+                return Err(format!(
+                    "unknown hotkey modifier {other:?}; use Alt, Ctrl, Shift or Win"
+                ))
+            }
+        };
+    }
+    Ok(Hotkey { modifiers, vk: virtual_key(key, spec)? })
+}
+
+/// The virtual-key code for the non-modifier part of a spec.
+fn virtual_key(key: &str, spec: &str) -> Result<u32, String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(format!("hotkey {spec:?} has no key after the last '+'"));
+    }
+    let upper = key.to_ascii_uppercase();
+    let mut chars = upper.chars();
+    if let (Some(first), None) = (chars.next(), chars.next()) {
+        // Letters and digits use their ASCII code as the virtual-key code.
+        if first.is_ascii_uppercase() || first.is_ascii_digit() {
+            return Ok(first as u32);
+        }
+    }
+    let named = match upper.as_str() {
+        "SPACE" => Some(0x20),
+        "ENTER" | "RETURN" => Some(0x0D),
+        "TAB" => Some(0x09),
+        "ESC" | "ESCAPE" => Some(0x1B),
+        "BACKSPACE" => Some(0x08),
+        "LEFT" => Some(0x25),
+        "UP" => Some(0x26),
+        "RIGHT" => Some(0x27),
+        "DOWN" => Some(0x28),
+        _ => None,
+    };
+    if let Some(vk) = named {
+        return Ok(vk);
+    }
+    if let Some(number) = upper.strip_prefix('F').and_then(|rest| rest.parse::<u32>().ok()) {
+        if (1..=24).contains(&number) {
+            return Ok(0x70 + number - 1);
+        }
+    }
+    Err(format!(
+        "unknown hotkey key {key:?}; use A-Z, 0-9, Space, Enter, Tab, Esc, the arrows or F1-F24"
+    ))
+}
+
+/// The `hotkey` string from `watcher_rules.json`, or [`DEFAULT_HOTKEY`].
+///
+/// Read straight from the same rules file as everything else, so changing the
+/// shortcut needs no rebuild — only an app restart (a hotkey is registered once
+/// at startup). A missing/blank/broken file keeps `Alt+Space`.
+pub fn hotkey_spec(rules_path: Option<&std::path::Path>) -> String {
+    let fallback = DEFAULT_HOTKEY.to_string();
+    let Some(path) = rules_path else { return fallback };
+    let Ok(text) = std::fs::read_to_string(path) else { return fallback };
+    let Ok(document) = serde_json::from_str::<Value>(&text) else { return fallback };
+    document
+        .get("hotkey")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or(fallback)
+}
+
+/// Summon the command bar: make the overlay interactive, focus it, and tell the
+/// page to open its bar.
+///
+/// Order matters. A click-through (`WS_EX_TRANSPARENT`) window cannot take the
+/// keyboard even when it is focused, so click-through is disabled and the
+/// ignore-cursor flag applied *before* `set_focus`. The page restores
+/// click-through when the bar closes.
+pub fn summon_command_bar(app: &AppHandle, ctx: &AppCtx, spec: &str) {
+    ctx.set_click_through(false);
+    ctx.apply_ignore_cursor(app, false);
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_minimized().unwrap_or(false) {
+            let _ = window.unminimize();
+        }
+        if let Err(err) = window.set_focus() {
+            log::warn!("could not focus the overlay for the hotkey: {err}");
+        }
+    }
+    if let Err(err) = app.emit(
+        "summon-command-bar",
+        serde_json::json!({ "source": "hotkey", "hotkey": spec }),
+    ) {
+        log::warn!("failed to emit summon-command-bar: {err}");
+    }
+}
+
+/// Register the system-wide hotkey on a background thread and pump its messages.
+///
+/// `RegisterHotKey` runs on the thread that owns the message queue, so the
+/// thread both registers and polls. A failure (another app already holds the
+/// shortcut, or the spec is invalid) is a warning, never a panic: the overlay
+/// keeps working and `Enter`/`/` still reach the bar once the window has focus.
+#[cfg(windows)]
+fn spawn_hotkey_listener(app: AppHandle, ctx: Arc<AppCtx>, spec: String) {
+    let hotkey = match parse_hotkey(&spec) {
+        Ok(hotkey) => hotkey,
+        Err(err) => {
+            log::warn!("global hotkey {spec:?} ignored: {err}");
+            return;
+        }
+    };
+
+    let spawned = std::thread::Builder::new()
+        .name("avatar-hotkey".to_string())
+        .spawn(move || {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::Input::KeyboardAndMouse::{
+                RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
+            };
+            use windows::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_REMOVE, WM_HOTKEY};
+
+            let modifiers = HOT_KEY_MODIFIERS(hotkey.modifiers | HOTKEY_MOD_NOREPEAT);
+            // SAFETY: `HWND::default()` associates the hotkey with this thread's
+            // message queue; the id is ours and is unregistered before the
+            // thread ends.
+            if let Err(err) = unsafe { RegisterHotKey(HWND::default(), HOTKEY_ID, modifiers, hotkey.vk) } {
+                log::warn!(
+                    "could not register the global hotkey {spec:?} ({err}); another app may hold it — \
+                     Enter or / still opens the command bar when the overlay has focus"
+                );
+                return;
+            }
+            log::info!("global hotkey {spec:?} summons the command bar");
+            ctx.hotkey_registered.store(true, Ordering::Relaxed);
+
+            let mut message = MSG::default();
+            while ctx.running.load(Ordering::Relaxed) {
+                // SAFETY: PeekMessageW only writes into the MSG we own.
+                let had_message =
+                    unsafe { PeekMessageW(&mut message, HWND::default(), 0, 0, PM_REMOVE) }.as_bool();
+                if had_message {
+                    if message.message == WM_HOTKEY {
+                        summon_command_bar(&app, &ctx, &spec);
+                    }
+                    continue;
+                }
+                std::thread::sleep(HOTKEY_POLL_INTERVAL);
+            }
+            // SAFETY: same id/handle pair as the registration above.
+            let _ = unsafe { UnregisterHotKey(HWND::default(), HOTKEY_ID) };
+            ctx.hotkey_registered.store(false, Ordering::Relaxed);
+            log::info!("global hotkey released");
+        });
+
+    if let Err(err) = spawned {
+        log::warn!("could not spawn the global hotkey listener: {err}");
+    }
+}
+
+#[cfg(not(windows))]
+fn spawn_hotkey_listener(_app: AppHandle, _ctx: Arc<AppCtx>, spec: String) {
+    log::warn!("global hotkeys are only supported on Windows; {spec:?} was not registered");
 }
 
 /* ------------------------------------------------------------------ *
@@ -2243,6 +2589,7 @@ pub fn run() {
             get_parts,
             emote,
             speak,
+            set_clipboard,
             clear_speech,
             get_speech,
             save_rig,
@@ -2295,7 +2642,14 @@ pub fn run() {
                     }
                 }
 
-                spawn_cursor_tracker(handle, Arc::clone(&ctx));
+                spawn_cursor_tracker(handle.clone(), Arc::clone(&ctx));
+
+                // The system-wide shortcut that summons the command bar from any
+                // application. Registered once at startup from the same rules
+                // file as everything else; a failure is logged and ignored.
+                let rules_file = { lock_or_recover(&ctx.watcher).rules.clone() };
+                let hotkey = hotkey_spec(rules_file.as_deref());
+                spawn_hotkey_listener(handle, Arc::clone(&ctx), hotkey);
                 Ok(())
             }
         });
@@ -2809,5 +3163,73 @@ mod tests {
         ctx.request_shutdown();
 
         assert!(lock_or_recover(&ctx.watcher).child.is_none());
+    }
+
+    /* ---------- global hotkey ---------- */
+
+    #[test]
+    fn parse_hotkey_understands_the_documented_grammar() {
+        let alt_space = parse_hotkey("Alt+Space").expect("the default hotkey parses");
+        assert_eq!(alt_space.modifiers, HOTKEY_MOD_ALT);
+        assert_eq!(alt_space.vk, 0x20);
+
+        let ctrl_shift_a = parse_hotkey("Ctrl+Shift+A").expect("ctrl+shift+a parses");
+        assert_eq!(ctrl_shift_a.modifiers, HOTKEY_MOD_CONTROL | HOTKEY_MOD_SHIFT);
+        assert_eq!(ctrl_shift_a.vk, 0x41, "letters use their ASCII code");
+
+        // Whitespace and case are cosmetic; `Control` is a synonym for `Ctrl`.
+        assert_eq!(parse_hotkey("  control + alt + f9  ").unwrap(), Hotkey {
+            modifiers: HOTKEY_MOD_CONTROL | HOTKEY_MOD_ALT,
+            vk: 0x70 + 8,
+        });
+        assert_eq!(parse_hotkey("Win+Shift+Enter").unwrap().vk, 0x0D);
+        assert_eq!(parse_hotkey("f1").unwrap().vk, 0x70);
+        assert_eq!(parse_hotkey("F24").unwrap().vk, 0x70 + 23);
+        // A bare key with no modifier is legal (single-key hotkeys).
+        assert_eq!(parse_hotkey("7").unwrap(), Hotkey { modifiers: 0, vk: 0x37 });
+    }
+
+    #[test]
+    fn parse_hotkey_rejects_junk_instead_of_panicking() {
+        for bad in ["", "   ", "Alt+", "+Space", "Alt+Ctrl+", "Hyper+A", "Alt+Nope", "F25", "Alt+AB"] {
+            assert!(parse_hotkey(bad).is_err(), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn hotkey_spec_reads_the_rules_file_and_falls_back() {
+        assert_eq!(hotkey_spec(None), DEFAULT_HOTKEY);
+
+        let root = std::env::temp_dir().join(format!("char-rig-hotkey-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let path = root.join("watcher_rules.json");
+
+        std::fs::write(&path, r#"{"hotkey":"Ctrl+Shift+A"}"#).expect("write rules");
+        assert_eq!(hotkey_spec(Some(&path)), "Ctrl+Shift+A");
+
+        // A blank value is the default, not an unbindable empty shortcut.
+        std::fs::write(&path, r#"{"hotkey":"   "}"#).expect("write rules");
+        assert_eq!(hotkey_spec(Some(&path)), DEFAULT_HOTKEY);
+
+        // No key at all / an unparsable file keeps the default.
+        std::fs::write(&path, r#"{"quick_tasks":[]}"#).expect("write rules");
+        assert_eq!(hotkey_spec(Some(&path)), DEFAULT_HOTKEY);
+        std::fs::write(&path, "{not json").expect("write rules");
+        assert_eq!(hotkey_spec(Some(&path)), DEFAULT_HOTKEY);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /* ---------- speech details ---------- */
+
+    #[test]
+    fn speech_details_are_capped_on_a_char_boundary() {
+        // The same cap the cap-splitting helper enforces for `do_speak`.
+        let long = "é".repeat(MAX_SPEECH_DETAILS_CHARS + 25);
+        let (cut, truncated) = truncate_chars(&long, MAX_SPEECH_DETAILS_CHARS);
+        assert!(truncated);
+        assert_eq!(cut.chars().count(), MAX_SPEECH_DETAILS_CHARS);
+        assert_eq!(MAX_SPEECH_DETAILS_CHARS, 8000);
+        assert_eq!(MAX_CLIPBOARD_WRITE_CHARS, 32_000);
     }
 }

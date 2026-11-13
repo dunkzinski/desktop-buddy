@@ -77,6 +77,12 @@ You never need a terminal to talk to the avatar:
 * **`Enter`** or **`/`** anywhere on the overlay, the **chat icon** in the
   titlebar, the **Ask…** button in the control panel, or **clicking the speech
   bubble** all summon a floating command bar under the avatar.
+* **From any application: `Alt+Space`** (change it with `hotkey` in
+  `watcher_rules.json`). The app registers the shortcut with Win32
+  `RegisterHotKey` on its own thread; when it fires, the overlay drops
+  click-through, takes focus and emits `summon-command-bar`, so the bar opens
+  with the caret already in the input. If another app owns the shortcut the
+  registration fails with a warning and nothing else changes.
 * Type a prompt or a task and press **`Enter`** — it goes out as a `user_reply`
   frame (`notify_reply`, the page-side twin of `POST /reply`) and the bubble
   immediately switches to a **Thinking…** card with the `thinking` face while
@@ -383,6 +389,21 @@ expression and animates the mouth. `duration_ms` is how long the finished text
 stays on screen (default 6000, min 500); `char_ms` is the per-character typing
 speed (default 26). Text is limited to 2000 characters.
 
+`details` (optional, ≤ 8000 characters) is the long half of a bubble — a code
+snippet, a diff, a log tail. It renders behind a **Details ▾** toggle inside the
+bubble with a **Copy** button, pauses the auto-dismiss timer while expanded, and
+is echoed back as `details_chars`. Prefer a one-line `text` plus `details` over
+a paragraph the bubble cannot fit:
+
+```bash
+curl -s -X POST localhost:8765/speak -H 'content-type: application/json' \
+     -d '{"text":"Build failed: 2 errors","details":"src/lib.rs:41: unused import\nsrc/lib.rs:88: mismatched types"}'
+```
+```json
+{"ok":true,"text":"Build failed: 2 errors","expression":"neutral","duration_ms":6000,"char_ms":26,
+ "details":"src/lib.rs:41: unused import\nsrc/lib.rs:88: mismatched types","details_chars":62}
+```
+
 #### `POST /clear_speech`
 
 Immediately hides the bubble and stops the mouth animation.
@@ -455,6 +476,14 @@ curl -s -X POST localhost:8765/watcher -H 'content-type: application/json'      
 Both return the same status object as `GET /watcher`. Every start, stop and log
 line also goes out as a `watcher` frame on `GET /events` and as the
 `watcher-status` Tauri event, so the page never has to poll.
+
+Dispatch is **single-flight with a one-slot pending queue**. A `user_reply` or an
+`alert` that arrives while a `--hermes-cmd` turn is still running is not dropped:
+it waits in a one-trigger slot (a newer one replaces it, so only the latest
+matters — the watcher logs `[watcher] queued pending trigger (1 slot)`) and runs
+as soon as that turn's child exits or is killed by the timeout. Routine triggers
+(`interaction`, `window_title`, `idle_return`) are dropped while busy, so
+background noise never stacks up behind a task.
 
 ### `POST /shutdown`
 
@@ -537,6 +566,34 @@ It always answers `ok: true`: an empty clipboard, a non-text clipboard and a
 clipboard another process is holding open all read as `""`. The read is
 best-effort (the clipboard is a machine-wide singleton, so the open is retried a
 few times) and never blocks the API thread for long.
+
+### `POST /clipboard`
+
+Put text on the clipboard — the write half of the route above, and how an agent
+hands over something too big for a bubble.
+
+```bash
+curl -s -X POST localhost:8765/clipboard -H 'content-type: application/json' \
+     -d '{"text":"fn main() {\n    println!(\"hi\");\n}\n"}'
+```
+
+```json
+{ "ok": true, "chars": 39, "truncated": false }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `text` | required; the exact text to copy (newlines kept). `""` clears the clipboard |
+| `chars` | characters actually written |
+| `truncated` | `true` when `text` exceeded the 32 000-character cap and was cut |
+
+Win32 `OpenClipboard` → `EmptyClipboard` → `GlobalAlloc(GMEM_MOVEABLE)` + UTF-16
+copy → `SetClipboardData(CF_UNICODETEXT)` → `CloseClipboard`, retried while the
+clipboard is busy. If another process holds it open for the whole retry window
+the route answers **400** (`the clipboard is held open by another process; try
+again`) — the one clipboard case worth retrying rather than ignoring. The same
+writer backs the `set_clipboard` Tauri command (the bubble's **Copy** button) and
+the `avatar_set_clipboard` MCP tool.
 
 ### `POST /reply`
 
@@ -639,7 +696,7 @@ Every `data:` line is one JSON object:
 | --- | --- | --- |
 | `hello` | a client connects (always the first frame) | `{api_url, click_through, model, state, subscribers}` |
 | `state` | state / expression / talking changes — from HTTP, a command, or the page's own transitions | full `AvatarState` (same shape as `GET /state`) |
-| `speech` | `POST /speak` | `{text, expression, duration_ms, char_ms}` |
+| `speech` | `POST /speak` | `{text, expression, duration_ms, char_ms}`, plus `details` when the bubble carries a drawer |
 | `speech_cleared` | `POST /clear_speech` (or the bubble dismissing itself) | `{}` |
 | `model` | model loaded, switched, imported or reset | `{name, label, rig_path, is_override, bones, images, reason}` with `reason` ∈ `load` \| `switch` \| `import` \| `reset` |
 | `rig_saved` | `POST /rig`, or the editor's **Save rig** | `{rig_path}` |
@@ -701,7 +758,7 @@ curl -s -X POST localhost:8765/shutdown
 ## Internal (Tauri command) surface
 
 The page talks to Rust through `invoke`; the same mutations are available as
-commands. Arguments are snake_case (`rename_all = "snake_case"`). All 33, in the
+commands. Arguments are snake_case (`rename_all = "snake_case"`). All 34, in the
 order they are registered (ARCHITECTURE.md §6 has the full purpose table):
 
 **State, window & interaction** — `get_avatar_state`, `get_runtime_info`,
@@ -718,8 +775,9 @@ target_position, state, expression, joints?, talking?, speech?)`,
 `reset_rig`, `set_pose(joints)`, `clear_pose`, `get_joints`.
 
 **Expressions & speech** — `emote(expression, duration_ms?, revert?)`,
-`speak(text, expression?, duration_ms?, char_ms?)`, `clear_speech`,
-`get_speech`.
+`speak(text, expression?, duration_ms?, char_ms?, details?)`, `set_clipboard(text)`
+(the bubble's **Copy** button; same Win32 writer as `POST /clipboard`),
+`clear_speech`, `get_speech`.
 
 **Watcher** — `get_watcher_status`, `set_watcher_enabled(enabled)`. The switch
 and log tail behind the control panel's **Watcher** row and the pop-out console;
@@ -744,9 +802,10 @@ session id.
 
 Events emitted to the page: `avatar-state-changed` (full state after every
 command/API mutation), `api-status` (bound address or `offline`),
-`model-changed`, `rig-pose`, `rig-saved`, `part-patch`, `emote`, `speak`,
-`speech-clear`, `avatar-animate` (play/stop a custom clip: `{action, name,
-duration_ms, loop}`).
+`model-changed`, `rig-pose`, `rig-saved`, `part-patch`, `emote`, `speak`
+(including `details`), `speech-clear`, `avatar-animate` (play/stop a custom clip:
+`{action, name, duration_ms, loop}`), `summon-command-bar` (`{source, hotkey}` —
+the global hotkey fired; the page opens the bar and focuses its input).
 
 The same changes are also mirrored onto the HTTP event bus (`GET /events`) —
 see *Awareness: desktop context & the event stream* for the frame list.
@@ -757,7 +816,7 @@ see *Awareness: desktop context & the event stream* for the frame list.
 
 `src-tauri/src/bin/char-rig-mcp.rs` builds a **second binary**,
 `src-tauri/target/debug/char-rig-mcp.exe`, that exposes the avatar to any MCP
-client (Hermes, Claude Desktop, …) over **stdio JSON-RPC 2.0** as eleven tools.
+client (Hermes, Claude Desktop, …) over **stdio JSON-RPC 2.0** as twelve tools.
 It is a thin, stateless bridge: each tool call becomes one HTTP request to the
 *running* `avatar-desktop.exe`.
 
@@ -769,13 +828,14 @@ Base URL: `CHAR_RIG_API_URL`, default `http://127.0.0.1:8765`.
 
 | MCP tool | Arguments | Forwards to |
 | --- | --- | --- |
-| `avatar_speak` | `text` (required), `expression?`, `duration_ms?` | `POST /speak` |
+| `avatar_speak` | `text` (required), `expression?`, `duration_ms?`, `details?` | `POST /speak` |
 | `avatar_emote` | `expression` (required), `duration_ms?` | `POST /emote` |
 | `avatar_move` | `x`, `y` (required) | `POST /move` |
 | `avatar_wave` | — | `POST /wave` |
 | `avatar_pose` | `joints` (required; `{boneId: {rotation?, scale?, x?, y?}}`, `null` clears a bone) | `POST /pose` |
 | `avatar_get_context` | — | `GET /context` **and** `GET /state` |
 | `avatar_get_clipboard` | — | `GET /clipboard` |
+| `avatar_set_clipboard` | `text` (required; `""` clears) | `POST /clipboard` |
 | `avatar_list_models` | — | `GET /models` |
 | `avatar_switch_model` | `name` (required) | `POST /model` |
 | `avatar_list_animations` | — | `GET /animations` |

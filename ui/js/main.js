@@ -36,6 +36,7 @@ import {
   speak, hideSpeech, updateSpeech, openReply, closeReply,
   beginThinking, showThinking, endThinking, setBubbleHover,
   commandBarVisible, positionCommandBar,
+  toggleDetails, copyDetails, detailsOpen,
 } from "./speech.js";
 
 import {
@@ -46,7 +47,7 @@ import {
   toggleWatcherDrawer, isWatcherDrawerOpen,
 } from "./bridge.js";
 
-import { call } from "./ipc.js";
+import { call, listen } from "./ipc.js";
 
 /* ---------- behaviour (play mode) ---------- */
 
@@ -367,6 +368,13 @@ async function sendUserMessage(text) {
   return true;
 }
 
+/**
+ * Set by the global-hotkey summon: Rust turns click-through off so the overlay
+ * can take the keyboard, and this flag remembers whether the desktop should go
+ * back to click-through once the bar closes.
+ */
+let resumeClickThrough = false;
+
 /** Open the floating ask/task bar, anchored under the avatar, and focus it. */
 async function openCommandBar(focus = true) {
   const bar = document.getElementById("command-bar");
@@ -394,6 +402,13 @@ function closeCommandBar() {
     if (document.activeElement === input) input.blur();
   }
   wireRegions();
+  // A global-hotkey summon turns click-through off so the window can take the
+  // keyboard. Put the desktop back once the bar is dismissed, but only if it was
+  // the armed default — a user who switched click-through off keeps it off.
+  if (resumeClickThrough) {
+    resumeClickThrough = false;
+    call("set_click_through", { enabled: true });
+  }
 }
 
 function toggleCommandBar() {
@@ -448,11 +463,31 @@ function setupQuickReply() {
   const input = document.getElementById("speech-reply-input");
   if (!bubble || !form || !input) return;
 
-  // Clicking the bubble summons the full command bar (chips + new chat).
+  // Clicking the bubble summons the full command bar (chips + new chat), except
+  // on the Details/Copy row — those are the bubble's own controls.
   bubble.addEventListener("click", (event) => {
     if (form.contains(event.target)) return;
+    if (event.target.closest && event.target.closest("#speech-actions")) return;
     openCommandBar();
   });
+
+  // Details ▾ expands the code/log drawer; Copy puts the full text on the
+  // clipboard (same Win32 writer as POST /clipboard and avatar_set_clipboard).
+  const detailsButton = document.getElementById("speech-details-toggle");
+  const copyButton = document.getElementById("speech-copy");
+  if (detailsButton) {
+    detailsButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleDetails();
+    });
+  }
+  if (copyButton) {
+    copyButton.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const copied = await copyDetails();
+      toast(copied ? "Copied full text" : "Copy failed", !copied);
+    });
+  }
 
   // Hovering the bubble pauses its auto-dismiss timer.
   bubble.addEventListener("mouseenter", () => setBubbleHover(true));
@@ -511,6 +546,15 @@ function setupCommandBar() {
 
   document.getElementById("command-close").addEventListener("click", closeCommandBar);
   document.getElementById("command-newchat").addEventListener("click", resetSession);
+
+  // The system-wide hotkey (Rust: `summon-command-bar`). Rust has already
+  // disabled click-through and focused the window, so all that is left is to
+  // open the bar and put the caret in the input — type straight away from any
+  // application. The flag restores click-through when the bar closes.
+  listen("summon-command-bar", () => {
+    resumeClickThrough = avatar.clickThrough;
+    openCommandBar();
+  }).catch((err) => console.error("[avatar] summon listener failed:", err));
 
   // Keep the bar glued under the avatar while it wanders, and re-publish the
   // region when it moves.
@@ -709,6 +753,14 @@ function installDebugSurface() {
       visible: speech.visible,
       text: speech.visible ? speech.full : "",
     }),
+    /** Details drawer: read it, expand it, copy it (CDP can drive all three). */
+    details: () => ({
+      open: detailsOpen(),
+      chars: speech.details ? speech.details.length : 0,
+      text: speech.details || "",
+    }),
+    toggleDetails: () => toggleDetails(),
+    copyDetails: () => copyDetails(),
     selectBone: (id, partId) => select(id, partId || null),
     undo: undo,
     /** Same path the canvas uses: notify Rust of a pointer interaction. */

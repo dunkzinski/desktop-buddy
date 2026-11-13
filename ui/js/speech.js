@@ -1,14 +1,23 @@
 /**
  * char-rig — speech bubble lifecycle
  *
- * Depends on: state.js only (speech state, avatar, RT.world, viewport).
- * No rig.js import: the bubble reads RT.world, which the render loop fills.
+ * Depends on: state.js (speech state, avatar, RT.world, viewport), ipc.js (the
+ * clipboard command) and rig.js (`wireRegions`, because an expanded details
+ * drawer changes the bubble's hit region immediately instead of waiting for the
+ * next 200 ms publish). rig.js imports neither speech.js nor ipc.js back, so the
+ * module DAG stays acyclic.
  */
 
 import {
   avatar, RT, speech,
   clamp, viewport, updateStatusUI,
 } from "./state.js";
+
+import { call } from "./ipc.js";
+import { wireRegions } from "./rig.js";
+
+/** Longest `details` block the page will render (mirrors lib.rs). */
+const MAX_DETAILS_CHARS = 8000;
 
 /* ---------- speech bubble ---------- */
 
@@ -49,7 +58,9 @@ export function positionBubble() {
 
 /**
  * Show a speech bubble. `opts.durationMs` is how long the finished text stays
- * on screen; the mouth animates while the bubble is visible.
+ * on screen; `opts.details` is the optional long half (code, diff, log) that
+ * hides behind a **Details ▾** toggle. The mouth animates while the bubble is
+ * visible.
  */
 export function speak(text, opts) {
   const options = opts || {};
@@ -65,13 +76,16 @@ export function speak(text, opts) {
   speech.doneFor = 0;
   speech.charMs = clamp(Number(options.charMs) || 26, 6, 200);
   speech.holdMs = Number.isFinite(options.durationMs) ? Math.max(500, options.durationMs) : 6000;
+  speech.details = String(options.details == null ? "" : options.details).slice(0, MAX_DETAILS_CHARS);
+  speech.detailsOpen = false;
   speech.visible = true;
   avatar.talk = true;
 
   const el = document.getElementById("speech");
-  el.classList.remove("hidden", "thinking");
+  el.classList.remove("hidden", "thinking", "details-open");
   el.classList.add("show");
   document.getElementById("speech-text").textContent = "";
+  renderDetails();
   positionBubble();
   updateSpeech(0);
 }
@@ -133,11 +147,14 @@ function hideSpeechNow() {
   speech.shown = -1;
   speech.elapsed = 0;
   speech.doneFor = 0;
+  speech.details = "";
+  speech.detailsOpen = false;
   avatar.talk = false;
   closeReply();
+  renderDetails();
 
   const el = document.getElementById("speech");
-  el.classList.remove("show", "thinking");
+  el.classList.remove("show", "thinking", "details-open");
   el.classList.add("hidden");
   if (wasVisible) updateStatusUI();
 }
@@ -186,6 +203,88 @@ export function toggleReply() {
   return isReplyOpen() ? (closeReply(), false) : openReply();
 }
 
+/* ---------- details drawer + copy ---------- */
+
+/** The long half of the current bubble (empty when there is none). */
+export function detailsText() {
+  return speech.details || "";
+}
+
+/**
+ * Paint the Details/Copy row and the drawer from `speech.details`.
+ *
+ * The row only exists when the bubble actually carries details, so a plain
+ * one-line bubble looks exactly as it did before.
+ */
+function renderDetails() {
+  const has = !!detailsText();
+  const actions = document.getElementById("speech-actions");
+  const toggle = document.getElementById("speech-details-toggle");
+  const copy = document.getElementById("speech-copy");
+  const pre = document.getElementById("speech-details");
+
+  if (actions) actions.classList.toggle("hidden", !has);
+  if (copy) copy.classList.toggle("hidden", !has);
+  if (toggle) {
+    toggle.classList.toggle("hidden", !has);
+    toggle.textContent = speech.detailsOpen ? "Details ▴" : "Details ▾";
+    toggle.title = speech.detailsOpen ? "Hide the full text" : "Show the full code, diff or log";
+  }
+  if (pre) {
+    pre.textContent = has ? detailsText() : "";
+    pre.classList.toggle("hidden", !has || !speech.detailsOpen);
+  }
+
+  const el = document.getElementById("speech");
+  if (el) el.classList.toggle("details-open", has && !!speech.detailsOpen);
+}
+
+/**
+ * Expand/collapse the drawer. Returns the new open state.
+ *
+ * Expanding grows the card well past the summary, so the bubble is re-anchored
+ * above the head and its hit region is republished *now* — the 200 ms publish
+ * in `main.js` would leave a click-through gap over the fresh pixels.
+ */
+export function toggleDetails() {
+  if (!detailsText()) return false;
+  speech.detailsOpen = !speech.detailsOpen;
+  renderDetails();
+  positionBubble();
+  wireRegions();
+  return speech.detailsOpen;
+}
+
+/** Is the drawer open right now? */
+export function detailsOpen() {
+  return !!speech.detailsOpen && !!detailsText();
+}
+
+/**
+ * Copy the drawer's text to the clipboard.
+ *
+ * The Tauri command is preferred: it is the same Win32 writer the MCP tool and
+ * `POST /clipboard` use, so it works while the page's async-clipboard permission
+ * is not granted. `navigator.clipboard` is the fallback outside Tauri.
+ */
+export async function copyDetails() {
+  const text = detailsText();
+  if (!text) return false;
+
+  const result = await call("set_clipboard", { text });
+  if (result && !result.__error) return true;
+
+  if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      console.error("[avatar] clipboard write failed:", err);
+    }
+  }
+  return false;
+}
+
 /* ---------- "Thinking…" feedback ---------- */
 
 /** Set just before submitting; the next speech-clear becomes the thinking card. */
@@ -232,12 +331,13 @@ export function setBubbleHover(hovered) {
 /**
  * Should the bubble stay up even though its hold expired?
  *
- * True while the quick-reply box is pinned, the pointer is over the bubble, or
- * either text input (bubble reply / command bar) has focus — the three ways a
- * user can be mid-sentence when the timer would otherwise fire.
+ * True while the details drawer is expanded (the user is reading code), the
+ * quick-reply box is pinned, the pointer is over the bubble, or either text
+ * input (bubble reply / command bar) has focus — the ways a user can be
+ * mid-sentence when the timer would otherwise fire.
  */
 function bubbleHeld() {
-  if (isReplyOpen() || speech.hovered) return true;
+  if (speech.detailsOpen || isReplyOpen() || speech.hovered) return true;
   const active = document.activeElement;
   return !!active && (active.id === "speech-reply-input" || active.id === "command-input");
 }

@@ -356,6 +356,35 @@ input[type="range"]::-webkit-slider-thumb {
 }
 #speech.show { opacity: 1; transform: translateY(0); }
 #speech-bubble { display: block; }
+
+/* details drawer: the summary stays a glance, the code/log lives behind it */
+#speech-actions { display: flex; gap: 6px; margin-top: 8px; }
+#speech-actions button {
+  padding: 3px 8px;
+  font-family: inherit; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #bcd0e6;
+  cursor: pointer;
+}
+#speech-actions button:hover { background: rgba(255, 255, 255, 0.15); color: #fff; }
+#speech-actions button:active { transform: scale(0.96); }
+#speech-details {
+  margin-top: 7px; padding: 7px 9px;
+  max-height: 220px; overflow: auto;
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 11px; line-height: 1.35;
+  white-space: pre; tab-size: 2;
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 9px;
+  cursor: auto;
+  /* the drawer is the one part of the overlay whose text must be selectable */
+  user-select: text;
+}
+/* An expanded drawer holds the bubble open, so it must not look dismissible. */
+#speech.details-open { cursor: default; }
 #speech .caret {
   display: inline-block; width: 2px; height: 12px;
   background: #7ab6f0; margin-left: 1px;

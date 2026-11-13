@@ -219,6 +219,11 @@
 <div id="speech" class="hidden">
   <div id="speech-bubble">
     <span id="speech-text"></span>
+    <div id="speech-actions" class="hidden">
+      <button type="button" id="speech-details-toggle" title="Show the full code, diff or log">Details ▾</button>
+      <button type="button" id="speech-copy" title="Copy the full text to the clipboard">Copy</button>
+    </div>
+    <pre id="speech-details" class="hidden"></pre>
     <form id="speech-reply" autocomplete="off"
           title="Reply to the avatar — Enter sends, Esc dismisses">
       <input type="text" id="speech-reply-input" maxlength="500" spellcheck="false"

@@ -143,8 +143,8 @@ else:
     tool_block = re.search(r"const TOOL_NAMES: \[&str; \d+\] = \[(.*?)\];", mcp_rs, re.S)
     tool_names = set(re.findall(r'"([a-z_]+)"', tool_block.group(1))) if tool_block else set()
     print(f"\nMCP tools ({len(tool_names)}): {', '.join(sorted(tool_names))}")
-    if len(tool_names) != 11:
-        problems.append(f"char-rig-mcp.rs: expected 11 tools, found {len(tool_names)}")
+    if len(tool_names) != 12:
+        problems.append(f"char-rig-mcp.rs: expected 12 tools, found {len(tool_names)}")
 
     # every declared tool must have a schema entry in tools()
     for name in sorted(tool_names):
@@ -291,10 +291,22 @@ else:
                 "hermes_cmd",
                 "hermes_timeout_secs",
                 "webhook_url",
+                "hotkey",
             }
             unknown = set(shipped) - known
             if unknown:
                 problems.append(f"watcher_rules.json: unknown keys {sorted(unknown)}")
+
+            # The hotkey is registered from this file at startup, so a value the
+            # parser cannot read would silently fall back to Alt+Space.
+            hotkey = shipped.get("hotkey")
+            if hotkey is not None:
+                if not isinstance(hotkey, str) or not hotkey.strip():
+                    problems.append("watcher_rules.json: hotkey must be a non-empty string")
+                elif "hotkey" not in arch_md:
+                    problems.append(
+                        "ARCHITECTURE.md: watcher_rules.json carries `hotkey` but it is not documented"
+                    )
 
             # quick_tasks: the command bar reads these straight out of the file,
             # so a typo there means a silently missing chip.

@@ -23,20 +23,20 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | --- | --- |
 | **Desktop windowing** | Transparent, borderless, always-on-top overlay covering the primary monitor; selective click-through so the desktop stays usable; custom titlebar with click-through toggle, minimize and close |
 | **UI controls** | Avatar control panel (state readout, expression buttons, Wave / Idle / Walk / Center, New chat, Ask…, walk-speed slider, live position, API URL), model dropdown, Import…, a **chat icon** in the titlebar, and a **Watcher** row: on/off switch, `running`/`off`/`missing` badge and a **Logs ↗** pop-out console |
-| **Ask / task from the desktop** | Floating command bar under the avatar — `Enter`/`/`, the titlebar chat icon, the **Ask…** button or a click on the bubble opens it; type + `Enter` sends a `user_reply`, `Esc` closes it. Quick-task chips come from `quick_tasks` in `watcher_rules.json`, and **↺ / New chat** drops the conversation context (`POST /session/reset`) |
+| **Ask / task from the desktop** | Floating command bar under the avatar — `Enter`/`/`, the titlebar chat icon, the **Ask…** button or a click on the bubble opens it, and a **system-wide hotkey** (`Alt+Space` by default, `hotkey` in `watcher_rules.json`) summons it from any application; type + `Enter` sends a `user_reply`, `Esc` closes it. Quick-task chips come from `quick_tasks` in `watcher_rules.json`, and **↺ / New chat** drops the conversation context (`POST /session/reset`) |
 | **Model importing** | Rig manifests as `.json` or `.toml`; single images (`.png`, `.jpg`/`.jpeg`, `.webp`, `.svg`) as a **new character** or as a **part attached to the current rig**; native file picker; clear validation errors |
 | **Rig Edit Mode** | Bone/joint/pivot/hitbox overlay; drag joints, drag rotation ring (unlimited multi-turn), wheel rotate / shift+wheel scale; re-parent; add bone, add limb, add part, duplicate/delete; inspector for transforms, limits, z-order and animation channels; undo; save to `rig.json`; reset |
 | **Facial system** | Per-part sprite **variants**, 6 expression presets (`neutral`, `happy`, `surprised`, `thinking`, `sad`, `angry`) mapping to eye/mouth variant names, procedural squash/stretch fallback, expression holds with auto-revert |
 | **Custom animations** | Optional `animations` block on the rig root: named keyframe clips (`duration_ms`, `loop`, `keyframes[]`) whose per-bone deltas are sampled with smoothstep easing and composed into the transform pass; timeline bar in Rig Edit Mode (clip CRUD, duration, loop, play/stop, 0–100 % scrubber with keyframe ticks, `+ Keyframe` capture) |
 | **Life signs** | Auto-blink every 3–6 s (~120 ms), talking mouth loop while a bubble is visible |
-| **Speech bubbles** | Head-anchored DOM card, typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss; an optional **quick-reply box** (click the bubble, or just hover) with `Enter` to send and `Esc` to dismiss |
-| **Agent API** | 32 local HTTP paths (37 method routes): state, movement, expressions, speech, models, rigs, parts, joints, custom animations, desktop context, clipboard, quick replies, external alerts, session reset, watcher control, shutdown |
-| **Desktop awareness** | `GET /context` — foreground window title, its owning executable (`process_name`), machine-wide idle seconds (Win32 probes, safe defaults elsewhere) **and** the last 15 SSE frames as the agent's short-term memory; `GET /clipboard` — the last-copied text, capped at 2000 characters |
+| **Speech bubbles** | Head-anchored DOM card, typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss; an optional **quick-reply box** (click the bubble, or just hover) with `Enter` to send and `Esc` to dismiss; an optional **details drawer** — a `details` string renders a monospace, scrollable pre block behind a **Details ▾** toggle plus a **Copy** button, and an open drawer holds the bubble up |
+| **Agent API** | 32 local HTTP paths (38 method routes): state, movement, expressions, speech, models, rigs, parts, custom animations, desktop context, clipboard read **and write**, quick replies, external alerts, session reset, watcher control, shutdown |
+| **Desktop awareness** | `GET /context` — foreground window title, its owning executable (`process_name`), machine-wide idle seconds (Win32 probes, safe defaults elsewhere) **and** the last 15 SSE frames as the agent's short-term memory; `GET /clipboard` — the last-copied text, capped at 2000 characters; `POST /clipboard` — put up to 32 000 characters on the clipboard |
 | **Event stream** | `GET /events` — Server-Sent Events over a 64-frame `tokio::broadcast` channel: `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`, `animate`, `interaction`, `user_reply`, `alert`, `session_reset`, `watcher`; 15 s keep-alive, plus a 15-frame history ring buffer served inside `/context` |
 | **Interactions** | Play-mode click / double-click / drag on the avatar's bounds → `notify_interaction` → `interaction` frame; a typed command-bar message → `notify_reply` → `user_reply` frame |
 | **Sessions** | The watcher owns a mutable `{session}` id (`char-rig-<seed>`, `-2`, `-3`… after each rotation) substituted into `hermes_cmd`; **New chat** / `POST /session/reset` broadcasts `session_reset` and rotates it; `max_session_turns` / `session_idle_reset_secs` rotate automatically |
-| **MCP bridge** | `char-rig-mcp.exe` — a second binary exposing 11 tools (`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_wave`, `avatar_pose`, `avatar_get_context`, `avatar_get_clipboard`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_animate`) to any MCP client over stdio JSON-RPC 2.0; stateless, forwards each call to the HTTP API and reports a down host as a readable tool error |
-| **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword **or a per-app rule**, an `idle_return` after a long idle stretch, a `user_reply` from the command bar (no cooldown — the user asked directly), or an `alert` pushed by `POST /alert` under its own cooldown. Per-trigger cooldowns, an immediate ack (expression or custom clip), an optional webhook, and an optional spawned Hermes command with a one-line prompt on a persistent, rotatable session (`{session}`). Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Exponential-backoff reconnect; **zero LLM tokens while idle** |
+| **MCP bridge** | `char-rig-mcp.exe` — a second binary exposing 12 tools (`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_wave`, `avatar_pose`, `avatar_get_context`, `avatar_get_clipboard`, `avatar_set_clipboard`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_animate`) to any MCP client over stdio JSON-RPC 2.0; stateless, forwards each call to the HTTP API and reports a down host as a readable tool error |
+| **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword **or a per-app rule**, an `idle_return` after a long idle stretch, a `user_reply` from the command bar (no cooldown — the user asked directly), or an `alert` pushed by `POST /alert` under its own cooldown. Per-trigger cooldowns, an immediate ack (expression or custom clip), an optional webhook, and an optional spawned Hermes command with a one-line prompt on a persistent, rotatable session (`{session}`). Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Dispatch is single-flight with a **one-slot pending queue**: a `user_reply`/`alert` arriving mid-turn waits and runs as soon as that turn ends (newest wins), while routine triggers are dropped. Exponential-backoff reconnect; **zero LLM tokens while idle** |
 | **Persistence** | `models/<name>/model.json` (shipped), `rig.json` (editor override), `models/.state.json` (selected model) |
 
 ### Repository map — what is live vs. legacy
@@ -92,7 +92,7 @@ ui/
 │  • click/double-click/drag detection         │
 └───────────────┬─────────────────────────────┘
                 │  invoke(cmd, args)  ▲  events
-                │  (29 Tauri commands)│  (9 event names)
+                │  (34 Tauri commands)│  (10 event names)
 ┌───────────────▼─────────────────────┴───────┐
 │ Tauri main process (Rust)                    │
 │  AppCtx   — avatar state, hit regions,       │
@@ -106,7 +106,7 @@ ui/
 ┌───────────────▼─────────────────────────────┐
 │ API thread "avatar-api"                      │
 │  private Tokio runtime (2 workers)           │
-│  axum 0.7 — 24 routes on 127.0.0.1:8765      │
+│  axum 0.7 — 32 routes on 127.0.0.1:8765      │
 │  ↳ GET /events fans the broadcast out as SSE │
 └─────────────────────────────────────────────┘
 ```
@@ -122,6 +122,7 @@ ui/
 | `avatar-cursor` | `spawn_cursor_tracker` | until `AppCtx::running` is false | Global cursor poll + click-through toggling |
 | `avatar-watcher-log` (x2) | `spawn_log_reader` | until the child closes stdout/stderr | Drain the watcher's pipes into the `AppCtx` ring buffer and echo each line to stderr |
 | `avatar-watcher-supervisor` | `supervise_watcher` | until `AppCtx::running` is false | `try_wait`s the supervised `char-rig-watcher.exe` every 250 ms and respawns it after a crash (2 s, doubling to 30 s); parks while the switch is off |
+| `avatar-hotkey` | `spawn_hotkey_listener` | until `AppCtx::running` is false | Registers the system-wide hotkey (`RegisterHotKey`) and polls its thread message queue every 120 ms; on `WM_HOTKEY` it disables click-through, focuses the overlay and emits `summon-command-bar`, then `UnregisterHotKey` on the way out |
 
 Nothing on the API side ever touches the GUI thread directly: handlers mutate
 shared state and emit Tauri events; the page applies them on its next frame.
@@ -263,7 +264,7 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 
 | Section | Responsibility |
 | --- | --- |
-| consts | `AVATAR_STATES`, `AVATAR_EXPRESSIONS` (6), `INTERACTION_KINDS` (`click`, `double_click`, `drag_end`), `EVENT_CHANNEL_CAPACITY = 64`, `EVENT_HISTORY_CAPACITY = 15`, `DEFAULT_API_PORT = 8765`, `MAX_SPEECH_CHARS = 2000`, `MAX_CLIPBOARD_CHARS = 2000`, `MAX_REPLY_CHARS = 500`, `MAX_QUICK_TASKS = 6` |
+| consts | `AVATAR_STATES`, `AVATAR_EXPRESSIONS` (6), `INTERACTION_KINDS` (`click`, `double_click`, `drag_end`), `EVENT_CHANNEL_CAPACITY = 64`, `EVENT_HISTORY_CAPACITY = 15`, `DEFAULT_API_PORT = 8765`, `MAX_SPEECH_CHARS = 2000`, `MAX_SPEECH_DETAILS_CHARS = 8000`, `MAX_CLIPBOARD_CHARS = 2000`, `MAX_CLIPBOARD_WRITE_CHARS = 32000`, `MAX_REPLY_CHARS = 500`, `MAX_QUICK_TASKS = 6`, `DEFAULT_HOTKEY = "Alt+Space"`, `HOTKEY_ID` |
 | `AvatarState`, `HitRegion` | serialized shared state; region contains-test |
 | `lock_or_recover`, `snapshot` | poisoned-lock recovery (never panic on the UI path) |
 | `AppCtx` + impl | avatar state, regions, `api_port`, `speech` slot, `events` broadcast sender, `recent_events: Mutex<VecDeque<Value>>`, `event_seq`, `speech_seen`, `expression_commanded_at`, `click_through`, `running`, `api_url`, `shutdown_tx`, `watcher: Mutex<WatcherState>`; `emit_event` (which also remembers the frame), `recent_events`, `apply_ignore_cursor`, `request_shutdown` (which calls `stop_watcher`), `watcher_status`, `set_watcher_enabled`, `push_watcher_log`, `spawn_watcher` |
@@ -279,6 +280,9 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `quick_tasks`, `default_quick_tasks` | read `quick_tasks` out of `watcher_rules.json` for `GET /watcher` (blank entries skipped, capped at `MAX_QUICK_TASKS`, built-in chips when absent/unreadable) |
 | `desktop_context` | Win32 `GetForegroundWindow`/`GetWindowTextW`, `GetWindowThreadProcessId`/`OpenProcess`/`QueryFullProcessImageNameW` (the `process_name`), `GetLastInputInfo`/`GetTickCount64` behind `GET /context`; safe defaults off Windows |
 | `clipboard_text`, `truncate_chars` | Win32 `OpenClipboard`/`GetClipboardData(CF_UNICODETEXT)`/`GlobalLock` read behind `GET /clipboard`, capped at `MAX_CLIPBOARD_CHARS` on a char boundary; every path balances its handle |
+| `write_clipboard_text`, `ClipboardWrite` | the Win32 write half: `OpenClipboard` → `EmptyClipboard` → `GlobalAlloc(GMEM_MOVEABLE)` + UTF-16 copy → `SetClipboardData(CF_UNICODETEXT)` → `CloseClipboard`, capped at `MAX_CLIPBOARD_WRITE_CHARS` and reported as `{chars, truncated}`; a failed `SetClipboardData` frees the block instead of leaking it. Drives `POST /clipboard` and the `set_clipboard` command |
+| `Hotkey`, `parse_hotkey`, `virtual_key`, `hotkey_spec` | pure parser for the `"Ctrl+Shift+A"` grammar (modifier bits + virtual-key code) and the `hotkey` lookup in `watcher_rules.json`; a bad value is a logged warning, never a panic |
+| `summon_command_bar`, `spawn_hotkey_listener` | the `avatar-hotkey` thread: `RegisterHotKey` (+ `MOD_NOREPEAT`), a 120 ms `PeekMessageW` poll, then `set_click_through(false)` + `apply_ignore_cursor(false)` + `window.set_focus()` + the `summon-command-bar` event; `UnregisterHotKey` on `request_shutdown` |
 | `cursor_position`, `spawn_cursor_tracker` | Windows cursor poll (stub returning `None` elsewhere) |
 | `WatcherState`, `watcher_status`, `set_watcher_enabled`, `push_watcher_log` | on/off switch, live `Child`, resolved `binary`/`rules` paths and a 200-line `VecDeque` log tail; the status JSON feeds `GET /watcher`, `get_watcher_status` and every `watcher` frame (Tauri `watcher-status` + SSE) |
 | `watcher_disabled_by`, `watcher_binary_name`, `watcher_binary_path` | `CHAR_RIG_NO_WATCHER` parsing; resolves `char-rig-watcher{EXE_SUFFIX}` next to `current_exe()` |
@@ -286,7 +290,7 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `clock_stamp`, `stamped`, `push_log_line`, `log_watcher_event`, `spawn_log_reader` | `[HH:MM:SS]` local-time stamps (`GetLocalTime`), bounded ring-buffer append, and the two pipe readers that echo every line to the app's stderr |
 | `spawn_watcher`, `supervise_watcher`, `watcher_health`, `start_watcher`, `kill_and_reap` | spawn with `--api-url`, `--rules`, null stdin, piped stdout/stderr, `CREATE_NO_WINDOW`, cwd = exe dir; then `try_wait` polling, crash restart with backoff (parked while off), and a store-under-the-lock handshake that cannot orphan a child during shutdown |
 | `api_port`, `run` | startup |
-| `tests` | 32 unit tests over the event envelope, sequence numbers, the 15-frame history ring buffer, interaction validation, quick replies (trim, caps, bubble dismissal, `user_reply` frame), `session_reset` (frame + bubble dismissal), `quick_tasks` (defaults, file parse, blank-entry filtering, cap, missing/broken fallback), `truncate_chars`, the clipboard contract, the desktop-context shape, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
+| `tests` | 36 unit tests over the event envelope, sequence numbers, the 15-frame history ring buffer, interaction validation, quick replies (trim, caps, bubble dismissal, `user_reply` frame), `session_reset` (frame + bubble dismissal), `quick_tasks` (defaults, file parse, blank-entry filtering, cap, missing/broken fallback), `truncate_chars`, the clipboard contract (read cap + write cap + char boundary), the desktop-context shape, the hotkey grammar (`parse_hotkey`) and the `hotkey` rules lookup, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
 
 ### `src-tauri/src/api.rs` (925 lines)
 
@@ -296,11 +300,11 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `watcher_status`, `set_watcher` | `GET /watcher` / `POST /watcher` → `AppCtx::watcher_status` / `set_watcher_enabled` |
 | `start` | bind, spawn thread, Tokio runtime, axum serve, graceful shutdown |
 | `bind_first_available` | port fallback `preferred..preferred+9` |
-| `router` | 31 routes |
-| request bodies | `SetStateBody`, `MoveBody`, `ExpressionBody`, `ClickThroughBody`, `HitRegionsBody`, `ModelBody`, `RigBody`, `PoseBody`, `ImportBody`, `PartPatchBody`, `MouthBody`, `EmoteBody`, `SpeakBody`, `ReplyBody`, `AlertBody`, `AnimateBody` |
+| `router` | 32 routes |
+| request bodies | `SetStateBody`, `MoveBody`, `ExpressionBody`, `ClickThroughBody`, `HitRegionsBody`, `ModelBody`, `RigBody`, `PoseBody`, `ImportBody`, `PartPatchBody`, `MouthBody`, `EmoteBody`, `SpeakBody` (incl. optional `details`), `ReplyBody`, `AlertBody`, `ClipboardBody`, `AnimateBody` |
 | `ApiError` | `IntoResponse` → `{"ok":false,"error":…}` + status |
 | `context` | `GET /context` — OS probes, `avatar_state` snapshot and the `recent_events` history |
-| `clipboard`, `reply`, `alert` | `GET /clipboard` (never fails: empty text for a non-text clipboard), `POST /reply` (`user_reply` frame + bubble dismissal) and `POST /alert` (severity validation → `alert` frame) |
+| `clipboard`, `set_clipboard`, `reply`, `alert` | `GET /clipboard` (never fails: empty text for a non-text clipboard), `POST /clipboard` (`{text}` → `write_clipboard_text`, `{ok, chars, truncated}`; a held-open clipboard is a 400 to retry), `POST /reply` (`user_reply` frame + bubble dismissal) and `POST /alert` (severity validation → `alert` frame) |
 | `ALERT_SEVERITIES` | `info` \| `warn` \| `error`, the only values `POST /alert` accepts |
 | `events` | `GET /events` — SSE from `BroadcastStream`, `hello` frame, 15 s keep-alive |
 | `event_name` | maps a frame `type` onto the SSE `event:` field (`&'static str`) |
@@ -347,8 +351,8 @@ each tool call to the HTTP API with `reqwest::blocking`.
 | `ApiError` / `Api` | blocking client + error taxonomy: `Unreachable`, `Timeout`, `Transport`, `Http{status,message}`, `Decode`; `get`/`post`/`send`/`classify` |
 | argument helpers | `req_str`, `opt_str`, `opt_expression`, `opt_u64`, `opt_bool`, `req_number`, `req_object` — each failure is a model-readable message |
 | `tool_content` / `tool_failure` | build the MCP result envelope (`content[]`, `isError`) and the `{ok:false, kind, error, hint, details}` payload |
-| `TOOL_NAMES` / `tools()` | the 11 tool definitions with JSON Schemas and descriptions |
-| `tool_*` | one function per tool; `tool_get_context` merges `GET /context` + `GET /state` and adds `process_name` + the `recent_events` history (summarised as `type: hint` pairs), `tool_get_clipboard` forwards `GET /clipboard`, `tool_animate` maps `stop`/`null` onto `POST /animate {"name": null}` |
+| `TOOL_NAMES` / `tools()` | the 12 tool definitions with JSON Schemas and descriptions |
+| `tool_*` | one function per tool; `tool_get_context` merges `GET /context` + `GET /state` and adds `process_name` + the `recent_events` history (summarised as `type: hint` pairs), `tool_get_clipboard` forwards `GET /clipboard`, `tool_set_clipboard` forwards `POST /clipboard` (empty string clears), `tool_speak` passes the optional `details` drawer text through, `tool_animate` maps `stop`/`null` onto `POST /animate {"name": null}` |
 | `handle_message` | JSON-RPC dispatch: `initialize`, `ping`, `tools/list`, `tools/call`, notifications, `-32601`/`-32602`/`-32700` |
 | `main` | read stdin line-by-line, one JSON frame per line out, flush, clean exit on EOF |
 
@@ -386,16 +390,16 @@ one open SSE response and one small JSON poll every 20 s.
 | `ack_plan` | picks the immediate ack: a matched `app_rules[].animation` (an expression name → `Ack::Emote`, anything else → `Ack::Animate` clip) or the generic `--ack-emote`; `""` disables it |
 | `context_triggers` | evaluates one poll: title-change matching `keyword OR app_rule` (the app rule wins when both match and supplies `animation`/`hint`), and the idle→active rule; also maintains `last_title` / `last_idle_secs` / `was_idle`; the **first** poll only sets the baseline (`initialized`) |
 | `Shared` | `Mutex`-guarded snapshot: latest `/context`, `initialized`, `last_title`, `last_idle_secs`, `was_idle`, `cooldowns`; `lock` recovers from poisoning |
-| `SingleFlight` / `FlightGuard` | one-permit `Arc<AtomicBool>` latch (`compare_exchange`) guarding the whole dispatch; the guard releases the permit on `Drop`, so a panic in a spawned task cannot wedge the watcher |
+| `SingleFlight` / `FlightGuard` | one-permit `Arc<AtomicBool>` latch (`compare_exchange`) guarding the whole dispatch, plus a one-slot `Mutex<Option<Trigger>>` pending queue and a `Notify` the guard pings on drop; `offer` returns `Immediate`/`Queued`/`Dropped`, so only `user_reply`/`alert` queue while busy. The guard releases the permit on `Drop`, so a panic in a spawned task cannot wedge the watcher |
 | `split_command` / `command_argv` / `spawn_hermes` | quote-aware argv split (no shell), `{prompt}` substitution or append-as-last-arg, then a `tokio::process` spawn with `stdin(Stdio::null())` (an interactive prompt reads EOF instead of hanging), `kill_on_drop`, and `tokio::time::timeout(--hermes-timeout)` around the wait — an expired child is `start_kill`ed and reaped. The `FlightGuard` moves into the spawned task, so the permit covers the process lifetime |
 | `handle_trigger` | dry-run print → take the single-flight permit → the ack (`ack_plan`: `POST /emote` or `POST /animate`) → `POST --webhook-url` → spawn `--hermes-cmd`, in that order; a trigger that finds the permit taken is **skipped** with a `debug:` line on stderr instead of stacking another `hermes` process |
 | `build_client` / `fetch_context` | reqwest client with a 3 s connect timeout; `GET /context` → `ContextSnapshot {window_title, process_name, idle_secs}` (an older avatar without `process_name` still works) |
 | `handle_frame` | one SSE frame → at most one trigger; routes `interaction`, `user_reply` and `alert`, ignores `hello`, unparsable data and every other frame type |
 | `stream_events` / `sse_loop` | consume `Response::bytes_stream()`, feed the parser, reconnect forever with doubling backoff capped at 30 s (reset on a successful subscribe) |
 | `context_loop` | `tokio::time::interval` with `MissedTickBehavior::Delay`; one warning per offline streak, then silent retries |
-| `dispatcher` | single consumer of the `mpsc` channel plus the `SingleFlight` latch, so two triggers can never race their side effects and a running child is never duplicated |
+| `dispatcher` | single consumer of the `mpsc` channel plus the `SingleFlight` latch, so two triggers can never race their side effects and a running child is never duplicated; `select!`s the channel against the latch's `finished` `Notify`, and drains the pending slot as soon as a flight ends |
 | `main` | parse → load rules → spawn `sse_loop`, `context_loop`, `dispatcher` → `tokio::select!`; any task ending stops the process |
-| `tests` | 58 unit tests: SSE parsing (chunk boundaries, comments, CRLF, multi-line data), rule matching, per-app rule matching (case-insensitive, blank wildcards, `animation`/`prompt_hint` carried onto the trigger), alert parsing/cooldowns/disable switch, the backward-compatible rules schema, cooldown suppression, `user_reply` triggers (no cooldown, quoted text), `handle_frame` routing for `user_reply`/`alert`, `ack_plan` (expression vs. clip vs. none), trigger payloads/prompts, argv splitting, CLI precedence, `--hermes-timeout` parsing + default + `hermes_timeout_secs` precedence, the headless directive (clipboard, context, chaining, 180-char cap) and its tool signatures, the session id/rotation helpers (`{session}` substitution, max-turns, idle reset, reset frames), and the single-flight latch |
+| `tests` | 64 unit tests: SSE parsing (chunk boundaries, comments, CRLF, multi-line data), rule matching, per-app rule matching (case-insensitive, blank wildcards, `animation`/`prompt_hint` carried onto the trigger), alert parsing/cooldowns/disable switch, the backward-compatible rules schema, cooldown suppression, `user_reply` triggers (no cooldown, quoted text), `handle_frame` routing for `user_reply`/`alert`, `ack_plan` (expression vs. clip vs. none), trigger payloads/prompts, argv splitting, CLI precedence, `--hermes-timeout` parsing + default + `hermes_timeout_secs` precedence, the headless directive (clipboard, context, chaining, 180-char cap) and its tool signatures, the session id/rotation helpers (`{session}` substitution, max-turns, idle reset, reset frames), the single-flight latch and its one-slot pending queue (immediate/queued/dropped offers, latest-wins, the wake-on-drop `Notify`) |
 
 Protocol notes worth keeping: diagnostics go to **stderr** and stdout carries
 only `--dry-run` payloads (so the binary stays pipeable), the prompt is always a
@@ -421,12 +425,14 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/animator.js` | Custom keyframe clips: catalogue (`animationClips`, `listAnimations`), transport (`playAnimation`, `stopAnimation`, `stopPlayback`, `seekAnimation`, `stepAnimation`), sampling (`sampleAnimation`), authoring (`setAnimationBone`, `captureKeyframe`, `addClip`, `renameClip`, `deleteClip`, `setClipDuration`, `setClipLoop`) and finished listeners (`onAnimationFinished`) |
 | `ui/js/renderer.js` | Canvas pipeline: DPR resize (`initRenderer`, `resizeCanvas`), `drawFace`, `drawShape`, `drawPart`, rig overlay gizmos, `render` |
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
-| `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), the quick-reply box (`isReplyOpen`, `openReply`, `closeReply`, `toggleReply`), the "Thinking…" card (`beginThinking`, `showThinking`, `endThinking`) and the command bar's anchor (`commandBarVisible`, `positionCommandBar`); the hold timer is suspended while the box is open, the bubble is hovered or an input has focus |
+| `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), the quick-reply box (`isReplyOpen`, `openReply`, `closeReply`, `toggleReply`), the **details drawer** (`detailsText`, `toggleDetails`, `detailsOpen`, `copyDetails` — which republishes the hit region so the expanded card stays clickable), the "Thinking…" card (`beginThinking`, `showThinking`, `endThinking`) and the command bar's anchor (`commandBarVisible`, `positionCommandBar`); the hold timer is suspended while the drawer is open, the box is open, the bubble is hovered or an input has focus |
 | `ui/js/bridge.js` | Tauri event listeners (`avatar-state-changed`, `emote`, `speak`, `part-patch`, …), `reportState`, `applyRemoteState` (ignores frames that would yank a dragged avatar and never adopts a bare `walking` without its segment), `applyPartPatch`, `applyWatcherStatus` (which also mirrors `quick_tasks` for the command bar), click-through (`setClickThrough`), import flow (`importFromDialog`, `importImageAs`, chooser) |
-| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar), `window.__avatarDebug`, behaviour loop (`step`, `startWalk`, `wander`), `requestAnimationFrame` driver, play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, plus the bubble's inline reply) |
+| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), `window.__avatarDebug`, behaviour loop (`step`, `startWalk`, `wander`), `requestAnimationFrame` driver, play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
 `ipc, state → rig → animator → {renderer, speech, editor, bridge}; editor → bridge; all → main`.
+`speech` also imports `ipc` (the clipboard command) and `rig` (`wireRegions`), both
+downward edges — `rig` imports neither back, so the DAG stays acyclic.
 No module writes to another module's namespace object; no `export let` placeholders.
 The only mutable cross-module surfaces are the plain objects owned by `state.js`:
 `viewport` (canvas size) and `animation` (the sampled clip offsets `rig.js` folds
@@ -717,6 +723,16 @@ overlay (while it has keyboard focus), the **chat icon** in the titlebar, the
 **Ask…** button in the control panel, or a click on the speech bubble all open a
 floating command bar anchored under the avatar:
 
+* **From any application: `Alt+Space`.** The app registers a system-wide hotkey
+  (`RegisterHotKey` on the `avatar-hotkey` thread) and, when it fires, disables
+  click-through, focuses the overlay and emits `summon-command-bar`; the page
+  opens the bar and focuses `#command-input`, so you can start typing the moment
+  the shortcut lands. Change it with `hotkey` in `watcher_rules.json`
+  (`"Ctrl+Shift+A"`, `"F9"`, `"Win+Shift+Enter"`, …) and restart the app —
+  a hotkey is registered once at startup. If another application already owns
+  the shortcut, `RegisterHotKey` fails, the app logs a warning and everything
+  else keeps working (`Enter`/`/` still open the bar while the overlay has
+  focus). Closing the bar restores click-through.
 * Type a prompt or a task, `Enter` sends it (`notify_reply` → `user_reply`), and
   the bubble immediately shows a **Thinking…** card with the `thinking` face so
   you can see the task was received before the local model answers.
@@ -735,6 +751,26 @@ floating command bar anchored under the avatar:
 The bubble's own inline reply box (hover it) is the same `notify_reply` path in
 miniature, and its auto-dismiss timer is paused while the pointer is over the
 bubble or either input has focus.
+
+### Reading long output (details drawer + clipboard)
+
+A bubble is a glance, not a page: the headless prompt asks Hermes for under 180
+characters. Anything longer travels in `details`:
+
+* `POST /speak {"text": "3 failures in parser.rs", "details": "…full log…"}` (or
+  the MCP `avatar_speak` `details` argument) renders a compact **Details ▾**
+  toggle and a **Copy** button inside `#speech-bubble`.
+* **Details ▾** expands a scrollable, monospace `<pre>` under the summary,
+  re-anchors the bubble above the head, republishes the hit region (so the fresh
+  pixels are clickable immediately, not after the 200 ms publish) and **pauses
+  the auto-dismiss timer** while it is open.
+* **Copy** puts the full text on the clipboard through the `set_clipboard`
+  command — the same Win32 writer as `POST /clipboard` and
+  `avatar_set_clipboard`, so it works without the webview's async-clipboard
+  permission. `navigator.clipboard` is only a fallback outside Tauri.
+* For output that should not live in a bubble at all, an agent calls
+  `avatar_set_clipboard(text)` (MCP) or `POST /clipboard` and speaks one line
+  about it.
 
 ### Watcher console
 
@@ -782,6 +818,7 @@ keywords and cooldowns it now carries two blocks:
   "max_session_turns": 15,
   "session_idle_reset_secs": 1800,
   "session_base": "char-rig",
+  "hotkey": "Alt+Space",
   "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q"
 }
 ```
@@ -821,6 +858,12 @@ keywords and cooldowns it now carries two blocks:
 * **`session_idle_reset_secs`** — rotate after this long without a dispatch
   (absent/0 = off), so a conversation left overnight does not come back stale.
 * **`session_base`** — prefix for generated ids (default `char-rig`).
+* **`hotkey`** — the system-wide shortcut that summons the command bar
+  (`"Alt+Space"` by default; modifiers `Alt`/`Ctrl`/`Shift`/`Win` plus a letter,
+  digit, `Space`, `Enter`, `Tab`, `Esc`, an arrow or `F1`–`F24`). Read by the
+  **app**, not the watcher, at startup: change it and restart the overlay. A
+  blank or unparsable value keeps `Alt+Space`, and a shortcut another
+  application owns is a warning in the log, never a crash.
 
 ### Importing
 
@@ -906,7 +949,7 @@ offset, rotation, z-order, scale, tag, state, variant.
 
 ## 6. Tauri command surface (page ⇄ Rust)
 
-33 commands, registered in `generate_handler!`. Most take `tauri::State<Arc<AppCtx>>`
+34 commands, registered in `generate_handler!`. Most take `tauri::State<Arc<AppCtx>>`
 and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated ones.
 
 | Command | Purpose |
@@ -930,7 +973,8 @@ and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated o
 | `patch_part(target, patch)` | runtime part patch |
 | `set_mouth(state)` | mouth convenience wrapper |
 | `emote(expression, duration_ms?, revert?)` | expression with hold |
-| `speak(text, expression?, duration_ms?, char_ms?)` | bubble + talking |
+| `speak(text, expression?, duration_ms?, char_ms?, details?)` | bubble + talking; `details` (≤ 8000 chars) becomes the expandable drawer |
+| `set_clipboard(text)` | put text on the Windows clipboard (≤ 32 000 chars) → `{ok, chars, truncated}`; the bubble's **Copy** button |
 | `clear_speech` / `get_speech` | stop / inspect speech |
 | `get_parts` | parts snapshot |
 | `save_rig(rig)` / `reset_rig` | persist / discard override (broadcast `rig_saved` / `model`+`reset`) |
@@ -940,7 +984,8 @@ and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated o
 
 Events emitted to the page: `avatar-state-changed`, `api-status`,
 `model-changed`, `rig-pose`, `rig-saved`, `part-patch`, `emote`, `speak`,
-`speech-clear`, `avatar-animate`.
+`speech-clear`, `avatar-animate`, `summon-command-bar` (the global hotkey fired:
+`{source, hotkey}` — the page opens the bar and focuses its input).
 
 The same mutations are mirrored onto the HTTP event bus (`GET /events`) as
 `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`,
@@ -967,6 +1012,7 @@ unknown routes are **404**.
 | GET | `/health` | liveness + uptime |
 | GET | `/context` | desktop context: foreground window title, its `process_name`, machine idle time + the last 15 SSE frames |
 | GET | `/clipboard` | the clipboard's text, capped at 2000 characters |
+| POST | `/clipboard` | put `{"text": "…"}` on the clipboard, capped at 32 000 characters |
 | POST | `/reply` | the user's quick reply (`{"text": "…"}`) → `user_reply` frame |
 | POST | `/alert` | an external monitor's alert (`{"source","summary","severity"}`) → `alert` frame |
 | POST | `/session/reset` | drop the conversation context → `session_reset` frame |
@@ -1069,6 +1115,21 @@ curl -s -X POST localhost:8765/speak -H 'content-type: application/json' \
 text stays visible (default 6000, clamped 500..600000), `char_ms` = typing speed
 (default 26, clamped 6..200). While the bubble is visible the mouth animates;
 the bubble is dismissed by the page and `/speech` then reports `null`.
+
+`details` (optional, ≤ 8000 chars — `MAX_SPEECH_DETAILS_CHARS`) is the long half
+of a bubble: a code snippet, a diff, a log tail. It is trimmed, truncated rather
+than rejected, echoed in `details_chars`, and renders as a **Details ▾** drawer
+with a **Copy** button under the 180-character summary. The drawer pauses the
+bubble's auto-dismiss timer while it is open. Use it instead of packing a
+paragraph into `text`.
+
+```bash
+curl -s -X POST localhost:8765/speak -H 'content-type: application/json' -d '{
+  "text": "2 tests failed in parser.rs",
+  "expression": "sad",
+  "details": "failures:\n  parser::nested   expected 3, got 4\n  parser::trailing expected EOF"
+}'
+```
 
 ### `/clear_speech`, `/speech`
 
@@ -1215,6 +1276,25 @@ capped at `MAX_CLIPBOARD_CHARS` (2000) on a char boundary. It always answers
 `ok: true`; an empty, non-text or busy clipboard yields `text: ""`.
 `truncated` says the source was longer.
 
+The write direction — how an agent hands over a whole file, patch or log:
+
+```bash
+curl -s -X POST localhost:8765/clipboard -H 'content-type: application/json' \
+     -d '{"text":"fn main() {\n    println!(\"hi\");\n}\n"}'
+```
+```json
+{"ok":true,"chars":39,"truncated":false}
+```
+
+`text` is required (an empty string clears the clipboard) and is cut at
+`MAX_CLIPBOARD_WRITE_CHARS` (32 000) with `truncated: true` rather than an error.
+The implementation is `OpenClipboard` → `EmptyClipboard` →
+`GlobalAlloc(GMEM_MOVEABLE)` + UTF-16 copy → `SetClipboardData(CF_UNICODETEXT)` →
+`CloseClipboard`, retried on a busy clipboard; if another process holds it open
+for the whole retry window the route answers **400**, so a caller can retry.
+Same writer as the `set_clipboard` command (the bubble's **Copy** button) and the
+MCP `avatar_set_clipboard` tool.
+
 ### `/reply` and `/alert`
 
 ```bash
@@ -1277,10 +1357,13 @@ history served in `/context`. Full payload table in `API.md` §
   no per-task session and no history UI beyond the chat bubble. The id is
   re-derived at every watcher start (`<prefix>-<timestamp>`), so restarting the
   watcher or the app starts a fresh thread — "New chat" is only needed mid-run.
-* **The command bar needs keyboard focus.** `Enter`/`/` only reach the page when
-  the overlay window has focus (click the titlebar or the avatar first); a
-  click-through window cannot steal keys from the app you are typing in. That is
-  why the titlebar chat button and the bubble click exist.
+* **The command bar's hotkey is Windows-only and registered once.** `Enter`/`/`
+  only reach the page when the overlay window has focus — which is exactly what
+  the `Alt+Space` hotkey arranges by focusing the window first. `RegisterHotKey`
+  is Win32, so off Windows the shortcut is skipped with a warning; a hotkey
+  another application already owns cannot be taken (the app logs it and keeps
+  running), and changing `hotkey` in `watcher_rules.json` needs an app restart
+  because the shortcut is registered at startup.
 * **`interaction` is one-way.** The UI reports a click and does nothing else;
   any reaction (wave, speak) has to come back from an agent over HTTP. The
   quick-reply box is the other direction: it *sends* text (`user_reply`) but
@@ -1295,8 +1378,10 @@ history served in `/context`. Full payload table in `API.md` §
   there is no replay buffer (`Last-Event-ID` is ignored), so a reconnecting
   client resumes from the next `state` frame — the 15-frame history exposed in
   `/context` is the closest thing to a catch-up.
-* **One bubble at a time.** No queue, no history, plain text only (max 2000
-  chars); dismissal is page-side, so `/speech` follows the page's reports.
+* **One bubble at a time.** No queue, no history; `text` is plain text (max 2000
+  chars) and the `details` drawer is plain, monospace text (max 8000 chars, no
+  syntax highlighting, no rich formatting); dismissal is page-side, so `/speech`
+  follows the page's reports.
 * **Expression variants are optional.** Missing variants fall back to
   procedural squash/stretch rather than substituting another sprite.
 * **Blink only affects parts tagged `eye`;** other body parts are unaffected.
@@ -1316,10 +1401,13 @@ history served in `/context`. Full payload table in `API.md` §
   reacts to `interaction`, `user_reply` and `alert` frames plus window-title and
   idle changes; `app_rules` match a process name against the title with plain
   case-insensitive substrings (no regex, no path, no other window's context),
-  and a burst of triggers inside a cooldown is silently dropped rather than
-  queued. A `user_reply` bypasses cooldowns entirely, but it still shares the
-  single-flight latch with everything else — a reply that lands while a Hermes
-  turn is running is dropped (the debug line on stderr says so). It cannot stop
+  and a burst of triggers inside a cooldown is dropped rather than queued. Two
+  kinds are exempt from the cooldown: a `user_reply` bypasses them entirely, and
+  a `user_reply`/`alert` that lands while a Hermes turn is running waits in a
+  **one-slot pending queue** (the newest replaces the older, so an intermediate
+  message is lost by design) and runs when that turn ends. Routine
+  `interaction`/`window_title`/`idle_return` triggers are still dropped while
+  busy, so background noise never stacks up behind a task. It cannot stop
   or configure the avatar (it only observes), and its rules file is looked up
   next to the binary/cwd — a checkout that keeps `watcher_rules.json` at the
   repo root needs `CHAR_RIG_NO_WATCHER=1` plus a manual run, or a copy beside

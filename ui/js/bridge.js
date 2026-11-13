@@ -234,6 +234,7 @@ export async function setupEventListeners() {
     speak(payload.text, {
       durationMs: payload.duration_ms,
       charMs: payload.char_ms,
+      details: payload.details,
     });
   });
   await listen("speech-clear", () => hideSpeech());
