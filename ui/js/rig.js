@@ -244,37 +244,84 @@ export function sortedDrawables() {
   return list;
 }
 
+/**
+ * The part's world matrix — **the single source of truth** for both the
+ * renderer (`drawPart`) and the editor (selection box, pivot cross, hit test).
+ *
+ * It mirrors `drawPart`'s transform chain exactly:
+ *
+ * ```text
+ * translate(bone.x, bone.y) · rotate(bone.rot) · scale(worldScale * part.scale)
+ *                           · translate(part.offset) · rotate(part.rotation)
+ * ```
+ *
+ * Note the offset is multiplied by the *full* part scale (bone × part), because
+ * the renderer applies `ctx.scale()` before `ctx.translate(offset)`.
+ */
 export function partWorldMatrix(bone, part) {
   const w = RT.world[bone.id];
   if (!w) return null;
+  const scale = w.scale * num(part.scale, 1);
   const cos = Math.cos(w.rot);
   const sin = Math.sin(w.rot);
   const ox = part.offset[0];
   const oy = part.offset[1];
   return {
-    x: w.x + (ox * cos - oy * sin) * w.scale,
-    y: w.y + (ox * sin + oy * cos) * w.scale,
+    x: w.x + (ox * cos - oy * sin) * scale,
+    y: w.y + (ox * sin + oy * cos) * scale,
     rot: w.rot + num(part.rotation, 0),
-    scale: w.scale * num(part.scale, 1),
+    scale,
   };
 }
 
-/** Axis-aligned bounding box of a part in screen space. */
-export function partBox(bone, part) {
-  const m = partWorldMatrix(bone, part);
+/**
+ * The rectangle a part actually paints, in its own local frame (before the
+ * world matrix above).
+ *
+ * Images are drawn with their top-left at `-size * pivot`, so that rect is
+ * `[-w·px, w(1-px)] × [-h·py, h(1-py)]`. **Shapes are not**: `drawShape` draws
+ * centred on the local origin, so after the same `-size * pivot` pre-translate
+ * an ellipse/face sits half a size up and left of the image rect, and a capsule
+ * always spans `[-h/2, w-h/2]` (its own pivot maths cancels the pre-translate).
+ * The selection box has to describe the pixels, not the authoring intent, or it
+ * drifts off the sprite — which is exactly the `body`-part bug.
+ */
+export function partLocalRect(part) {
   const size = partSize(part);
   const w = size[0];
   const h = size[1];
   const px = part.pivot[0];
   const py = part.pivot[1];
+  // `drawPart` prefers an image (or an active variant) over `shape`.
+  const hasImage = !!part.image || !!(part.variants && Object.keys(part.variants).length);
+  if (hasImage || !part.shape) {
+    return { x: -w * px, y: -h * py, w, h };
+  }
+  if (part.shape === "capsule") {
+    // Capsules are drawn from a round cap at the pivot to `w - h/2`.
+    const r = h / 2;
+    return { x: -r, y: -r, w, h };
+  }
+  // `face` is drawn with an extra `translate(w/2, h/2)`, so it fills the image
+  // rect; circles and ellipses are centred on the pre-translated origin.
+  if (part.shape === "face") {
+    return { x: -w * px, y: -h * py, w, h };
+  }
+  return { x: -w * px - w / 2, y: -h * py - h / 2, w, h };
+}
+
+/** Axis-aligned bounding box of a part's artwork in screen space. */
+export function partBox(bone, part) {
+  const m = partWorldMatrix(bone, part);
   if (!m) return { x: 0, y: 0, w: 0, h: 0 };
+  const rect = partLocalRect(part);
   const cos = Math.cos(m.rot);
   const sin = Math.sin(m.rot);
   const corners = [
-    [-w * px, -h * py],
-    [w * (1 - px), -h * py],
-    [w * (1 - px), h * (1 - py)],
-    [-w * px, h * (1 - py)],
+    [rect.x, rect.y],
+    [rect.x + rect.w, rect.y],
+    [rect.x + rect.w, rect.y + rect.h],
+    [rect.x, rect.y + rect.h],
   ].map((corner) => [
     m.x + (corner[0] * cos - corner[1] * sin) * m.scale,
     m.y + (corner[0] * sin + corner[1] * cos) * m.scale,

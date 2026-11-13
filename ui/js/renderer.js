@@ -7,7 +7,7 @@
 
 import {
   avatar, RT, TAU, speech, gaze,
-  clamp, num, activeState,
+  clamp, activeState,
   hasVariant, viewport, updateViewport,
 } from "./state.js";
 
@@ -151,20 +151,23 @@ function drawShape(part, w, h, px) {
   if (part.shape === "face") drawFace(w, h);
 }
 
-function drawPart(boneWorld, part) {
+function drawPart(bone, part) {
   if (part.visible === false) return;
+  // ONE matrix for the renderer and the editor (selection box, pivot cross,
+  // hit test) — see `rig.js::partWorldMatrix`. Drawing through it is what keeps
+  // the yellow box glued to the pixels at any pivot/offset/rotation/scale.
+  const m = partWorldMatrix(bone, part);
+  if (!m) return;
   const size = partSize(part);
   const w = size[0];
   const h = size[1];
   const px = part.pivot[0];
   const py = part.pivot[1];
   ctx.save();
-  ctx.translate(boneWorld.x, boneWorld.y);
-  ctx.rotate(boneWorld.rot);
-  const scale = boneWorld.scale * num(part.scale, 1);
+  ctx.translate(m.x, m.y);
+  ctx.rotate(m.rot);
+  const scale = m.scale;
   ctx.scale(scale, scale);
-  ctx.translate(part.offset[0], part.offset[1]);
-  if (part.rotation) ctx.rotate(part.rotation);
 
   const state = activeState(part);
   if (part.tag === "mouth") {
@@ -298,9 +301,7 @@ export function render() {
   rigHasPupils = RT.boneList.some((bone) => bone.parts.some(isPupilPart));
   updateGazeDir();
   for (const entry of sortedDrawables()) {
-    const world = RT.world[entry.bone.id];
-    if (!world) continue;
-    drawPart(world, entry.part);
+    drawPart(entry.bone, entry.part);
   }
   if (RT.rigMode) drawEditorOverlay();
 }

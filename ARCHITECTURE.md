@@ -423,7 +423,7 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/styles.css` | All CSS rules (titlebar, control panel, rig inspector, import modal, speech bubble + quick reply + thinking state, command bar + chips, toasts) |
 | `ui/js/ipc.js` | **Leaf** Tauri access: `call`, `listen`, `once`, `isTauri`. Reads `window.__TAURI__` lazily on every call (never cached at module scope) |
 | `ui/js/state.js` | **Leaf** shared state objects (`avatar`, `RT`, `speech`, `gaze`, `viewport`), constants (`EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), helpers, `toast`, `updateStatusUI`, `setExpression`, `snapshot`, `setDirty`, `activeState` (which routes the lip-sync mouth variant through `mouthState`), `blinkActive`, `markManual` |
-| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset` — the hover head tilt rides on it, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix`, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
+| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset` — the hover head tilt rides on it, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix` — the one world matrix the renderer and the editor both draw through, `partLocalRect` — how each shape type is anchored inside that matrix, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
 | `ui/js/animator.js` | Custom keyframe clips: catalogue (`animationClips`, `listAnimations`), transport (`playAnimation`, `stopAnimation`, `stopPlayback`, `seekAnimation`, `stepAnimation`), sampling (`sampleAnimation`), authoring (`setAnimationBone`, `captureKeyframe`, `addClip`, `renameClip`, `deleteClip`, `setClipDuration`, `setClipLoop`) and finished listeners (`onAnimationFinished`) |
 | `ui/js/renderer.js` | Canvas pipeline: DPR resize (`initRenderer`, `resizeCanvas`), `drawFace`, `drawShape`, `drawPart`, rig overlay gizmos, `render`; `updateGazeDir` turns the smoothed aim point into a clamped pupil vector and `isPupilPart` decides between moving the pupil sprite or the whole eye; the mouth squash reads `speech.mouthSmooth` (the same cadence as the sprite variants) |
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
@@ -912,6 +912,23 @@ keywords and cooldowns it now carries two blocks:
    file, missing sprite, dangling parent, …).
 
 ### Rig Edit Mode
+
+The selection overlay draws through the **same matrix as the renderer**
+(`rig.js::partWorldMatrix` + `partLocalRect` — `renderer.js::drawPart` calls the
+former, `editor.js::hitTest` and the yellow box call the latter), so the box, the
+pivot cross, the click target and `avatarBounds()` all describe the pixels on
+screen:
+
+* Images are drawn with their top-left at `-size * pivot`, so their rect is
+  `[-w·px, w(1-px)] × [-h·py, h(1-py)]`.
+* Shapes are **not** anchored that way: `drawShape` paints centred on the local
+  origin (a circle/ellipse therefore sits half a size up-left of the image rect)
+  and a capsule always spans `[-h/2, w-h/2]`; `partLocalRect` mirrors each case.
+  Without that, a circular body part's selection box sat half a part down-right
+  of the sprite (and clicks on the sprite missed it).
+* The part offset is multiplied by the full world scale (bone × part), because
+  the renderer scales before it translates; the inspector's part drag divides by
+  the same factor so a scaled part keeps up with the cursor.
 
 ![Rig Edit Mode: inspector on the left, bone overlay on the avatar](docs/rig-editor.png)
 

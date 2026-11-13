@@ -136,6 +136,9 @@ export function onMouseDown(event) {
     worldRot: world.rot,
     worldX: world.x,
     worldY: world.y,
+    // Scale of the frame the part offset lives in: `rig.js::partWorldMatrix`
+    // multiplies the offset by bone scale * part scale.
+    worldScale: world.scale,
     origRotation: num(bone.rotation, 0),
     prevAngle: Math.atan2(y - world.y, x - world.x),
     accum: 0,
@@ -228,8 +231,11 @@ export function onMouseMove(event) {
       } else {
         const cosPart = Math.cos(-drag.worldRot);
         const sinPart = Math.sin(-drag.worldRot);
-        part.offset[0] = round(drag.origOffset[0] + (dx * cosPart - dy * sinPart) / scale, 1);
-        part.offset[1] = round(drag.origOffset[1] + (dx * sinPart + dy * cosPart) / scale, 1);
+        // The offset is scaled by bone scale * part scale in the transform, so
+        // undo both or a scaled part lags behind the cursor.
+        const offsetScale = (drag.worldScale || 1) * num(part.scale, 1) || 1;
+        part.offset[0] = round(drag.origOffset[0] + (dx * cosPart - dy * sinPart) / offsetScale, 1);
+        part.offset[1] = round(drag.origOffset[1] + (dx * sinPart + dy * cosPart) / offsetScale, 1);
       }
     }
   }
