@@ -9,7 +9,7 @@
  */
 
 import {
-  avatar, RT, speech, watcher, PRESET_STATES,
+  avatar, RT, speech, watcher, gaze, PRESET_STATES, TAU,
   round, num, viewport, updateViewport,
   setExpression, markManual, toast, updateStatusUI, activeState, blinkActive,
 } from "./state.js";
@@ -35,7 +35,7 @@ import {
 import {
   speak, hideSpeech, updateSpeech, openReply, closeReply,
   beginThinking, showThinking, endThinking, setBubbleHover,
-  commandBarVisible, positionCommandBar,
+  commandBarVisible, positionCommandBar, positionBubble,
   toggleDetails, copyDetails, detailsOpen,
 } from "./speech.js";
 
@@ -81,6 +81,117 @@ function wander() {
     margin + Math.random() * Math.max(1, viewport.h - margin * 2));
 }
 
+/* ---------- gaze / eye tracking ---------- */
+
+/** How long a motionless pointer keeps the gaze before idle glances resume. */
+const GAZE_POINTER_HOLD = 2.5;
+/** Idle saccade interval, seconds. */
+const GLANCE_MIN = 2;
+const GLANCE_MAX = 4;
+
+/** The head bone's world point — the same origin `renderer.js` aims from. */
+function headPoint() {
+  let bone = RT.boneList.find((candidate) => candidate.parts.some((part) => part.tag === "head"));
+  if (!bone) bone = RT.boneList.find((candidate) => /head/i.test(candidate.id));
+  const world = bone ? RT.world[bone.id] : null;
+  return world ? { x: world.x, y: world.y } : { x: avatar.x, y: avatar.y - 60 };
+}
+
+/** Is this screen point inside the avatar art (the click-through region)? */
+function pointInAvatar(x, y) {
+  if (RT.rigMode || !RT.model) return false;
+  const box = avatarBounds();
+  return x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h;
+}
+
+/** Centre of the command bar, or null while it is closed. */
+function commandBarCenter() {
+  const bar = document.getElementById("command-bar");
+  if (!bar || bar.classList.contains("hidden")) return null;
+  const rect = bar.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+}
+
+/**
+ * Track the pointer, but only where the page actually receives events — the
+ * overlay is click-through everywhere else, so the eyes rest or glance when the
+ * cursor is over some other application.
+ */
+function attachGazeTracking() {
+  window.addEventListener("mousemove", (event) => {
+    gaze.pointerX = event.clientX;
+    gaze.pointerY = event.clientY;
+    gaze.lastMove = avatar.time;
+  });
+  // Leaving the window (or the overlay) ends pointer tracking immediately.
+  window.addEventListener("mouseleave", () => {
+    gaze.lastMove = -100;
+  });
+}
+
+/**
+ * Decide where the eyes should look and smooth toward it.
+ *
+ * Priority: a focused command bar (the user is typing *at* the avatar) > the
+ * pointer for a moment after it moves > a random idle glance every 2–4 s.
+ * The smoothing happens here (with `dt`) rather than in the renderer, so the
+ * pupils ease instead of snapping between saccades.
+ */
+function updateGaze(dt) {
+  const active = document.activeElement;
+  const typing = !!active && active.id === "command-input";
+  const bar = typing ? commandBarCenter() : null;
+  const pointerFresh = avatar.time - gaze.lastMove < GAZE_POINTER_HOLD;
+
+  let aim = null;
+  let tracking = false;
+  if (bar) {
+    aim = bar;
+    tracking = true;
+  } else if (pointerFresh) {
+    aim = { x: gaze.pointerX, y: gaze.pointerY };
+    tracking = true;
+  }
+
+  if (tracking) {
+    // Do not fire a glance the instant the target goes away.
+    gaze.nextGlance = Math.max(gaze.nextGlance, avatar.time + 0.8);
+  } else {
+    if (avatar.time >= gaze.nextGlance) {
+      const head = headPoint();
+      const angle = Math.random() * TAU;
+      const radius = 45 + Math.random() * 95;
+      gaze.glanceX = head.x + Math.cos(angle) * radius;
+      gaze.glanceY = head.y + Math.sin(angle) * radius * 0.6;
+      gaze.nextGlance = avatar.time + GLANCE_MIN + Math.random() * (GLANCE_MAX - GLANCE_MIN);
+    }
+    aim = { x: gaze.glanceX, y: gaze.glanceY };
+  }
+
+  gaze.tracking = tracking;
+  gaze.targetX = aim.x;
+  gaze.targetY = aim.y;
+
+  if (!gaze.ready) {
+    // First frame: start where we are looking instead of sliding in from (0,0).
+    gaze.ready = true;
+    gaze.x = aim.x;
+    gaze.y = aim.y;
+  } else {
+    const k = Math.min(1, dt * 12);
+    gaze.x += (gaze.targetX - gaze.x) * k;
+    gaze.y += (gaze.targetY - gaze.y) * k;
+  }
+
+  // Hover life-sign: ease a 0..1 weight that `rig.js` turns into a head tilt.
+  // The pointer has to be on the art *and* recently alive (not a stale reading
+  // left behind while the avatar wandered away).
+  const over = pointerFresh && pointInAvatar(gaze.pointerX, gaze.pointerY);
+  gaze.hoverTarget = over ? 1 : 0;
+  gaze.hover += (gaze.hoverTarget - gaze.hover) * Math.min(1, dt * 5);
+  if (gaze.hover < 0.002) gaze.hover = 0;
+}
+
 function step(dt) {
   avatar.time += dt;
   stepBlendshapes(dt);
@@ -108,10 +219,18 @@ function step(dt) {
   }
 
   if (avatar.mode === "idle") {
-    avatar.idleTimer += dt;
-    if (avatar.idleTimer >= avatar.nextIdle && avatar.time > avatar.manualUntil) {
-      wander();
-      avatar.nextIdle = 2.5 + Math.random() * 3.5;
+    // While the bubble is up the avatar stands still: talking pins it in place
+    // so the card (and the person reading it) never drifts across the screen.
+    // An explicit /move or a keypress still overrides this — only the automatic
+    // wander below is held back.
+    if (speech.visible) {
+      avatar.idleTimer = 0;
+    } else {
+      avatar.idleTimer += dt;
+      if (avatar.idleTimer >= avatar.nextIdle && avatar.time > avatar.manualUntil) {
+        wander();
+        avatar.nextIdle = 2.5 + Math.random() * 3.5;
+      }
     }
   } else if (avatar.mode === "walking") {
     const elapsed = avatar.time - avatar.startTime;
@@ -143,6 +262,10 @@ function step(dt) {
       updateStatusUI();
     }
   }
+
+  // Gaze runs last: the head bone has moved by now, and the next `render()`
+  // turns the smoothed aim point into a pupil offset.
+  updateGaze(dt);
 }
 
 /* ---------- main loop ---------- */
@@ -153,7 +276,11 @@ function frame(now) {
   const dt = Math.min(0.05, (now - lastFrame) / 1000);
   lastFrame = now;
   step(dt);
+  // `render()` refreshes RT.world (computeWorld) before drawing, so the bubble
+  // can be re-anchored against this frame's head position instead of the 10 Hz
+  // throttle it used to run on.
   render();
+  positionBubble();
   reportState(now);
   requestAnimationFrame(frame);
 }
@@ -670,6 +797,7 @@ function setupUI() {
   });
 
   attachInteractionDetection(canvas);
+  attachGazeTracking();
   setupQuickReply();
   setupCommandBar();
 
@@ -761,6 +889,34 @@ function installDebugSurface() {
     }),
     toggleDetails: () => toggleDetails(),
     copyDetails: () => copyDetails(),
+    /** Eye tracking: where the pupils are aiming and how far the hover eased. */
+    gaze: () => ({
+      x: round(gaze.x, 1), y: round(gaze.y, 1),
+      targetX: round(gaze.targetX, 1), targetY: round(gaze.targetY, 1),
+      tracking: gaze.tracking,
+      hover: round(gaze.hover, 3),
+      glanceAt: round(gaze.nextGlance, 2),
+    }),
+    /** Text-driven lip sync: current character + the openness it produced. */
+    mouth: () => ({
+      char: speech.char,
+      open: round(speech.mouthOpen, 3),
+      smooth: round(speech.mouthSmooth, 3),
+      variant: speech.mouthVariant,
+    }),
+    /** Bubble geometry vs. the head anchor — the per-frame tracking check. */
+    bubble: () => {
+      const el = document.getElementById("speech");
+      if (!el || el.classList.contains("hidden")) return null;
+      const rect = el.getBoundingClientRect();
+      const anchor = headPoint();
+      return {
+        left: round(rect.left, 1), top: round(rect.top, 1),
+        anchorX: round(anchor.x, 1), anchorY: round(anchor.y, 1),
+        /** Head-to-bubble gap: a constant ~30 px while tracking, drifting when stale. */
+        anchorGap: round(anchor.y - (rect.top + rect.height), 1),
+      };
+    },
     selectBone: (id, partId) => select(id, partId || null),
     undo: undo,
     /** Same path the canvas uses: notify Rust of a pointer interaction. */

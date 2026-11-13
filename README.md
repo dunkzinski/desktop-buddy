@@ -9,6 +9,8 @@ local HTTP API so an AI agent can drive it.
 * Rust + Tauri 2 (WebView2) shell, canvas renderer, axum HTTP API
 * Data-driven rigs (`model.json`), editable in-app, with sprite parts + variants
 * Custom keyframe animations: author clips in the rig editor, play them from the UI, the HTTP API or an MCP agent
+* Life signs: the mouth is driven by the typewriter (vowel / consonant / pause shapes), the eyes follow your cursor, and the head tilts a little when you hover
+* Talk to it without a terminal: `Alt+Space` (configurable via `hotkey` in `watcher_rules.json`) summons the command bar from any application
 * Works alongside your desktop: only the titlebar, panel and avatar catch clicks
 
 ---
@@ -391,23 +393,24 @@ ui/                   modular frontend (native ES modules, no build step)
   styles.css          all CSS rules
   js/
     ipc.js            Tauri access (call/listen/isTauri), read lazily from window.__TAURI__
-    state.js          shared state & constants (avatar, RT, speech, viewport, EXPRESSIONS)
-    rig.js            model ingestion, skeletal FK (incl. clip offsets), part geometry, hit regions, serialization
+    state.js          shared state & constants (avatar, RT, speech, gaze, viewport, EXPRESSIONS)
+    rig.js            model ingestion, skeletal FK (incl. clip offsets + hover head tilt), part geometry, hit regions, serialization
     animator.js       custom keyframe clips: sampling, playback, authoring, finished state
-    renderer.js       canvas rendering pipeline
+    renderer.js       canvas rendering pipeline, gaze→pupil offset, lip-sync mouth squash
     editor.js         rig editor gizmos, inspector, bone/part authoring, undo
-    speech.js         speech bubble lifecycle + quick-reply box
+    speech.js         speech bubble lifecycle, text-driven lip sync, quick-reply box, details drawer
     bridge.js         Tauri events, state reports, import flow, click-through
-    main.js           entry point: DOM bindings, shortcuts, __avatarDebug, main loop, click detection
+    main.js           entry point: DOM bindings, shortcuts, gaze targeting, __avatarDebug, main loop, click detection
 models/               rigs + sprites (+ .state.json remembering the selection)
 watcher_rules.json    optional trigger rules for char-rig-watcher.exe (built-in defaults when absent)
 docs/                 screenshots
 tools/                verify_docs.py (docs↔source diff), cdp-eval.mjs (evaluate JS in the running page)
 ```
 
-`ai-avatar-bridge/`, `avatar-editor/`, `avatar-desktop/` and `spikes/` are
-earlier prototypes kept for reference; they are **not** part of the running app
-and can be deleted.
+The legacy prototypes (`ai-avatar-bridge/`, `avatar-desktop/`, `avatar-editor/`,
+`spikes/`, the unused `src-tauri/avatar-renderer.html` and the empty
+`src/char_rig/`, `tests/` and `assets/` placeholders) have been **deleted** —
+the tree above is the whole app.
 
 ## Status
 

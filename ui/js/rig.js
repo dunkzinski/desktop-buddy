@@ -9,12 +9,15 @@
  */
 
 import {
-  avatar, RT, TAU, animation,
+  avatar, RT, TAU, animation, gaze,
   clamp, num, round,
   setDirty, toast, viewport,
 } from "./state.js";
 
 import { call } from "./ipc.js";
+
+/** Head tilt (radians, ~3°) at full hover — the "the cursor is on me" sign. */
+const HOVER_HEAD_TILT = 0.05;
 
 /* ---------- model loading ---------- */
 
@@ -149,6 +152,11 @@ export function animOffset(bone) {
   }
   if (anim.wave && avatar.mode === "waving") {
     rot += Math.sin(avatar.wavePhase + phase) * anim.wave;
+  }
+  // Hover life-sign: a soft head tilt while the cursor rests on the avatar.
+  // `gaze.hover` is eased by main.js, so the tilt eases in and back out.
+  if (gaze.hover > 0 && bone.parts.some((part) => part.tag === "head")) {
+    rot += gaze.hover * HOVER_HEAD_TILT;
   }
   const bob = anim.bob ? Math.sin(avatar.time * 1.8 + phase) * anim.bob : 0;
   return { rot, bob };

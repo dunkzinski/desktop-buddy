@@ -28,8 +28,8 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | **Rig Edit Mode** | Bone/joint/pivot/hitbox overlay; drag joints, drag rotation ring (unlimited multi-turn), wheel rotate / shift+wheel scale; re-parent; add bone, add limb, add part, duplicate/delete; inspector for transforms, limits, z-order and animation channels; undo; save to `rig.json`; reset |
 | **Facial system** | Per-part sprite **variants**, 6 expression presets (`neutral`, `happy`, `surprised`, `thinking`, `sad`, `angry`) mapping to eye/mouth variant names, procedural squash/stretch fallback, expression holds with auto-revert |
 | **Custom animations** | Optional `animations` block on the rig root: named keyframe clips (`duration_ms`, `loop`, `keyframes[]`) whose per-bone deltas are sampled with smoothstep easing and composed into the transform pass; timeline bar in Rig Edit Mode (clip CRUD, duration, loop, play/stop, 0–100 % scrubber with keyframe ticks, `+ Keyframe` capture) |
-| **Life signs** | Auto-blink every 3–6 s (~120 ms), talking mouth loop while a bubble is visible |
-| **Speech bubbles** | Head-anchored DOM card, typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss; an optional **quick-reply box** (click the bubble, or just hover) with `Enter` to send and `Esc` to dismiss; an optional **details drawer** — a `details` string renders a monospace, scrollable pre block behind a **Details ▾** toggle plus a **Copy** button, and an open drawer holds the bubble up |
+| **Life signs** | Auto-blink every 3–6 s (~120 ms); **text-driven lip sync** — the mouth follows the typewriter character by character (vowels wide open, soft consonants mid-open, spaces and punctuation closed) for both sprite variants and the procedural shape; **eye tracking** — pupils ease toward the pointer, the focused command bar, or an idle glance every 2–4 s, clamped to ±4 px so they never leave the socket; **hover response** — a soft head tilt when the cursor enters the avatar's bounds |
+| **Speech bubbles** | Head-anchored DOM card, re-anchored to the head **every animation frame** (no lag while the avatar walks), typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss; the avatar stands still while a bubble is up (automatic wandering is paused — an explicit `/move` or keypress still wins); an optional **quick-reply box** (click the bubble, or just hover) with `Enter` to send and `Esc` to dismiss; an optional **details drawer** — a `details` string renders a monospace, scrollable pre block behind a **Details ▾** toggle plus a **Copy** button, and an open drawer holds the bubble up |
 | **Agent API** | 32 local HTTP paths (38 method routes): state, movement, expressions, speech, models, rigs, parts, custom animations, desktop context, clipboard read **and write**, quick replies, external alerts, session reset, watcher control, shutdown |
 | **Desktop awareness** | `GET /context` — foreground window title, its owning executable (`process_name`), machine-wide idle seconds (Win32 probes, safe defaults elsewhere) **and** the last 15 SSE frames as the agent's short-term memory; `GET /clipboard` — the last-copied text, capped at 2000 characters; `POST /clipboard` — put up to 32 000 characters on the clipboard |
 | **Event stream** | `GET /events` — Server-Sent Events over a 64-frame `tokio::broadcast` channel: `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`, `animate`, `interaction`, `user_reply`, `alert`, `session_reset`, `watcher`; 15 s keep-alive, plus a 15-frame history ring buffer served inside `/context` |
@@ -39,7 +39,7 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword **or a per-app rule**, an `idle_return` after a long idle stretch, a `user_reply` from the command bar (no cooldown — the user asked directly), or an `alert` pushed by `POST /alert` under its own cooldown. Per-trigger cooldowns, an immediate ack (expression or custom clip), an optional webhook, and an optional spawned Hermes command with a one-line prompt on a persistent, rotatable session (`{session}`). Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Dispatch is single-flight with a **one-slot pending queue**: a `user_reply`/`alert` arriving mid-turn waits and runs as soon as that turn ends (newest wins), while routine triggers are dropped. Exponential-backoff reconnect; **zero LLM tokens while idle** |
 | **Persistence** | `models/<name>/model.json` (shipped), `rig.json` (editor override), `models/.state.json` (selected model) |
 
-### Repository map — what is live vs. legacy
+### Repository map
 
 | Path | Status | Notes |
 | --- | --- | --- |
@@ -47,12 +47,14 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | `ui/` | **live** | Modular frontend (see structure below) |
 | `models/` | **live** | Model folders + `models/.state.json` |
 | [`API.md`](API.md), [`MODEL_FORMAT.md`](MODEL_FORMAT.md), [`README.md`](README.md) | **live docs** | Endpoint reference, manifest guide, quick start (this file is the design overview) |
-| `watcher_rules.json` | **live config** | Optional rules for `char-rig-watcher.exe` (interaction kinds, title keywords, **per-app `app_rules`**, alert cooldown, idle threshold, cooldowns, ack emote, Hermes command/session, webhook); built-in defaults when absent |
-| `avatar-editor/`, `avatar-desktop/` | legacy prototypes | Standalone HTML prototypes from earlier phases; not loaded by the app |
-| `ai-avatar-bridge/` | legacy workspace | Earlier multi-crate experiment (`avatar-api`, `avatar-core`, …); separate `Cargo.toml`, not built or referenced by `src-tauri` |
-| `spikes/` | legacy | Throwaway experiments (format loading, auto-rigging, wgpu mesh, ws api, llm) |
-| `src/char_rig/`, `tests/`, `assets/` | empty | Leftovers |
-| `src-tauri/avatar-renderer.html` | unused | Superseded by `ui/index.html`; no longer referenced by any code |
+| `watcher_rules.json` | **live config** | Optional rules for `char-rig-watcher.exe` (interaction kinds, title keywords, **per-app `app_rules`**, alert cooldown, idle threshold, cooldowns, ack emote, Hermes command/session, hotkey, webhook); built-in defaults when absent |
+| `docs/`, `tools/`, `TASKS.json` | **live** | Screenshots, `verify_docs.py` / `mcp_smoke_test.py` / `cdp-eval.mjs`, and the stage ledger |
+
+The legacy prototypes that used to sit in this tree — `ai-avatar-bridge/`,
+`avatar-desktop/`, `avatar-editor/`, `spikes/`, `src-tauri/avatar-renderer.html`
+and the empty `src/char_rig/`, `tests/`, `assets/` placeholders — have been
+**deleted**. Nothing outside `src-tauri`, `ui`, `models`, `docs`, `tools` is
+part of the app, and no source file references them.
 
 ### `ui/` — modular frontend structure (no build step)
 
@@ -61,21 +63,21 @@ ui/
 ├── index.html          # Lean semantic HTML shell (titlebar, canvas, panels, bubble, toasts)
 ├── styles.css          # All CSS rules (titlebar, control panel, inspector, import modal, speech bubble, toasts)
 └── js/
-    ├── state.js        # Shared state objects (`avatar`, `RT`, `animation`), constants (`EXPRESSION_PRESETS`, `EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), undo history helpers
-    ├── rig.js          # Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`), skeletal FK (`animOffset`, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), rig serialization (`serializeRig`, `serializeAnimations`)
+    ├── state.js        # Shared state objects (`avatar`, `RT`, `animation`, `gaze`, `speech`), constants (`EXPRESSION_PRESETS`, `EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), the lip-sync mouth mapping helper, undo history helpers
+    ├── rig.js          # Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`), skeletal FK (`animOffset` — which also adds the hover head tilt, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), rig serialization (`serializeRig`, `serializeAnimations`)
     ├── animator.js     # Custom keyframe clips: `playAnimation`, `stopAnimation`, `sampleAnimation`, `seekAnimation`, `stepAnimation`, `captureKeyframe`, clip CRUD, finished listeners
-    ├── renderer.js     # Canvas rendering pipeline (`drawFace`, `drawShape`, `drawPart`, `sortedDrawables`, `render`)
+    ├── renderer.js     # Canvas rendering pipeline (`drawFace`, `drawShape`, `drawPart`, `render`), the gaze→pupil offset (`updateGazeDir`, `isPupilPart`), and the lip-sync mouth squash
     ├── editor.js       # Rig Edit Mode overlay gizmos (`drawEditorOverlay`, `hitTest`, mouse/wheel handlers), inspector rendering/bindings (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `bindExpressionSprite`, `saveRig`, `resetRig`), and the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`)
-    ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
+    ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), text-driven lip sync (`mouthPoseFor`, `setMouthFrom`, `stepMouth`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
     ├── bridge.js       # Tauri IPC commands, event listeners (`avatar-state-changed`, `emote`, `speak`, `avatar-animate`, etc.), hit-region publishing (`wireRegions`, `setClickThrough`), state sync (`reportState`, `applyRemoteState`, `applyPartPatch`)
-    └── main.js         # Entry point: DOM bindings, keyboard shortcuts, `window.__avatarDebug`, `requestAnimationFrame` main loop (`step`, `frame`), the ask/task command bar (`openCommandBar`, `sendUserMessage`, quick-task chips, `resetSession`)
+    └── main.js         # Entry point: DOM bindings, keyboard shortcuts, gaze targeting (`updateGaze`, `attachGazeTracking`), `window.__avatarDebug`, `requestAnimationFrame` main loop (`step`, `frame` — bubble re-anchor), the ask/task command bar (`openCommandBar`, `sendUserMessage`, quick-task chips, `resetSession`)
 ```
 
 > **No Node/npm build step.** `src-tauri/tauri.conf.json` serves `../ui` directly into WebView2 (`frontendDist: ../ui`, `"withGlobalTauri": true`). Native ES modules (`<script type="module">`) load at runtime.
 
-> The app is **only** `src-tauri` + `ui` + `models`. The large directories
-> (`ai-avatar-bridge` ~8 GB, `avatar-desktop` ~1.4 GB) are build artifacts of
-> older experiments and can be deleted.
+> The app is **only** `src-tauri` + `ui` + `models` (+ `docs`/`tools` for
+> development). The legacy prototype trees are gone — see the repository map
+> above.
 
 ---
 
@@ -420,14 +422,14 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/index.html` | Lean semantic HTML shell (titlebar with the chat icon, canvas, control panel, inspector container, import chooser, floating command bar, speech bubble with its quick-reply form, toasts) linking `styles.css` and `<script type="module" src="./js/main.js"></script>` |
 | `ui/styles.css` | All CSS rules (titlebar, control panel, rig inspector, import modal, speech bubble + quick reply + thinking state, command bar + chips, toasts) |
 | `ui/js/ipc.js` | **Leaf** Tauri access: `call`, `listen`, `once`, `isTauri`. Reads `window.__TAURI__` lazily on every call (never cached at module scope) |
-| `ui/js/state.js` | **Leaf** shared state objects (`avatar`, `RT`, `speech`, `viewport`), constants (`EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), helpers, `toast`, `updateStatusUI`, `setExpression`, `snapshot`, `setDirty`, `activeState` |
-| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset`, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix`, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
+| `ui/js/state.js` | **Leaf** shared state objects (`avatar`, `RT`, `speech`, `gaze`, `viewport`), constants (`EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), helpers, `toast`, `updateStatusUI`, `setExpression`, `snapshot`, `setDirty`, `activeState` (which routes the lip-sync mouth variant through `mouthState`), `blinkActive`, `markManual` |
+| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset` — the hover head tilt rides on it, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix`, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
 | `ui/js/animator.js` | Custom keyframe clips: catalogue (`animationClips`, `listAnimations`), transport (`playAnimation`, `stopAnimation`, `stopPlayback`, `seekAnimation`, `stepAnimation`), sampling (`sampleAnimation`), authoring (`setAnimationBone`, `captureKeyframe`, `addClip`, `renameClip`, `deleteClip`, `setClipDuration`, `setClipLoop`) and finished listeners (`onAnimationFinished`) |
-| `ui/js/renderer.js` | Canvas pipeline: DPR resize (`initRenderer`, `resizeCanvas`), `drawFace`, `drawShape`, `drawPart`, rig overlay gizmos, `render` |
+| `ui/js/renderer.js` | Canvas pipeline: DPR resize (`initRenderer`, `resizeCanvas`), `drawFace`, `drawShape`, `drawPart`, rig overlay gizmos, `render`; `updateGazeDir` turns the smoothed aim point into a clamped pupil vector and `isPupilPart` decides between moving the pupil sprite or the whole eye; the mouth squash reads `speech.mouthSmooth` (the same cadence as the sprite variants) |
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
-| `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), the quick-reply box (`isReplyOpen`, `openReply`, `closeReply`, `toggleReply`), the **details drawer** (`detailsText`, `toggleDetails`, `detailsOpen`, `copyDetails` — which republishes the hit region so the expanded card stays clickable), the "Thinking…" card (`beginThinking`, `showThinking`, `endThinking`) and the command bar's anchor (`commandBarVisible`, `positionCommandBar`); the hold timer is suspended while the drawer is open, the box is open, the bubble is hovered or an input has focus |
+| `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), **text-driven lip sync** (`mouthPoseFor` vowel/consonant/punctuation table, `setMouthFrom`, `stepMouth` smoothing), the quick-reply box (`isReplyOpen`, `openReply`, `closeReply`, `toggleReply`), the **details drawer** (`detailsText`, `toggleDetails`, `detailsOpen`, `copyDetails` — which republishes the hit region so the expanded card stays clickable), the "Thinking…" card (`beginThinking`, `showThinking`, `endThinking`) and the command bar's anchor (`commandBarVisible`, `positionCommandBar`); the hold timer is suspended while the drawer is open, the box is open, the bubble is hovered or an input has focus |
 | `ui/js/bridge.js` | Tauri event listeners (`avatar-state-changed`, `emote`, `speak`, `part-patch`, …), `reportState`, `applyRemoteState` (ignores frames that would yank a dragged avatar and never adopts a bare `walking` without its segment), `applyPartPatch`, `applyWatcherStatus` (which also mirrors `quick_tasks` for the command bar), click-through (`setClickThrough`), import flow (`importFromDialog`, `importImageAs`, chooser) |
-| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), `window.__avatarDebug`, behaviour loop (`step`, `startWalk`, `wander`), `requestAnimationFrame` driver, play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
+| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), **gaze targeting** (`attachGazeTracking`, `updateGaze` — pointer > focused command bar > idle glances, plus the eased hover weight), `window.__avatarDebug`, behaviour loop (`step`, `startWalk`, `wander` — held back while a bubble is up), `requestAnimationFrame` driver (`frame`: `step` → `render` → `positionBubble`), play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
 `ipc, state → rig → animator → {renderer, speech, editor, bridge}; editor → bridge; all → main`.
@@ -716,6 +718,29 @@ outran the art box; and `applyRemoteState` ignores in-flight
 echo that arrives without the walk segment that goes with it (adopting it used
 to leave `step()` with a stale start and snap the avatar to an old target).
 
+### Life signs: lip sync, gaze and hover
+
+Three small behaviours make the avatar feel alive without any agent input:
+
+* **Lip sync.** While a bubble is up the mouth is driven by the typewriter, not
+  by a clock: `speech.js::mouthPoseFor` maps each revealed character to an
+  openness — vowels (`a e i o u`) wide open, soft consonants mid-open, spaces
+  and `. , ! ? -` closed — and `updateSpeech` eases `speech.mouthSmooth` toward
+  it every frame. `state.js::activeState` picks the matching sprite variant
+  (`open` / `flat` / `closed`, falling back to whichever exists) and
+  `renderer.js` squash-stretches shape mouths by the same number, so the cadence
+  survives a rig with no mouth variants at all.
+* **Eye tracking.** `main.js::updateGaze` picks a target each frame — a focused
+  `#command-input` (the user is typing *at* the avatar) beats the pointer, which
+  beats a random idle glance every 2–4 s — smooths it, and `renderer.js` turns
+  the offset into a pupil shift clamped to ±4 px (and to 18 % of the part), so a
+  pupil can never slide out of its socket. A rig with no pupil sprite moves the
+  whole eye by ~55 % of that instead, and the procedural `face` shape moves its
+  iris arcs.
+* **Hover.** The pointer entering the avatar's art sets `gaze.hover`, which
+  `rig.js::animOffset` turns into a ~3° head tilt that eases in and out. It is
+  the same maths as the `sway` channel, so it composes with any animation.
+
 ### Asking the avatar (command bar)
 
 The avatar is addressable without a terminal. `Enter` or `/` anywhere on the
@@ -751,6 +776,15 @@ floating command bar anchored under the avatar:
 The bubble's own inline reply box (hover it) is the same `notify_reply` path in
 miniature, and its auto-dismiss timer is paused while the pointer is over the
 bubble or either input has focus.
+
+While a bubble is up the avatar **stands still**: `step()` zeroes the idle timer
+instead of starting a wander, so the card (and the person reading it) never
+drifts across the screen. An explicit `POST /move`, a quick-task chip's task or a
+keypress still wins — only the automatic wander is held back. The card itself is
+re-anchored **every animation frame** (`frame()` → `render()` →
+`positionBubble()`), so a walk that was already in progress when the agent spoke
+cannot detach it: the tail stays 30 px above the head no matter how fast the
+avatar moves.
 
 ### Reading long output (details drawer + clipboard)
 
@@ -1384,7 +1418,15 @@ history served in `/context`. Full payload table in `API.md` §
   follows the page's reports.
 * **Expression variants are optional.** Missing variants fall back to
   procedural squash/stretch rather than substituting another sprite.
-* **Blink only affects parts tagged `eye`;** other body parts are unaffected.
+* **Life signs are cosmetic and page-local.** Blinking only affects parts tagged
+  `eye`. Lip sync is an approximation — characters are bucketed into
+  vowel / soft-consonant / punctuation shapes, with no visemes, no audio
+  analysis and no per-language tuning (it reads English-ish on any rig). Eye
+  tracking only sees the pointer while it is over a published interactive
+  region (the rest of the overlay is click-through, so the eyes fall back to
+  idle glances when you are in another application), and it moves the pupils
+  only — there is no head yaw, body turn or blink-on-focus. Hover is the head
+  tilt alone.
 * **Editor scope.** No viewport scale gizmo (wheel/shift+wheel or the inspector
   instead), no snapping, no IK handles, undo is rig-edits-only (80 steps, no
   redo), and there is no undo for imports or model switches.

@@ -19,6 +19,56 @@ import { wireRegions } from "./rig.js";
 /** Longest `details` block the page will render (mirrors lib.rs). */
 const MAX_DETAILS_CHARS = 8000;
 
+/* ---------- text-driven lip sync ---------- */
+
+/**
+ * Mouth openness per character, driving both the sprite variant and the
+ * procedural squash. Vowels open wide, soft consonants sit mid-open, and spaces
+ * / punctuation close the mouth — so the avatar visibly pauses between words
+ * instead of flapping at a fixed ~3 Hz.
+ */
+const VOWELS = "aeiouyàáâäãåèéêëìíîïòóôöõùúûü";
+const WIDE = ".!?…";            // sentence/clause ends: a beat with the mouth shut
+const CLOSED = " \n\t,;:-–—\"'()[]{}…";
+const MID_CONSONANTS = "mbpwfvhlcnrszxjqgdtk";
+
+/**
+ * Lip-sync pose for one revealed character.
+ *
+ * `open` is the 0..1 openness the renderer squashes the mouth by; `variant` is
+ * the sprite name `state.js::activeState` prefers (falling back to open/closed
+ * when the rig lacks `flat`).
+ */
+export function mouthPoseFor(char) {
+  const ch = String(char || "").toLowerCase();
+  if (!ch) return { open: 0, variant: "closed" };
+  if (CLOSED.includes(ch) || WIDE.includes(ch)) return { open: 0, variant: "closed" };
+  if (VOWELS.includes(ch)) return { open: 0.95, variant: "open" };
+  if (MID_CONSONANTS.includes(ch)) return { open: 0.45, variant: "flat" };
+  // Digits, other letters and emoji: a neutral half-open beat.
+  return { open: 0.55, variant: "flat" };
+}
+
+/** Keep `speech.mouthOpen/mouthVariant` in step with the typewriter. */
+function setMouthFrom(chars) {
+  const char = chars > 0 ? speech.full[chars - 1] : "";
+  speech.char = char;
+  const pose = mouthPoseFor(char);
+  speech.mouthOpen = pose.open;
+  speech.mouthVariant = pose.variant;
+}
+
+/**
+ * Ease the drawn openness toward the character's target. Fast enough to keep
+ * up with 26 ms/char typing, slow enough that vowels read as a shape rather
+ * than a flicker.
+ */
+function stepMouth(dt) {
+  const k = Math.min(1, dt * 22);
+  speech.mouthSmooth += (speech.mouthOpen - speech.mouthSmooth) * k;
+  if (speech.mouthSmooth < 0.01) speech.mouthSmooth = 0;
+}
+
 /* ---------- speech bubble ---------- */
 
 function bubbleAnchor() {
@@ -104,23 +154,26 @@ export function updateSpeech(dt) {
       caret.className = "caret";
       textEl.appendChild(caret);
     }
-    positionBubble();
+    // The mouth follows the letter that just appeared, not the clock.
+    setMouthFrom(chars);
+    // `positionBubble` runs every frame from the main loop (after `step()`
+    // and `render()`), so the card can never lag the head.
   }
 
   if (chars >= speech.full.length) {
     speech.doneFor += dt;
+    // Finished talking: shut the mouth, so the hold is a closed-mouth beat.
+    if (speech.mouthOpen !== 0) {
+      speech.mouthOpen = 0;
+      speech.mouthVariant = "closed";
+      speech.char = "";
+    }
     // An open reply box, a hovered bubble or a focused input outranks the hold
     // timer: the bubble must not vanish while the user is reading or typing.
     if (speech.doneFor * 1000 >= speech.holdMs && !bubbleHeld()) hideSpeechNow();
-    return;
   }
 
-  // keep the bubble glued to the head while the avatar walks around
-  speech.lastLayout += dt;
-  if (speech.lastLayout > 0.1) {
-    speech.lastLayout = 0;
-    positionBubble();
-  }
+  stepMouth(dt);
 }
 
 export function hideSpeech() {
@@ -149,6 +202,10 @@ function hideSpeechNow() {
   speech.doneFor = 0;
   speech.details = "";
   speech.detailsOpen = false;
+  speech.char = "";
+  speech.mouthOpen = 0;
+  speech.mouthSmooth = 0;
+  speech.mouthVariant = "closed";
   avatar.talk = false;
   closeReply();
   renderDetails();

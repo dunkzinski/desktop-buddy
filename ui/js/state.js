@@ -146,6 +146,35 @@ export const PRESET_STATES = {
 export const PART_TAGS = ["none", "head", "torso", "arm_left", "arm_right", "leg_left",
   "leg_right", "eye", "mouth", "accessory", "custom"];
 
+/* ---------- gaze / eye tracking ---------- */
+
+/**
+ * Where the eyes are looking, in screen (CSS) px.
+ *
+ * Written by `main.js` (pointer, command bar, idle saccades — the things that
+ * know about the DOM) and read by `renderer.js`, which turns it into a clamped
+ * pupil offset. `hover` is the eased 0..1 "cursor is on me" weight that `rig.js`
+ * folds into a small head tilt. It lives here because both sides need it and
+ * neither may import the other (module DAG).
+ */
+export const gaze = {
+  /** Smoothed aim point (screen px) — the eyes follow this. */
+  x: 0, y: 0,
+  /** The raw aim point for this frame (pointer / command bar / glance). */
+  targetX: 0, targetY: 0,
+  /** True while a real target (pointer or a focused input) drives the gaze. */
+  tracking: false,
+  /** False until the first `updateGaze` snaps the smoothed point into place. */
+  ready: false,
+  /** Last pointer position + when it last moved (pointer tracking decays). */
+  pointerX: 0, pointerY: 0, lastMove: -100,
+  /** Idle glances: when the next one starts, and where it lands. */
+  nextGlance: 0, glanceX: 0, glanceY: 0,
+  /** Eased hover weight 0..1 (cursor inside the avatar's bounds). */
+  hover: 0,
+  hoverTarget: 0,
+};
+
 /* ---------- speech bubble state ---------- */
 export const speech = {
   visible: false,
@@ -156,7 +185,6 @@ export const speech = {
   holdMs: 6000,
   doneFor: 0,
   flipped: false,
-  lastLayout: 0,
   /** The long half of the bubble (code/diff/log), shown in a drawer. */
   details: "",
   /** Is the details drawer expanded? An open drawer holds the bubble up. */
@@ -165,6 +193,15 @@ export const speech = {
   thinking: false,
   /** True while the pointer is over the bubble (the hold timer is paused). */
   hovered: false,
+  /* ----- text-driven lip sync (see speech.js) ----- */
+  /** Last character revealed by the typewriter ("" when idle). */
+  char: "",
+  /** Mouth openness the current character asked for, 0..1. */
+  mouthOpen: 0,
+  /** Eased openness the renderer actually draws (0..1). */
+  mouthSmooth: 0,
+  /** Sprite variant that matches `mouthOpen`: `open` | `flat` | `closed`. */
+  mouthVariant: "closed",
 };
 
 /* ---------- helpers ---------- */
@@ -192,14 +229,29 @@ export function hasVariant(part, key) {
   return !!(part.variants && typeof part.variants[key] === "string");
 }
 
+/**
+ * Which mouth sprite matches the lip-sync variant the typewriter asked for?
+ *
+ * `speech.js` maps each revealed character to `open` (vowels), `flat` (soft
+ * consonants) or `closed` (spaces / punctuation) and the renderer squashes the
+ * *shape* with the same openness, so a rig without variants still reads as
+ * talking. A rig with no `flat` sprite shows its open mouth for the mid-open
+ * consonants instead of snapping shut.
+ */
+function mouthState(part) {
+  const want = speech.mouthVariant;
+  if (want && hasVariant(part, want)) return want;
+  if (want === "flat" && hasVariant(part, "open")) return "open";
+  return "__talk__";
+}
+
 /** Which sprite state should this part show right now? */
 export function activeState(part) {
   if (part.tag === "eye" && blinkActive()) {
     return hasVariant(part, "blink") ? "blink" : "__blink__";
   }
   if (part.tag === "mouth" && avatar.talk) {
-    const want = Math.sin(avatar.time * 26) > 0 ? "open" : "closed";
-    return hasVariant(part, want) ? want : "__talk__";
+    return mouthState(part);
   }
   if (part.expressionState && hasVariant(part, part.expressionState)) return part.expressionState;
   if (part.state && hasVariant(part, part.state)) return part.state;

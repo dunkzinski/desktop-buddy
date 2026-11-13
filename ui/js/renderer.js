@@ -1,12 +1,12 @@
 /**
  * char-rig — canvas rendering pipeline
  *
- * Depends on: state.js (state + activeState/hasVariant) and rig.js (geometry).
- * Owns the 2D context and the DPR transform.
+ * Depends on: state.js (state + activeState/hasVariant + gaze/speech) and
+ * rig.js (geometry). Owns the 2D context and the DPR transform.
  */
 
 import {
-  avatar, RT, TAU,
+  avatar, RT, TAU, speech, gaze,
   clamp, num, activeState,
   hasVariant, viewport, updateViewport,
 } from "./state.js";
@@ -18,13 +18,62 @@ import {
 let canvas = null;
 let ctx = null;
 
-/* ---------- drawing ---------- */
+/** Unit-ish gaze vector for this frame, recomputed in `render()`. */
+let gazeDir = { x: 0, y: 0 };
+/** Does the rig draw a dedicated pupil part? (-eye offset fallback if not) */
+let rigHasPupils = false;
+
+/** Longest a pupil may travel from its socket centre, in world px. */
+const GAZE_RADIUS = 4;
+
+/**
+ * Is this the pupil sprite?
+ *
+ * The rig format has no `pupil` tag (pupils are authored as `eye` parts), so the
+ * **id** is the signal — the shipped rig names them `pupil_l` / `pupil_r`. The
+ * image path is deliberately *not* used: `parts/pupil.png` is also the hand
+ * sprite on demo-blob, and matching it would make a hand drift with the gaze.
+ */
+function isPupilPart(part) {
+  return part.tag === "pupil" || /pupil/i.test(part.id || "");
+}
+
+/**
+ * Where the eyes are looking, as a clamped direction.
+ *
+ * `gaze.x/y` is already smoothed in screen space by `main.js`; this turns it
+ * into `dir * strength` where strength saturates once the target is ~140 px
+ * away, so a near pointer is a small glance and the far corner is a full look.
+ */
+function updateGazeDir() {
+  let head = RT.boneList.find((bone) => bone.parts.some((part) => part.tag === "head"));
+  if (!head) head = RT.boneList.find((bone) => bone.parts.some((part) => part.tag === "eye"));
+  const world = head ? RT.world[head.id] : null;
+  const hx = world ? world.x : avatar.x;
+  const hy = world ? world.y : avatar.y - 60;
+  const dx = gaze.x - hx;
+  const dy = gaze.y - hy;
+  const length = Math.hypot(dx, dy);
+  if (!Number.isFinite(length) || length < 0.001) {
+    gazeDir = { x: 0, y: 0 };
+    return;
+  }
+  const strength = clamp(length / 140, 0, 1);
+  // Vertical travel is subtler than horizontal in a real eye; 0.75 keeps it
+  // from looking like the pupils are sliding out of the socket.
+  gazeDir = { x: (dx / length) * strength, y: (dy / length) * strength * 0.75 };
+}
 
 function drawFace(w, h) {
-  const mouthOpen = avatar.blendshapes.mouth_open || 0;
+  const mouthOpen = avatar.talk
+    ? clamp(speech.mouthSmooth, 0, 1)
+    : (avatar.blendshapes.mouth_open || 0);
   const eyeWide = avatar.blendshapes.eye_wide || 0;
   const browUp = avatar.blendshapes.brow_up || 0;
   const scale = w / 116;
+  // The procedural face has no pupil parts: the iris arcs move with the gaze.
+  const gazeX = gazeDir.x * GAZE_RADIUS * 0.85 * scale;
+  const gazeY = gazeDir.y * GAZE_RADIUS * 0.85 * scale;
 
   ctx.fillStyle = "rgba(255,255,255,0.10)";
   ctx.beginPath();
@@ -41,8 +90,8 @@ function drawFace(w, h) {
 
   ctx.fillStyle = "#101018";
   ctx.beginPath();
-  ctx.arc(-22 * scale, eyeY + scale, eyeR * 0.42, 0, TAU);
-  ctx.arc(22 * scale, eyeY + scale, eyeR * 0.42, 0, TAU);
+  ctx.arc(-22 * scale + gazeX, eyeY + scale + gazeY, eyeR * 0.42, 0, TAU);
+  ctx.arc(22 * scale + gazeX, eyeY + scale + gazeY, eyeR * 0.42, 0, TAU);
   ctx.fill();
 
   ctx.strokeStyle = "#1e2233";
@@ -119,12 +168,25 @@ function drawPart(boneWorld, part) {
 
   const state = activeState(part);
   if (part.tag === "mouth") {
-    // sprite variant switching is preferred; squash/stretch is the fallback
-    const open = avatar.talk ? 0.5 + 0.5 * Math.sin(avatar.time * 26)
+    // Sprite variants switch per character (state.js::mouthState); this squash
+    // is the procedural fallback and follows the same text-driven openness.
+    const open = avatar.talk
+      ? clamp(speech.mouthSmooth, 0, 1)
       : clamp(avatar.blendshapes.mouth_open || 0, 0, 1);
     ctx.scale(1 + open * 0.18, 1 + open * 0.55);
   } else if (part.tag === "eye" && state === "__blink__") {
     ctx.scale(1, 0.12);
+  }
+
+  // Gaze: pupils drift inside the socket; a rig without a pupil part moves the
+  // whole eye sprite a little instead. The radius is in world px (so it stays
+  // natural across rig sizes) and is clamped to a fraction of the part.
+  const pupil = isPupilPart(part);
+  if (pupil || (part.tag === "eye" && !rigHasPupils)) {
+    const worldRadius = Math.min(GAZE_RADIUS, Math.min(w, h) * scale * 0.18);
+    const localRadius = worldRadius / Math.max(0.0001, scale);
+    const weight = pupil ? 1 : 0.55;
+    ctx.translate(gazeDir.x * localRadius * weight, gazeDir.y * localRadius * weight);
   }
 
   const imagePath = state && hasVariant(part, state) ? part.variants[state] : part.image;
@@ -232,6 +294,9 @@ export function render() {
   ctx.clearRect(0, 0, viewport.w, viewport.h);
   if (!RT.model) return;
   computeWorld();
+  // Both depend on the world transforms, so they run after computeWorld().
+  rigHasPupils = RT.boneList.some((bone) => bone.parts.some(isPupilPart));
+  updateGazeDir();
   for (const entry of sortedDrawables()) {
     const world = RT.world[entry.bone.id];
     if (!world) continue;
