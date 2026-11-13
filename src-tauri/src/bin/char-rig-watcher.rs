@@ -115,10 +115,13 @@ const AI_REPLY_CONTRACT: &str = "Reply with ONE JSON object and nothing else: \
 \"expression\"?: \"neutral\"|\"happy\"|\"sad\"|\"surprised\"|\"thinking\"|\"angry\", \
 \"perch_edge\"?: \"top_left\"|\"top_right\"|\"left\"|\"right\"|\"bottom\", \
 \"window_process\"?: string (only with perch_edge; a substring of the executable name, e.g. \"code\"), \
+\"animate\"?: string (play one of the rig's clips — use EXACTLY one of the clip names listed in the context, e.g. \"wave\"), \
+\"wave\"?: boolean (true plays the built-in wave gesture), \
 \"details\"?: string (long code/diff/log text; never put that in speech), \
 \"escalate\"?: boolean}. \
-Set escalate to true (and speech to one short sentence) when the task needs tools, files or a real agent turn; \
-otherwise answer yourself.";
+Prefer your own actions: answer, emote, and animate/wave yourself instead of escalating. \
+Set escalate to true (and speech to one short sentence) only for multi-step tasks or work needing external tools — \
+clipboard contents, network scans, files, a terminal or the user's machine; otherwise answer yourself.";
 
 /* ------------------------------------------------------------------ *
  * AI profiles (inference backends)
@@ -390,6 +393,10 @@ impl AiShared {
 enum AvatarAction {
     Perch { edge: String, window_process: Option<String> },
     Emote { expression: String },
+    /// Built-in wave gesture (`POST /wave`, empty body) — always available.
+    Wave,
+    /// A custom keyframe clip (`POST /animate`), named from `GET /animations`.
+    Animate { name: String },
     Speak { text: String, expression: Option<String>, details: Option<String> },
 }
 
@@ -400,12 +407,23 @@ struct AiReply {
     expression: Option<String>,
     perch_edge: Option<String>,
     window_process: Option<String>,
+    /// Clip name from the rig's own `GET /animations` list.
+    animate: Option<String>,
+    /// `true` plays the built-in wave (works on every rig, sprite or procedural).
+    wave: Option<bool>,
     details: Option<String>,
     escalate: bool,
 }
 
 /// Perch edges `POST /perch` accepts (mirrors `PerchEdge` in `lib.rs`).
 const PERCH_EDGES: [&str; 5] = ["top_left", "top_right", "left", "right", "bottom"];
+
+/// Clip name that means "the built-in wave gesture".
+///
+/// A rig may also author a *custom* clip called `wave`; when it does, that clip
+/// wins (it is the more expressive one). When it does not, the watcher maps the
+/// request onto `POST /wave`, which works for every model.
+const WAVE_CLIP: &str = "wave";
 
 /// Cut `text` to at most `max` **characters** (never mid-codepoint).
 fn truncate_chars(text: &str, max: usize) -> String {
@@ -458,13 +476,20 @@ impl AiReply {
                 .map(|value| value.to_ascii_lowercase())
                 .filter(|value| PERCH_EDGES.contains(&value.as_str())),
             window_process: text_field("window_process"),
+            // A clip name: trimmed, empty ignored, case preserved (clip names
+            // are the rig author's, not an enum we control).
+            animate: text_field("animate"),
+            wave: value.get("wave").and_then(Value::as_bool),
             details: text_field("details").map(|value| truncate_chars(&value, MAX_DETAILS_CHARS)),
             escalate: value.get("escalate").and_then(Value::as_bool).unwrap_or(false),
         })
     }
 
     /// The ordered side effects, with the bubble already truncated.
-    fn actions(&self) -> Vec<AvatarAction> {
+    ///
+    /// `clips` is the rig's own `GET /animations` list: `animate: "wave"` needs
+    /// it to decide between a custom `wave` clip and the built-in gesture.
+    fn actions_with_clips(&self, clips: &[String]) -> Vec<AvatarAction> {
         let mut actions = Vec::new();
         if let Some(edge) = self.perch_edge.clone() {
             actions.push(AvatarAction::Perch {
@@ -474,6 +499,18 @@ impl AiReply {
         }
         if let Some(expression) = self.expression.clone() {
             actions.push(AvatarAction::Emote { expression });
+        }
+        // Gesture before words: the wave/anim plays while the bubble types.
+        if self.wave == Some(true) {
+            actions.push(AvatarAction::Wave);
+        } else if let Some(name) = self.animate.clone() {
+            actions.push(if name.eq_ignore_ascii_case(WAVE_CLIP) && !has_clip(clips, WAVE_CLIP) {
+                // "wave" with no custom clip on this rig: use the built-in
+                // gesture so sprite AND procedural models wave reliably.
+                AvatarAction::Wave
+            } else {
+                AvatarAction::Animate { name }
+            });
         }
         let speech = self.speech.trim();
         if !speech.is_empty() {
@@ -485,6 +522,21 @@ impl AiReply {
         }
         actions
     }
+
+    /// Actions when the rig's clip list is unknown (no custom `wave` clip is
+    /// assumed, so `animate: "wave"` means the built-in gesture).
+    ///
+    /// The dispatch path always has the real list from `GET /animations`; this
+    /// wrapper is what the pure parse/ordering tests use.
+    #[allow(dead_code)]
+    fn actions(&self) -> Vec<AvatarAction> {
+        self.actions_with_clips(&[])
+    }
+}
+
+/// Does this rig have a clip with that name? (Clip names are case-insensitive.)
+fn has_clip(clips: &[String], name: &str) -> bool {
+    clips.iter().any(|clip| clip.eq_ignore_ascii_case(name))
 }
 
 /// What one backend did, for the log line and the tests.
@@ -608,21 +660,26 @@ You do not have tools: you see only the context you are given and you answer wit
         body
     }
 
-    /// The user message for a no-tools model.
+    /// The user message for a no-tools model, plus the rig's animation clips.
     ///
-    /// The HTTP backend cannot call `avatar_get_context` or
-    /// `avatar_get_clipboard` — it has no MCP tools — so the watcher fetches the
-    /// same data and inlines it. `/context` is refreshed on every dispatch (the
-    /// trigger's snapshot may be seconds old); the clipboard is only fetched
-    /// when the user's words actually mention it, because reading the clipboard
-    /// is the single most privacy-sensitive call this process makes.
+    /// The HTTP backend cannot call `avatar_get_context`, `avatar_get_clipboard`
+    /// or `avatar_list_animations` — it has no MCP tools — so the watcher fetches
+    /// the same data and inlines it. `/context` is refreshed on every dispatch
+    /// (the trigger's snapshot may be seconds old); `/animations` names the clips
+    /// the model may ask for; the clipboard is only fetched when the user's words
+    /// actually mention it, because reading the clipboard is the single most
+    /// privacy-sensitive call this process makes.
+    ///
+    /// Returning the clip list too (instead of fetching twice) is what lets
+    /// `animate: "wave"` decide between a custom clip and the built-in gesture.
     async fn augmented_prompt(
         &self,
         client: &reqwest::Client,
         api_url: &str,
         base: &str,
-    ) -> String {
+    ) -> (String, Vec<String>) {
         let mut prompt = base.to_string();
+        let mut clips = Vec::new();
 
         match fetch_context(client, api_url).await {
             Ok(context) => {
@@ -640,6 +697,24 @@ You do not have tools: you see only the context you are given and you answer wit
             Err(err) => eprintln!("[watcher] openai prompt could not refresh /context: {err}"),
         }
 
+        match fetch_animations(client, api_url).await {
+            Ok(list) => {
+                clips = list;
+                if clips.is_empty() {
+                    prompt.push_str(
+                        "\n\nThis rig has no custom animation clips; use \"wave\": true for a gesture.",
+                    );
+                } else {
+                    prompt.push_str(&format!(
+                        "\n\nAnimation clips on this rig: {}. Ask for one with \"animate\": \"<name>\" \
+(or \"wave\": true for the built-in wave).",
+                        clips.join(", ")
+                    ));
+                }
+            }
+            Err(err) => eprintln!("[watcher] openai prompt could not read /animations: {err}"),
+        }
+
         if mentions_clipboard(base) {
             match fetch_clipboard(client, api_url).await {
                 Ok(text) if !text.trim().is_empty() => {
@@ -651,7 +726,7 @@ You do not have tools: you see only the context you are given and you answer wit
             }
         }
 
-        prompt
+        (prompt, clips)
     }
 
     /// One round-trip: POST the prompt, return the parsed reply.
@@ -701,7 +776,7 @@ impl InferenceBackend for OpenaiCompatBackend {
             // Hold the permit for the whole round-trip: a second trigger must
             // not stack another model call on a busy local server.
             let _flight = ctx.flight;
-            let prompt = self
+            let (prompt, clips) = self
                 .augmented_prompt(ctx.client, ctx.api_url, ctx.prompt)
                 .await;
             let reply = match self.ask(ctx.client, &prompt).await {
@@ -718,7 +793,7 @@ impl InferenceBackend for OpenaiCompatBackend {
                 }
             };
 
-            let actions = reply.actions();
+            let actions = reply.actions_with_clips(&clips);
             apply_actions(ctx.client, ctx.api_url, &actions).await;
             eprintln!(
                 "[watcher] ai profile {:?} answered ({} action(s){})",
@@ -830,6 +905,8 @@ async fn apply_actions(client: &reqwest::Client, api_url: &str, actions: &[Avata
                     "revert": "neutral",
                 }),
             ),
+            AvatarAction::Wave => ("/wave", json!({})),
+            AvatarAction::Animate { name } => ("/animate", json!({ "name": name, "loop": false })),
             AvatarAction::Speak { text, expression, details } => {
                 let mut body = json!({ "text": text });
                 if let Some(expression) = expression {
@@ -842,14 +919,67 @@ async fn apply_actions(client: &reqwest::Client, api_url: &str, actions: &[Avata
             }
         };
         let url = format!("{api_url}{path}");
-        match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
+        let failed = match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
             Ok(response) if !response.status().is_success() => {
-                eprintln!("[watcher] {path} rejected with {}", response.status())
+                eprintln!("[watcher] {path} rejected with {}", response.status());
+                true
             }
-            Ok(_) => {}
-            Err(err) => eprintln!("[watcher] {path} failed: {err}"),
+            Ok(_) => false,
+            Err(err) => {
+                eprintln!("[watcher] {path} failed: {err}");
+                true
+            }
+        };
+
+        // A rig with no custom `wave` clip answers 400 to /animate. The built-in
+        // gesture exists on every model, so degrade to it rather than losing the
+        // wave — and never let it abort the rest of the reply (notably `/speak`).
+        if failed {
+            if let AvatarAction::Animate { name } = action {
+                if name.eq_ignore_ascii_case(WAVE_CLIP) {
+                    let wave = format!("{api_url}/wave");
+                    match client.post(&wave).json(&json!({})).timeout(CONTEXT_TIMEOUT).send().await {
+                        Ok(response) if !response.status().is_success() => {
+                            eprintln!("[watcher] /wave rejected with {}", response.status())
+                        }
+                        Ok(_) => {}
+                        Err(err) => eprintln!("[watcher] /wave failed: {err}"),
+                    }
+                }
+            }
         }
     }
+}
+
+/// `GET /animations` → the clip names on the loaded rig.
+///
+/// A rig without the block (or an older avatar build) answers with an empty
+/// list, which is not an error: the model is told to use the built-in wave.
+async fn fetch_animations(client: &reqwest::Client, api_url: &str) -> Result<Vec<String>, String> {
+    let url = format!("{api_url}/animations");
+    let response = client
+        .get(&url)
+        .timeout(CONTEXT_TIMEOUT)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("{url} answered {}", response.status()));
+    }
+    let body: Value = response.json().await.map_err(|err| err.to_string())?;
+    Ok(body
+        .get("animations")
+        .and_then(Value::as_array)
+        .map(|clips| {
+            clips
+                .iter()
+                .filter_map(|clip| clip.get("name").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 
@@ -4601,6 +4731,10 @@ c"));
         );
     }
 
+    /// `GET /animations` body for the fake server (the rig knows two clips).
+    const CLIPS_BODY: &str =
+        r#"{"ok":true,"animations":[{"name":"wave","duration_ms":900,"loop":false,"keyframes":3},{"name":"dance","duration_ms":1900,"loop":true,"keyframes":5}]}"#;
+
     /// Read one whole HTTP request (headers + `content-length` body).
     fn read_request(socket: &mut std::net::TcpStream) -> String {
         use std::io::Read;
@@ -4631,19 +4765,20 @@ c"));
         String::from_utf8_lossy(&data).to_string()
     }
 
-    /// Accept `count` connections, answer each with the matching body.
-    fn serve(
+    /// Accept one connection per entry, answering with `(status, body)`.
+    fn serve_responses(
         listener: std::net::TcpListener,
-        bodies: Vec<&'static str>,
+        responses: Vec<(u16, &'static str)>,
     ) -> std::thread::JoinHandle<Vec<String>> {
         use std::io::Write;
         std::thread::spawn(move || {
             let mut requests = Vec::new();
-            for body in bodies {
+            for (status, body) in responses {
                 let Ok((mut socket, _)) = listener.accept() else { break };
                 requests.push(read_request(&mut socket));
+                let reason = if status == 200 { "OK" } else { "Bad Request" };
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = socket.write_all(response.as_bytes());
@@ -4652,13 +4787,22 @@ c"));
         })
     }
 
+    /// Accept `count` connections, answer each with the matching body and 200.
+    fn serve(
+        listener: std::net::TcpListener,
+        bodies: Vec<&'static str>,
+    ) -> std::thread::JoinHandle<Vec<String>> {
+        serve_responses(listener, bodies.into_iter().map(|body| (200u16, body)).collect())
+    }
+
     #[tokio::test]
     async fn the_openai_backend_answers_and_applies_every_action() {
         let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"Build failed in main.rs\",\"expression\":\"surprised\",\"perch_edge\":\"right\",\"window_process\":\"code\",\"details\":\"error[E0308]\"}"}}]}"#;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         // GET /context, chat completion, then /perch, /emote, /speak
-        let server = serve(listener, vec!["{}", chat, "{}", "{}", "{}"]);
+        // GET /context, GET /animations, chat, then /perch, /emote, /speak
+        let server = serve(listener, vec!["{}", CLIPS_BODY, chat, "{}", "{}", "{}"]);
 
         let parsed = rules(PROFILE_RULES);
         let backend = OpenaiCompatBackend::from_profile(
@@ -4700,37 +4844,43 @@ c"));
 
         assert_eq!(
             requests.len(),
-            5,
-            "one context read + one chat call + three avatar actions: {requests:#?}"
+            6,
+            "context + animations + chat + three avatar actions: {requests:#?}"
         );
         assert!(requests[0].starts_with("GET /context "), "{}", requests[0]);
-        assert!(requests[1].starts_with("POST /v1/chat/completions "), "{}", requests[1]);
+        assert!(requests[1].starts_with("GET /animations "), "{}", requests[1]);
+        assert!(requests[2].starts_with("POST /v1/chat/completions "), "{}", requests[2]);
         assert!(
-            requests[1].to_ascii_lowercase().contains("authorization: bearer secret"),
+            requests[2].to_ascii_lowercase().contains("authorization: bearer secret"),
             "the api_key is sent: {}",
-            requests[1]
+            requests[2]
         );
         assert!(
-            requests[1].contains("Live avatar context:"),
+            requests[2].contains("Live avatar context:"),
             "the model sees the refreshed /context: {}",
-            requests[1]
+            requests[2]
         );
-        assert!(requests[2].starts_with("POST /perch "), "{}", requests[2]);
-        assert!(requests[2].contains("\"edge\":\"right\""), "{}", requests[2]);
-        assert!(requests[2].contains("\"window_process\":\"code\""), "{}", requests[2]);
-        assert!(requests[3].starts_with("POST /emote "), "{}", requests[3]);
-        assert!(requests[3].contains("\"expression\":\"surprised\""), "{}", requests[3]);
-        assert!(requests[4].starts_with("POST /speak "), "{}", requests[4]);
-        assert!(requests[4].contains("Build failed in main.rs"), "{}", requests[4]);
-        assert!(requests[4].contains("error[E0308]"), "the details block is forwarded: {}", requests[4]);
+        assert!(
+            requests[2].contains("Animation clips on this rig: wave, dance"),
+            "the model is told which clips exist: {}",
+            requests[2]
+        );
+        assert!(requests[3].starts_with("POST /perch "), "{}", requests[3]);
+        assert!(requests[3].contains("\"edge\":\"right\""), "{}", requests[3]);
+        assert!(requests[3].contains("\"window_process\":\"code\""), "{}", requests[3]);
+        assert!(requests[4].starts_with("POST /emote "), "{}", requests[4]);
+        assert!(requests[4].contains("\"expression\":\"surprised\""), "{}", requests[4]);
+        assert!(requests[5].starts_with("POST /speak "), "{}", requests[5]);
+        assert!(requests[5].contains("Build failed in main.rs"), "{}", requests[5]);
+        assert!(requests[5].contains("error[E0308]"), "the details block is forwarded: {}", requests[5]);
     }
 
     #[tokio::test]
     async fn a_dead_openai_endpoint_posts_the_sad_bubble() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        // The context read succeeds; only the fallback `/speak` follows.
-        let server = serve(listener, vec!["{}", "{}"]);
+        // The context + animations reads succeed; only the fallback `/speak` follows.
+        let server = serve(listener, vec!["{}", CLIPS_BODY, "{}"]);
 
         let parsed = rules(PROFILE_RULES);
         let backend = OpenaiCompatBackend {
@@ -4765,11 +4915,16 @@ c"));
         assert!(report.failure.is_some(), "the failure is reported: {report:?}");
         assert!(report.actions.is_empty());
         assert!(!flight.is_busy());
-        assert_eq!(requests.len(), 2, "context + only the fallback bubble: {requests:#?}");
+        assert_eq!(
+            requests.len(),
+            3,
+            "context + animations + only the fallback bubble: {requests:#?}"
+        );
         assert!(requests[0].starts_with("GET /context "), "{}", requests[0]);
-        assert!(requests[1].starts_with("POST /speak "), "{}", requests[1]);
-        assert!(requests[1].contains(FALLBACK_SPEECH_TEXT), "{}", requests[1]);
-        assert!(requests[1].contains("\"expression\":\"sad\""), "{}", requests[1]);
+        assert!(requests[1].starts_with("GET /animations "), "{}", requests[1]);
+        assert!(requests[2].starts_with("POST /speak "), "{}", requests[2]);
+        assert!(requests[2].contains(FALLBACK_SPEECH_TEXT), "{}", requests[2]);
+        assert!(requests[2].contains("\"expression\":\"sad\""), "{}", requests[2]);
     }
 
     #[test]
@@ -4839,11 +4994,12 @@ c"));
         let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"It is a cargo command\"}"}}]}"#;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        // GET /context, GET /clipboard, chat completion, then the speak action.
+        // GET /context, GET /animations, GET /clipboard, chat, then the speak action.
         let server = serve(
             listener,
             vec![
                 r#"{"window_title":"char-rig","process_name":"Code.exe","idle_secs":12}"#,
+                CLIPS_BODY,
                 r#"{"ok":true,"text":"cargo test --lib","truncated":false}"#,
                 chat,
                 "{}",
@@ -4879,15 +5035,20 @@ c"));
             .expect("join");
 
         assert!(report.failure.is_none(), "{report:?}");
-        assert_eq!(requests.len(), 4, "context + clipboard + chat + speak: {requests:#?}");
+        assert_eq!(
+            requests.len(),
+            5,
+            "context + animations + clipboard + chat + speak: {requests:#?}"
+        );
         assert!(requests[0].starts_with("GET /context "), "{}", requests[0]);
-        assert!(requests[1].starts_with("GET /clipboard "), "{}", requests[1]);
-        let body = &requests[2];
+        assert!(requests[1].starts_with("GET /animations "), "{}", requests[1]);
+        assert!(requests[2].starts_with("GET /clipboard "), "{}", requests[2]);
+        let body = &requests[3];
         assert!(body.contains("Live avatar context:"), "{body}");
         assert!(body.contains("Code.exe"), "the process reaches the model: {body}");
         assert!(body.contains("idle 12s"), "{body}");
         assert!(body.contains("cargo test --lib"), "the clipboard is inlined: {body}");
-        assert!(requests[3].starts_with("POST /speak "), "{}", requests[3]);
+        assert!(requests[4].starts_with("POST /speak "), "{}", requests[4]);
     }
 
     #[tokio::test]
@@ -4895,8 +5056,8 @@ c"));
         let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"ok\"}"}}]}"#;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        // Context + chat + speak only: no GET /clipboard may appear.
-        let server = serve(listener, vec!["{}", chat, "{}"]);
+        // Context + animations + chat + speak only: no GET /clipboard may appear.
+        let server = serve(listener, vec!["{}", CLIPS_BODY, chat, "{}"]);
 
         let parsed = rules(PROFILE_RULES);
         let backend = OpenaiCompatBackend {
@@ -4926,7 +5087,7 @@ c"));
             .await
             .expect("join");
 
-        assert_eq!(requests.len(), 3, "no clipboard read: {requests:#?}");
+        assert_eq!(requests.len(), 4, "no clipboard read: {requests:#?}");
         assert!(
             !requests.iter().any(|request| request.starts_with("GET /clipboard ")),
             "the clipboard is private until the user asks: {requests:#?}"
@@ -4938,7 +5099,7 @@ c"));
         let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"On it\",\"escalate\":true}"}}]}"#;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        let server = serve(listener, vec!["{}", chat, "{}"]);
+        let server = serve(listener, vec!["{}", CLIPS_BODY, chat, "{}"]);
 
         let parsed = rules(PROFILE_RULES);
         let backend = OpenaiCompatBackend {
@@ -4971,7 +5132,11 @@ c"));
 
         assert!(report.escalated, "escalate:true is carried on the report");
         assert!(report.failure.is_none());
-        assert_eq!(requests.len(), 3, "context + chat + the short ack bubble: {requests:#?}");
+        assert_eq!(
+            requests.len(),
+            4,
+            "context + animations + chat + the short ack bubble: {requests:#?}"
+        );
 
         // The hand-off target is a real CLI backend built from the profile.
         let (name, profile) = ai.cli_fallback().expect("a hermes_cli profile exists");
@@ -4979,6 +5144,238 @@ c"));
         assert_eq!(profile.kind(), "hermes_cli");
         let cli = backend_for(&name, &profile, Duration::from_secs(120)).expect("cli backend");
         assert_eq!(cli.kind(), "hermes_cli");
+    }
+
+    #[test]
+    fn ai_reply_parses_animate_and_wave() {
+        let reply = AiReply::parse(
+            r#"{"speech":"hi","animate":"  wave  ","wave":false}"#,
+        )
+        .expect("json");
+        assert_eq!(reply.animate.as_deref(), Some("wave"), "animate is trimmed");
+        assert_eq!(reply.wave, Some(false), "an explicit false is kept");
+
+        // A blank animate is ignored rather than sent as an empty clip name.
+        let blank = AiReply::parse(r#"{"speech":"hi","animate":"   "}"#).expect("json");
+        assert!(blank.animate.is_none());
+        // Wrong types are ignored, not fatal.
+        let wrong = AiReply::parse(r#"{"speech":"hi","animate":7,"wave":"yes"}"#).expect("json");
+        assert!(wrong.animate.is_none());
+        assert!(wrong.wave.is_none());
+        // Absent keys stay None (not Some(false)).
+        let none = AiReply::parse(r#"{"speech":"hi"}"#).expect("json");
+        assert!(none.animate.is_none());
+        assert!(none.wave.is_none());
+
+        // Clip names keep their case: they belong to the rig, not an enum.
+        let cased = AiReply::parse(r#"{"speech":"hi","animate":"Dance"}"#).expect("json");
+        assert_eq!(cased.animate.as_deref(), Some("Dance"));
+    }
+
+    #[test]
+    fn animate_and_wave_are_ordered_between_the_face_and_the_words() {
+        let reply = AiReply::parse(
+            r#"{"speech":"look","expression":"happy","animate":"dance"}"#,
+        )
+        .expect("json");
+        let actions = reply.actions_with_clips(&["dance".to_string()]);
+        assert_eq!(actions.len(), 3, "{actions:?}");
+        assert!(matches!(&actions[0], AvatarAction::Emote { expression } if expression == "happy"));
+        assert!(
+            matches!(&actions[1], AvatarAction::Animate { name } if name == "dance"),
+            "the gesture plays before the bubble types: {actions:?}"
+        );
+        assert!(matches!(&actions[2], AvatarAction::Speak { .. }));
+
+        let wave = AiReply::parse(r#"{"speech":"hey","wave":true}"#).expect("json");
+        assert_eq!(
+            wave.actions(),
+            vec![
+                AvatarAction::Wave,
+                AvatarAction::Speak { text: "hey".into(), expression: None, details: None }
+            ]
+        );
+
+        // `wave` outranks `animate`: one gesture, never two.
+        let both = AiReply::parse(r#"{"speech":"hey","wave":true,"animate":"dance"}"#).expect("json");
+        assert_eq!(
+            both.actions_with_clips(&["dance".to_string()]),
+            vec![
+                AvatarAction::Wave,
+                AvatarAction::Speak { text: "hey".into(), expression: None, details: None }
+            ]
+        );
+    }
+
+    #[test]
+    fn animate_wave_uses_a_custom_clip_when_the_rig_has_one() {
+        let reply = AiReply::parse(r#"{"speech":"hi","animate":"wave"}"#).expect("json");
+
+        // No clips at all (or a rig whose clip list could not be read): the
+        // built-in gesture, so sprite and procedural models both wave.
+        assert_eq!(reply.actions_with_clips(&[])[0], AvatarAction::Wave);
+        assert_eq!(reply.actions()[0], AvatarAction::Wave, "the clip-less wrapper agrees");
+
+        // A rig that authored its own `wave` clip gets the richer version —
+        // case-insensitively, because clip names are the author's.
+        assert_eq!(
+            reply.actions_with_clips(&["Dance".to_string(), "WAVE".to_string()])[0],
+            AvatarAction::Animate { name: "wave".to_string() }
+        );
+        // A different clip is untouched.
+        let other = AiReply::parse(r#"{"speech":"hi","animate":"dance"}"#).expect("json");
+        assert_eq!(
+            other.actions_with_clips(&[])[0],
+            AvatarAction::Animate { name: "dance".to_string() },
+            "only \"wave\" has a built-in fallback"
+        );
+    }
+
+    /// One dispatch against a fake avatar + fake model, returning the report and
+    /// the raw requests the fake avatar saw.
+    async fn run_openai_case(
+        chat: &'static str,
+        responses: Vec<(u16, &'static str)>,
+        prompt: &'static str,
+    ) -> (DispatchReport, Vec<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut bodies = vec![(200u16, "{}"), (200u16, CLIPS_BODY), (200u16, chat)];
+        bodies.extend(responses);
+        let server = serve_responses(listener, bodies);
+
+        let parsed = rules(PROFILE_RULES);
+        let backend = OpenaiCompatBackend {
+            endpoint: format!("http://{addr}"),
+            ..OpenaiCompatBackend::from_profile(
+                "lfm3-fast",
+                &parsed.ai_profiles["lfm3-fast"],
+                Duration::from_secs(120),
+            )
+            .expect("profile")
+        };
+        let client = build_client();
+        let api_url = format!("http://{addr}");
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        let report = backend
+            .dispatch(DispatchCtx {
+                client: &client,
+                api_url: &api_url,
+                prompt,
+                session: "char-rig-test",
+                flight: guard,
+            })
+            .await;
+        let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
+            .await
+            .expect("join");
+        (report, requests)
+    }
+
+    #[tokio::test]
+    async fn the_openai_backend_executes_a_wave() {
+        let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"hey\",\"wave\":true}"}}]}"#;
+        let (report, requests) = run_openai_case(
+            chat,
+            vec![(200u16, "{}"), (200u16, "{}")],
+            "say hi and wave",
+        )
+        .await;
+
+        assert!(report.failure.is_none(), "{report:?}");
+        assert_eq!(report.actions, vec![AvatarAction::Wave, AvatarAction::Speak {
+            text: "hey".into(),
+            expression: None,
+            details: None,
+        }]);
+        assert_eq!(requests.len(), 5, "context, animations, chat, wave, speak: {requests:#?}");
+        assert!(requests[3].starts_with("POST /wave "), "{}", requests[3]);
+        assert!(requests[4].starts_with("POST /speak "), "{}", requests[4]);
+        assert!(
+            !requests.iter().any(|request| request.starts_with("POST /animate ")),
+            "the built-in wave is not an animate call: {requests:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_openai_backend_executes_a_named_animation_clip() {
+        let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"ok\",\"animate\":\"dance\"}"}}]}"#;
+        let (report, requests) = run_openai_case(
+            chat,
+            vec![(200u16, "{}"), (200u16, "{}")],
+            "do a little dance",
+        )
+        .await;
+
+        assert!(report.failure.is_none(), "{report:?}");
+        assert_eq!(requests.len(), 5, "{requests:#?}");
+        assert!(requests[3].starts_with("POST /animate "), "{}", requests[3]);
+        assert!(requests[3].contains("\"name\":\"dance\""), "{}", requests[3]);
+        assert!(requests[3].contains("\"loop\":false"), "{}", requests[3]);
+        assert!(requests[4].starts_with("POST /speak "), "{}", requests[4]);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_wave_clip_falls_back_to_the_builtin_wave() {
+        // The rig *claims* a `wave` clip in its list, so the watcher sends
+        // POST /animate — and the avatar rejects it (stale clip, renamed rig).
+        // The built-in gesture must still happen, and /speak must still run.
+        let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"hi\",\"animate\":\"wave\"}"}}]}"#;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = serve_responses(
+            listener,
+            vec![
+                (200u16, "{}"),
+                (200u16, CLIPS_BODY),
+                (200u16, chat),
+                (400u16, r#"{"ok":false,"error":"unknown clip"}"#),
+                (200u16, "{}"), // the fallback /wave
+                (200u16, "{}"), // /speak
+            ],
+        );
+
+        let parsed = rules(PROFILE_RULES);
+        let backend = OpenaiCompatBackend {
+            endpoint: format!("http://{addr}"),
+            ..OpenaiCompatBackend::from_profile(
+                "lfm3-fast",
+                &parsed.ai_profiles["lfm3-fast"],
+                Duration::from_secs(120),
+            )
+            .expect("profile")
+        };
+        let client = build_client();
+        let api_url = format!("http://{addr}");
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        let report = backend
+            .dispatch(DispatchCtx {
+                client: &client,
+                api_url: &api_url,
+                prompt: "wave at me",
+                session: "char-rig-test",
+                flight: guard,
+            })
+            .await;
+        let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
+            .await
+            .expect("join");
+
+        assert!(report.failure.is_none(), "a rejected clip is not a failed dispatch: {report:?}");
+        assert_eq!(requests.len(), 6, "{requests:#?}");
+        assert!(requests[3].starts_with("POST /animate "), "{}", requests[3]);
+        assert!(
+            requests[4].starts_with("POST /wave "),
+            "the rejected clip degrades to the built-in wave: {:#?}",
+            requests
+        );
+        assert!(
+            requests[5].starts_with("POST /speak "),
+            "a rejected clip must never swallow the bubble: {:#?}",
+            requests
+        );
     }
 
     #[tokio::test]

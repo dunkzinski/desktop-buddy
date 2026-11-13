@@ -344,14 +344,17 @@ inference targets, and `active_profile` says which one answers:
   LM Studio): `{kind, endpoint, model, api_key?, max_tokens?, timeout_secs?,
   system_prompt?}`. Because the model has no MCP tools — and is deliberately
   never shown the CLI's tool directive — the watcher inlines a fresh
-  `GET /context` snapshot (and the clipboard, only when the user's message asks
-  about it), then sends **one** request with
-  `response_format: {"type":"json_object"}`, parses
-  `{speech, expression?, perch_edge?, window_process?, details?, escalate?}` and
-  performs the actions itself (`POST /perch` → `POST /emote` → `POST /speak`,
-  bubble cut to 180 chars, `details` forwarded). `escalate: true` hands the same
-  prompt to the CLI profile; a dead or slow server gets the sad fallback bubble
-  instead of a stuck **Thinking…**.
+  `GET /context` snapshot and the rig's clip names from `GET /animations` (and
+  the clipboard, only when the user's message asks about it), then sends **one**
+  request with `response_format: {"type":"json_object"}`, parses
+  `{speech, expression?, perch_edge?, window_process?, animate?, wave?, details?,
+  escalate?}` and performs the actions itself (`POST /perch` → `POST /emote` →
+  `POST /wave` or `POST /animate` → `POST /speak`, bubble cut to 180 chars,
+  `details` forwarded). `animate` names one of the rig's clips; `animate: "wave"`
+  with no custom `wave` clip — or `wave: true` — uses the built-in `POST /wave`,
+  so sprite and procedural models both gesture. `escalate: true` (multi-step or
+  external-tool work only) hands the same prompt to the CLI profile; a dead or
+  slow server gets the sad fallback bubble instead of a stuck **Thinking…**.
 * **`hermes_cli`** — the existing agent runner (`{kind, label, cmd,
   timeout_secs?}`), with `{session}` rotation and the headless directive.
 

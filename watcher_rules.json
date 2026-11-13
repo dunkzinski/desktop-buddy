@@ -59,16 +59,16 @@
   "ack_emote": "thinking",
   "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
-  "active_profile": "hermes",
+  "active_profile": "lfm3-fast",
   "ai_profiles": {
     "lfm3-fast": {
       "kind": "openai_compat",
       "label": "LFM3 1.7B (llama.cpp)",
-      "endpoint": "http://127.0.0.1:8080",
-      "model": "lfm3-1.7b",
-      "max_tokens": 320,
-      "timeout_secs": 45,
-      "system_prompt": "You are a tiny, fast assistant riding along on the user's desktop. Answer in one short bubble, never more than two sentences, and escalate when the task needs tools."
+      "endpoint": "http://127.0.0.1:9931",
+      "model": "LiquidAI/LFM3-1.7B-GGUF:Q8_0",
+      "max_tokens": 16384,
+      "timeout_secs": 60,
+      "system_prompt": "You are a tiny, fast desktop avatar assistant. Do not output thinking tags. Respond ONLY with a valid JSON object using this exact schema: {\"speech\": \"short reply under 180 chars\", \"expression\": \"neutral\", \"animate\": \"clip name\"}. Valid expressions: neutral, happy, sad, surprised, thinking, angry. Act yourself: use \"animate\" with a clip name from the list in the context (for example wave), or \"wave\": true for the built-in wave. Add \"escalate\": true ONLY for multi-step or external-tool tasks (clipboard contents, network scan, files, terminal); answer everything else yourself."
     },
     "ollama-fast": {
       "kind": "openai_compat",
