@@ -199,6 +199,13 @@ live in `ModelCtx`; joint angles reported by the page live there too.
 ### Window transparency and hit-testing
 
 * Config (`tauri.conf.json`): `transparent: true`, `decorations: false`,
+  `shadow: false` (no window shadow frame, which on Windows 11 is what draws a
+  faint outline along the screen edge), and `strip_dwm_frame` at setup clears
+  `DWMWA_BORDER_COLOR` (34, `DWMWA_COLOR_NONE`) + `DWMWA_WINDOW_CORNER_PREFERENCE`
+  (33, `DWMWCP_DONOTROUND`) so Windows 11 does not draw its 1 px frame and
+  rounded corners either; `ui/styles.css` also zeroes `margin`/`padding`/
+  `border`/`outline`/`overflow` on `html`, `body` and `canvas` so WebView2 cannot
+  contribute an edge line or a focus ring of its own,
   `alwaysOnTop: true`, `skipTaskbar: true`, `focusable: true`,
   `"withGlobalTauri": true`. No `WS_EX_LAYERED` fiddling — wry handles it.
 * The page publishes the rectangles that must stay interactive
@@ -284,7 +291,7 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `health_probe_urls`, `probe_openai_health`, `ai_health`, `find_on_path`, `hermes_on_path` | the liveness probe behind the panel's dot: a GET of the server's /health then /v1/models with an 800 ms cap → `online` / `offline` (plus the endpoint and error in `detail`); a `hermes_cli` profile reports `status: "cli"` with `reachable` = whether `hermes` resolves on `PATH` |
 | `ai_status_json`, `set_active_ai_profile`, `with_active_profile`, `write_rules_atomically` | the `GET /ai-profiles` body; the switch (validate against the file → rewrite **only** the `active_profile` string so hand-written formatting and key order survive → write a sibling `.json.tmp` and rename, so the rules file is never half-written → re-parse to prove it → re-read the status); an unknown name is an error that lists the valid ones |
 | `do_user_reply_with_profile` | `do_user_reply` plus an optional `profile`, carried in the `user_reply` frame so a chip can pin its own brain |
-| `desktop_context` | Win32 `GetForegroundWindow`/`GetWindowTextW`, `GetWindowThreadProcessId`/`OpenProcess`/`QueryFullProcessImageNameW` (the `process_name`), `GetLastInputInfo`/`GetTickCount64`, `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` for `window_rect` and `EnumWindows` for `visible_windows`, behind `GET /context`; safe defaults off Windows |
+| `desktop_context` | Win32 `GetForegroundWindow`/`GetWindowTextW`, `GetWindowThreadProcessId`/`OpenProcess`/`QueryFullProcessImageNameW` (the `process_name`), `GetLastInputInfo`/`GetTickCount64`, `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` for `window_rect` and `EnumWindows` for `visible_windows`, behind `GET /context`; safe defaults off Windows. The overlay is a full-screen transparent window, so after a drag or a quick-task click *it* owns foreground: `reported_window` drops a foreground whose PID is `std::process::id()` (or whose exe name is `own_process_name`, for an unreadable PID) and reports the front-most other entry from `visible_windows` instead — the same rect an unqualified `POST /perch` perches on — or a blank context when nothing else is on screen |
 | `physical_rect_to_logical`, `primary_scale`, `primary_viewport` | physical px → CSS px via `GetDpiForSystem()/96`, degenerate rects rejected, monitor size in CSS px |
 | `perch_target`, `PerchEdge`, `PERCH_EDGES`, `AvatarBounds` | pure perch geometry: feet on a top/bottom edge, standing beside a left/right edge, `offset` along the edge, clamp to the monitor — unit-tested without Win32; `AvatarBounds` is the art's extent per direction around the root |
 | `tool_perch`, `tool_move` | MCP-side argument validation (`edge`, `look_at`) before any HTTP call |
@@ -299,7 +306,7 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `clock_stamp`, `stamped`, `push_log_line`, `log_watcher_event`, `spawn_log_reader` | `[HH:MM:SS]` local-time stamps (`GetLocalTime`), bounded ring-buffer append, and the two pipe readers that echo every line to the app's stderr |
 | `spawn_watcher`, `supervise_watcher`, `watcher_health`, `start_watcher`, `kill_and_reap` | spawn with `--api-url`, `--rules`, null stdin, piped stdout/stderr, `CREATE_NO_WINDOW`, cwd = exe dir; then `try_wait` polling, crash restart with backoff (parked while off), and a store-under-the-lock handshake that cannot orphan a child during shutdown |
 | `api_port`, `run` | startup |
-| `tests` | 67 unit tests over the event envelope, sequence numbers, the 15-frame history ring buffer, interaction validation, quick replies (trim, caps, bubble dismissal, `user_reply` frame), `session_reset` (frame + bubble dismissal), `quick_tasks` (defaults, file parse, blank-entry filtering, cap, missing/broken fallback), `truncate_chars`, the clipboard contract (read cap + write cap + char boundary), the desktop-context shape, the hotkey grammar (`parse_hotkey`) and the `hotkey` rules lookup, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
+| `tests` | 72 unit tests over the event envelope, `reported_window` / `is_self_foreground` (PID and exe-name matching, the front-most-window fallback and its rect, the blank overlay-alone case), sequence numbers, the 15-frame history ring buffer, interaction validation, quick replies (trim, caps, bubble dismissal, `user_reply` frame), `session_reset` (frame + bubble dismissal), `quick_tasks` (defaults, file parse, blank-entry filtering, cap, missing/broken fallback), `truncate_chars`, the clipboard contract (read cap + write cap + char boundary), the desktop-context shape, the hotkey grammar (`parse_hotkey`) and the `hotkey` rules lookup, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
 
 ### `src-tauri/src/api.rs` (925 lines)
 
@@ -446,7 +453,7 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | File | Responsibility |
 | --- | --- |
 | `ui/index.html` | Lean semantic HTML shell (titlebar with the chat icon, canvas, control panel, inspector container, import chooser, floating command bar, speech bubble with its quick-reply form, toasts) linking `styles.css` and `<script type="module" src="./js/main.js"></script>`; the control panel carries the **Watcher** row and the **AI Brain** row (`#ai-profile-select` + `#ai-health-badge`) |
-| `ui/styles.css` | All CSS rules (titlebar, control panel, rig inspector, import modal, speech bubble + quick reply + thinking state, command bar + chips, the `.ai-row` dropdown and its `.ai-health` dot with `online` / `offline` / `cli` variants, toasts) |
+| `ui/styles.css` | All CSS rules (`html`/`body`/`canvas` reset to zero margin/padding/border/outline/overflow so no edge line or focus ring can appear, titlebar, control panel, rig inspector, import modal, speech bubble + quick reply + thinking state, command bar + chips, the `.ai-row` dropdown and its `.ai-health` dot with `online` / `offline` / `cli` variants, toasts) |
 | `ui/js/ipc.js` | **Leaf** Tauri access: `call`, `listen`, `once`, `isTauri`. Reads `window.__TAURI__` lazily on every call (never cached at module scope) |
 | `ui/js/state.js` | **Leaf** shared state objects (`avatar`, `RT`, `speech`, `gaze`, `viewport`, `watcher`, `ai` — the last mirroring `{active, profiles, health, checked}` for the **AI Brain** row), constants (`EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), helpers, `toast`, `updateStatusUI`, `setExpression`, `snapshot`, `setDirty`, `activeState` (which routes the lip-sync mouth variant through `mouthState`), `blinkActive`, `markManual` |
 | `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset` — the hover head tilt rides on it, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix` — the one world matrix the renderer and the editor both draw through, `partLocalRect` — how each shape type is anchored inside that matrix, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
@@ -786,7 +793,13 @@ floating command bar anchored under the avatar:
   focus). Closing the bar restores click-through.
 * Type a prompt or a task, `Enter` sends it (`notify_reply` → `user_reply`), and
   the bubble immediately shows a **Thinking…** card with the `thinking` face so
-  you can see the task was received before the local model answers. The card can
+  you can see the task was received before the local model answers. The same
+  card covers the *watcher's* own triggers: every one of them acks with
+  `POST /emote {"expression": "thinking"}`, and `bridge.js` turns that emote into
+  `showThinkingForAck()` — except when a real answer is already on screen, which
+  must not be replaced by a spinner. So `drag_end`, `idle_return`,
+  `window_title` and `alert` show the wait too, and all of them inherit the same
+  safety timer.
   never get stuck: the watcher posts a `sad` fallback bubble when the spawned
   agent times out or dies (see `char-rig-watcher.rs`), and `speech.js` keeps a
   `THINKING_TIMEOUT_MS` (125 s) timer as the last resort — it clears the card, sets

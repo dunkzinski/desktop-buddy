@@ -1735,6 +1735,66 @@ pub fn primary_viewport() -> Option<(f64, f64)> {
     None
 }
 
+/// The window `/context` reports as "what the user is looking at".
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReportedWindow {
+    pub window_title: String,
+    pub process_name: String,
+    pub window_rect: Option<WindowRect>,
+}
+
+/// Is this foreground window the overlay itself?
+///
+/// PID is the reliable test (two instances of any exe share a name); the exe
+/// name is the fallback for the odd window whose PID cannot be read. A blank
+/// `self_name` (an exe path we could not resolve) must never match, or every
+/// window would look like ours and `/context` would go blank.
+pub fn is_self_foreground(
+    foreground_pid: Option<u32>,
+    process_name: &str,
+    self_pid: u32,
+    self_name: &str,
+) -> bool {
+    foreground_pid == Some(self_pid)
+        || (!self_name.is_empty() && process_name.eq_ignore_ascii_case(self_name))
+}
+
+/// Pick the window to report, ignoring the overlay itself.
+///
+/// The overlay is a full-screen transparent window: the moment the user drags
+/// the avatar or clicks a quick-task chip, Windows hands it foreground, and a
+/// naive `GetForegroundWindow()` then tells every trigger that the user is
+/// looking at `avatar-desktop.exe` — which poisons the model's context *and*
+/// makes an unqualified `POST /perch` walk to the overlay's own full-screen
+/// rect. When the foreground window is ours, the front-most *other* window is
+/// reported instead; `visible_windows` is already z-ordered front-to-back and
+/// already excludes this process. With nothing else on screen the context is
+/// blank rather than self-referential, so a caller can tell "nothing focused"
+/// from "the overlay is focused".
+pub fn reported_window(
+    foreground: ReportedWindow,
+    foreground_pid: Option<u32>,
+    self_pid: u32,
+    self_name: &str,
+    visible: &[VisibleWindow],
+) -> ReportedWindow {
+    if !is_self_foreground(foreground_pid, &foreground.process_name, self_pid, self_name) {
+        return foreground;
+    }
+    match visible.first() {
+        Some(front) => ReportedWindow {
+            window_title: front.title.clone(),
+            process_name: front.process_name.clone(),
+            window_rect: Some(front.rect),
+        },
+        None => ReportedWindow {
+            window_title: String::new(),
+            process_name: String::new(),
+            window_rect: None,
+        },
+    }
+}
+
 #[cfg(windows)]
 pub fn desktop_context() -> DesktopContext {
     use windows::Win32::System::SystemInformation::GetTickCount64;
@@ -1749,8 +1809,21 @@ pub fn desktop_context() -> DesktopContext {
         let hwnd = GetForegroundWindow();
         let scale = primary_scale();
 
-        let window_title = window_title_of(hwnd);
-        let process_name = foreground_process_name(hwnd);
+        // Read the visible list first: it is both a `DesktopContext` field and
+        // the fallback source when the overlay holds foreground.
+        let visible_windows = visible_windows(scale, MAX_VISIBLE_WINDOWS);
+        let foreground = ReportedWindow {
+            window_title: window_title_of(hwnd),
+            process_name: foreground_process_name(hwnd),
+            window_rect: window_rect_of(hwnd, scale),
+        };
+        let reported = reported_window(
+            foreground,
+            foreground_pid(hwnd),
+            std::process::id(),
+            &own_process_name(),
+            &visible_windows,
+        );
 
         let idle_secs = {
             let mut info = LASTINPUTINFO {
@@ -1768,11 +1841,28 @@ pub fn desktop_context() -> DesktopContext {
             }
         };
 
-        let window_rect = window_rect_of(hwnd, scale);
-        let visible_windows = visible_windows(scale, MAX_VISIBLE_WINDOWS);
-
-        DesktopContext { window_title, process_name, idle_secs, source: "win32", window_rect, visible_windows }
+        DesktopContext {
+            window_title: reported.window_title,
+            process_name: reported.process_name,
+            idle_secs,
+            source: "win32",
+            window_rect: reported.window_rect,
+            visible_windows,
+        }
     }
+}
+
+/// PID that owns `hwnd` (`None` when the window is gone).
+#[cfg(windows)]
+unsafe fn foreground_pid(hwnd: windows::Win32::Foundation::HWND) -> Option<u32> {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    (pid != 0).then_some(pid)
 }
 
 /// Title of `hwnd`, capped at [`MAX_TITLE_CHARS`]; empty for a window without one.
@@ -3389,6 +3479,62 @@ fn start_watcher(ctx: Arc<AppCtx>, app: AppHandle) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Remove the 1 px DWM frame Windows 11 draws around a borderless window.
+///
+/// `decorations: false` + `transparent: true` still leaves the DWM border (and
+/// the rounded corners it draws for that border) visible against a bright
+/// desktop — a thin line along the screen edge that reads as a rendering bug.
+/// `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE` makes the frame fully transparent and
+/// `DWMWCP_DONOTROUND` keeps the corners square, so the overlay is exactly the
+/// pixels WebView2 paints.
+///
+/// Both attributes are Windows 11 only: on Windows 10 `DwmSetWindowAttribute`
+/// answers `E_INVALIDARG`, which is expected and ignored (there is no border to
+/// remove there).
+#[cfg(windows)]
+fn strip_dwm_frame(window: &tauri::WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE,
+        DWMWCP_DONOTROUND,
+    };
+
+    // tauri hands back its own `windows` crate's HWND (0.62); this crate links
+    // 0.58, so only the raw pointer crosses over.
+    let Ok(raw) = window.hwnd() else {
+        log::warn!("no HWND for the overlay: the DWM border stays");
+        return;
+    };
+    if raw.0.is_null() {
+        return;
+    }
+    let hwnd = HWND(raw.0);
+
+    // SAFETY: `hwnd` is a live top-level window owned by this process, and each
+    // call is handed a pointer to a local of exactly the size it is told.
+    unsafe {
+        let border: u32 = DWMWA_COLOR_NONE;
+        if let Err(err) = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &border as *const u32 as *const core::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        ) {
+            log::debug!("DWMWA_BORDER_COLOR unavailable: {err}");
+        }
+
+        let corners = DWMWCP_DONOTROUND;
+        if let Err(err) = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corners as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&corners) as u32,
+        ) {
+            log::debug!("DWMWA_WINDOW_CORNER_PREFERENCE unavailable: {err}");
+        }
+    }
+}
+
 pub fn run() {
     let ctx = Arc::new(AppCtx::new(api_port()));
     let model_ctx = Arc::new(ModelCtx::new());
@@ -3456,6 +3602,8 @@ pub fn run() {
                             window.set_position(tauri::Position::Physical(*monitor.position()));
                         let _ = window.set_size(tauri::Size::Physical(*monitor.size()));
                     }
+                    #[cfg(windows)]
+                    strip_dwm_frame(&window);
                 }
 
                 if let Err(err) = model_ctx.ensure_loaded() {
@@ -3682,6 +3830,97 @@ mod tests {
         if clip.truncated {
             assert_eq!(clip.text.chars().count(), MAX_CLIPBOARD_CHARS);
         }
+    }
+
+    fn window(title: &str, process: &str, x: f64) -> VisibleWindow {
+        VisibleWindow {
+            title: title.to_string(),
+            process_name: process.to_string(),
+            rect: WindowRect { x, y: 0.0, width: 800.0, height: 600.0 },
+        }
+    }
+
+    fn foreground(title: &str, process: &str, x: f64) -> ReportedWindow {
+        ReportedWindow {
+            window_title: title.to_string(),
+            process_name: process.to_string(),
+            window_rect: Some(WindowRect { x, y: 0.0, width: 800.0, height: 600.0 }),
+        }
+    }
+
+    #[test]
+    fn is_self_foreground_matches_on_pid_or_exe_name() {
+        // Same PID wins even if the name could not be read.
+        assert!(is_self_foreground(Some(7), "", 7, "avatar-desktop.exe"));
+        // The name is the fallback, case-insensitively.
+        assert!(is_self_foreground(None, "Avatar-Desktop.EXE", 7, "avatar-desktop.exe"));
+        assert!(is_self_foreground(Some(9), "avatar-desktop.exe", 7, "avatar-desktop.exe"));
+        // Somebody else's window is left alone.
+        assert!(!is_self_foreground(Some(9), "Code.exe", 7, "avatar-desktop.exe"));
+        // An unresolved exe path must never match every window.
+        assert!(!is_self_foreground(None, "", 7, ""));
+        assert!(!is_self_foreground(None, "Code.exe", 7, ""));
+    }
+
+    #[test]
+    fn the_overlay_never_reports_itself_as_the_focused_window() {
+        // After a drag the overlay holds foreground; the user is really in Code.
+        let reported = reported_window(
+            foreground("", "avatar-desktop.exe", 0.0),
+            Some(4242),
+            4242,
+            "avatar-desktop.exe",
+            &[window("char-rig — lib.rs", "Code.exe", 40.0), window("Terminal", "WindowsTerminal.exe", 60.0)],
+        );
+        assert_eq!(reported.process_name, "Code.exe", "the front-most real window wins");
+        assert_eq!(reported.window_title, "char-rig — lib.rs");
+        // `POST /perch` without `window_process` perches on this rect, so the
+        // fallback must carry the *other* window's rect, not the overlay's.
+        assert_eq!(
+            reported.window_rect,
+            Some(WindowRect { x: 40.0, y: 0.0, width: 800.0, height: 600.0 })
+        );
+    }
+
+    #[test]
+    fn an_ordinary_foreground_window_is_reported_untouched() {
+        let original = foreground("Inbox", "OUTLOOK.EXE", 10.0);
+        let reported = reported_window(
+            original.clone(),
+            Some(1234),
+            4242,
+            "avatar-desktop.exe",
+            &[window("char-rig — lib.rs", "Code.exe", 40.0)],
+        );
+        assert_eq!(reported, original, "the fallback only applies to our own window");
+    }
+
+    #[test]
+    fn the_overlay_alone_reports_an_empty_context() {
+        // Nothing else on screen: blank, so a caller can tell "nothing focused"
+        // from "we are focused" instead of being told it is looking at us.
+        let reported = reported_window(
+            foreground("", "avatar-desktop.exe", 0.0),
+            Some(4242),
+            4242,
+            "avatar-desktop.exe",
+            &[],
+        );
+        assert_eq!(reported.window_title, "");
+        assert_eq!(reported.process_name, "");
+        assert_eq!(reported.window_rect, None, "no rect means /perch says so instead of using ours");
+    }
+
+    #[test]
+    fn the_name_fallback_applies_when_the_pid_is_unreadable() {
+        let reported = reported_window(
+            foreground("", "avatar-desktop.exe", 0.0),
+            None,
+            4242,
+            "avatar-desktop.exe",
+            &[window("Terminal", "WindowsTerminal.exe", 60.0)],
+        );
+        assert_eq!(reported.process_name, "WindowsTerminal.exe");
     }
 
     #[test]

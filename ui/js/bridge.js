@@ -15,7 +15,7 @@ import {
   applyModel, refreshModelList, localRotation, wireRegions, avatarBounds,
 } from "./rig.js";
 
-import { speak, hideSpeech } from "./speech.js";
+import { speak, hideSpeech, showThinkingForAck } from "./speech.js";
 
 import { renderInspector, updateInspectorValues, attachStagedPart, updateTimeline } from "./editor.js";
 
@@ -247,7 +247,12 @@ export async function setupEventListeners() {
     const payload = event.payload || {};
     const holdMs = Number(payload.duration_ms) || 0;
     markManual(Math.max(8, holdMs / 1000 + 2));
-    setExpression(payload.expression || "neutral", {
+    const expression = payload.expression || "neutral";
+    // The watcher acks every trigger with a thinking emote; the card is what
+    // makes the wait visible (and arms the THINKING_TIMEOUT_MS safety net) for
+    // drag_end / idle_return / window_title / alert, not just the command bar.
+    if (expression === "thinking") showThinkingForAck();
+    setExpression(expression, {
       durationMs: payload.duration_ms,
       revert: payload.revert || "neutral",
     });

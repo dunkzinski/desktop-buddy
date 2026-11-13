@@ -6,9 +6,18 @@
 
 /* ---------- global reset ---------- */
 * { margin: 0; padding: 0; box-sizing: border-box; }
+/* The overlay must be exactly the pixels we paint: any margin, border, outline
+ * or scrollbar on the root boxes shows up as a line along the screen edge (and
+ * a focus ring around the canvas after a click). */
+html, body, canvas {
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  overflow: hidden;
+}
 html, body {
   width: 100%; height: 100%;
-  overflow: hidden;
   background: transparent;
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
   color: #e8e8ed;

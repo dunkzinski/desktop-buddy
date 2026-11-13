@@ -415,6 +415,22 @@ export function showThinking(label) {
   armThinkingTimeout();
 }
 
+/**
+ * Show the "Thinking…" card for a watcher ack (`POST /emote {"thinking"}`).
+ *
+ * Every watcher trigger — `drag_end`, `idle_return`, `window_title`, `alert` —
+ * acknowledges with a thinking emote, but only the command bar used to raise the
+ * card, so a drag-triggered task looked like nothing had happened. A real bubble
+ * that is already on screen wins: replacing an answer the user is reading with
+ * "Thinking…" would be worse than the missing hint. Returns true when the card
+ * was shown, so the caller can log/skip.
+ */
+export function showThinkingForAck(label) {
+  if (speech.visible && !speech.thinking) return false;
+  showThinking(label);
+  return true;
+}
+
 /** Cancel a pending or visible thinking card (e.g. the submit failed). */
 export function endThinking() {
   expectingThinking = false;
