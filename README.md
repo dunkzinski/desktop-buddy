@@ -342,9 +342,10 @@ inference targets, and `active_profile` says which one answers:
 
 * **`openai_compat`** — any `/v1/chat/completions` server (`llama.cpp`, Ollama,
   LM Studio): `{kind, endpoint, model, api_key?, max_tokens?, timeout_secs?,
-  system_prompt?}`. Because the model has no MCP tools, the watcher inlines a
-  fresh `GET /context` snapshot (and the clipboard, only when the user's message
-  asks about it), then sends **one** request with
+  system_prompt?}`. Because the model has no MCP tools — and is deliberately
+  never shown the CLI's tool directive — the watcher inlines a fresh
+  `GET /context` snapshot (and the clipboard, only when the user's message asks
+  about it), then sends **one** request with
   `response_format: {"type":"json_object"}`, parses
   `{speech, expression?, perch_edge?, window_process?, details?, escalate?}` and
   performs the actions itself (`POST /perch` → `POST /emote` → `POST /speak`,

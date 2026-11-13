@@ -1612,14 +1612,14 @@ impl Trigger {
         Value::Object(map)
     }
 
-    /// Concise context prompt for `--hermes-cmd`.
+    /// Concise description of what happened, without any backend-specific
+    /// instruction.
     ///
-    /// Ends with [`HEADLESS_DIRECTIVE`]: the child has no stdin, so a prompt that
-    /// invites a clarifying question would just stall the turn. A `user_reply`
-    /// puts the user's words verbatim in the middle — that text is the whole
-    /// reason the turn exists — and an `app_rules` hint is appended as
-    /// "Context:" so the tailored advice reaches the model.
-    fn prompt(&self) -> String {
+    /// This is what a **no-tools** model gets: it must not be told to call MCP
+    /// tools it does not have, and — critically — it must not see the word
+    /// "clipboard" when the user did not ask, because that word is what decides
+    /// whether the clipboard is read at all ([`mentions_clipboard`]).
+    fn brief(&self) -> String {
         let focus = if self.window_title.is_empty() {
             "no focused window".to_string()
         } else {
@@ -1639,6 +1639,21 @@ Treat it as their task: do what they asked with your tools, then report the outc
             prompt.push_str(&format!(" Context: {hint}"));
         }
         prompt.push_str(" Decide whether to react (speak, emote, move) or ignore it. ");
+        prompt
+    }
+
+    /// Concise context prompt for the `hermes_cli` backend.
+    ///
+    /// Ends with [`HEADLESS_DIRECTIVE`]: the child has no stdin, so a prompt that
+    /// invites a clarifying question would just stall the turn. A `user_reply`
+    /// puts the user's words verbatim in the middle — that text is the whole
+    /// reason the turn exists — and an `app_rules` hint is appended as
+    /// "Context:" so the tailored advice reaches the model.
+    ///
+    /// Only the CLI runner gets this: [`Trigger::brief`] is what goes to an
+    /// OpenAI-compatible model, which has neither the tools nor the session.
+    fn prompt(&self) -> String {
+        let mut prompt = self.brief();
         prompt.push_str(HEADLESS_DIRECTIVE);
         prompt
     }
@@ -2407,7 +2422,15 @@ async fn handle_trigger(
         return;
     };
 
-    let prompt = trigger.prompt();
+    // Two prompts: the CLI runner needs the headless directive (it has tools and
+    // a session), while a no-tools HTTP model must not be told to call MCP tools
+    // — and must not see the word "clipboard" unless the user said it.
+    let cli_prompt = trigger.prompt();
+    let prompt = if profile.is_cli() {
+        cli_prompt.clone()
+    } else {
+        trigger.brief()
+    };
     // Pick (or rotate) the conversation *before* any dispatch, so an escalated
     // hand-off lands in a session that respects max_session_turns.
     let session_id = {
@@ -2465,7 +2488,7 @@ async fn handle_trigger(
         .dispatch(DispatchCtx {
             client,
             api_url: &config.api_url,
-            prompt: &prompt,
+            prompt: &cli_prompt,
             session: &session_id,
             flight: guard,
         })
@@ -4782,6 +4805,33 @@ c"));
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         assert!(response.ends_with("{\"ok\":true}"), "{response}");
         server.join().expect("server");
+    }
+
+    #[test]
+    fn only_the_cli_prompt_carries_the_headless_directive() {
+        let reply = Trigger {
+            event_type: "user_reply".to_string(),
+            detail: "the user replied in the speech bubble: \"how is my build doing?\"".to_string(),
+            text: Some("how is my build doing?".to_string()),
+            ..Trigger::default()
+        };
+        let brief = reply.brief();
+        let cli = reply.prompt();
+
+        // The environment model gets the situation, nothing else: no MCP tools
+        // to call and — the bug this pins down — no "clipboard" word that would
+        // make the watcher read the clipboard for an unrelated question.
+        assert!(!brief.contains("tool_search"), "{brief}");
+        assert!(!brief.to_lowercase().contains("clipboard"), "{brief}");
+        assert!(!mentions_clipboard(&brief), "the clipboard must not be read here");
+        assert_eq!(cli, format!("{brief}{HEADLESS_DIRECTIVE}"), "the CLI prompt is the brief plus the directive");
+
+        // An explicit question still counts.
+        let asked = Trigger {
+            text: Some("what is on my clipboard?".to_string()),
+            ..Trigger::default()
+        };
+        assert!(mentions_clipboard(&asked.brief()));
     }
 
     #[tokio::test]
