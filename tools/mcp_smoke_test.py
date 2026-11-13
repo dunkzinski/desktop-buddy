@@ -27,6 +27,7 @@ EXPECTED_TOOLS = {
     "avatar_speak": ["text"],
     "avatar_emote": ["expression"],
     "avatar_move": ["x", "y"],
+    "avatar_perch": ["edge"],
     "avatar_wave": [],
     "avatar_pose": ["joints"],
     "avatar_get_context": [],
@@ -37,7 +38,7 @@ EXPECTED_TOOLS = {
     "avatar_list_animations": [],
     "avatar_animate": ["name"],
 }
-EXPECTED_TOOL_COUNT = 12
+EXPECTED_TOOL_COUNT = 13
 
 failures = []
 checks = 0
@@ -195,6 +196,21 @@ def main():
         check(json.loads(text_of(no_clip))["kind"] == "invalid_arguments", "animate without a clip name rejected locally")
         bad_loop = mcp.call("avatar_animate", {"name": "stop", "loop": True})
         check(json.loads(text_of(bad_loop))["kind"] == "invalid_arguments", "loop overrides rejected when stopping")
+        fail_perch = mcp.call("avatar_perch", {"edge": "middle"})
+        perch_payload = json.loads(text_of(fail_perch))
+        check(fail_perch["result"]["isError"] is True, "avatar_perch with a bad edge is an isError result")
+        check(perch_payload["kind"] == "invalid_arguments", "bad perch edge reports invalid_arguments")
+        check(
+            "top_left" in json.dumps(perch_payload),
+            "the perch error lists the accepted edges",
+            perch_payload.get("error"),
+        )
+        no_edge = mcp.call("avatar_perch", {})
+        check(json.loads(text_of(no_edge))["kind"] == "invalid_arguments", "perch without an edge rejected locally")
+        bad_offset = mcp.call("avatar_perch", {"edge": "left", "offset": "12"})
+        check(json.loads(text_of(bad_offset))["kind"] == "invalid_arguments", "non-numeric perch offset rejected locally")
+        bad_look = mcp.call("avatar_move", {"x": 1, "y": 2, "look_at": [1, 2, 3]})
+        check(json.loads(text_of(bad_look))["kind"] == "invalid_arguments", "malformed look_at rejected locally")
         no_text = mcp.call("avatar_set_clipboard", {})
         check(json.loads(text_of(no_text))["kind"] == "invalid_arguments", "set_clipboard without text rejected locally")
 
@@ -220,6 +236,7 @@ def main():
         cases = [
             ("avatar_wave", {}),
             ("avatar_move", {"x": 700, "y": 500}),
+            ("avatar_perch", {"edge": "top_left"}),
             ("avatar_speak", {"text": "Hello from the MCP smoke test.", "expression": "happy", "duration_ms": 3000}),
             ("avatar_emote", {"expression": "surprised", "duration_ms": 1500}),
             ("avatar_pose", {"joints": {"root": {"rotation": 0.1}}}),
@@ -290,6 +307,20 @@ def main():
             check("idle_secs" in context_body, "context includes idle_secs")
             check("avatar_state" in context_body, "context includes avatar_state")
             check("recent_events" in context_body, "context includes the recent event buffer")
+            context_json = json.loads(context_body[context_body.index("{"):])
+            check("window_rect" in context_json, "context includes the foreground window_rect")
+            check("visible_windows" in context_json, "context includes visible_windows")
+            check(isinstance(context_json["visible_windows"], list), "visible_windows is an array")
+            check(len(context_json["visible_windows"]) <= 5, "visible_windows is capped at 5")
+            check("Foreground window rect" in context_body, "the summary names the foreground rect")
+            check("Visible windows" in context_body, "the summary lists the visible windows")
+            if isinstance(context_json.get("visible_windows"), list) and context_json["visible_windows"]:
+                first = context_json["visible_windows"][0]
+                check(
+                    {"title", "process_name", "rect"} <= set(first),
+                    "a visible window carries title/process_name/rect",
+                    sorted(first),
+                )
             check("Recent events" in context_body, "context summary mentions the recent events")
             check(context_body.startswith("User is in"), "context opens with a human summary")
 

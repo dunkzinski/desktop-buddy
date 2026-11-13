@@ -106,6 +106,18 @@ pub struct AvatarState {
     /// Reported by the page: is the mouth currently animating?
     #[serde(default)]
     pub talking: bool,
+    /// True while the avatar was sent to a window border by `POST /perch`.
+    /// The page pauses idle wandering and aims the gaze at `perch_rect`.
+    #[serde(default)]
+    pub perched: bool,
+    /// The window the avatar is perched on, in CSS px (primary-monitor space).
+    #[serde(default)]
+    pub perch_rect: Option<WindowRect>,
+    /// Explicit gaze target from `POST /move {"look_at": [x, y]}`; cleared by a
+    /// later move/perch/state change. The page looks here instead of its
+    /// default target.
+    #[serde(default)]
+    pub look_at: Option<(f64, f64)>,
 }
 
 impl AvatarState {
@@ -117,7 +129,19 @@ impl AvatarState {
             expression: "neutral".to_string(),
             revision: 0,
             talking: false,
+            perched: false,
+            perch_rect: None,
+            look_at: None,
         }
+    }
+
+    /// Drop every spatial directive: called by anything that moves the avatar
+    /// on its own (`/move`, `POST /state`, a drag) so a stale perch never keeps
+    /// the wander pause or the gaze pinned to a window the avatar left.
+    pub fn clear_perch(&mut self) {
+        self.perched = false;
+        self.perch_rect = None;
+        self.look_at = None;
     }
 }
 
@@ -203,7 +227,63 @@ pub struct AppCtx {
     /// buffer of its output and where it came from. `request_shutdown` takes
     /// the child out and kills it, so no watcher is ever left behind.
     pub watcher: Mutex<WatcherState>,
+    /// How far the avatar's painted artwork reaches from its root, in CSS px,
+    /// reported by the page with `report_state`. `POST /perch` needs it to land
+    /// the feet on a window edge; the fallback applies only before the first
+    /// report.
+    pub bounds: Mutex<AvatarBounds>,
 }
+
+/// How far the avatar's painted artwork reaches from its root, per direction.
+///
+/// The root is the bone origin the avatar is positioned by, and it is rarely
+/// the centre of the art (most rigs carry the body above the hips), so a single
+/// half-size would leave the feet floating above a perching edge. These four
+/// extents let `perch_target` put the *pixels* on the border.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub struct AvatarBounds {
+    pub left: f64,
+    pub right: f64,
+    pub up: f64,
+    pub down: f64,
+}
+
+impl AvatarBounds {
+    /// Extents for artwork that *is* centred on the root.
+    pub const fn symmetric(half: (f64, f64)) -> Self {
+        Self { left: half.0, right: half.0, up: half.1, down: half.1 }
+    }
+
+    /// Clamp to something usable: negative extents are nonsense and a page
+    /// reporting NaN must not poison a perch target.
+    pub fn sanitized(self) -> Self {
+        let clean = |value: f64| {
+            if value.is_finite() {
+                value.clamp(0.0, 4000.0)
+            } else {
+                0.0
+            }
+        };
+        Self {
+            left: clean(self.left),
+            right: clean(self.right),
+            up: clean(self.up),
+            down: clean(self.down),
+        }
+    }
+
+    pub fn width(self) -> f64 {
+        self.left + self.right
+    }
+
+    pub fn height(self) -> f64 {
+        self.up + self.down
+    }
+}
+
+/// Bounds assumed before the page reports its real size (see
+/// [`AppCtx::bounds`]); roughly the shipped models' footprint.
+pub const DEFAULT_BOUNDS: AvatarBounds = AvatarBounds::symmetric((70.0, 90.0));
 
 impl AppCtx {
     fn new(api_port: u16) -> Self {
@@ -226,6 +306,7 @@ impl AppCtx {
             api_url: Mutex::new(String::new()),
             shutdown_tx: Mutex::new(None),
             watcher: Mutex::new(WatcherState::new()),
+            bounds: Mutex::new(DEFAULT_BOUNDS),
         }
     }
 
@@ -632,6 +713,9 @@ fn set_avatar_position(
         let mut avatar = lock_or_recover(&ctx.avatar);
         avatar.target_position = (x, y);
         avatar.state = "walking".to_string();
+        // The page calls this when *it* starts a walk (W / centre / random
+        // wander): those are manual moves, so a perch no longer applies.
+        avatar.clear_perch();
     }
     publish(&app, &ctx);
     Ok(())
@@ -679,6 +763,9 @@ fn report_state(
     joints: Option<BTreeMap<String, f64>>,
     talking: Option<bool>,
     speech: Option<bool>,
+    // How far the painted artwork reaches from the root, per direction.
+    // `POST /perch` uses it to land the art on a window edge.
+    bounds: Option<AvatarBounds>,
     ctx: tauri::State<'_, Arc<AppCtx>>,
     model: tauri::State<'_, Arc<ModelCtx>>,
 ) -> Result<(), String> {
@@ -686,6 +773,12 @@ fn report_state(
     let (tx, ty) = target_position;
     if !x.is_finite() || !y.is_finite() || !tx.is_finite() || !ty.is_finite() {
         return Err("positions must be finite numbers".to_string());
+    }
+    if let Some(reported) = bounds {
+        let reported = reported.sanitized();
+        if reported.width() > 0.0 && reported.height() > 0.0 {
+            *lock_or_recover(&ctx.bounds) = reported;
+        }
     }
     // Did the page-driven transition (idle -> walking, mouth starts/stops)
     // actually change anything observable? Only then is an SSE frame worth it;
@@ -1378,6 +1471,160 @@ pub struct DesktopContext {
     pub idle_secs: u64,
     /// Which probe produced the values: `"win32"` or `"unsupported"`.
     pub source: &'static str,
+    /// Bounds of the foreground window in CSS pixels (primary-monitor space),
+    /// so `POST /perch` and the overlay agree on coordinates.
+    pub window_rect: Option<WindowRect>,
+    /// Up to [`MAX_VISIBLE_WINDOWS`] top-level windows, front-most first.
+    pub visible_windows: Vec<VisibleWindow>,
+}
+
+/// A rectangle in CSS pixels, relative to the primary monitor's top-left.
+///
+/// The WebView2 overlay covers that monitor and draws in CSS px, so every
+/// coordinate an agent sees (avatar position, window rects) is in this space.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct WindowRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl WindowRect {
+    pub fn right(&self) -> f64 {
+        self.x + self.width
+    }
+
+    pub fn bottom(&self) -> f64 {
+        self.y + self.height
+    }
+
+    pub fn center(&self) -> (f64, f64) {
+        (self.x + self.width / 2.0, self.y + self.height / 2.0)
+    }
+}
+
+/// One top-level window in `GET /context.visible_windows`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct VisibleWindow {
+    pub title: String,
+    pub process_name: String,
+    pub rect: WindowRect,
+}
+
+/// How many `visible_windows` entries `/context` reports: an agent needs the
+/// windows it might perch on, not an inventory of the desktop.
+pub const MAX_VISIBLE_WINDOWS: usize = 5;
+
+/// The edges `POST /perch` accepts.
+pub const PERCH_EDGES: [&str; 5] = ["top_left", "top_right", "left", "right", "bottom"];
+
+/// Which border of a window the avatar perches on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerchEdge {
+    /// On the top edge, at the window's left corner.
+    TopLeft,
+    /// On the top edge, at the window's right corner.
+    TopRight,
+    /// Standing just outside the left edge.
+    Left,
+    /// Standing just outside the right edge.
+    Right,
+    /// Hanging under the bottom edge.
+    Bottom,
+}
+
+impl PerchEdge {
+    /// Parse an API value; the message lists what is accepted so a 400 is
+    /// actionable without reading the docs.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "top_left" => Ok(Self::TopLeft),
+            "top_right" => Ok(Self::TopRight),
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            "bottom" => Ok(Self::Bottom),
+            other => Err(format!(
+                "invalid edge {other:?}; expected one of {PERCH_EDGES:?}"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TopLeft => "top_left",
+            Self::TopRight => "top_right",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Bottom => "bottom",
+        }
+    }
+}
+
+/// Physical window rect (Win32 `RECT`, physical px) → logical CSS rect.
+///
+/// `scale` is the primary monitor's DPI factor (physical px per CSS px), the
+/// same ratio the WebView2 page reports as `devicePixelRatio`. A degenerate
+/// rect returns `None`: minimized windows report 0×0 at (-32000, -32000) and
+/// would otherwise place the avatar a long way off screen.
+pub fn physical_rect_to_logical(
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    scale: f64,
+) -> Option<WindowRect> {
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let width = (right - left) as f64 / scale;
+    let height = (bottom - top) as f64 / scale;
+    if !(width > 0.0) || !(height > 0.0) {
+        return None;
+    }
+    Some(WindowRect {
+        x: left as f64 / scale,
+        y: top as f64 / scale,
+        width,
+        height,
+    })
+}
+
+/// Where the avatar's **root** goes to perch on `edge` of `rect`.
+///
+/// `bounds` is how far the painted art reaches from that root, so the artwork —
+/// not the root — touches the border: the feet land on the top/bottom edge and
+/// the body stands just outside the left/right edge. `offset` slides the avatar
+/// along its edge (x for top/bottom, y for left/right). The result is clamped to
+/// the primary monitor so a window at the screen edge cannot push the avatar out
+/// of view; `viewport` `None` skips the clamp (non-Windows builds).
+pub fn perch_target(
+    rect: &WindowRect,
+    edge: PerchEdge,
+    bounds: AvatarBounds,
+    offset: f64,
+    viewport: Option<(f64, f64)>,
+) -> (f64, f64) {
+    let b = bounds.sanitized();
+    let offset = if offset.is_finite() { offset } else { 0.0 };
+    let (cx, cy) = rect.center();
+    // The art spans [x-left, x+right] and [y-up, y+down] around the root, so
+    // each edge places the SIDE THAT FACES IT on the border: the feet (down) on
+    // a top border, the head (up) under a bottom one, the right flank on a left
+    // border and the left flank on a right one.
+    let (x, y) = match edge {
+        PerchEdge::TopLeft => (rect.x + b.left + offset, rect.y - b.down),
+        PerchEdge::TopRight => (rect.right() - b.right + offset, rect.y - b.down),
+        PerchEdge::Left => (rect.x - b.right, cy + offset),
+        PerchEdge::Right => (rect.right() + b.left, cy + offset),
+        PerchEdge::Bottom => (cx + offset, rect.bottom() + b.up),
+    };
+    let Some((vw, vh)) = viewport else {
+        return (x, y);
+    };
+    // A viewport smaller than the avatar cannot honour both bounds; centring is
+    // the least surprising result.
+    let x = if vw > b.width() { x.clamp(b.left, vw - b.right) } else { vw / 2.0 };
+    let y = if vh > b.height() { y.clamp(b.up, vh - b.down) } else { vh / 2.0 };
+    (x, y)
 }
 
 /// Longest window title we copy out of the foreground window.
@@ -1387,13 +1634,51 @@ const MAX_TITLE_CHARS: usize = 512;
 #[cfg(windows)]
 const MAX_PROCESS_PATH_CHARS: usize = 1024;
 
+/// Physical px per CSS px on the primary monitor (`devicePixelRatio`).
+#[cfg(windows)]
+pub fn primary_scale() -> f64 {
+    use windows::Win32::UI::HiDpi::GetDpiForSystem;
+
+    // SAFETY: GetDpiForSystem only reads the system DPI.
+    let dpi = unsafe { GetDpiForSystem() };
+    if dpi == 0 {
+        1.0
+    } else {
+        dpi as f64 / 96.0
+    }
+}
+
+#[cfg(not(windows))]
+pub fn primary_scale() -> f64 {
+    1.0
+}
+
+/// The primary monitor's size in CSS px; `None` when it cannot be read.
+#[cfg(windows)]
+pub fn primary_viewport() -> Option<(f64, f64)> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    let scale = primary_scale();
+    // SAFETY: GetSystemMetrics only reads display metrics.
+    let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    let (w, h) = (w as f64 / scale, h as f64 / scale);
+    if w > 0.0 && h > 0.0 {
+        Some((w, h))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(windows))]
+pub fn primary_viewport() -> Option<(f64, f64)> {
+    None
+}
+
 #[cfg(windows)]
 pub fn desktop_context() -> DesktopContext {
     use windows::Win32::System::SystemInformation::GetTickCount64;
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
     // SAFETY: every call below is a read-only query of process/OS state. The
     // buffers we hand over are owned by this function and sized before use;
@@ -1401,21 +1686,9 @@ pub fn desktop_context() -> DesktopContext {
     // UTF-16 units they may write. The process handle is closed in all paths.
     unsafe {
         let hwnd = GetForegroundWindow();
+        let scale = primary_scale();
 
-        let window_title = {
-            let length = GetWindowTextLengthW(hwnd);
-            if length <= 0 {
-                String::new()
-            } else {
-                let capacity = (length as usize).saturating_add(1).min(MAX_TITLE_CHARS);
-                let mut buffer = vec![0u16; capacity];
-                let written = GetWindowTextW(hwnd, &mut buffer);
-                let written = written.max(0) as usize;
-                buffer.truncate(written);
-                String::from_utf16_lossy(&buffer)
-            }
-        };
-
+        let window_title = window_title_of(hwnd);
         let process_name = foreground_process_name(hwnd);
 
         let idle_secs = {
@@ -1434,8 +1707,144 @@ pub fn desktop_context() -> DesktopContext {
             }
         };
 
-        DesktopContext { window_title, process_name, idle_secs, source: "win32" }
+        let window_rect = window_rect_of(hwnd, scale);
+        let visible_windows = visible_windows(scale, MAX_VISIBLE_WINDOWS);
+
+        DesktopContext { window_title, process_name, idle_secs, source: "win32", window_rect, visible_windows }
     }
+}
+
+/// Title of `hwnd`, capped at [`MAX_TITLE_CHARS`]; empty for a window without one.
+#[cfg(windows)]
+unsafe fn window_title_of(hwnd: windows::Win32::Foundation::HWND) -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
+
+    let length = GetWindowTextLengthW(hwnd);
+    if length <= 0 {
+        return String::new();
+    }
+    let capacity = (length as usize).saturating_add(1).min(MAX_TITLE_CHARS);
+    let mut buffer = vec![0u16; capacity];
+    let written = GetWindowTextW(hwnd, &mut buffer).max(0) as usize;
+    buffer.truncate(written);
+    String::from_utf16_lossy(&buffer)
+}
+
+/// Bounds of `hwnd` in CSS px.
+///
+/// `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` is preferred because it
+/// excludes the invisible resize border Windows 10+ reports from
+/// `GetWindowRect`; if DWM cannot answer (a destroyed window, a fully
+/// software-composited session) the plain rect is used.
+#[cfg(windows)]
+unsafe fn window_rect_of(hwnd: windows::Win32::Foundation::HWND, scale: f64) -> Option<WindowRect> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    if hwnd.0.is_null() {
+        return None;
+    }
+
+    let mut rect = RECT::default();
+    let mut have_rect = DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_EXTENDED_FRAME_BOUNDS,
+        &mut rect as *mut _ as *mut core::ffi::c_void,
+        std::mem::size_of::<RECT>() as u32,
+    )
+    .is_ok();
+
+    if !have_rect {
+        have_rect = GetWindowRect(hwnd, &mut rect).is_ok();
+    }
+    if !have_rect {
+        return None;
+    }
+
+    physical_rect_to_logical(rect.left, rect.top, rect.right, rect.bottom, scale)
+}
+
+/// Is the window cloaked (a UWP app on another virtual desktop, a suspended
+/// app)? Cloaked windows are visible to `EnumWindows` but not on screen.
+#[cfg(windows)]
+unsafe fn is_cloaked(hwnd: windows::Win32::Foundation::HWND) -> bool {
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+
+    let mut cloaked: u32 = 0;
+    let ok = DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_CLOAKED,
+        &mut cloaked as *mut _ as *mut core::ffi::c_void,
+        std::mem::size_of::<u32>() as u32,
+    )
+    .is_ok();
+    ok && cloaked != 0
+}
+
+/// Executable name of this process, so the overlay never lists itself.
+#[cfg(windows)]
+fn own_process_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .unwrap_or_default()
+}
+
+/// The front-most visible top-level windows, up to `limit`.
+///
+/// `EnumWindows` walks in z-order (top first). A window is kept when it is
+/// visible, not minimized, not cloaked, has a title, owns a readable process
+/// name that is not ours, and has a non-empty rect — the same set a person
+/// would call "the windows I can see".
+#[cfg(windows)]
+unsafe fn visible_windows(scale: f64, limit: usize) -> Vec<VisibleWindow> {
+    use windows::Win32::Foundation::{BOOL, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, IsIconic, IsWindowVisible};
+
+    struct Acc {
+        out: Vec<VisibleWindow>,
+        scale: f64,
+        own: String,
+        limit: usize,
+    }
+
+    unsafe extern "system" fn callback(
+        hwnd: windows::Win32::Foundation::HWND,
+        lparam: LPARAM,
+    ) -> BOOL {
+        // SAFETY: `lparam` is the `&mut Acc` `EnumWindows` was called with; the
+        // callback outlives that borrow for the duration of the enumeration.
+        let acc = &mut *(lparam.0 as *mut Acc);
+        if acc.out.len() >= acc.limit {
+            return BOOL(0); // stop: the cap is reached
+        }
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() || is_cloaked(hwnd) {
+            return BOOL(1);
+        }
+        let title = window_title_of(hwnd);
+        if title.trim().is_empty() {
+            return BOOL(1);
+        }
+        let process_name = foreground_process_name(hwnd);
+        if process_name.is_empty() || process_name.eq_ignore_ascii_case(&acc.own) {
+            return BOOL(1);
+        }
+        let Some(rect) = window_rect_of(hwnd, acc.scale) else {
+            return BOOL(1);
+        };
+        acc.out.push(VisibleWindow { title, process_name, rect });
+        BOOL(1)
+    }
+
+    let mut acc = Acc {
+        out: Vec::with_capacity(limit),
+        scale,
+        own: own_process_name(),
+        limit,
+    };
+    let _ = EnumWindows(Some(callback), LPARAM(&mut acc as *mut Acc as isize));
+    acc.out
 }
 
 /// `GetWindowThreadProcessId` → `OpenProcess` → `QueryFullProcessImageNameW`,
@@ -1491,6 +1900,8 @@ pub fn desktop_context() -> DesktopContext {
         process_name: String::new(),
         idle_secs: 0,
         source: "unsupported",
+        window_rect: None,
+        visible_windows: Vec::new(),
     }
 }
 
@@ -3218,6 +3629,179 @@ mod tests {
         assert_eq!(hotkey_spec(Some(&path)), DEFAULT_HOTKEY);
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /* ---------- window geometry / perch ---------- */
+
+    #[test]
+    fn physical_rect_converts_to_css_pixels() {
+        // 1x display: identity.
+        let rect = physical_rect_to_logical(100, 200, 900, 800, 1.0).expect("rect");
+        assert_eq!(rect, WindowRect { x: 100.0, y: 200.0, width: 800.0, height: 600.0 });
+
+        // 2x display: every value is halved, so the rect lines up with the
+        // WebView2 overlay's CSS coordinate space.
+        let hidpi = physical_rect_to_logical(200, 100, 1000, 700, 2.0).expect("rect");
+        assert_eq!(hidpi, WindowRect { x: 100.0, y: 50.0, width: 400.0, height: 300.0 });
+
+        // A nonsense scale must not produce infinities.
+        let guarded = physical_rect_to_logical(0, 0, 96, 96, 0.0).expect("rect");
+        assert_eq!(guarded, WindowRect { x: 0.0, y: 0.0, width: 96.0, height: 96.0 });
+        let negative = physical_rect_to_logical(0, 0, 96, 96, -2.0).expect("rect");
+        assert_eq!(negative.width, 96.0);
+    }
+
+    #[test]
+    fn degenerate_rects_are_rejected() {
+        // Minimized windows report 0x0 at -32000; a zero-width rect is not a
+        // window anyone can perch on.
+        assert!(physical_rect_to_logical(-32000, -32000, -32000, -32000, 1.0).is_none());
+        assert!(physical_rect_to_logical(10, 10, 10, 400, 1.0).is_none());
+        assert!(physical_rect_to_logical(10, 10, 400, 10, 1.0).is_none());
+        // Inverted rects are degenerate too.
+        assert!(physical_rect_to_logical(400, 400, 10, 10, 1.0).is_none());
+    }
+
+    #[test]
+    fn perch_edges_parse_and_reject() {
+        assert_eq!(PerchEdge::parse("top_left"), Ok(PerchEdge::TopLeft));
+        assert_eq!(PerchEdge::parse("  TOP-RIGHT "), Ok(PerchEdge::TopRight));
+        assert_eq!(PerchEdge::parse("left"), Ok(PerchEdge::Left));
+        assert_eq!(PerchEdge::parse("Right"), Ok(PerchEdge::Right));
+        assert_eq!(PerchEdge::parse("bottom"), Ok(PerchEdge::Bottom));
+
+        let err = PerchEdge::parse("middle").expect_err("unknown edge");
+        assert!(err.contains("invalid edge"), "{err}");
+        assert!(err.contains("top_left"), "the message lists the accepted values: {err}");
+        assert!(PerchEdge::parse("").is_err());
+    }
+
+    #[test]
+    fn perch_target_puts_the_feet_on_the_edge() {
+        // Far enough from the screen edges that no clamping happens: this test
+        // is about the geometry, not the clamp (see below for that).
+        let rect = WindowRect { x: 300.0, y: 300.0, width: 800.0, height: 500.0 };
+        let half = AvatarBounds::symmetric((70.0, 90.0));
+        let viewport = Some((1920.0, 1080.0));
+
+        // Standing on the top border: the avatar's bottom edge touches y=300.
+        let (x, y) = perch_target(&rect, PerchEdge::TopLeft, half, 0.0, viewport);
+        assert_eq!((x, y), (370.0, 210.0));
+        assert_eq!(y + half.down, rect.y, "feet on the top edge");
+
+        // …and at the right corner.
+        let (x, _) = perch_target(&rect, PerchEdge::TopRight, half, 0.0, viewport);
+        assert_eq!(x, rect.right() - half.right);
+
+        // Beside the left edge, vertically centred.
+        let (x, y) = perch_target(&rect, PerchEdge::Left, half, 0.0, viewport);
+        assert_eq!(x, rect.x - half.right);
+        assert_eq!(y, rect.center().1);
+
+        // Beside the right edge.
+        let (x, _) = perch_target(&rect, PerchEdge::Right, half, 0.0, viewport);
+        assert_eq!(x, rect.right() + half.left);
+
+        // Hanging under the bottom edge.
+        let (_, y) = perch_target(&rect, PerchEdge::Bottom, half, 0.0, viewport);
+        assert_eq!(y, rect.bottom() + half.up);
+    }
+
+    #[test]
+    fn perch_offset_slides_along_the_edge_only() {
+        let rect = WindowRect { x: 300.0, y: 300.0, width: 800.0, height: 500.0 };
+        let half = AvatarBounds::symmetric((70.0, 90.0));
+        let viewport = Some((1920.0, 1080.0));
+
+        let (x, y) = perch_target(&rect, PerchEdge::TopLeft, half, 40.0, viewport);
+        assert_eq!((x, y), (410.0, 210.0), "offset moves along the top edge");
+        let (x, y) = perch_target(&rect, PerchEdge::Right, half, 40.0, viewport);
+        assert_eq!((x, y), (1170.0, 590.0), "offset moves down the right edge");
+        // Non-finite offsets are ignored rather than poisoning the target.
+        let (x, _) = perch_target(&rect, PerchEdge::TopLeft, half, f64::NAN, viewport);
+        assert_eq!(x, 370.0);
+    }
+
+    #[test]
+    fn perch_target_clamps_to_the_viewport() {
+        let half = AvatarBounds::symmetric((70.0, 90.0));
+        let viewport = Some((1920.0, 1080.0));
+
+        // A window flush with the screen's top-left: standing on that border
+        // would put the avatar's head off screen, so the target is pushed down
+        // and right until the whole art fits.
+        let corner = WindowRect { x: 0.0, y: 0.0, width: 400.0, height: 300.0 };
+        let (x, y) = perch_target(&corner, PerchEdge::TopLeft, half, 0.0, viewport);
+        assert_eq!((x, y), (70.0, 90.0));
+
+        // Off the right and bottom edge of the monitor.
+        let far = WindowRect { x: 1800.0, y: 900.0, width: 400.0, height: 300.0 };
+        let (x, y) = perch_target(&far, PerchEdge::Bottom, half, 0.0, viewport);
+        assert_eq!(x, 1920.0 - half.right);
+        assert_eq!(y, 1080.0 - half.down);
+
+        // No viewport (non-Windows): raw math, no clamp.
+        let (x, y) = perch_target(&corner, PerchEdge::TopLeft, half, 0.0, None);
+        assert_eq!((x, y), (70.0, -90.0));
+
+        // A monitor smaller than the avatar centres instead of inverting bounds.
+        let tiny = perch_target(&corner, PerchEdge::TopLeft, half, 0.0, Some((100.0, 100.0)));
+        assert_eq!(tiny, (50.0, 50.0));
+    }
+
+    #[test]
+    fn perch_uses_the_arts_real_extents_around_the_root() {
+        // The root sits near the hips: 144 px of body above it, 74 px below.
+        // Half the total height would leave the feet 35 px above the border.
+        let bounds = AvatarBounds { left: 70.0, right: 70.0, up: 144.0, down: 74.0 };
+        let rect = WindowRect { x: 290.0, y: 300.0, width: 900.0, height: 400.0 };
+        let viewport = Some((1920.0, 1080.0));
+
+        let (x, y) = perch_target(&rect, PerchEdge::TopLeft, bounds, 0.0, viewport);
+        assert_eq!(y + bounds.down, rect.y, "the feet touch the top border");
+        assert_eq!(x, rect.x + bounds.left);
+
+        let (x, y) = perch_target(&rect, PerchEdge::Bottom, bounds, 0.0, viewport);
+        assert_eq!(y - bounds.up, rect.bottom(), "the head touches the bottom border");
+        assert_eq!(x, rect.center().0);
+
+        let (x, _) = perch_target(&rect, PerchEdge::Left, bounds, 0.0, viewport);
+        assert_eq!(x + bounds.right, rect.x, "the right flank touches the left border");
+        let (x, _) = perch_target(&rect, PerchEdge::Right, bounds, 0.0, viewport);
+        assert_eq!(x - bounds.left, rect.right(), "the left flank touches the right border");
+    }
+
+    #[test]
+    fn avatar_bounds_sanitize_nonsense() {
+        let wild = AvatarBounds { left: f64::NAN, right: -20.0, up: f64::INFINITY, down: 1e9 }
+            .sanitized();
+        assert_eq!(wild.left, 0.0);
+        assert_eq!(wild.right, 0.0);
+        assert_eq!(wild.up, 0.0);
+        assert_eq!(wild.down, 4000.0);
+        assert_eq!(AvatarBounds::symmetric((12.0, 30.0)).width(), 24.0);
+        assert_eq!(AvatarBounds::symmetric((12.0, 30.0)).height(), 60.0);
+    }
+
+    #[test]
+    fn avatar_state_perch_fields_serialize_and_clear() {
+        let mut state = AvatarState::new();
+        assert!(!state.perched);
+        assert!(state.perch_rect.is_none());
+        assert!(state.look_at.is_none());
+
+        state.perched = true;
+        state.perch_rect = Some(WindowRect { x: 10.0, y: 20.0, width: 30.0, height: 40.0 });
+        state.look_at = Some((5.0, 6.0));
+        let wire = serde_json::to_value(&state).unwrap();
+        assert_eq!(wire["perched"], true);
+        assert_eq!(wire["perch_rect"]["width"], 30.0);
+        assert_eq!(wire["look_at"][1], 6.0);
+
+        state.clear_perch();
+        assert!(!state.perched);
+        assert!(state.perch_rect.is_none());
+        assert!(state.look_at.is_none());
     }
 
     /* ---------- speech details ---------- */

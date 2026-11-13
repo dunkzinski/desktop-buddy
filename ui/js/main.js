@@ -60,6 +60,11 @@ function stepBlendshapes(dt) {
 }
 
 function startWalk(x, y, notify) {
+  // A manual walk (W, centre, random) ends a perch; an agent's `POST /perch`
+  // arrives through applyRemoteState, which sets the target directly.
+  avatar.perched = false;
+  avatar.perchRect = null;
+  avatar.lookAt = null;
   avatar.targetX = x;
   avatar.targetY = y;
   avatar.startX = avatar.x;
@@ -148,8 +153,20 @@ function updateGaze(dt) {
   if (bar) {
     aim = bar;
     tracking = true;
+  } else if (avatar.lookAt) {
+    // An agent asked for this point explicitly (`avatar_move`'s `look_at`).
+    aim = avatar.lookAt;
+    tracking = true;
   } else if (pointerFresh) {
     aim = { x: gaze.pointerX, y: gaze.pointerY };
+    tracking = true;
+  } else if (avatar.perched && avatar.perchRect) {
+    // Perched: watch the window we are standing on instead of glancing around.
+    const rect = avatar.perchRect;
+    aim = {
+      x: num(rect.x, 0) + num(rect.width, 0) / 2,
+      y: num(rect.y, 0) + num(rect.height, 0) / 2,
+    };
     tracking = true;
   }
 
@@ -223,7 +240,9 @@ function step(dt) {
     // so the card (and the person reading it) never drifts across the screen.
     // An explicit /move or a keypress still overrides this — only the automatic
     // wander below is held back.
-    if (speech.visible) {
+    if (speech.visible || avatar.perched) {
+      // Talking pins it in place so the bubble never drifts; a perch pins it
+      // too, otherwise the avatar would wander off the window it is watching.
       avatar.idleTimer = 0;
     } else {
       avatar.idleTimer += dt;
@@ -377,6 +396,9 @@ function attachInteractionDetection(canvas) {
       // Past the threshold: this press is a drag, not a click.
       grab.active = true;
       avatar.dragging = true;
+      avatar.perched = false;
+      avatar.perchRect = null;
+      avatar.lookAt = null;
       avatar.mode = "idle";
       avatar.idleTimer = 0;
       avatar.walkPhase = 0;
@@ -896,6 +918,12 @@ function installDebugSurface() {
       tracking: gaze.tracking,
       hover: round(gaze.hover, 3),
       glanceAt: round(gaze.nextGlance, 2),
+    }),
+    /** Perch/gaze directives the page is currently obeying (see `POST /perch`). */
+    perched: () => ({
+      perched: !!avatar.perched,
+      rect: avatar.perchRect || null,
+      lookAt: avatar.lookAt || null,
     }),
     /** Text-driven lip sync: current character + the openness it produced. */
     mouth: () => ({

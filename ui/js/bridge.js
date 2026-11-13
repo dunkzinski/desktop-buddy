@@ -12,7 +12,7 @@ import {
 } from "./state.js";
 
 import {
-  applyModel, refreshModelList, localRotation, wireRegions,
+  applyModel, refreshModelList, localRotation, wireRegions, avatarBounds,
 } from "./rig.js";
 
 import { speak, hideSpeech } from "./speech.js";
@@ -49,6 +49,19 @@ export function reportState(now) {
     joints: jointAngles(),
     talking: avatar.talk,
     speech: speech.visible,
+    // How far the art reaches from the root, per direction. Rust needs this for
+    // `POST /perch` to land the *pixels* on a window border: the root sits near
+    // the hips, so half the height would leave the feet floating.
+    bounds: (() => {
+      const box = avatarBounds();
+      if (!box || !(box.w > 0) || !(box.h > 0)) return null;
+      return {
+        left: Math.max(0, avatar.x - box.x),
+        right: Math.max(0, box.x + box.w - avatar.x),
+        up: Math.max(0, avatar.y - box.y),
+        down: Math.max(0, box.y + box.h - avatar.y),
+      };
+    })(),
   });
 }
 
@@ -60,6 +73,18 @@ export function applyRemoteState(remote) {
   if (!Number.isFinite(rev) || rev <= avatar.revision) return;
   avatar.revision = rev;
   markManual(15);
+
+  // Spatial directives ride along with every state frame, so a `POST /perch`
+  // is adopted here and the `/move` or `POST /state` that ends it clears it.
+  avatar.perched = remote.perched === true;
+  avatar.perchRect = remote.perch_rect && typeof remote.perch_rect === "object"
+    ? remote.perch_rect
+    : null;
+  avatar.lookAt = Array.isArray(remote.look_at) &&
+    Number.isFinite(Number(remote.look_at[0])) &&
+    Number.isFinite(Number(remote.look_at[1]))
+    ? { x: Number(remote.look_at[0]), y: Number(remote.look_at[1]) }
+    : null;
 
   // The pointer owns the avatar while it is being dragged: a frame that was
   // already in flight must not yank it out from under the user's hand. The

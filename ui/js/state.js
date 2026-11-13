@@ -56,6 +56,14 @@ export const avatar = {
   // true only between the drag threshold being crossed and the pointer release;
   // while set, the whole viewport stays mouse-interactive (see wireRegions).
   dragging: false,
+  // `POST /perch` planted the avatar on a window border: idle wandering pauses
+  // and the gaze rests on `perchRect` (window bounds, CSS px) instead of
+  // glancing around. Cleared by a drag, W/centre, or any move.
+  perched: false,
+  perchRect: null,
+  // Explicit gaze target from `POST /move {"look_at": [x, y]}`, screen px, or
+  // null for "decide for yourself".
+  lookAt: null,
 };
 
 /* ---------- watcher (the supervised char-rig-watcher.exe) ---------- */

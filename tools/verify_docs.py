@@ -143,8 +143,8 @@ else:
     tool_block = re.search(r"const TOOL_NAMES: \[&str; \d+\] = \[(.*?)\];", mcp_rs, re.S)
     tool_names = set(re.findall(r'"([a-z_]+)"', tool_block.group(1))) if tool_block else set()
     print(f"\nMCP tools ({len(tool_names)}): {', '.join(sorted(tool_names))}")
-    if len(tool_names) != 12:
-        problems.append(f"char-rig-mcp.rs: expected 12 tools, found {len(tool_names)}")
+    if len(tool_names) != 13:
+        problems.append(f"char-rig-mcp.rs: expected 13 tools, found {len(tool_names)}")
 
     # every declared tool must have a schema entry in tools()
     for name in sorted(tool_names):
@@ -180,8 +180,8 @@ else:
     unknown_paths = {p for p in mcp_paths if p not in routes}
     if unknown_paths:
         problems.append(f"char-rig-mcp.rs calls non-existent routes: {sorted(unknown_paths)}")
-    if len(mcp_paths) < 12:
-        problems.append(f"char-rig-mcp.rs only maps {len(mcp_paths)} routes; expected 12")
+    if len(mcp_paths) < 13:
+        problems.append(f"char-rig-mcp.rs only maps {len(mcp_paths)} routes; expected 13")
 
     # the documented Windows path must match where cargo puts the binary
     if r"src-tauri\target\debug\char-rig-mcp.exe" not in readme:

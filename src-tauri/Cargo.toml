@@ -41,6 +41,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 #   * OpenClipboard / GetClipboardData / CF_UNICODETEXT / GlobalLock
 #                       -> Win32_System_DataExchange + Win32_System_Ole + Win32_System_Memory
 #                          (`GET /clipboard`)
+#   * DwmGetWindowAttribute / DWMWA_EXTENDED_FRAME_BOUNDS / DWMWA_CLOAKED
+#                       -> Win32_Graphics_Dwm   (undecorated window bounds)
+#   * EnumWindows / IsWindowVisible / IsIconic / GetWindowRect
+#                       -> Win32_UI_WindowsAndMessaging  (visible_windows)
+#   * GetDpiForSystem   -> Win32_UI_HiDpi       (physical px -> CSS px)
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -51,6 +56,8 @@ windows = { version = "0.58", features = [
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_Ole",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_HiDpi",
 ] }
 
 # Model importing / rig editor

@@ -25,9 +25,9 @@ use tokio::sync::oneshot;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 
 use crate::{
-    clipboard_text, desktop_context, lock_or_recover, model_event_payload, models,
-    publish as publish_state, snapshot, validate_expression, validate_state, AppCtx, AvatarState,
-    HitRegion, ModelCtx,
+    clipboard_text, desktop_context, lock_or_recover, model_event_payload, models, perch_target,
+    primary_viewport, publish as publish_state, snapshot, validate_expression, validate_state,
+    AppCtx, AvatarState, DesktopContext, HitRegion, ModelCtx, PerchEdge, WindowRect,
 };
 
 /// Everything a request handler needs. Cheap to clone.
@@ -50,6 +50,23 @@ struct SetStateBody {
 struct MoveBody {
     x: f64,
     y: f64,
+    /// Optional explicit gaze target `[x, y]` in CSS px, so one call can put the
+    /// avatar somewhere *and* point its eyes at the thing it is talking about.
+    #[serde(default)]
+    look_at: Option<(f64, f64)>,
+}
+
+/// `POST /perch` — stand on a window border.
+#[derive(Debug, Deserialize)]
+struct PerchBody {
+    edge: String,
+    /// Case-insensitive substring of the target window's `process_name`
+    /// (`"code"` matches `Code.exe`). Absent ⇒ the foreground window.
+    #[serde(default)]
+    window_process: Option<String>,
+    /// Pixels to slide along the chosen edge.
+    #[serde(default)]
+    offset: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,6 +184,7 @@ struct AnimateBody {
 }
 
 /// Error payload returned for every non-2xx response.
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     message: String,
@@ -289,6 +307,7 @@ fn router(api: ApiCtx) -> Router {
         .route("/events", get(events))
         .route("/state", get(get_state).post(set_state))
         .route("/move", post(move_to))
+        .route("/perch", post(perch))
         .route("/expression", post(set_expression))
         .route("/wave", post(wave))
         .route("/click-through", post(set_click_through))
@@ -347,8 +366,13 @@ async fn get_state(State(api): State<ApiCtx>) -> Json<AvatarState> {
 /// Windows probes: `GetForegroundWindow` + `GetWindowTextW` for the focused
 /// window title, `GetWindowThreadProcessId` + `OpenProcess` +
 /// `QueryFullProcessImageNameW` for the owning executable (e.g. `"Code.exe"`),
-/// and `GetLastInputInfo` + `GetTickCount64` for machine-wide idle time. Off
-/// Windows the values are safe defaults and `source` says so.
+/// `GetLastInputInfo` + `GetTickCount64` for machine-wide idle time, and
+/// `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` for the focused
+/// window's rectangle — converted to CSS pixels with the primary monitor's DPI
+/// scale so it matches the overlay. `visible_windows` lists the front-most
+/// visible, non-minimized, non-cloaked windows (at most
+/// `MAX_VISIBLE_WINDOWS`). Off Windows every rectangle is `null` / empty and
+/// `source` says so.
 ///
 /// `recent_events` is the last 15 SSE frames (`EVENT_HISTORY_CAPACITY`),
 /// oldest first — the same envelope `GET /events` pushes, so an agent that only
@@ -360,6 +384,8 @@ async fn context(State(api): State<ApiCtx>) -> Json<Value> {
         "window_title": desktop.window_title,
         "process_name": desktop.process_name,
         "idle_secs": desktop.idle_secs,
+        "window_rect": desktop.window_rect,
+        "visible_windows": desktop.visible_windows,
         "avatar_state": snapshot(&api.shared.avatar),
         "recent_events": api.shared.recent_events(),
         "source": desktop.source,
@@ -550,6 +576,9 @@ async fn set_state(
     if let Some(expression) = body.expression {
         guard.expression = expression;
     }
+    // An explicit state change is the user/agent taking over: drop the perch so
+    // the avatar does not keep hanging on a window it is no longer standing on.
+    guard.clear_perch();
     drop(guard);
     Ok(Json(json!({ "ok": true, "state": publish_state(&api.app, &api.shared) })))
 }
@@ -561,11 +590,99 @@ async fn move_to(
     if !body.x.is_finite() || !body.y.is_finite() {
         return Err(ApiError::bad_request("x and y must be finite numbers"));
     }
+    if let Some((lx, ly)) = body.look_at {
+        if !lx.is_finite() || !ly.is_finite() {
+            return Err(ApiError::bad_request("look_at must be two finite numbers"));
+        }
+    }
     let mut guard = lock_or_recover(&api.shared.avatar);
     guard.target_position = (body.x, body.y);
     guard.state = "walking".to_string();
+    // Moving away ends any perch; `look_at` is the new (optional) gaze target.
+    guard.clear_perch();
+    guard.look_at = body.look_at;
     drop(guard);
     Ok(Json(json!({ "ok": true, "state": publish_state(&api.app, &api.shared) })))
+}
+
+/// Pick the window rect a perch request refers to.
+///
+/// `window_process` is matched case-insensitively as a substring of a visible
+/// window's `process_name` (so `"code"` finds `Code.exe`); without it the
+/// foreground window is used. A process that matches nothing visible is a 400
+/// that names what *is* visible, because that is what the caller has to fix.
+fn resolve_perch_rect(
+    body: &PerchBody,
+    desktop: &DesktopContext,
+) -> Result<WindowRect, ApiError> {
+    match body.window_process.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        Some(wanted) => {
+            let wanted = wanted.to_ascii_lowercase();
+            desktop
+                .visible_windows
+                .iter()
+                .find(|window| window.process_name.to_ascii_lowercase().contains(&wanted))
+                .map(|window| window.rect)
+                .ok_or_else(|| {
+                    let visible: Vec<&str> = desktop
+                        .visible_windows
+                        .iter()
+                        .map(|window| window.process_name.as_str())
+                        .collect();
+                    ApiError::bad_request(format!(
+                        "no visible window matches process {wanted:?}; visible processes: {visible:?}"
+                    ))
+                })
+        }
+        None => desktop.window_rect.ok_or_else(|| {
+            ApiError::bad_request("no foreground window rect available (nothing focused?)")
+        }),
+    }
+}
+
+/// `POST /perch {"edge": "top_right", "window_process": "code", "offset": 12}`
+/// — walk the avatar onto (or beside) a window's border and keep it there.
+///
+/// The target is derived from the window rect and half the avatar's painted
+/// bounds, so the **art** touches the border rather than its root, then clamped
+/// to the primary monitor. The response carries the resolved window rect and
+/// target, and the `state` frame marks `perched: true` + `perch_rect`, which
+/// pauses idle wandering and aims the gaze at the window in the page. A 400
+/// covers an unknown edge, a process nobody is showing, and a missing
+/// foreground rect — the caller always learns which of those it hit.
+async fn perch(
+    State(api): State<ApiCtx>,
+    Json(body): Json<PerchBody>,
+) -> Result<Json<Value>, ApiError> {
+    let edge = PerchEdge::parse(&body.edge)?;
+    if let Some(offset) = body.offset {
+        if !offset.is_finite() {
+            return Err(ApiError::bad_request("offset must be a finite number"));
+        }
+    }
+
+    let desktop = desktop_context();
+    let rect = resolve_perch_rect(&body, &desktop)?;
+    let bounds = *lock_or_recover(&api.shared.bounds);
+    let target = perch_target(&rect, edge, bounds, body.offset.unwrap_or(0.0), primary_viewport());
+
+    let mut guard = lock_or_recover(&api.shared.avatar);
+    guard.target_position = target;
+    guard.state = "walking".to_string();
+    guard.clear_perch();
+    guard.perched = true;
+    guard.perch_rect = Some(rect);
+    drop(guard);
+
+    let state = publish_state(&api.app, &api.shared);
+    Ok(Json(json!({
+        "ok": true,
+        "edge": edge.as_str(),
+        "window_process": body.window_process,
+        "window_rect": rect,
+        "target": { "x": target.0, "y": target.1 },
+        "state": state,
+    })))
 }
 
 async fn set_expression(
@@ -964,4 +1081,154 @@ async fn get_speech(State(api): State<ApiCtx>) -> Json<Value> {
     // has not been cleared explicitly.
     let speech = if talking { stored } else { None };
     Json(json!({ "ok": true, "speech": speech, "talking": talking }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AvatarBounds;
+    use crate::VisibleWindow;
+
+    fn rect(x: f64, y: f64, width: f64, height: f64) -> WindowRect {
+        WindowRect { x, y, width, height }
+    }
+
+    fn desktop_with(
+        foreground: Option<WindowRect>,
+        windows: &[(&str, WindowRect)],
+    ) -> DesktopContext {
+        DesktopContext {
+            window_title: "some window".to_string(),
+            process_name: "Code.exe".to_string(),
+            idle_secs: 3,
+            source: "win32",
+            window_rect: foreground,
+            visible_windows: windows
+                .iter()
+                .map(|(process, rect)| VisibleWindow {
+                    title: format!("{process} window"),
+                    process_name: (*process).to_string(),
+                    rect: *rect,
+                })
+                .collect(),
+        }
+    }
+
+    fn body(edge: &str, process: Option<&str>, offset: Option<f64>) -> PerchBody {
+        PerchBody {
+            edge: edge.to_string(),
+            window_process: process.map(str::to_string),
+            offset,
+        }
+    }
+
+    #[test]
+    fn perch_body_deserializes_with_optional_fields() {
+        let parsed: PerchBody = serde_json::from_str(r#"{"edge":"top_right"}"#).unwrap();
+        assert_eq!(parsed.edge, "top_right");
+        assert!(parsed.window_process.is_none());
+        assert!(parsed.offset.is_none());
+
+        let full: PerchBody = serde_json::from_str(
+            r#"{"edge":"left","window_process":"code","offset":12.5}"#,
+        )
+        .unwrap();
+        assert_eq!(full.window_process.as_deref(), Some("code"));
+        assert_eq!(full.offset, Some(12.5));
+
+        // `edge` is required: a request without one is not a perch.
+        assert!(serde_json::from_str::<PerchBody>(r#"{"window_process":"code"}"#).is_err());
+    }
+
+    #[test]
+    fn perch_edge_validation_matches_the_api_contract() {
+        for edge in crate::PERCH_EDGES {
+            assert!(PerchEdge::parse(edge).is_ok(), "{edge} must be accepted");
+        }
+
+        // The handler turns a parse failure into a 400 with the same message.
+        let err: ApiError = PerchEdge::parse("top").expect_err("`top` is not an edge").into();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("invalid edge"), "{}", err.message);
+        assert!(
+            err.message.contains("top_left") && err.message.contains("bottom"),
+            "the 400 lists the accepted edges: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn resolve_perch_rect_picks_the_matching_visible_window() {
+        let target = rect(1200.0, 40.0, 600.0, 400.0);
+        let desktop = desktop_with(
+            Some(rect(0.0, 0.0, 100.0, 100.0)),
+            &[("explorer.exe", rect(0.0, 0.0, 800.0, 600.0)), ("Code.exe", target)],
+        );
+
+        // Case-insensitive substring, not an exact name.
+        let rect = resolve_perch_rect(&body("right", Some("code"), None), &desktop).unwrap();
+        assert_eq!(rect, target);
+        assert_eq!(
+            resolve_perch_rect(&body("right", Some("CODE.EXE"), None), &desktop).unwrap(),
+            target
+        );
+    }
+
+    #[test]
+    fn resolve_perch_rect_reports_what_is_actually_visible() {
+        let desktop = desktop_with(Some(rect(0.0, 0.0, 100.0, 100.0)), &[("Code.exe", rect(1.0, 2.0, 3.0, 4.0))]);
+
+        let err = resolve_perch_rect(&body("left", Some("photoshop"), None), &desktop)
+            .expect_err("no such process");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("photoshop"), "{}", err.message);
+        assert!(
+            err.message.contains("Code.exe"),
+            "the 400 names the windows that are visible: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn resolve_perch_rect_falls_back_to_the_foreground() {
+        let foreground = rect(10.0, 20.0, 300.0, 200.0);
+        let desktop = desktop_with(Some(foreground), &[]);
+
+        // Absent and blank `window_process` both mean "the focused window".
+        assert_eq!(resolve_perch_rect(&body("bottom", None, None), &desktop).unwrap(), foreground);
+        assert_eq!(resolve_perch_rect(&body("bottom", Some("   "), None), &desktop).unwrap(), foreground);
+
+        // Nothing focused at all: a 400, not a panic or a (0,0) rect.
+        let empty = desktop_with(None, &[("Code.exe", foreground)]);
+        let err = resolve_perch_rect(&body("bottom", None, None), &empty).expect_err("no rect");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("foreground"), "{}", err.message);
+    }
+
+    #[test]
+    fn move_body_takes_an_optional_look_at() {
+        let plain: MoveBody = serde_json::from_str(r#"{"x":10,"y":20}"#).unwrap();
+        assert!(plain.look_at.is_none());
+
+        let looking: MoveBody =
+            serde_json::from_str(r#"{"x":10,"y":20,"look_at":[300,400]}"#).unwrap();
+        assert_eq!(looking.look_at, Some((300.0, 400.0)));
+    }
+
+    #[test]
+    fn perch_response_uses_the_page_reported_half_bounds() {
+        // End-to-end math: a 220x300 avatar on a window at (400, 300, 800x500)
+        // perches its feet exactly on the top border.
+        let half = crate::AvatarBounds::symmetric((110.0, 150.0));
+        let target_rect = rect(400.0, 300.0, 800.0, 500.0);
+        let (x, y) = perch_target(
+            &target_rect,
+            PerchEdge::TopLeft,
+            half,
+            0.0,
+            Some((1920.0, 1080.0)),
+        );
+        assert_eq!((x, y), (510.0, 150.0));
+        assert_eq!(y + half.down, target_rect.y);
+    }
 }

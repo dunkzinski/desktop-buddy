@@ -43,6 +43,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Mirrors `AVATAR_EXPRESSIONS` in `lib.rs` — kept in sync by `tools/verify_docs.py`.
 const EXPRESSIONS: [&str; 6] = ["neutral", "happy", "sad", "surprised", "thinking", "angry"];
 
+/// Mirrors `PERCH_EDGES` in `lib.rs`; validated here so a typo fails before the
+/// HTTP round-trip and the model gets the accepted list back.
+const PERCH_EDGES: [&str; 5] = ["top_left", "top_right", "left", "right", "bottom"];
+
 /// MCP protocol revisions this server speaks. Tools-only servers are
 /// version-agnostic, so the client's requested revision is echoed when we know
 /// it and we fall back to our newest otherwise.
@@ -53,8 +57,11 @@ const INSTRUCTIONS: &str = "Tools that drive a 2D avatar living on the user's Wi
 The avatar is a separate process (`avatar-desktop.exe`) that must already be running; if a call reports \
 that it cannot reach the avatar, tell the user to start it instead of retrying blindly. \
 `avatar_get_context` is the cheapest way to see what the user is doing (foreground window title, the \
-owning process name such as `Code.exe`, and machine-wide idle seconds) together with the avatar's current \
-state and the last few events, so it is the right first call before interrupting anyone. \
+owning process name such as `Code.exe`, machine-wide idle seconds, the focused window's `window_rect` and the \
+top few `visible_windows`) together with the avatar's current state and the last few events, so it is the right \
+first call before interrupting anyone. `avatar_perch(edge, window_process?, offset?)` then walks the avatar onto \
+or beside a window's border (`top_left`, `top_right`, `left`, `right`, `bottom`) and keeps its gaze on that window — \
+use it to stand next to the editor whose error you are explaining, or on the app an alert came from. \
 `avatar_get_clipboard` returns whatever text the user last copied (capped at 2000 characters) — useful when \
 a trigger mentions \"this\" or \"what I copied\"; `avatar_set_clipboard` is the reverse and is how you hand over \
 a full snippet, command or log without stuffing it into a bubble. Speech bubbles are transient: `avatar_speak` returns \
@@ -347,10 +354,11 @@ fn api_base_for_error() -> String {
  * ------------------------------------------------------------------ */
 
 /// Tool names, in the order they appear in `tools/list`.
-const TOOL_NAMES: [&str; 12] = [
+const TOOL_NAMES: [&str; 13] = [
     "avatar_speak",
     "avatar_emote",
     "avatar_move",
+    "avatar_perch",
     "avatar_wave",
     "avatar_pose",
     "avatar_get_context",
@@ -429,9 +437,41 @@ whole primary monitor, so they are effectively screen coordinates.",
                 "type": "object",
                 "properties": {
                     "x": { "type": "number", "description": "Target X in pixels from the left edge of the monitor." },
-                    "y": { "type": "number", "description": "Target Y in pixels from the top edge of the monitor." }
+                    "y": { "type": "number", "description": "Target Y in pixels from the top edge of the monitor." },
+                    "look_at": {
+                        "type": "array",
+                        "items": { "type": "number" },
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "description": "Optional explicit gaze target `[x, y]` in the same CSS-pixel space: sets where the eyes point while (and after) walking, e.g. at the window you are about to talk about. Cleared by the next move or perch."
+                    }
                 },
                 "required": ["x", "y"]
+            }
+        },
+        {
+            "name": "avatar_perch",
+            "description": "Walk the avatar onto or beside a window's border and leave it there, looking at that window's content. 
+`edge` chooses where: `top_left`/`top_right` stand it on the top border (at that corner), `left`/`right` stand it just outside that side, `bottom` hangs it under the bottom border. 
+With `window_process` (a case-insensitive substring of the owning executable, e.g. `code` or `firefox`) it targets that visible window; without it the focused window is used. While perched the avatar stops its idle wandering and keeps its gaze on the window, so it reads as \"watching\" that app — good for editor errors, alerts from a specific app, or narrating what is on screen. `avatar_move`, a drag or `POST /state` ends the perch. Use `avatar_get_context` first to see `window_rect` and `visible_windows`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "edge": {
+                        "type": "string",
+                        "enum": PERCH_EDGES,
+                        "description": "Which border of the window to perch on."
+                    },
+                    "window_process": {
+                        "type": "string",
+                        "description": "Case-insensitive substring of the target window's process name (`code` matches `Code.exe`). Omit to use the focused window."
+                    },
+                    "offset": {
+                        "type": "number",
+                        "description": "Pixels to slide along the chosen edge (x for top/bottom, y for left/right). Default 0."
+                    }
+                },
+                "required": ["edge"]
             }
         },
         {
@@ -469,9 +509,10 @@ until cleared.",
             "name": "avatar_get_context",
             "description": "Read the user's desktop context, the avatar state and the last few events in one call: the \
 title of the foreground window, the executable that owns it (e.g. `Code.exe`), how many seconds the machine has been \
-idle (no keyboard or mouse anywhere), where the avatar is and what it is doing, plus the most recent SSE frames \
-(interactions, speech, animations…) — i.e. short-term memory of what just happened. Use this before deciding \
-whether to interrupt the user.",
+idle (no keyboard or mouse anywhere), where the avatar is and what it is doing, the foreground window's \
+`window_rect` plus the top few `visible_windows` (title, process_name, rect) so you can point the avatar at a \
+specific app with `avatar_perch`, and the most recent SSE frames (interactions, speech, animations…) — i.e. \
+short-term memory of what just happened. Use this before deciding whether to interrupt the user.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -587,7 +628,73 @@ fn tool_emote(api: &Api, args: &Map<String, Value>) -> Result<Value, ToolError> 
 fn tool_move(api: &Api, args: &Map<String, Value>) -> Result<Value, ToolError> {
     let x = req_number(args, "x")?;
     let y = req_number(args, "y")?;
-    api.post("/move", json!({ "x": x, "y": y })).map_err(ToolError::Api)
+    let mut body = json!({ "x": x, "y": y });
+    if let Some(look_at) = opt_look_at(args)? {
+        body["look_at"] = look_at;
+    }
+    api.post("/move", body).map_err(ToolError::Api)
+}
+
+/// `look_at: [x, y]` — an optional explicit gaze target alongside a move.
+fn opt_look_at(args: &Map<String, Value>) -> Result<Option<Value>, ToolError> {
+    let Some(value) = args.get("look_at") else { return Ok(None) };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let pair = value.as_array().ok_or_else(|| {
+        ToolError::Invalid("`look_at` must be an array of two finite numbers `[x, y]`".to_string())
+    })?;
+    if pair.len() != 2 {
+        return Err(ToolError::Invalid(format!(
+            "`look_at` must have exactly two values [x, y]; got {}",
+            pair.len()
+        )));
+    }
+    let mut out = Vec::with_capacity(2);
+    for value in pair {
+        let number = value.as_f64().filter(|number| number.is_finite()).ok_or_else(|| {
+            ToolError::Invalid("`look_at` must be an array of two finite numbers `[x, y]`".to_string())
+        })?;
+        out.push(number);
+    }
+    Ok(Some(json!(out)))
+}
+
+/// `edge` for `POST /perch`, validated against the five accepted borders.
+fn parse_perch_edge(value: &str) -> Result<&'static str, ToolError> {
+    let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
+    PERCH_EDGES
+        .iter()
+        .copied()
+        .find(|edge| *edge == normalized)
+        .ok_or_else(|| {
+            ToolError::Invalid(format!(
+                "`edge` must be one of {}; got {value:?}",
+                PERCH_EDGES.join(", ")
+            ))
+        })
+}
+
+fn tool_perch(api: &Api, args: &Map<String, Value>) -> Result<Value, ToolError> {
+    let raw_edge = req_str(args, "edge")?;
+    let edge = parse_perch_edge(&raw_edge)?;
+
+    let mut body = json!({ "edge": edge });
+    if let Some(process) = opt_str(args, "window_process")? {
+        if !process.trim().is_empty() {
+            body["window_process"] = json!(process);
+        }
+    }
+    if let Some(offset) = args.get("offset") {
+        if !offset.is_null() {
+            let number = offset
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| ToolError::Invalid("`offset` must be a finite number".to_string()))?;
+            body["offset"] = json!(number);
+        }
+    }
+    api.post("/perch", body).map_err(ToolError::Api)
 }
 
 fn tool_wave(api: &Api, _args: &Map<String, Value>) -> Result<Value, ToolError> {
@@ -618,6 +725,12 @@ fn tool_get_context(api: &Api, _args: &Map<String, Value>) -> Result<Value, Tool
         .to_string();
     let idle_secs = context.get("idle_secs").and_then(Value::as_u64).unwrap_or(0);
     let source = context.get("source").and_then(Value::as_str).unwrap_or("unknown");
+    let window_rect = context.get("window_rect").cloned().unwrap_or(Value::Null);
+    let visible_windows: Vec<Value> = context
+        .get("visible_windows")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let recent_events: Vec<Value> = context
         .get("recent_events")
         .and_then(Value::as_array)
@@ -642,10 +755,18 @@ fn tool_get_context(api: &Api, _args: &Map<String, Value>) -> Result<Value, Tool
     let expression = avatar_state.get("expression").and_then(Value::as_str).unwrap_or("unknown");
     let (px, py) = position_of(&avatar_state);
     let recent = summarise_events(&recent_events);
+    let perched = if avatar_state.get("perched").and_then(Value::as_bool).unwrap_or(false) {
+        ", perched on a window"
+    } else {
+        ""
+    };
     let summary = format!(
-        "User is in {focused}, idle for {idle_secs}s. \
-Avatar is {mode} ({expression}) at ({px:.0}, {py:.0}). Context source: {source}. \
-Recent events ({n}): {recent}",
+        "User is in {focused}, idle for {idle_secs}s. Foreground window rect: {rect} (CSS px). \
+Visible windows ({count}): {windows}. Avatar is {mode} ({expression}) at ({px:.0}, {py:.0}){perched}. \
+Context source: {source}. Recent events ({n}): {recent}",
+        rect = describe_rect(&window_rect),
+        count = visible_windows.len(),
+        windows = describe_windows(&visible_windows),
         n = recent_events.len()
     );
 
@@ -655,6 +776,8 @@ Recent events ({n}): {recent}",
         "process_name": process_name,
         "idle_secs": idle_secs,
         "source": source,
+        "window_rect": window_rect,
+        "visible_windows": visible_windows,
         "avatar_state": avatar_state,
         "state_source": state_source,
         "recent_events": recent_events,
@@ -663,6 +786,33 @@ Recent events ({n}): {recent}",
         "{summary}\n\n{}",
         serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string())
     )))
+}
+
+/// `"(x, y) wxh"` for a rect object, or `"unknown"` when the probe had none.
+fn describe_rect(rect: &Value) -> String {
+    let number = |key: &str| rect.get(key).and_then(Value::as_f64);
+    match (number("x"), number("y"), number("width"), number("height")) {
+        (Some(x), Some(y), Some(width), Some(height)) => {
+            format!("({x:.0}, {y:.0}) {width:.0}x{height:.0}")
+        }
+        _ => "unknown".to_string(),
+    }
+}
+
+/// `Code.exe@(400, 300) 800x500 | firefox.exe@…`, or `"none"`.
+fn describe_windows(windows: &[Value]) -> String {
+    if windows.is_empty() {
+        return "none".to_string();
+    }
+    windows
+        .iter()
+        .filter_map(|window| {
+            let process = window.get("process_name").and_then(Value::as_str)?;
+            let rect = window.get("rect").cloned().unwrap_or(Value::Null);
+            Some(format!("{process}@{}", describe_rect(&rect)))
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 /// One short phrase per remembered frame: `type(seq): payload hint`.
@@ -786,6 +936,7 @@ fn run_tool(api: &Api, name: &str, args: &Map<String, Value>) -> Result<Value, T
         "avatar_speak" => tool_speak(api, args),
         "avatar_emote" => tool_emote(api, args),
         "avatar_move" => tool_move(api, args),
+        "avatar_perch" => tool_perch(api, args),
         "avatar_wave" => tool_wave(api, args),
         "avatar_pose" => tool_pose(api, args),
         "avatar_get_context" => tool_get_context(api, args),
@@ -953,4 +1104,192 @@ fn main() {
     }
 
     eprintln!("[char-rig-mcp] stdin closed, exiting");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(json: Value) -> Map<String, Value> {
+        json.as_object().cloned().unwrap_or_default()
+    }
+
+    /// An `Api` pointed at a port nothing listens on: any call that reaches the
+    /// HTTP layer fails as unreachable, which is how these tests prove a
+    /// validation error happened *before* the request.
+    fn offline_api() -> Api {
+        Api {
+            base: "http://127.0.0.1:9".to_string(),
+            http: reqwest::blocking::Client::builder()
+                .connect_timeout(Duration::from_millis(150))
+                .timeout(Duration::from_millis(300))
+                .build()
+                .expect("client"),
+        }
+    }
+
+    #[test]
+    fn thirteen_tools_are_declared_and_dispatched() {
+        assert_eq!(TOOL_NAMES.len(), 13);
+        assert!(TOOL_NAMES.contains(&"avatar_perch"));
+
+        let listed = tools();
+        let entries = listed.as_array().expect("tools() is an array");
+        assert_eq!(entries.len(), TOOL_NAMES.len());
+        for name in TOOL_NAMES {
+            let entry = entries
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("{name} has no tools() entry"));
+            assert!(!entry["description"].as_str().unwrap_or("").is_empty(), "{name} needs a description");
+            assert_eq!(entry["inputSchema"]["type"], "object", "{name} schema");
+        }
+        // Every declared tool is dispatched in run_tool.
+        let source_dispatch = std::fs::read_to_string(file!()).expect("read own source");
+        for name in TOOL_NAMES {
+            assert!(
+                source_dispatch.contains(&format!("\"{name}\" =>")),
+                "{name} is not dispatched in run_tool"
+            );
+        }
+    }
+
+    #[test]
+    fn avatar_perch_schema_requires_only_the_edge() {
+        let listed = tools();
+        let tool = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "avatar_perch")
+            .expect("avatar_perch entry");
+
+        let schema = &tool["inputSchema"];
+        assert_eq!(schema["required"].as_array().unwrap(), &vec![json!("edge")]);
+        let properties = schema["properties"].as_object().expect("properties");
+        let mut keys: Vec<&str> = properties.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["edge", "offset", "window_process"]);
+
+        let edges: Vec<&str> = properties["edge"]["enum"]
+            .as_array()
+            .expect("edge enum")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(edges, PERCH_EDGES.to_vec());
+    }
+
+    #[test]
+    fn avatar_move_advertises_the_optional_look_at() {
+        let listed = tools();
+        let tool = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "avatar_move")
+            .expect("avatar_move entry");
+        let look_at = &tool["inputSchema"]["properties"]["look_at"];
+        assert_eq!(look_at["type"], "array");
+        assert_eq!(look_at["minItems"], 2);
+        assert_eq!(look_at["maxItems"], 2);
+        // `look_at` is optional: only x/y are required.
+        let required: Vec<&str> = tool["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(required, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn perch_edges_validate_locally() {
+        for edge in PERCH_EDGES {
+            assert_eq!(parse_perch_edge(edge).unwrap(), edge);
+        }
+        assert_eq!(parse_perch_edge(" TOP-LEFT ").unwrap(), "top_left");
+        assert_eq!(parse_perch_edge("Right").unwrap(), "right");
+
+        for bad in ["top", "middle", "", "corner"] {
+            let err = parse_perch_edge(bad).expect_err("must be rejected");
+            match err {
+                ToolError::Invalid(message) => {
+                    assert!(message.contains("top_left"), "{message}");
+                    assert!(message.contains("bottom"), "{message}");
+                }
+                other => panic!("expected Invalid, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn avatar_perch_rejects_bad_arguments_before_the_http_call() {
+        let api = offline_api();
+
+        // Missing edge.
+        let err = tool_perch(&api, &args(json!({}))).expect_err("edge is required");
+        assert!(matches!(err, ToolError::Invalid(_)), "{err:?}");
+
+        // Unknown edge: the message names the accepted values so the model can
+        // correct itself without another round-trip.
+        let err = tool_perch(&api, &args(json!({"edge": "middle"}))).expect_err("bad edge");
+        match err {
+            ToolError::Invalid(message) => assert!(message.contains("top_left"), "{message}"),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+
+        // Non-numeric offset / non-string process are argument errors too, not
+        // "avatar unreachable".
+        let err = tool_perch(&api, &args(json!({"edge": "left", "offset": "12"})))
+            .expect_err("offset must be a number");
+        assert!(matches!(err, ToolError::Invalid(_)), "{err:?}");
+        let err = tool_perch(&api, &args(json!({"edge": "left", "window_process": 7})))
+            .expect_err("window_process must be a string");
+        assert!(matches!(err, ToolError::Invalid(_)), "{err:?}");
+    }
+
+    #[test]
+    fn avatar_perch_reaches_http_once_the_arguments_are_valid() {
+        // A valid call gets past local validation and fails at the network
+        // layer — which proves the request was actually attempted.
+        let api = offline_api();
+        let err = tool_perch(&api, &args(json!({"edge": "top_right", "window_process": "code", "offset": 0.0})))
+            .expect_err("nothing is listening");
+        assert!(matches!(err, ToolError::Api(_)), "{err:?}");
+    }
+
+    #[test]
+    fn look_at_is_validated_locally() {
+        let none = opt_look_at(&args(json!({}))).unwrap();
+        assert!(none.is_none());
+        let null = opt_look_at(&args(json!({"look_at": null}))).unwrap();
+        assert!(null.is_none());
+        assert_eq!(
+            opt_look_at(&args(json!({"look_at": [10, 20]}))).unwrap(),
+            Some(json!([10.0, 20.0]))
+        );
+
+        for bad in [json!({"look_at": [1, 2, 3]}), json!({"look_at": "there"}), json!({"look_at": [1, "x"]})] {
+            let err = opt_look_at(&args(bad)).expect_err("must be rejected");
+            assert!(matches!(err, ToolError::Invalid(_)), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn context_summary_describes_rects_and_windows() {
+        let rect = json!({"x": 400.0, "y": 300.0, "width": 800.0, "height": 500.0});
+        assert_eq!(describe_rect(&rect), "(400, 300) 800x500");
+        assert_eq!(describe_rect(&Value::Null), "unknown");
+
+        let windows = vec![
+            json!({"process_name": "Code.exe", "rect": rect}),
+            json!({"process_name": "firefox.exe", "rect": {"x": 0.0, "y": 0.0, "width": 1920.0, "height": 40.0}}),
+        ];
+        assert_eq!(
+            describe_windows(&windows),
+            "Code.exe@(400, 300) 800x500 | firefox.exe@(0, 0) 1920x40"
+        );
+        assert_eq!(describe_windows(&[]), "none");
+    }
 }

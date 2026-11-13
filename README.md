@@ -50,10 +50,12 @@ Verify it responds:
 
 ```bash
 curl -s localhost:8765/health
-curl -s localhost:8765/context          # foreground window + idle seconds
+curl -s localhost:8765/context          # foreground window, its rect, visible windows, idle seconds
 curl -N localhost:8765/events           # live push stream (Ctrl-C to stop)
 curl -s -X POST localhost:8765/speak -H 'content-type: application/json' \
      -d '{"text":"Hello!","expression":"happy","duration_ms":4000}'
+curl -s -X POST localhost:8765/perch -H 'content-type: application/json' \
+     -d '{"edge":"top_right","window_process":"code"}'
 ```
 
 Run the unit tests with `cd src-tauri && cargo test`.
@@ -141,8 +143,11 @@ keeps the press for its gizmos, so the two gestures never fight.
 ## Pushing vs polling
 
 `GET /context` answers *what is the user doing* (foreground window title, the
-executable that owns it, machine-wide idle seconds, plus the last 15 SSE frames
-as a catch-up). `GET /clipboard` reads the last-copied text (2000 chars max).
+executable that owns it, the focused window's `window_rect` and the top five
+`visible_windows` — all in CSS pixels — machine-wide idle seconds, plus the last
+15 SSE frames as a catch-up). `POST /perch` turns that into a place to stand:
+`{"edge":"top_right","window_process":"code"}` walks the avatar onto that
+window's top border and keeps its gaze on the window while it sits there. `GET /clipboard` reads the last-copied text (2000 chars max).
 `GET /events` is a Server-Sent Events stream of *what the avatar did*: `state`,
 `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`,
 `interaction`, `user_reply`, `alert`, `session_reset`. An agent can therefore block on the stream
@@ -326,15 +331,21 @@ are rejected on a resumed session — put them in `config.yaml` instead.
 ## Hermes / MCP
 
 `cargo build` also produces a second binary, **`char-rig-mcp.exe`** — a stdio MCP
-server that exposes the avatar to Hermes (or any MCP client) as twelve tools:
-`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_wave`, `avatar_pose`,
-`avatar_get_context`, `avatar_get_clipboard`, `avatar_set_clipboard`,
-`avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`,
-`avatar_animate`.
-`avatar_get_context` carries the window title, the owning `process_name`, idle
-seconds and the last 15 events; `avatar_get_clipboard` returns the last-copied
-text (2000 chars max) and `avatar_set_clipboard` puts up to 32000 characters
-back on it — the way to hand over a full snippet, patch or log.
+server that exposes the avatar to Hermes (or any MCP client) as thirteen tools:
+`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_perch`, `avatar_wave`,
+`avatar_pose`, `avatar_get_context`, `avatar_get_clipboard`,
+`avatar_set_clipboard`, `avatar_list_models`, `avatar_switch_model`,
+`avatar_list_animations`, `avatar_animate`.
+`avatar_get_context` carries the window title, the owning `process_name`, the
+foreground `window_rect`, the top five `visible_windows`, idle seconds and the
+last 15 events; `avatar_get_clipboard` returns the last-copied text (2000 chars
+max) and `avatar_set_clipboard` puts up to 32000 characters back on it — the way
+to hand over a full snippet, patch or log.
+`avatar_perch(edge, window_process?, offset?)` walks the avatar onto or beside a
+window's border (`top_left`, `top_right`, `left`, `right`, `bottom`) and keeps
+its gaze on that window, so it can stand next to the editor whose error it is
+explaining or on the app an alert came from; `avatar_move` takes an optional
+`look_at: [x, y]` to point the eyes at something specific.
 `avatar_speak` takes an optional `details` string (8000 chars) that the bubble
 renders behind a **Details ▾** toggle with its own **Copy** button.
 
@@ -355,7 +366,7 @@ mcp_servers:
       CHAR_RIG_API_URL: http://127.0.0.1:8765
 ```
 
-Then restart Hermes (or reconnect the server) — the twelve `avatar_*` tools show
+Then restart Hermes (or reconnect the server) — the thirteen `avatar_*` tools show
 up in the tool list. Verify the bridge on its own with:
 
 ```bash

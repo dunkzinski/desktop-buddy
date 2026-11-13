@@ -30,12 +30,12 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | **Custom animations** | Optional `animations` block on the rig root: named keyframe clips (`duration_ms`, `loop`, `keyframes[]`) whose per-bone deltas are sampled with smoothstep easing and composed into the transform pass; timeline bar in Rig Edit Mode (clip CRUD, duration, loop, play/stop, 0–100 % scrubber with keyframe ticks, `+ Keyframe` capture) |
 | **Life signs** | Auto-blink every 3–6 s (~120 ms); **text-driven lip sync** — the mouth follows the typewriter character by character (vowels wide open, soft consonants mid-open, spaces and punctuation closed) for both sprite variants and the procedural shape; **eye tracking** — pupils ease toward the pointer, the focused command bar, or an idle glance every 2–4 s, clamped to ±4 px so they never leave the socket; **hover response** — a soft head tilt when the cursor enters the avatar's bounds |
 | **Speech bubbles** | Head-anchored DOM card, re-anchored to the head **every animation frame** (no lag while the avatar walks), typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss; the avatar stands still while a bubble is up (automatic wandering is paused — an explicit `/move` or keypress still wins); an optional **quick-reply box** (click the bubble, or just hover) with `Enter` to send and `Esc` to dismiss; an optional **details drawer** — a `details` string renders a monospace, scrollable pre block behind a **Details ▾** toggle plus a **Copy** button, and an open drawer holds the bubble up |
-| **Agent API** | 32 local HTTP paths (38 method routes): state, movement, expressions, speech, models, rigs, parts, custom animations, desktop context, clipboard read **and write**, quick replies, external alerts, session reset, watcher control, shutdown |
-| **Desktop awareness** | `GET /context` — foreground window title, its owning executable (`process_name`), machine-wide idle seconds (Win32 probes, safe defaults elsewhere) **and** the last 15 SSE frames as the agent's short-term memory; `GET /clipboard` — the last-copied text, capped at 2000 characters; `POST /clipboard` — put up to 32 000 characters on the clipboard |
+| **Agent API** | 33 local HTTP paths (39 method routes): state, movement, expressions, speech, models, rigs, parts, custom animations, desktop context, clipboard read **and write**, quick replies, external alerts, session reset, watcher control, shutdown |
+| **Desktop awareness** | `GET /context` — foreground window title, its owning executable (`process_name`), the focused window's `window_rect` plus the top few `visible_windows` (all converted to CSS px), machine-wide idle seconds (Win32 probes, safe defaults elsewhere); `POST /perch` — stand the avatar on or beside a window border and keep its gaze there **and** the last 15 SSE frames as the agent's short-term memory; `GET /clipboard` — the last-copied text, capped at 2000 characters; `POST /clipboard` — put up to 32 000 characters on the clipboard |
 | **Event stream** | `GET /events` — Server-Sent Events over a 64-frame `tokio::broadcast` channel: `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`, `animate`, `interaction`, `user_reply`, `alert`, `session_reset`, `watcher`; 15 s keep-alive, plus a 15-frame history ring buffer served inside `/context` |
 | **Interactions** | Play-mode click / double-click / drag on the avatar's bounds → `notify_interaction` → `interaction` frame; a typed command-bar message → `notify_reply` → `user_reply` frame |
 | **Sessions** | The watcher owns a mutable `{session}` id (`char-rig-<seed>`, `-2`, `-3`… after each rotation) substituted into `hermes_cmd`; **New chat** / `POST /session/reset` broadcasts `session_reset` and rotates it; `max_session_turns` / `session_idle_reset_secs` rotate automatically |
-| **MCP bridge** | `char-rig-mcp.exe` — a second binary exposing 12 tools (`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_wave`, `avatar_pose`, `avatar_get_context`, `avatar_get_clipboard`, `avatar_set_clipboard`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_animate`) to any MCP client over stdio JSON-RPC 2.0; stateless, forwards each call to the HTTP API and reports a down host as a readable tool error |
+| **MCP bridge** | `char-rig-mcp.exe` — a second binary exposing 13 tools (`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_perch`, `avatar_wave`, `avatar_pose`, `avatar_get_context`, `avatar_get_clipboard`, `avatar_set_clipboard`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_animate`) to any MCP client over stdio JSON-RPC 2.0; stateless, forwards each call to the HTTP API and reports a down host as a readable tool error |
 | **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword **or a per-app rule**, an `idle_return` after a long idle stretch, a `user_reply` from the command bar (no cooldown — the user asked directly), or an `alert` pushed by `POST /alert` under its own cooldown. Per-trigger cooldowns, an immediate ack (expression or custom clip), an optional webhook, and an optional spawned Hermes command with a one-line prompt on a persistent, rotatable session (`{session}`). Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Dispatch is single-flight with a **one-slot pending queue**: a `user_reply`/`alert` arriving mid-turn waits and runs as soon as that turn ends (newest wins), while routine triggers are dropped. Exponential-backoff reconnect; **zero LLM tokens while idle** |
 | **Persistence** | `models/<name>/model.json` (shipped), `rig.json` (editor override), `models/.state.json` (selected model) |
 
@@ -108,7 +108,7 @@ ui/
 ┌───────────────▼─────────────────────────────┐
 │ API thread "avatar-api"                      │
 │  private Tokio runtime (2 workers)           │
-│  axum 0.7 — 32 routes on 127.0.0.1:8765      │
+│  axum 0.7 — 33 routes on 127.0.0.1:8765      │
 │  ↳ GET /events fans the broadcast out as SSE │
 └─────────────────────────────────────────────┘
 ```
@@ -280,7 +280,10 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `do_user_reply`, `notify_reply` | quick-reply validation (non-blank, ≤ `MAX_REPLY_CHARS`), bubble dismissal and the `user_reply` frame; the command adds the page-side `speech-clear` event |
 | `do_session_reset`, `reset_session` | broadcast `session_reset` (`{reason}`) + dismiss the bubble; the watcher does the actual rotation |
 | `quick_tasks`, `default_quick_tasks` | read `quick_tasks` out of `watcher_rules.json` for `GET /watcher` (blank entries skipped, capped at `MAX_QUICK_TASKS`, built-in chips when absent/unreadable) |
-| `desktop_context` | Win32 `GetForegroundWindow`/`GetWindowTextW`, `GetWindowThreadProcessId`/`OpenProcess`/`QueryFullProcessImageNameW` (the `process_name`), `GetLastInputInfo`/`GetTickCount64` behind `GET /context`; safe defaults off Windows |
+| `desktop_context` | Win32 `GetForegroundWindow`/`GetWindowTextW`, `GetWindowThreadProcessId`/`OpenProcess`/`QueryFullProcessImageNameW` (the `process_name`), `GetLastInputInfo`/`GetTickCount64`, `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` for `window_rect` and `EnumWindows` for `visible_windows`, behind `GET /context`; safe defaults off Windows |
+| `physical_rect_to_logical`, `primary_scale`, `primary_viewport` | physical px → CSS px via `GetDpiForSystem()/96`, degenerate rects rejected, monitor size in CSS px |
+| `perch_target`, `PerchEdge`, `PERCH_EDGES`, `AvatarBounds` | pure perch geometry: feet on a top/bottom edge, standing beside a left/right edge, `offset` along the edge, clamp to the monitor — unit-tested without Win32; `AvatarBounds` is the art's extent per direction around the root |
+| `tool_perch`, `tool_move` | MCP-side argument validation (`edge`, `look_at`) before any HTTP call |
 | `clipboard_text`, `truncate_chars` | Win32 `OpenClipboard`/`GetClipboardData(CF_UNICODETEXT)`/`GlobalLock` read behind `GET /clipboard`, capped at `MAX_CLIPBOARD_CHARS` on a char boundary; every path balances its handle |
 | `write_clipboard_text`, `ClipboardWrite` | the Win32 write half: `OpenClipboard` → `EmptyClipboard` → `GlobalAlloc(GMEM_MOVEABLE)` + UTF-16 copy → `SetClipboardData(CF_UNICODETEXT)` → `CloseClipboard`, capped at `MAX_CLIPBOARD_WRITE_CHARS` and reported as `{chars, truncated}`; a failed `SetClipboardData` frees the block instead of leaking it. Drives `POST /clipboard` and the `set_clipboard` command |
 | `Hotkey`, `parse_hotkey`, `virtual_key`, `hotkey_spec` | pure parser for the `"Ctrl+Shift+A"` grammar (modifier bits + virtual-key code) and the `hotkey` lookup in `watcher_rules.json`; a bad value is a logged warning, never a panic |
@@ -302,10 +305,11 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `watcher_status`, `set_watcher` | `GET /watcher` / `POST /watcher` → `AppCtx::watcher_status` / `set_watcher_enabled` |
 | `start` | bind, spawn thread, Tokio runtime, axum serve, graceful shutdown |
 | `bind_first_available` | port fallback `preferred..preferred+9` |
-| `router` | 32 routes |
+| `router` | 33 routes |
 | request bodies | `SetStateBody`, `MoveBody`, `ExpressionBody`, `ClickThroughBody`, `HitRegionsBody`, `ModelBody`, `RigBody`, `PoseBody`, `ImportBody`, `PartPatchBody`, `MouthBody`, `EmoteBody`, `SpeakBody` (incl. optional `details`), `ReplyBody`, `AlertBody`, `ClipboardBody`, `AnimateBody` |
 | `ApiError` | `IntoResponse` → `{"ok":false,"error":…}` + status |
-| `context` | `GET /context` — OS probes, `avatar_state` snapshot and the `recent_events` history |
+| `context` | `GET /context` — OS probes (title, process, idle, `window_rect`, `visible_windows`), `avatar_state` snapshot and the `recent_events` history |
+| `perch` | `POST /perch` — resolve a window rect (by `window_process` or the foreground window), turn `edge` + half-bounds + `offset` into a clamped target, mark the state `perched` and publish a `state` frame |
 | `clipboard`, `set_clipboard`, `reply`, `alert` | `GET /clipboard` (never fails: empty text for a non-text clipboard), `POST /clipboard` (`{text}` → `write_clipboard_text`, `{ok, chars, truncated}`; a held-open clipboard is a 400 to retry), `POST /reply` (`user_reply` frame + bubble dismissal) and `POST /alert` (severity validation → `alert` frame) |
 | `ALERT_SEVERITIES` | `info` \| `warn` \| `error`, the only values `POST /alert` accepts |
 | `events` | `GET /events` — SSE from `BroadcastStream`, `hello` frame, 15 s keep-alive |
@@ -341,7 +345,7 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 
 Calls `avatar_desktop_lib::run()`; sets `windows_subsystem = "windows"` in release builds.
 
-### `src-tauri/src/bin/char-rig-mcp.rs` (900 lines)
+### `src-tauri/src/bin/char-rig-mcp.rs` (1300 lines)
 
 The **second binary** (`char-rig-mcp.exe`), built by the same `cargo build`. It is
 independent of the Tauri lib: a stdio MCP server that owns no state and forwards
@@ -354,7 +358,7 @@ each tool call to the HTTP API with `reqwest::blocking`.
 | argument helpers | `req_str`, `opt_str`, `opt_expression`, `opt_u64`, `opt_bool`, `req_number`, `req_object` — each failure is a model-readable message |
 | `tool_content` / `tool_failure` | build the MCP result envelope (`content[]`, `isError`) and the `{ok:false, kind, error, hint, details}` payload |
 | `TOOL_NAMES` / `tools()` | the 12 tool definitions with JSON Schemas and descriptions |
-| `tool_*` | one function per tool; `tool_get_context` merges `GET /context` + `GET /state` and adds `process_name` + the `recent_events` history (summarised as `type: hint` pairs), `tool_get_clipboard` forwards `GET /clipboard`, `tool_set_clipboard` forwards `POST /clipboard` (empty string clears), `tool_speak` passes the optional `details` drawer text through, `tool_animate` maps `stop`/`null` onto `POST /animate {"name": null}` |
+| `tool_*` | one function per tool; `tool_get_context` merges `GET /context` + `GET /state` and adds `window_rect`, `visible_windows` (as `Code.exe@(400, 300) 800x500 | …`), the `perched` flag and the `recent_events` history (summarised as `type: hint` pairs), `tool_perch` validates `edge` locally then forwards, `tool_move` passes the optional `look_at`, `tool_get_clipboard` forwards `GET /clipboard`, `tool_set_clipboard` forwards `POST /clipboard` (empty string clears), `tool_speak` passes the optional `details` drawer text through, `tool_animate` maps `stop`/`null` onto `POST /animate {"name": null}` |
 | `handle_message` | JSON-RPC dispatch: `initialize`, `ping`, `tools/list`, `tools/call`, notifications, `-32601`/`-32602`/`-32700` |
 | `main` | read stdin line-by-line, one JSON frame per line out, flush, clean exit on EOF |
 
@@ -385,7 +389,7 @@ one open SSE response and one small JSON poll every 20 s.
 | `InteractionRules` / `ContextRules` / `AppRule` / `AlertRules` / `Rules` | serde-defaulted rule model (`app_rules` and `alerts` optional, so the old schema still parses); `Rules::load` (explicit path, else cwd then next to the exe), `from_json`, `interaction_allowed`, `matched_keyword` (case-insensitive substring), `matched_app_rule` (process + title, first match wins, blank matcher = wildcard), `idle_transition` (`was_idle && idle < threshold`) |
 | `Cooldowns` | per-key `HashMap<String, Instant>`; `allow` checks **and** stamps, so a suppressed trigger does not extend the window |
 | `SseParser` | incremental `text/event-stream` parser: `event:`/`data:` fields, multi-line `data`, `:` keep-alive comments, CRLF, and frames split across arbitrary TCP reads; `message` is the default event name |
-| `Trigger` | `{event_type, detail, window_title, idle_secs, kind, keyword, x, y, animation, hint, text, severity}`; `payload(ts_ms)` builds the webhook / dry-run JSON (absent fields omitted), `prompt()` builds the one-line Hermes context — quoting a `user_reply`'s text verbatim and appending an `app_rules` `prompt_hint` as `Context:` — and ends with `HEADLESS_DIRECTIVE`: no follow-up questions, the literal `mcp__char_rig__avatar_speak(text, expression?, duration_ms?)` / `avatar_emote(expression, duration_ms?)` (with the six expressions) / `avatar_wave()` / `avatar_animate(name, loop?)` / `avatar_get_context()` / `avatar_get_clipboard()` signatures, an explicit invitation to chain several calls in one turn, and the **under-180-characters** bubble rule so a bubble never overflows the screen |
+| `Trigger` | `{event_type, detail, window_title, idle_secs, kind, keyword, x, y, animation, hint, text, severity}`; `payload(ts_ms)` builds the webhook / dry-run JSON (absent fields omitted), `prompt()` builds the one-line Hermes context — quoting a `user_reply`'s text verbatim and appending an `app_rules` `prompt_hint` as `Context:` — and ends with `HEADLESS_DIRECTIVE`: no follow-up questions, the literal `mcp__char_rig__avatar_speak(text, expression?, duration_ms?)` / `avatar_emote(expression, duration_ms?)` (with the six expressions) / `avatar_wave()` / `avatar_animate(name, loop?)` / `avatar_get_context()` / `avatar_get_clipboard()` / `avatar_perch(edge, window_process?, offset?)` signatures, an explicit invitation to chain several calls in one turn, and the **under-180-characters** bubble rule so a bubble never overflows the screen |
 | `interaction_trigger` | gate on `interaction_allowed` + cooldown, then format `the user double-clicked the avatar at (x, y)` |
 | `user_reply_trigger` | `user_reply` frame → trigger with the user's trimmed text; **no cooldown and no interaction gate** — the user asked directly |
 | `alert_trigger` | `alert` frame → trigger with `source`/`summary`/`severity`; honours `alerts.enabled` and the `alert` cooldown |
@@ -470,7 +474,7 @@ window `main` with the flags listed in §2.
 | `rfd` 0.15 | native file picker |
 | `toml` 0.8 | TOML rig manifests |
 | `image` 0.25 (`png`, `jpeg`, `webp`, no defaults) | image dimension probing |
-| `windows` 0.58 (`Win32_Foundation`, `Win32_UI_WindowsAndMessaging`, `Win32_System_SystemInformation`, `Win32_UI_Input_KeyboardAndMouse`) | `GetCursorPos` for the click-through tracker; `GetForegroundWindow`/`GetWindowTextW`/`GetLastInputInfo`/`GetTickCount64` for `GET /context` |
+| `windows` 0.58 (`Win32_Foundation`, `Win32_UI_WindowsAndMessaging`, `Win32_System_SystemInformation`, `Win32_UI_Input_KeyboardAndMouse`, `Win32_Graphics_Dwm`, `Win32_UI_HiDpi`) | `GetCursorPos` for the click-through tracker; `GetForegroundWindow`/`GetWindowTextW`/`GetLastInputInfo`/`GetTickCount64`/`DwmGetWindowAttribute`/`EnumWindows`/`GetSystemMetrics`/`GetDpiForSystem` for `GET /context` and `POST /perch` |
 
 ---
 
@@ -1115,10 +1119,14 @@ curl -s -X POST localhost:8765/state -H 'content-type: application/json' \
 ```
 ```json
 {"position":[463.27,678.53],"target_position":[463.27,678.53],
- "state":"idle","expression":"happy","revision":36,"talking":false}
+ "state":"idle","expression":"happy","revision":36,"talking":false,
+ "perched":true,"perch_rect":{"x":400.0,"y":300.0,"width":800.0,"height":500.0},"look_at":null}
 ```
 `revision` increments on every externally requested change — poll it to detect
-"something happened" without diffing the whole object.
+"something happened" without diffing the whole object. `perched`/`perch_rect`
+are the spatial directive set by `POST /perch` (the page pauses idle wandering
+and aims the gaze at the rect's centre); `look_at` is the explicit gaze target
+from `POST /move`. Both are cleared by a later move, `POST /state` or a drag.
 
 ### `/move`
 
@@ -1131,7 +1139,32 @@ curl -s -X POST localhost:8765/move -H 'content-type: application/json' \
  "state":"walking","expression":"neutral","revision":37,"talking":false}}
 ```
 The page animates the walk (ease-in-out) and reports the live position back, so
-`/state` converges on the target and returns to `idle` on arrival.
+`/state` converges on the target and returns to `idle` on arrival. An optional
+`"look_at": [x, y]` also sets where the eyes rest while walking, and every move
+clears a previous perch.
+
+### `/perch`
+
+```bash
+curl -s -X POST localhost:8765/perch -H 'content-type: application/json' \
+     -d '{"edge":"top_right","window_process":"code"}'
+```
+```json
+{"ok":true,"edge":"top_right","window_process":"code",
+ "window_rect":{"x":400.0,"y":300.0,"width":800.0,"height":500.0},
+ "target":{"x":1130.0,"y":210.0},"state":{"…":"…","perched":true}}
+```
+
+`edge` ∈ `top_left | top_right | left | right | bottom`; the rect comes from the
+first `visible_windows` entry whose `process_name` contains `window_process`
+(case-insensitive), or from the foreground `window_rect` when it is omitted. The
+target puts the avatar's **painted** bounds on the border — feet on a top/bottom
+edge, body just outside a left/right one — using the art's `left`/`right`/`up`/
+`down` extents around the root, which the page reports through `report_state`,
+then clamps to `primary_viewport()` so a window at the screen edge cannot push
+the avatar off screen. `offset` slides along the
+edge. An invalid edge, no matching window and no focused window are all **400**
+`{"ok":false,"error":"…"}` with an actionable message.
 
 ### `/expression`, `/wave`
 
@@ -1301,8 +1334,12 @@ curl -s localhost:8765/context
 ```
 ```json
 {"ok":true,"window_title":"main.rs - visual-studio-code","process_name":"Code.exe","idle_secs":12,
+ "window_rect":{"x":400.0,"y":300.0,"width":800.0,"height":500.0},
+ "visible_windows":[{"title":"main.rs - visual-studio-code","process_name":"Code.exe",
+                     "rect":{"x":400.0,"y":300.0,"width":800.0,"height":500.0}}],
  "avatar_state":{"position":[700.0,500.0],"target_position":[700.0,500.0],
-                 "state":"idle","expression":"neutral","revision":7,"talking":false},
+                 "state":"idle","expression":"neutral","revision":7,"talking":false,
+                 "perched":false,"perch_rect":null,"look_at":null},
  "recent_events":[{"seq":6,"type":"speech","ts_ms":1794405560000,"payload":{"text":"Build finished."}}],
  "source":"win32"}
 ```
@@ -1310,9 +1347,15 @@ curl -s localhost:8765/context
 UTF-16 units); `process_name` is `GetWindowThreadProcessId` + `OpenProcess` +
 `QueryFullProcessImageNameW` reduced to the file name (e.g. `Code.exe`, empty
 when the process is protected or absent); `idle_secs` is
-`(GetTickCount64() - GetLastInputInfo().dwTime)/1000`. `recent_events` is the
-last `EVENT_HISTORY_CAPACITY` (15) SSE frames, oldest first. Off Windows the
-values are empty/`0` and `source` is `"unsupported"`.
+`(GetTickCount64() - GetLastInputInfo().dwTime)/1000`. `window_rect` is
+`DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` (falling back to
+`GetWindowRect`) divided by the primary monitor's DPI scale, so it is in the same
+CSS-pixel space as the avatar; `visible_windows` comes from `EnumWindows`
+(z-order, front first) keeping visible, non-minimized, non-cloaked, titled
+windows owned by another process, capped at `MAX_VISIBLE_WINDOWS` (5).
+`recent_events` is the last `EVENT_HISTORY_CAPACITY` (15) SSE frames, oldest
+first. Off Windows the values are empty/`0`/`null` and `source` is
+`"unsupported"`.
 
 ### `/clipboard`
 
@@ -1393,7 +1436,16 @@ history served in `/context`. Full payload table in `API.md` §
   platforms the window stays fully interactive and `/context` returns
   `{"window_title":"","idle_secs":0,"source":"unsupported"}`.
 * **Primary monitor only.** The window is sized/positioned to
-  `primary_monitor()`; multi-monitor and mixed-DPI setups are untested.
+  `primary_monitor()`, and window rects are scaled by the *primary* monitor's DPI
+  factor, so a window on a second monitor with a different scale lands on the
+  wrong CSS coordinates. Multi-monitor and mixed-DPI setups are untested.
+* **A perch is a point, not a tether.** `POST /perch` computes one target from
+  the window rect captured at request time; if the user then moves, resizes or
+  maximises that window the avatar stays where it landed (nothing watches the
+  rect for changes). It also keeps whatever pose it arrived in — there is no
+  sit/hang animation, so `bottom` just places it below the border, and the
+  monitor clamp means a window flush with the top edge gets the avatar pushed
+  down onto it rather than above it.
 * **Rigid parts, no meshing.** Every part is transformed by one bone; there is
   no skinning, deformation or per-vertex mesh (the `spikes/` wgpu mesh
   experiment was never integrated).
@@ -1420,9 +1472,11 @@ history served in `/context`. Full payload table in `API.md` §
   quick-reply box is the other direction: it *sends* text (`user_reply`) but
   renders no reply of its own — the bubble only changes when the agent speaks.
 * **`/context` is shallow by design.** It exposes the foreground window title,
-  the owning executable's *name*, machine-wide idle seconds and the last 15 SSE
-  frames — no per-window activity, no other process list, and no clipboard on
-  `/context` itself (`GET /clipboard` is a separate, explicit call). The
+  the owning executable's *name*, machine-wide idle seconds, one rectangle and
+  the five front-most visible windows with their titles/processes/rects, plus the
+  last 15 SSE frames — no per-window activity, no full process list, and no
+  clipboard on `/context` itself (`GET /clipboard` is a separate, explicit
+  call). The
   clipboard read is text-only (`CF_UNICODETEXT`): images, files and rich
   formats come back empty, and the cap is 2000 characters.
 * **SSE is unauthenticated and un-persisted.** Any local process can subscribe;

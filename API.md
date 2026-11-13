@@ -126,7 +126,11 @@ panel). All request/response bodies are JSON.
   "target_position": [700.0, 500.0],
   "state": "idle",
   "expression": "neutral",
-  "revision": 3
+  "revision": 3,
+  "talking": false,
+  "perched": true,
+  "perch_rect": { "x": 400.0, "y": 300.0, "width": 800.0, "height": 500.0 },
+  "look_at": null
 }
 ```
 
@@ -136,6 +140,10 @@ panel). All request/response bodies are JSON.
   the window covers the primary monitor)
 * `revision` increments on every externally requested change — clients can poll
   it to detect "something happened"
+* `perched` is `true` while the avatar was planted on a window border by
+  [`POST /perch`](#post-perch); `perch_rect` is that window (CSS px). The page
+  pauses idle wandering and rests its gaze on the rect's centre while perched
+* `look_at` is an explicit gaze target `[x, y]` from `POST /move`, or `null`
 
 ### `POST /state`
 
@@ -146,11 +154,60 @@ panel). All request/response bodies are JSON.
 ### `POST /move`
 
 ```json
-{ "x": 1200, "y": 700 }
+{ "x": 1200, "y": 700, "look_at": [1180, 640] }   // look_at optional
 ```
 
 Sets the walk target (`state` becomes `walking`); the page animates the walk and
-reports the live position back.
+reports the live position back. `look_at` optionally names the point the eyes
+should rest on (same CSS-pixel space), which is how one call can both move the
+avatar and point it at the thing it is about to talk about. A move clears any
+perch and replaces the previous `look_at`.
+
+### `POST /perch`
+
+```json
+{ "edge": "top_right", "window_process": "code", "offset": 0 }
+```
+
+Walks the avatar to a border of a window and leaves it perched there, watching
+that window. `edge` is one of `top_left`, `top_right`, `left`, `right`,
+`bottom`:
+
+| `edge` | where the avatar ends up |
+| --- | --- |
+| `top_left` / `top_right` | standing on the **top** border, at the window's left/right corner — its feet on the edge |
+| `left` / `right` | standing just **outside** that side, vertically centred |
+| `bottom` | hanging under the **bottom** border |
+
+`window_process` is matched case-insensitively as a substring of a
+`visible_windows` entry's `process_name` (`"code"` matches `Code.exe`); without
+it the foreground window's `window_rect` is used. `offset` slides the avatar
+along the chosen edge (x for top/bottom, y for left/right).
+
+The target is computed from the window rect and how far the avatar's artwork
+reaches from its root in each direction (`left`/`right`/`up`/`down`, which the
+page reports with `report_state` — the root sits near the hips, so half the
+height would leave the feet floating), so the pixels touch the border rather
+than the bone root. It is then clamped to the primary monitor, so a window flush
+with the screen edge cannot push the avatar off screen.
+
+```json
+{
+  "ok": true,
+  "edge": "top_right",
+  "window_process": "code",
+  "window_rect": { "x": 400.0, "y": 300.0, "width": 800.0, "height": 500.0 },
+  "target": { "x": 1130.0, "y": 210.0 },
+  "state": { "position": [700.0, 500.0], "state": "walking", "perched": true, "…": "…" }
+}
+```
+
+The `state` frame it broadcasts carries `perched: true` + `perch_rect`, so the
+page stops its idle wandering and keeps its gaze on the window. `POST /move`,
+`POST /state`, a drag, or `W`/`C` in the overlay all end the perch. A request
+with an unknown `edge`, no matching visible process, or no foreground window is
+a **400** with `{"ok": false, "error": "…"}` — the message lists the valid edges
+or the processes that *are* visible.
 
 ### `POST /expression`
 
@@ -502,9 +559,14 @@ just do?".
 A cheap snapshot of the user's desktop. On Windows it reads
 `GetForegroundWindow` + `GetWindowTextW` for the focused window title,
 `GetWindowThreadProcessId` + `OpenProcess` + `QueryFullProcessImageNameW` for
-the executable that owns it, and `GetLastInputInfo` + `GetTickCount64` for
-machine-wide idle time; on other platforms it returns empty/zero values and
-says so in `source`.
+the executable that owns it, `GetLastInputInfo` + `GetTickCount64` for
+machine-wide idle time, `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`
+(falling back to `GetWindowRect`) for the focused window's rectangle, and
+`EnumWindows` for the front-most visible windows. Every rectangle is converted
+from physical pixels to **CSS pixels** with the primary monitor's DPI scale, so
+it lines up with the overlay's coordinate space and with the avatar's own
+position. On other platforms the values are empty/zero (`"window_rect": null`,
+`"visible_windows": []`) and `source` says so.
 
 ```bash
 curl -s localhost:8765/context
@@ -516,6 +578,13 @@ curl -s localhost:8765/context
   "window_title": "main.rs - visual-studio-code",
   "process_name": "Code.exe",
   "idle_secs": 12,
+  "window_rect": { "x": 400.0, "y": 300.0, "width": 800.0, "height": 500.0 },
+  "visible_windows": [
+    { "title": "main.rs - visual-studio-code", "process_name": "Code.exe",
+      "rect": { "x": 400.0, "y": 300.0, "width": 800.0, "height": 500.0 } },
+    { "title": "Inbox - Firefox", "process_name": "firefox.exe",
+      "rect": { "x": 1200.0, "y": 60.0, "width": 700.0, "height": 900.0 } }
+  ],
   "avatar_state": {
     "position": [700.0, 500.0],
     "target_position": [700.0, 500.0],
@@ -537,13 +606,16 @@ curl -s localhost:8765/context
 | `window_title` | title of the foreground window (`""` when there is none) |
 | `process_name` | executable that owns the foreground window, e.g. `"Code.exe"` (`""` when it cannot be read, and always `""` off Windows) |
 | `idle_secs` | seconds since the last keyboard/mouse input anywhere on the machine |
+| `window_rect` | bounds of the foreground window in CSS px — `{x, y, width, height}`, or `null` when nothing is focused / off Windows. This is the rect `POST /perch` uses when no `window_process` is given |
+| `visible_windows` | up to **5** front-most top-level windows (`{title, process_name, rect}`), skipping minimized, cloaked, untitled and the avatar's own window — what an agent can perch on by process name |
 | `avatar_state` | identical shape to `GET /state` |
 | `recent_events` | the last **15** SSE frames, oldest first, in the same `{seq, type, ts_ms, payload}` envelope `GET /events` pushes — the agent's short-term memory of what just happened |
 | `source` | `win32` when the Win32 probes ran, `unsupported` elsewhere |
 
 The handler queries the OS directly and never touches the avatar state machine,
 so it is safe to poll at any rate. `process_name` is best-effort: a protected
-process or the desktop/secure window yields `""` rather than an error.
+process or the desktop/secure window yields `""` rather than an error, and such
+a window is left out of `visible_windows` entirely.
 
 ### `GET /clipboard`
 
@@ -816,7 +888,7 @@ see *Awareness: desktop context & the event stream* for the frame list.
 
 `src-tauri/src/bin/char-rig-mcp.rs` builds a **second binary**,
 `src-tauri/target/debug/char-rig-mcp.exe`, that exposes the avatar to any MCP
-client (Hermes, Claude Desktop, …) over **stdio JSON-RPC 2.0** as twelve tools.
+client (Hermes, Claude Desktop, …) over **stdio JSON-RPC 2.0** as thirteen tools.
 It is a thin, stateless bridge: each tool call becomes one HTTP request to the
 *running* `avatar-desktop.exe`.
 
@@ -830,7 +902,8 @@ Base URL: `CHAR_RIG_API_URL`, default `http://127.0.0.1:8765`.
 | --- | --- | --- |
 | `avatar_speak` | `text` (required), `expression?`, `duration_ms?`, `details?` | `POST /speak` |
 | `avatar_emote` | `expression` (required), `duration_ms?` | `POST /emote` |
-| `avatar_move` | `x`, `y` (required) | `POST /move` |
+| `avatar_move` | `x`, `y` (required), `look_at?` (`[x, y]`) | `POST /move` |
+| `avatar_perch` | `edge` (required), `window_process?`, `offset?` | `POST /perch` |
 | `avatar_wave` | — | `POST /wave` |
 | `avatar_pose` | `joints` (required; `{boneId: {rotation?, scale?, x?, y?}}`, `null` clears a bone) | `POST /pose` |
 | `avatar_get_context` | — | `GET /context` **and** `GET /state` |
@@ -850,12 +923,21 @@ request is sent.
 of starting a clip, and `loop: true` together with a stop is rejected locally.
 
 `avatar_get_context` returns a single text block: a one-line human summary, then
-JSON with `window_title`, `process_name`, `idle_secs`, `source`, `avatar_state`,
-`state_source` (`"state"` when the fresh `/state` read answered, `"context"`
-when it fell back to the copy embedded in `/context`) and `recent_events` (the
-last 15 SSE frames, oldest first). The summary names the focused app — e.g.
-`User is in "main.rs - visual-studio-code" (Code.exe), idle for 12s.` — and
-lists the recent events as `type: hint` pairs.
+JSON with `window_title`, `process_name`, `idle_secs`, `source`, `window_rect`,
+`visible_windows`, `avatar_state`, `state_source` (`"state"` when the fresh
+`/state` read answered, `"context"` when it fell back to the copy embedded in
+`/context`) and `recent_events` (the last 15 SSE frames, oldest first). The
+summary names the focused app — e.g. `User is in "main.rs - visual-studio-code"
+(Code.exe), idle for 12s.` — gives the foreground rect and the visible windows
+as `Code.exe@(400, 300) 800x500 | firefox.exe@(0, 0) 1920x40`, says
+`perched on a window` while the avatar is perched, and lists the recent events as
+`type: hint` pairs.
+
+`avatar_perch` validates `edge` locally against the five borders before sending
+anything, so a typo comes back as an `invalid_arguments` tool result listing the
+accepted values instead of an HTTP 400. It is the spatial half of "react to what
+the user is looking at": `avatar_get_context` says which window is focused and
+where it is, then `avatar_perch` stands the avatar on it and the gaze follows.
 
 `avatar_get_clipboard` returns the `GET /clipboard` body as text:
 `{ok: true, text, truncated}`. Read it only when the trigger refers to copied
