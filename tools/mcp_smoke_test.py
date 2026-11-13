@@ -37,8 +37,9 @@ EXPECTED_TOOLS = {
     "avatar_switch_model": ["name"],
     "avatar_list_animations": [],
     "avatar_animate": ["name"],
+    "avatar_switch_ai": ["name"],
 }
-EXPECTED_TOOL_COUNT = 13
+EXPECTED_TOOL_COUNT = 14
 
 failures = []
 checks = 0
@@ -192,6 +193,10 @@ def main():
         check(json.loads(text_of(bad_expr))["kind"] == "invalid_arguments", "unknown expression rejected locally")
         no_name = mcp.call("avatar_switch_model", {})
         check(json.loads(text_of(no_name))["kind"] == "invalid_arguments", "missing name rejected locally")
+        no_ai = mcp.call("avatar_switch_ai", {})
+        check(json.loads(text_of(no_ai))["kind"] == "invalid_arguments", "switch_ai without a name rejected locally")
+        blank_ai = mcp.call("avatar_switch_ai", {"name": "   "})
+        check(json.loads(text_of(blank_ai))["kind"] == "invalid_arguments", "blank AI profile name rejected locally")
         no_clip = mcp.call("avatar_animate", {})
         check(json.loads(text_of(no_clip))["kind"] == "invalid_arguments", "animate without a clip name rejected locally")
         bad_loop = mcp.call("avatar_animate", {"name": "stop", "loop": True})
@@ -245,6 +250,7 @@ def main():
             ("avatar_list_models", {}),
             ("avatar_list_animations", {}),
             ("avatar_animate", {"name": "stop"}),
+            ("avatar_switch_ai", {"name": "hermes"}),
         ]
         for name, arguments in cases:
             response = mcp.call(name, arguments)
@@ -307,6 +313,8 @@ def main():
             check("idle_secs" in context_body, "context includes idle_secs")
             check("avatar_state" in context_body, "context includes avatar_state")
             check("recent_events" in context_body, "context includes the recent event buffer")
+            check("active_profile" in context_body, "context includes the active AI profile")
+            check("ai_profiles" in context_body, "context lists the available AI profiles")
             context_json = json.loads(context_body[context_body.index("{"):])
             check("window_rect" in context_json, "context includes the foreground window_rect")
             check("visible_windows" in context_json, "context includes visible_windows")
@@ -331,6 +339,53 @@ def main():
             check(isinstance(clipboard.get("text"), str), "clipboard text is a string")
             check("truncated" in clipboard, "clipboard reports truncation")
             check(len(clipboard["text"]) <= 2000, "clipboard text is capped at 2000 chars")
+
+            print("\nAI profiles")
+            try:
+                with urllib.request.urlopen(f"{API}/ai-profiles", timeout=10) as response:
+                    profiles = json.load(response)
+                entries = profiles.get("profiles") or []
+                names = {entry.get("name") for entry in entries}
+                check(profiles.get("ok") is True, "GET /ai-profiles reports ok")
+                check(bool(entries), "GET /ai-profiles lists the configured profiles")
+                check(profiles.get("active_profile") in names, "the active profile is one of them")
+                for entry in entries:
+                    check(
+                        {"name", "label", "kind", "model"} <= set(entry),
+                        f"profile {entry.get('name')}: has name/label/kind/model",
+                        str(sorted(entry)),
+                    )
+                    check(
+                        entry.get("kind") in {"openai_compat", "hermes_cli"},
+                        f"profile {entry.get('name')}: kind is a known backend",
+                        entry.get("kind"),
+                    )
+                health = profiles.get("active_health") or {}
+                check(
+                    health.get("status") in {"online", "offline", "cli"},
+                    "active_health.status is online|offline|cli",
+                    str(health),
+                )
+                check("reachable" in health, "active_health reports reachable")
+                check("detail" in health, "active_health carries a detail string")
+                # Switching to the profile that is already active is a no-op that
+                # still exercises persistence + the broadcast.
+                same = json.loads(text_of(mcp.call("avatar_switch_ai", {"name": profiles["active_profile"]})))
+                check(
+                    same.get("active_profile") == profiles["active_profile"],
+                    "avatar_switch_ai echoes the persisted active profile",
+                    same,
+                )
+                unknown = mcp.call("avatar_switch_ai", {"name": "definitely-not-a-profile"})
+                check(unknown["result"].get("isError") is True, "an unknown AI profile is an isError result")
+                check(
+                    json.loads(text_of(unknown)).get("kind") == "avatar_unreachable"
+                    or "unknown AI profile" in text_of(unknown),
+                    "the unknown-profile error explains itself",
+                    text_of(unknown)[:200],
+                )
+            except (urllib.error.URLError, TimeoutError, ValueError) as err:
+                check(False, "GET /ai-profiles answered", str(err))
 
         print("\nshutdown")
         code = mcp.close()

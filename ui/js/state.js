@@ -89,6 +89,23 @@ export const watcher = {
   drawer: false,
 };
 
+/* ---------- AI profiles (which brain answers a trigger) ---------- */
+/**
+ * Mirror of `get_ai_profiles` / `GET /ai-profiles`: the active profile, every
+ * configured one, and the active profile's live health. Written only by
+ * `bridge.js`, read by the control panel's **AI Brain** row.
+ */
+export const ai = {
+  /** Active profile name ("" until the first status arrives). */
+  active: "",
+  /** `[{ name, label, kind, model, endpoint? }]`, in rules-file order. */
+  profiles: [],
+  /** `{ reachable, status: "online"|"offline"|"cli", detail }`. */
+  health: { reachable: false, status: "offline", detail: "" },
+  /** True once a real status has been applied (a missing file shows "no profiles"). */
+  checked: false,
+};
+
 /* ---------- rig runtime (model, bones, images, pose, world) ---------- */
 export const RT = {
   model: null,

@@ -1,5 +1,6 @@
 ﻿# Rust build outputs
 src-tauri/target/
+src-tauri/target-scratch/
 target/
 
 # Legacy multi-GB prototypes

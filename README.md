@@ -150,7 +150,7 @@ executable that owns it, the focused window's `window_rect` and the top five
 window's top border and keeps its gaze on the window while it sits there. `GET /clipboard` reads the last-copied text (2000 chars max).
 `GET /events` is a Server-Sent Events stream of *what the avatar did*: `state`,
 `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`,
-`interaction`, `user_reply`, `alert`, `session_reset`. An agent can therefore block on the stream
+`interaction`, `user_reply`, `alert`, `session_reset`, `ai_profile`. An agent can therefore block on the stream
 instead of polling `/state`:
 
 ```bash
@@ -302,6 +302,22 @@ falls back to the built-in defaults shown here:
   "ack_emote": "thinking",
   "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
+  "active_profile": "hermes",
+  "ai_profiles": {
+    "lfm3-fast": {
+      "kind": "openai_compat",
+      "label": "LFM3 1.7B (llama.cpp)",
+      "endpoint": "http://127.0.0.1:8080",
+      "model": "lfm3-1.7b",
+      "max_tokens": 320,
+      "timeout_secs": 45
+    },
+    "hermes": {
+      "kind": "hermes_cli",
+      "label": "Hermes CLI",
+      "cmd": "hermes chat --continue {session} --create-if-missing -Q -q"
+    }
+  },
   "webhook_url": null
 }
 ```
@@ -313,10 +329,46 @@ substrings, blank = wildcard, first match wins. A match supplies the ack
 clip) and a `prompt_hint` that is appended to the Hermes prompt as `Context: …`.
 `alerts` throttles `POST /alert` frames from outside (network monitor, cron).
 
-`quick_tasks` is the command bar's chips (`[{label, prompt}]`, at most 6) — edit
-the file, reopen the bar, and the buttons change, no rebuild. `max_session_turns`
-and `session_idle_reset_secs` rotate the conversation automatically (after N
-turns / after a long break), and `session_base` is the id prefix.
+`quick_tasks` is the command bar's chips (`[{label, prompt, profile?}]`, at most
+6) — edit the file, reopen the bar, and the buttons change, no rebuild.
+`max_session_turns` and `session_idle_reset_secs` rotate the conversation
+automatically (after N turns / after a long break), and `session_base` is the id
+prefix.
+
+### Choosing the brain (`ai_profiles`)
+
+A trigger does not have to go to `hermes_cmd`. `ai_profiles` names one or more
+inference targets, and `active_profile` says which one answers:
+
+* **`openai_compat`** — any `/v1/chat/completions` server (`llama.cpp`, Ollama,
+  LM Studio): `{kind, endpoint, model, api_key?, max_tokens?, timeout_secs?,
+  system_prompt?}`. Because the model has no MCP tools, the watcher inlines a
+  fresh `GET /context` snapshot (and the clipboard, only when the user's message
+  asks about it), then sends **one** request with
+  `response_format: {"type":"json_object"}`, parses
+  `{speech, expression?, perch_edge?, window_process?, details?, escalate?}` and
+  performs the actions itself (`POST /perch` → `POST /emote` → `POST /speak`,
+  bubble cut to 180 chars, `details` forwarded). `escalate: true` hands the same
+  prompt to the CLI profile; a dead or slow server gets the sad fallback bubble
+  instead of a stuck **Thinking…**.
+* **`hermes_cli`** — the existing agent runner (`{kind, label, cmd,
+  timeout_secs?}`), with `{session}` rotation and the headless directive.
+
+`app_rules[].profile` and `quick_tasks[].profile` pin one trigger to a specific
+brain (a fast model for editor noise, the agent for anything with tools). The
+panel's **AI Brain** row switches the active profile live — `POST /ai-profile`
+persists it to this file and broadcasts an `ai_profile` frame, so the running
+watcher adopts it on the **next trigger** without a restart:
+
+```bash
+curl -s localhost:8765/ai-profiles                     # profiles + active_health
+curl -s -X POST localhost:8765/ai-profile \
+     -H 'content-type: application/json' -d '{"name":"lfm3-fast"}'
+```
+
+`active_health` is probed on demand (`GET /health`, then `/v1/models`, 800 ms
+cap) and reports `online`, `offline` (with the endpoint/error) or `cli` for the
+agent path.
 
 The shipped `hermes_cmd` keeps one conversation across triggers and is
 **rotatable**: `hermes chat --continue {session} --create-if-missing -Q -q`.
@@ -331,11 +383,11 @@ are rejected on a resumed session — put them in `config.yaml` instead.
 ## Hermes / MCP
 
 `cargo build` also produces a second binary, **`char-rig-mcp.exe`** — a stdio MCP
-server that exposes the avatar to Hermes (or any MCP client) as thirteen tools:
+server that exposes the avatar to Hermes (or any MCP client) as fourteen tools:
 `avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_perch`, `avatar_wave`,
 `avatar_pose`, `avatar_get_context`, `avatar_get_clipboard`,
 `avatar_set_clipboard`, `avatar_list_models`, `avatar_switch_model`,
-`avatar_list_animations`, `avatar_animate`.
+`avatar_list_animations`, `avatar_animate`, `avatar_switch_ai`.
 `avatar_get_context` carries the window title, the owning `process_name`, the
 foreground `window_rect`, the top five `visible_windows`, idle seconds and the
 last 15 events; `avatar_get_clipboard` returns the last-copied text (2000 chars

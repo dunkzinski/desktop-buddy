@@ -29,9 +29,11 @@
 //!
 //! Diagnostics always go to stderr; stdout carries only `--dry-run` payloads.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -85,6 +87,771 @@ const FALLBACK_SPEECH_DURATION_MS: u64 = 4000;
 /// /emote`; anything else is treated as a custom keyframe clip name and played
 /// with `POST /animate`.
 const EXPRESSIONS: [&str; 6] = ["neutral", "happy", "sad", "surprised", "thinking", "angry"];
+
+/// Profile name used when `watcher_rules.json` configures no `ai_profiles`, and
+/// the name the OpenAI backend escalates to by default.
+const DEFAULT_AI_PROFILE: &str = "hermes";
+
+/// Longest speech bubble the `openai_compat` path forwards (`POST /speak`).
+///
+/// The bubble is a fixed-width card; a small model happily writes a paragraph.
+/// Longer text still reaches the user — in `details`, which renders as a
+/// scrollable drawer with a Copy button.
+const MAX_SPEECH_CHARS: usize = 180;
+
+/// Longest `details` block forwarded to `POST /speak` (mirrors the page's cap).
+const MAX_DETAILS_CHARS: usize = 8000;
+
+/// Default per-request timeout for an `openai_compat` profile.
+const DEFAULT_OPENAI_TIMEOUT_SECS: u64 = 60;
+
+/// The JSON contract both AI paths are asked for.
+///
+/// Kept as one constant so the system prompt, the request's `response_format`
+/// and [`AiReply`] cannot drift apart: `escalate` is how a fast local model
+/// says "this one needs the big agent".
+const AI_REPLY_CONTRACT: &str = "Reply with ONE JSON object and nothing else: \
+{\"speech\": string (the short bubble, under 180 characters), \
+\"expression\"?: \"neutral\"|\"happy\"|\"sad\"|\"surprised\"|\"thinking\"|\"angry\", \
+\"perch_edge\"?: \"top_left\"|\"top_right\"|\"left\"|\"right\"|\"bottom\", \
+\"window_process\"?: string (only with perch_edge; a substring of the executable name, e.g. \"code\"), \
+\"details\"?: string (long code/diff/log text; never put that in speech), \
+\"escalate\"?: boolean}. \
+Set escalate to true (and speech to one short sentence) when the task needs tools, files or a real agent turn; \
+otherwise answer yourself.";
+
+/* ------------------------------------------------------------------ *
+ * AI profiles (inference backends)
+ * ------------------------------------------------------------------ */
+
+/// One configured inference target, tagged by `kind` in `watcher_rules.json`.
+///
+/// Two flavours, and they are deliberately different shapes: a local
+/// OpenAI-compatible server is a *fast responder* (one HTTP round-trip, a JSON
+/// bubble, no tools), while the Hermes CLI is a *full agent* (one process, one
+/// turn, MCP tools, sessions). The watcher can run either, and the HTTP one can
+/// escalate into the CLI one.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AiProfile {
+    /// `llama.cpp` / Ollama / any `/v1/chat/completions` server.
+    OpenaiCompat {
+        /// Human name for the panel dropdown.
+        #[serde(default)]
+        label: String,
+        /// Base URL (`http://127.0.0.1:8080`) or the full chat-completions URL.
+        endpoint: String,
+        /// Model name the server knows (e.g. `lfm3-1.7b`).
+        #[serde(default)]
+        model: String,
+        /// Sent as `Authorization: Bearer …` when set.
+        #[serde(default)]
+        api_key: Option<String>,
+        #[serde(default)]
+        max_tokens: Option<u32>,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+        /// Prepended to [`AI_REPLY_CONTRACT`] as the system message.
+        #[serde(default)]
+        system_prompt: Option<String>,
+    },
+    /// The existing `hermes chat …` runner: a real agent turn with MCP tools.
+    HermesCli {
+        #[serde(default)]
+        label: String,
+        /// Command template; `{session}` and `{prompt}` are substituted.
+        cmd: String,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+    },
+}
+
+impl AiProfile {
+    /// `openai_compat` or `hermes_cli` — the `kind` tag, as a string.
+    fn kind(&self) -> &'static str {
+        match self {
+            AiProfile::OpenaiCompat { .. } => "openai_compat",
+            AiProfile::HermesCli { .. } => "hermes_cli",
+        }
+    }
+
+    /// Panel label, falling back to the model/command so a bare profile still
+    /// reads as something in the dropdown.
+    fn label(&self, name: &str) -> String {
+        let label = match self {
+            AiProfile::OpenaiCompat { label, model, .. } => {
+                if label.trim().is_empty() { model.clone() } else { label.clone() }
+            }
+            AiProfile::HermesCli { label, .. } => label.clone(),
+        };
+        let label = label.trim();
+        if label.is_empty() {
+            name.to_string()
+        } else {
+            label.to_string()
+        }
+    }
+
+    fn endpoint(&self) -> Option<&str> {
+        match self {
+            AiProfile::OpenaiCompat { endpoint, .. } => Some(endpoint.as_str()),
+            AiProfile::HermesCli { .. } => None,
+        }
+    }
+
+    fn model(&self) -> Option<&str> {
+        match self {
+            AiProfile::OpenaiCompat { model, .. } => Some(model.as_str()),
+            AiProfile::HermesCli { .. } => None,
+        }
+    }
+
+    /// Per-profile timeout, or the launch default for that kind.
+    fn timeout(&self, default_cli: Duration) -> Duration {
+        let secs = match self {
+            AiProfile::OpenaiCompat { timeout_secs, .. } => {
+                timeout_secs.unwrap_or(DEFAULT_OPENAI_TIMEOUT_SECS)
+            }
+            AiProfile::HermesCli { timeout_secs, .. } => {
+                return timeout_secs
+                    .map(|secs| Duration::from_secs(secs.max(1)))
+                    .unwrap_or(default_cli);
+            }
+        };
+        Duration::from_secs(secs.max(1))
+    }
+
+    /// Is this the full-agent CLI runner (as opposed to a no-tools HTTP model)?
+    fn is_cli(&self) -> bool {
+        matches!(self, AiProfile::HermesCli { .. })
+    }
+}
+
+/// The profiles the watcher may dispatch to, plus which one is active.
+///
+/// Kept behind its own lock and updated from an `ai_profile` SSE frame, so a
+/// switch in the panel takes effect on the **next trigger** without restarting
+/// the watcher (or rebuilding it: the file is re-read).
+#[derive(Debug, Clone, Default, PartialEq)]
+struct AiRuntime {
+    active: String,
+    profiles: BTreeMap<String, AiProfile>,
+}
+
+impl AiRuntime {
+    /// Build the runtime from the rules file.
+    ///
+    /// Backwards compatible on purpose: a rules file with only `hermes_cmd`
+    /// (every file that existed before profiles did) gets a synthesised
+    /// `hermes` profile, and a file with profiles *and* `hermes_cmd` keeps the
+    /// legacy command reachable as the escalation target.
+    fn from_rules(rules: &Rules) -> Self {
+        let mut profiles = rules.ai_profiles.clone();
+        let legacy = rules
+            .hermes_cmd
+            .clone()
+            .map(|cmd| cmd.trim().to_string())
+            .filter(|cmd| !cmd.is_empty());
+        if let Some(cmd) = legacy {
+            profiles
+                .entry(DEFAULT_AI_PROFILE.to_string())
+                .or_insert(AiProfile::HermesCli {
+                    label: "Hermes CLI".to_string(),
+                    cmd,
+                    timeout_secs: rules.hermes_timeout_secs,
+                });
+        }
+
+        let requested = rules.active_profile.trim();
+        let active = if !requested.is_empty() && profiles.contains_key(requested) {
+            requested.to_string()
+        } else if profiles.contains_key(DEFAULT_AI_PROFILE) {
+            DEFAULT_AI_PROFILE.to_string()
+        } else {
+            profiles.keys().next().cloned().unwrap_or_default()
+        };
+        Self { active, profiles }
+    }
+
+    fn profile(&self, name: &str) -> Option<&AiProfile> {
+        self.profiles.get(name.trim())
+    }
+
+    /// The profile a trigger should use: the per-trigger override (an
+    /// `app_rules`/`quick_tasks` `profile`), else the active one.
+    ///
+    /// An unknown override falls back to the active profile rather than
+    /// failing the dispatch — a stale chip must still get an answer.
+    fn resolved(&self, requested: Option<&str>) -> Option<(String, &AiProfile)> {
+        if let Some(name) = requested.map(str::trim).filter(|name| !name.is_empty()) {
+            if let Some(profile) = self.profile(name) {
+                return Some((name.to_string(), profile));
+            }
+        }
+        let name = self.active.clone();
+        self.profile(&name).map(|profile| (name, profile))
+    }
+
+    /// The CLI profile an `escalate: true` reply hands off to.
+    ///
+    /// Prefers the conventional `hermes` name, then any `hermes_cli` profile,
+    /// so a file that renames it still escalates.
+    fn cli_fallback(&self) -> Option<(String, &AiProfile)> {
+        if let Some(profile) = self
+            .profile(DEFAULT_AI_PROFILE)
+            .filter(|profile| profile.is_cli())
+        {
+            return Some((DEFAULT_AI_PROFILE.to_string(), profile));
+        }
+        self.profiles
+            .iter()
+            .find(|(_, profile)| profile.is_cli())
+            .map(|(name, profile)| (name.clone(), profile))
+    }
+
+    /// Switch the active profile. `false` when the name is not configured.
+    ///
+    /// The daemon itself switches by re-reading the rules file (see
+    /// [`AiShared::reload`]); this is the validated in-memory primitive the
+    /// tests pin down, and what any future in-process switch would call.
+    #[allow(dead_code)]
+    fn set_active(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if self.profiles.contains_key(name) {
+            self.active = name.to_string();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn names(&self) -> Vec<String> {
+        self.profiles.keys().cloned().collect()
+    }
+}
+
+/// Shared, switchable AI state: the runtime itself plus where it was loaded
+/// from (so an `ai_profile` frame can re-read the edited file without a restart).
+#[derive(Debug, Clone, Default)]
+struct AiShared {
+    runtime: Arc<Mutex<AiRuntime>>,
+    rules_path: Option<PathBuf>,
+}
+
+fn lock_ai(ai: &AiShared) -> MutexGuard<'_, AiRuntime> {
+    ai.runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+impl AiShared {
+    fn new(rules: &Rules, rules_path: Option<PathBuf>) -> Self {
+        Self {
+            runtime: Arc::new(Mutex::new(AiRuntime::from_rules(rules))),
+            rules_path,
+        }
+    }
+
+    fn snapshot(&self, requested: Option<&str>) -> Option<(String, AiProfile)> {
+        lock_ai(self).resolved(requested).map(|(name, profile)| (name, profile.clone()))
+    }
+
+    fn cli_fallback(&self) -> Option<(String, AiProfile)> {
+        lock_ai(self)
+            .cli_fallback()
+            .map(|(name, profile)| (name, profile.clone()))
+    }
+
+    /// Re-read `watcher_rules.json` and adopt its `active_profile`.
+    ///
+    /// Called for every `ai_profile` frame: the panel persists the switch to
+    /// disk, then broadcasts, so the file — not the frame payload — is the
+    /// source of truth and a hand-edited file behaves the same way.
+    fn reload(&self) -> Option<String> {
+        let path = self.rules_path.as_ref()?;
+        let text = std::fs::read_to_string(path).ok()?;
+        let rules = Rules::from_json(&text).ok()?;
+        let mut next = AiRuntime::from_rules(&rules);
+        let adopted = next.active.clone();
+        {
+            let mut runtime = lock_ai(self);
+            std::mem::swap(&mut *runtime, &mut next);
+        }
+        Some(adopted)
+    }
+}
+
+/// One action an AI reply asks the avatar to perform.
+///
+/// Parsed *before* any HTTP side effect, so a malformed reply costs nothing and
+/// the order is fixed (perch, then face, then words) instead of whatever order
+/// the model happened to imagine.
+#[derive(Debug, Clone, PartialEq)]
+enum AvatarAction {
+    Perch { edge: String, window_process: Option<String> },
+    Emote { expression: String },
+    Speak { text: String, expression: Option<String>, details: Option<String> },
+}
+
+/// The JSON object an `openai_compat` model is asked for.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct AiReply {
+    speech: String,
+    expression: Option<String>,
+    perch_edge: Option<String>,
+    window_process: Option<String>,
+    details: Option<String>,
+    escalate: bool,
+}
+
+/// Perch edges `POST /perch` accepts (mirrors `PerchEdge` in `lib.rs`).
+const PERCH_EDGES: [&str; 5] = ["top_left", "top_right", "left", "right", "bottom"];
+
+/// Cut `text` to at most `max` **characters** (never mid-codepoint).
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+impl AiReply {
+    /// Parse the model's JSON object, tolerating ```json fences and the
+    /// occasional leading sentence a 1.7B model cannot stop itself writing.
+    fn parse(raw: &str) -> Result<AiReply, String> {
+        let mut text = raw.trim();
+        if let Some(start) = text.find("```") {
+            let rest = &text[start + 3..];
+            let rest = rest.strip_prefix("json").unwrap_or(rest);
+            text = rest.trim_start();
+            if let Some(end) = text.find("```") {
+                text = &text[..end];
+            }
+        }
+        let slice = match (text.find('{'), text.rfind('}')) {
+            (Some(start), Some(end)) if end > start => &text[start..=end],
+            _ => return Err(format!("no JSON object in the reply: {raw:.200}")),
+        };
+        let value: Value = serde_json::from_str(slice)
+            .map_err(|err| format!("reply is not valid JSON ({err}): {slice:.200}"))?;
+        if !value.is_object() {
+            return Err("the reply JSON is not an object".to_string());
+        }
+
+        let text_field = |key: &str| -> Option<String> {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+
+        Ok(AiReply {
+            speech: text_field("speech").unwrap_or_default(),
+            expression: text_field("expression")
+                .map(|value| value.to_ascii_lowercase())
+                .filter(|value| EXPRESSIONS.contains(&value.as_str())),
+            perch_edge: text_field("perch_edge")
+                .map(|value| value.to_ascii_lowercase())
+                .filter(|value| PERCH_EDGES.contains(&value.as_str())),
+            window_process: text_field("window_process"),
+            details: text_field("details").map(|value| truncate_chars(&value, MAX_DETAILS_CHARS)),
+            escalate: value.get("escalate").and_then(Value::as_bool).unwrap_or(false),
+        })
+    }
+
+    /// The ordered side effects, with the bubble already truncated.
+    fn actions(&self) -> Vec<AvatarAction> {
+        let mut actions = Vec::new();
+        if let Some(edge) = self.perch_edge.clone() {
+            actions.push(AvatarAction::Perch {
+                edge,
+                window_process: self.window_process.clone(),
+            });
+        }
+        if let Some(expression) = self.expression.clone() {
+            actions.push(AvatarAction::Emote { expression });
+        }
+        let speech = self.speech.trim();
+        if !speech.is_empty() {
+            actions.push(AvatarAction::Speak {
+                text: truncate_chars(speech, MAX_SPEECH_CHARS),
+                expression: self.expression.clone(),
+                details: self.details.clone(),
+            });
+        }
+        actions
+    }
+}
+
+/// What one backend did, for the log line and the tests.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct DispatchReport {
+    /// Profile name that actually answered.
+    backend: String,
+    /// `openai_compat` or `hermes_cli`.
+    kind: &'static str,
+    actions: Vec<AvatarAction>,
+    /// `true` when the reply asked for the CLI hand-off.
+    escalated: bool,
+    /// Set when the backend failed (a fallback bubble was posted).
+    failure: Option<String>,
+}
+
+/// Everything one dispatch needs. `flight` is owned so the single-flight permit
+/// covers the backend's whole lifetime — including a CLI child and an HTTP
+/// round-trip.
+struct DispatchCtx<'a> {
+    client: &'a reqwest::Client,
+    api_url: &'a str,
+    prompt: &'a str,
+    session: &'a str,
+    flight: FlightGuard,
+}
+
+/// A profile that can actually run a trigger.
+///
+/// Deliberately object-safe without `async_trait`: each backend returns a boxed
+/// future, which is all the two implementations need and keeps the dependency
+/// list unchanged.
+trait InferenceBackend {
+    /// Profile name (for logging).
+    fn name(&self) -> &str;
+    /// `openai_compat` / `hermes_cli`.
+    fn kind(&self) -> &'static str;
+    /// Run one trigger end to end.
+    fn dispatch<'a>(
+        &'a self,
+        ctx: DispatchCtx<'a>,
+    ) -> Pin<Box<dyn Future<Output = DispatchReport> + Send + 'a>>;
+}
+
+/// `POST /v1/chat/completions` on a local server (llama.cpp, Ollama, …).
+struct OpenaiCompatBackend {
+    name: String,
+    endpoint: String,
+    model: String,
+    api_key: Option<String>,
+    max_tokens: Option<u32>,
+    timeout: Duration,
+    system_prompt: Option<String>,
+}
+
+impl OpenaiCompatBackend {
+    fn from_profile(name: &str, profile: &AiProfile, default_cli: Duration) -> Option<Self> {
+        let AiProfile::OpenaiCompat {
+            endpoint,
+            model,
+            api_key,
+            max_tokens,
+            system_prompt,
+            ..
+        } = profile
+        else {
+            return None;
+        };
+        Some(Self {
+            name: name.to_string(),
+            endpoint: endpoint.trim().to_string(),
+            model: model.trim().to_string(),
+            api_key: api_key.clone().filter(|key| !key.trim().is_empty()),
+            max_tokens: *max_tokens,
+            timeout: profile.timeout(default_cli),
+            system_prompt: system_prompt.clone(),
+        })
+    }
+
+    /// Full URL of the chat-completions endpoint for this profile.
+    ///
+    /// Accepts a base URL (`http://127.0.0.1:8080`, `…:11434/v1`) and the full
+    /// path, because that is what people paste into a config file.
+    fn chat_url(endpoint: &str) -> String {
+        let base = endpoint.trim().trim_end_matches('/');
+        if base.ends_with("/chat/completions") {
+            base.to_string()
+        } else if base.ends_with("/v1") {
+            format!("{base}/chat/completions")
+        } else {
+            format!("{base}/v1/chat/completions")
+        }
+    }
+
+    fn system_message(&self) -> String {
+        match self.system_prompt.as_deref().map(str::trim) {
+            Some(extra) if !extra.is_empty() => format!("{extra}\n\n{AI_REPLY_CONTRACT}"),
+            _ => format!(
+                "You are the brain of a small desktop avatar that lives on the user's screen. \
+You do not have tools: you see only the context you are given and you answer with a JSON object. \
+{AI_REPLY_CONTRACT}"
+            ),
+        }
+    }
+
+    /// Build the request body. Pure, so the contract is testable.
+    fn request_body(&self, prompt: &str) -> Value {
+        let mut body = json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": self.system_message() },
+                { "role": "user", "content": prompt },
+            ],
+            "response_format": { "type": "json_object" },
+            "stream": false,
+            "temperature": 0.4,
+        });
+        if let Some(max_tokens) = self.max_tokens {
+            body["max_tokens"] = json!(max_tokens);
+        }
+        body
+    }
+
+    /// The user message for a no-tools model.
+    ///
+    /// The HTTP backend cannot call `avatar_get_context` or
+    /// `avatar_get_clipboard` — it has no MCP tools — so the watcher fetches the
+    /// same data and inlines it. `/context` is refreshed on every dispatch (the
+    /// trigger's snapshot may be seconds old); the clipboard is only fetched
+    /// when the user's words actually mention it, because reading the clipboard
+    /// is the single most privacy-sensitive call this process makes.
+    async fn augmented_prompt(
+        &self,
+        client: &reqwest::Client,
+        api_url: &str,
+        base: &str,
+    ) -> String {
+        let mut prompt = base.to_string();
+
+        match fetch_context(client, api_url).await {
+            Ok(context) => {
+                let mut lines = format!(
+                    "Live avatar context: focused window {:?}",
+                    context.window_title
+                );
+                if !context.process_name.is_empty() {
+                    lines.push_str(&format!(", process {:?}", context.process_name));
+                }
+                lines.push_str(&format!(", idle {}s.", context.idle_secs));
+                prompt.push_str("\n\n");
+                prompt.push_str(&lines);
+            }
+            Err(err) => eprintln!("[watcher] openai prompt could not refresh /context: {err}"),
+        }
+
+        if mentions_clipboard(base) {
+            match fetch_clipboard(client, api_url).await {
+                Ok(text) if !text.trim().is_empty() => {
+                    prompt.push_str("\n\nThe user's clipboard (truncated to fit):\n");
+                    prompt.push_str(text.trim());
+                }
+                Ok(_) => prompt.push_str("\n\nThe clipboard is empty."),
+                Err(err) => eprintln!("[watcher] openai prompt could not read /clipboard: {err}"),
+            }
+        }
+
+        prompt
+    }
+
+    /// One round-trip: POST the prompt, return the parsed reply.
+    async fn ask(&self, client: &reqwest::Client, prompt: &str) -> Result<AiReply, String> {
+        let url = Self::chat_url(&self.endpoint);
+        let mut request = client.post(&url).json(&self.request_body(prompt)).timeout(self.timeout);
+        if let Some(key) = &self.api_key {
+            request = request.header("authorization", format!("Bearer {key}"));
+        }
+        let response = request.send().await.map_err(|err| err.to_string())?;
+        let status = response.status();
+        let body: Value = response.json().await.map_err(|err| err.to_string())?;
+        if !status.is_success() {
+            let message = body
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("no message");
+            return Err(format!("{url} answered {status}: {message}"));
+        }
+        let content = body
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "the reply has no choices[0].message.content".to_string())?;
+        AiReply::parse(content)
+    }
+}
+
+impl InferenceBackend for OpenaiCompatBackend {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind(&self) -> &'static str {
+        "openai_compat"
+    }
+
+    fn dispatch<'a>(
+        &'a self,
+        ctx: DispatchCtx<'a>,
+    ) -> Pin<Box<dyn Future<Output = DispatchReport> + Send + 'a>> {
+        Box::pin(async move {
+            // Hold the permit for the whole round-trip: a second trigger must
+            // not stack another model call on a busy local server.
+            let _flight = ctx.flight;
+            let prompt = self
+                .augmented_prompt(ctx.client, ctx.api_url, ctx.prompt)
+                .await;
+            let reply = match self.ask(ctx.client, &prompt).await {
+                Ok(reply) => reply,
+                Err(err) => {
+                    eprintln!("[watcher] ai profile {:?} failed: {err}", self.name);
+                    post_fallback_speech(ctx.client, ctx.api_url).await;
+                    return DispatchReport {
+                        backend: self.name.clone(),
+                        kind: "openai_compat",
+                        failure: Some(err),
+                        ..DispatchReport::default()
+                    };
+                }
+            };
+
+            let actions = reply.actions();
+            apply_actions(ctx.client, ctx.api_url, &actions).await;
+            eprintln!(
+                "[watcher] ai profile {:?} answered ({} action(s){})",
+                self.name,
+                actions.len(),
+                if reply.escalate { ", escalating" } else { "" }
+            );
+            DispatchReport {
+                backend: self.name.clone(),
+                kind: "openai_compat",
+                actions,
+                escalated: reply.escalate,
+                failure: None,
+            }
+        })
+    }
+}
+
+/// The existing `hermes chat …` runner, wrapped in the backend trait.
+struct HermesCliBackend {
+    name: String,
+    cmd: String,
+    timeout: Duration,
+}
+
+impl HermesCliBackend {
+    fn from_profile(name: &str, profile: &AiProfile, default_cli: Duration) -> Option<Self> {
+        let AiProfile::HermesCli { cmd, .. } = profile else {
+            return None;
+        };
+        Some(Self {
+            name: name.to_string(),
+            cmd: cmd.clone(),
+            timeout: profile.timeout(default_cli),
+        })
+    }
+}
+
+impl InferenceBackend for HermesCliBackend {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind(&self) -> &'static str {
+        "hermes_cli"
+    }
+
+    fn dispatch<'a>(
+        &'a self,
+        ctx: DispatchCtx<'a>,
+    ) -> Pin<Box<dyn Future<Output = DispatchReport> + Send + 'a>> {
+        Box::pin(async move {
+            // `spawn_hermes` owns the invite-a-model work *and* the fallback
+            // bubble for a timeout / non-zero exit.
+            let spawned = spawn_hermes(
+                &self.cmd,
+                ctx.prompt,
+                ctx.session,
+                self.timeout,
+                ctx.client,
+                ctx.api_url,
+                ctx.flight,
+            )
+            .await;
+            DispatchReport {
+                backend: self.name.clone(),
+                kind: "hermes_cli",
+                escalated: false,
+                failure: (!spawned).then(|| "the CLI process could not be started".to_string()),
+                ..DispatchReport::default()
+            }
+        })
+    }
+}
+
+/// Build the backend for one profile.
+fn backend_for(
+    name: &str,
+    profile: &AiProfile,
+    default_cli: Duration,
+) -> Option<Box<dyn InferenceBackend + Send>> {
+    match profile {
+        AiProfile::OpenaiCompat { .. } => OpenaiCompatBackend::from_profile(name, profile, default_cli)
+            .map(|backend| Box::new(backend) as Box<dyn InferenceBackend + Send>),
+        AiProfile::HermesCli { .. } => HermesCliBackend::from_profile(name, profile, default_cli)
+            .map(|backend| Box::new(backend) as Box<dyn InferenceBackend + Send>),
+    }
+}
+
+/// Perform the reply's side effects in order: perch → face → words.
+///
+/// Every failure is logged and swallowed: the avatar being mid-move (or briefly
+/// unreachable) must not abort the remaining actions, let alone the dispatch.
+async fn apply_actions(client: &reqwest::Client, api_url: &str, actions: &[AvatarAction]) {
+    for action in actions {
+        let (path, body) = match action {
+            AvatarAction::Perch { edge, window_process } => {
+                let mut body = json!({ "edge": edge });
+                if let Some(process) = window_process {
+                    body["window_process"] = json!(process);
+                }
+                ("/perch", body)
+            }
+            AvatarAction::Emote { expression } => (
+                "/emote",
+                json!({
+                    "expression": expression,
+                    "duration_ms": ACK_EMOTE_DURATION_MS,
+                    "revert": "neutral",
+                }),
+            ),
+            AvatarAction::Speak { text, expression, details } => {
+                let mut body = json!({ "text": text });
+                if let Some(expression) = expression {
+                    body["expression"] = json!(expression);
+                }
+                if let Some(details) = details {
+                    body["details"] = json!(details);
+                }
+                ("/speak", body)
+            }
+        };
+        let url = format!("{api_url}{path}");
+        match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
+            Ok(response) if !response.status().is_success() => {
+                eprintln!("[watcher] {path} rejected with {}", response.status())
+            }
+            Ok(_) => {}
+            Err(err) => eprintln!("[watcher] {path} failed: {err}"),
+        }
+    }
+}
+
 
 /// Appended to every `--hermes-cmd` prompt.
 ///
@@ -386,6 +1153,10 @@ struct AppRule {
     animation: Option<String>,
     /// Extra context appended to the Hermes prompt for this app.
     prompt_hint: Option<String>,
+    /// AI profile to dispatch this app's triggers to, overriding
+    /// `active_profile` (e.g. a fast local model for editor noise, the agent
+    /// for a terminal).
+    profile: Option<String>,
 }
 
 impl AppRule {
@@ -438,6 +1209,9 @@ impl Default for AlertRules {
 struct QuickTask {
     label: String,
     prompt: String,
+    /// AI profile this chip runs on (forwarded with the `user_reply` frame).
+    #[serde(default)]
+    profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
@@ -459,6 +1233,16 @@ struct Rules {
     session_idle_reset_secs: Option<u64>,
     /// Prefix for generated session ids; defaults to `char-rig`.
     session_base: Option<String>,
+    /// Name of the `ai_profiles` entry triggers dispatch to.
+    ///
+    /// Absent (or naming a profile that does not exist) means: `hermes` when
+    /// configured, else the first profile in the map.
+    #[serde(default)]
+    active_profile: String,
+    /// Inference targets: local OpenAI-compatible servers and Hermes CLI
+    /// commands, keyed by the name the panel and the rules file use.
+    #[serde(default)]
+    ai_profiles: BTreeMap<String, AiProfile>,
     ack_emote: Option<String>,
     hermes_cmd: Option<String>,
     /// Longest `/hermes_cmd` timeout, in seconds.
@@ -472,7 +1256,14 @@ impl Rules {
     }
 
     /// Read `--rules` (or the default locations); fall back to defaults.
+    #[allow(dead_code)] // the convenience wrapper is used by the tests
     fn load(path: Option<&str>) -> Rules {
+        Self::load_with_path(path).0
+    }
+
+    /// Same, but also report the file that was actually used (the watcher keeps
+    /// it so an `ai_profile` frame can re-read the edited rules).
+    fn load_with_path(path: Option<&str>) -> (Rules, Option<PathBuf>) {
         let candidates: Vec<PathBuf> = match path {
             Some(explicit) => vec![PathBuf::from(explicit)],
             None => {
@@ -491,14 +1282,14 @@ impl Rules {
                 Ok(text) => match Rules::from_json(&text) {
                     Ok(rules) => {
                         eprintln!("[watcher] rules loaded from {}", candidate.display());
-                        return rules;
+                        return (rules, Some(candidate));
                     }
                     Err(err) => {
                         eprintln!(
                             "[watcher] {} is not valid rules ({err}); using built-in defaults",
                             candidate.display()
                         );
-                        return Rules::default();
+                        return (Rules::default(), None);
                     }
                 },
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
@@ -511,7 +1302,7 @@ impl Rules {
         } else {
             eprintln!("[watcher] no {DEFAULT_RULES_FILE}; using built-in defaults");
         }
-        Rules::default()
+        (Rules::default(), None)
     }
 
     /// Is this interaction kind configured to wake the agent?
@@ -777,6 +1568,8 @@ struct Trigger {
     animation: Option<String>,
     /// Tailored context for the prompt (`app_rules[].prompt_hint`).
     hint: Option<String>,
+    /// AI profile override (`app_rules[].profile`, or the chip's `profile`).
+    profile: Option<String>,
     /// The user's own words, from a `user_reply` frame.
     text: Option<String>,
     /// `info` | `warn` | `error`, from an `alert` frame.
@@ -918,6 +1711,14 @@ fn user_reply_trigger(shared: &Shared, payload: &Value, now: Instant) -> Option<
         window_title: shared.context.window_title.clone(),
         idle_secs: shared.context.idle_secs,
         text: Some(text.to_string()),
+        // A quick-task chip may pin its own profile (a fast model for a
+        // clipboard summary, the agent for anything that needs tools).
+        profile: payload
+            .get("profile")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string),
         ..Trigger::default()
     })
 }
@@ -1030,6 +1831,7 @@ fn context_triggers(
                 keyword: keyword.map(str::to_string),
                 animation: app_rule.and_then(|rule| rule.animation.clone()),
                 hint: app_rule.and_then(|rule| rule.prompt_hint.clone()),
+                profile: app_rule.and_then(|rule| rule.profile.clone()),
                 ..Trigger::default()
             });
         }
@@ -1353,24 +2155,37 @@ fn fallback_speech_for(outcome: RunOutcome) -> Option<Value> {
     outcome.is_failure().then(fallback_speech_body)
 }
 
+/// Post the fallback bubble. Returns whether the avatar accepted it.
+///
+/// Shared by both AI backends and by the CLI runner's failure path, so a stuck
+/// "Thinking…" is cleared the same way no matter where the dispatch died.
+async fn post_fallback_speech(client: &reqwest::Client, api_url: &str) -> bool {
+    let body = fallback_speech_body();
+    let url = format!("{api_url}/speak");
+    match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
+        Ok(response) if !response.status().is_success() => {
+            eprintln!("[watcher] fallback speech rejected with {}", response.status());
+            false
+        }
+        Ok(_) => true,
+        Err(err) => {
+            eprintln!("[watcher] fallback speech failed: {err}");
+            false
+        }
+    }
+}
+
 /// Post the failure bubble, logging rather than propagating: the avatar being
 /// unreachable must never turn into another error path.
 async fn deliver_fallback(client: &reqwest::Client, api_url: &str, outcome: RunOutcome) {
-    let Some(body) = fallback_speech_for(outcome) else {
+    if fallback_speech_for(outcome).is_none() {
         return;
-    };
+    }
     eprintln!(
         "[watcher] dispatch ended with {}; posting the fallback speech bubble",
         outcome.label()
     );
-    let url = format!("{api_url}/speak");
-    match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
-        Ok(response) if !response.status().is_success() => {
-            eprintln!("[watcher] fallback speech rejected with {}", response.status())
-        }
-        Ok(_) => {}
-        Err(err) => eprintln!("[watcher] fallback speech failed: {err}"),
-    }
+    post_fallback_speech(client, api_url).await;
 }
 
 /// Spawn the configured command, wait for it under a timeout, and log the exit.
@@ -1515,6 +2330,7 @@ async fn handle_trigger(
     trigger: &Trigger,
     flight: &SingleFlight,
     session: &Arc<Mutex<SessionState>>,
+    ai: &AiShared,
 ) {
     let payload = trigger.payload(now_ms());
 
@@ -1582,42 +2398,106 @@ async fn handle_trigger(
         }
     }
 
-    // 3. Hermes (or a plain log line when nothing is wired up). The guard moves
-    //    into the child's task so the permit covers the process lifetime.
-    match &config.hermes_cmd {
-        Some(command) => {
-            let prompt = trigger.prompt();
-            // Pick (or rotate) the conversation *before* spawning, so a turn
-            // that trips max_session_turns already lands in the new session.
-            let session_id = {
-                let mut state = lock_session(session);
-                session_for_dispatch(&config.rules, &mut state, Instant::now())
-            };
-            let spawned = spawn_hermes(
-                command,
-                &prompt,
-                &session_id,
-                config.hermes_timeout,
-                client,
-                &config.api_url,
-                guard,
-            )
-            .await;
-            if spawned {
-                let mut state = lock_session(session);
-                state.turns = state.turns.saturating_add(1);
-                state.last_turn = Some(Instant::now());
-            }
-        }
-        None if config.webhook_url.is_none() => {
-            drop(guard);
-            eprintln!(
-                "[watcher] no --hermes-cmd / --webhook-url; payload was {}",
-                payload
-            )
-        }
-        None => drop(guard),
+    // 3. The AI backend (or a plain log line when nothing is wired up). The
+    //    guard moves into the backend, so the permit covers the HTTP round-trip
+    //    or the CLI child's lifetime.
+    let Some((profile_name, profile)) = ai.snapshot(trigger.profile.as_deref()) else {
+        drop(guard);
+        eprintln!("[watcher] no AI profile configured; payload was {payload}");
+        return;
+    };
+
+    let prompt = trigger.prompt();
+    // Pick (or rotate) the conversation *before* any dispatch, so an escalated
+    // hand-off lands in a session that respects max_session_turns.
+    let session_id = {
+        let mut state = lock_session(session);
+        session_for_dispatch(&config.rules, &mut state, Instant::now())
+    };
+
+    let Some(backend) = backend_for(&profile_name, &profile, config.hermes_timeout) else {
+        drop(guard);
+        eprintln!("[watcher] profile {profile_name:?} could not be built; payload was {payload}");
+        return;
+    };
+
+    eprintln!(
+        "[watcher] dispatch via {profile_name:?} ({}, {})",
+        backend.kind(),
+        backend.name()
+    );
+    let report = backend
+        .dispatch(DispatchCtx {
+            client,
+            api_url: &config.api_url,
+            prompt: &prompt,
+            session: &session_id,
+            flight: guard,
+        })
+        .await;
+    log_report(&report);
+    if report.kind == "hermes_cli" && report.failure.is_none() {
+        count_turn(session);
     }
+
+    // 3b. Escalation: a fast local model answered "this needs the agent".
+    if !report.escalated {
+        return;
+    }
+    let Some((fallback_name, fallback_profile)) = ai.cli_fallback() else {
+        eprintln!(
+            "[watcher] {profile_name:?} asked to escalate, but no hermes_cli profile is configured"
+        );
+        return;
+    };
+    let Some(cli) = backend_for(&fallback_name, &fallback_profile, config.hermes_timeout) else {
+        return;
+    };
+    let Some(guard) = flight.try_enter() else {
+        eprintln!("[watcher] cannot escalate: a dispatch is already in flight");
+        return;
+    };
+    eprintln!(
+        "[watcher] escalating {profile_name:?} -> {fallback_name:?} ({})",
+        cli.kind()
+    );
+    let report = cli
+        .dispatch(DispatchCtx {
+            client,
+            api_url: &config.api_url,
+            prompt: &prompt,
+            session: &session_id,
+            flight: guard,
+        })
+        .await;
+    log_report(&report);
+    if report.kind == "hermes_cli" && report.failure.is_none() {
+        count_turn(session);
+    }
+}
+
+/// One line per backend run, so the watcher console shows what answered.
+fn log_report(report: &DispatchReport) {
+    match &report.failure {
+        Some(err) => eprintln!(
+            "[watcher] {} profile {:?} failed: {err}",
+            report.kind, report.backend
+        ),
+        None => eprintln!(
+            "[watcher] {} profile {:?} finished ({} action(s){})",
+            report.kind,
+            report.backend,
+            report.actions.len(),
+            if report.escalated { ", escalating" } else { "" }
+        ),
+    }
+}
+
+/// Count a spawned CLI turn against the current session.
+fn count_turn(session: &Arc<Mutex<SessionState>>) {
+    let mut state = lock_session(session);
+    state.turns = state.turns.saturating_add(1);
+    state.last_turn = Some(Instant::now());
 }
 
 /* ------------------------------------------------------------------ *
@@ -1662,6 +2542,41 @@ async fn fetch_context(client: &reqwest::Client, api_url: &str) -> Result<Contex
     })
 }
 
+/// Does the trigger's words ask about the clipboard?
+///
+/// A no-tools HTTP model cannot call `avatar_get_clipboard`, so the watcher has
+/// to decide *before* the request whether the clipboard belongs in the prompt.
+/// Kept deliberately narrow: "clipboard" or "copied" plus "copy what"-style
+/// phrasing. A false positive only means the model sees text the user just put
+/// on their clipboard; a false negative means it cannot answer the question.
+fn mentions_clipboard(prompt: &str) -> bool {
+    let lowered = prompt.to_lowercase();
+    lowered.contains("clipboard") || lowered.contains("what i copied") || lowered.contains("what did i copy")
+}
+
+/// `GET /clipboard` → the text, or an error when the avatar is unreachable.
+///
+/// The endpoint always answers `ok: true` with `text: ""` for an empty
+/// clipboard, so an empty string is a *successful* read, not a failure.
+async fn fetch_clipboard(client: &reqwest::Client, api_url: &str) -> Result<String, String> {
+    let url = format!("{api_url}/clipboard");
+    let response = client
+        .get(&url)
+        .timeout(CONTEXT_TIMEOUT)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("{url} answered {}", response.status()));
+    }
+    let body: Value = response.json().await.map_err(|err| err.to_string())?;
+    Ok(body
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string())
+}
+
 /* ------------------------------------------------------------------ *
  * tasks
  * ------------------------------------------------------------------ */
@@ -1679,6 +2594,7 @@ async fn handle_frame(
     rules: &Rules,
     shared: &Arc<Mutex<Shared>>,
     session: &Arc<Mutex<SessionState>>,
+    ai: &AiShared,
     tx: &mpsc::Sender<Trigger>,
 ) {
     if frame.event == "hello" || frame.data.is_empty() {
@@ -1696,6 +2612,25 @@ async fn handle_frame(
         .and_then(Value::as_str)
         .unwrap_or(frame.event.as_str());
     let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+
+    // A profile switch is an instruction too: re-read the rules file and adopt
+    // its `active_profile`, so the next trigger dispatches to the new backend
+    // without restarting the watcher.
+    if frame_type == "ai_profile" {
+        let requested = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>");
+        match ai.reload() {
+            Some(active) => {
+                eprintln!("[watcher] ai profile switched to {active:?} (frame asked for {requested:?})")
+            }
+            None => eprintln!(
+                "[watcher] ai_profile frame asked for {requested:?}, but the rules file could not be re-read"
+            ),
+        }
+        return;
+    }
 
     // A reset is an instruction, not an event to report: rotate and stay quiet.
     if frame_type == "session_reset" {
@@ -1744,6 +2679,7 @@ async fn stream_events(
     client: &reqwest::Client,
     shared: &Arc<Mutex<Shared>>,
     session: &Arc<Mutex<SessionState>>,
+    ai: &AiShared,
     tx: &mpsc::Sender<Trigger>,
     backoff: &mut Duration,
 ) -> Result<(), String> {
@@ -1767,7 +2703,7 @@ async fn stream_events(
         let bytes = chunk.map_err(|err| format!("stream error: {err}"))?;
         let text = String::from_utf8_lossy(&bytes);
         for frame in parser.feed(&text) {
-            handle_frame(&frame, &config.rules, shared, session, tx).await;
+            handle_frame(&frame, &config.rules, shared, session, ai, tx).await;
         }
     }
     Err("event stream closed by the server".to_string())
@@ -1779,11 +2715,12 @@ async fn sse_loop(
     client: reqwest::Client,
     shared: Arc<Mutex<Shared>>,
     session: Arc<Mutex<SessionState>>,
+    ai: AiShared,
     tx: mpsc::Sender<Trigger>,
 ) {
     let mut backoff = INITIAL_BACKOFF;
     loop {
-        match stream_events(&config, &client, &shared, &session, &tx, &mut backoff).await {
+        match stream_events(&config, &client, &shared, &session, &ai, &tx, &mut backoff).await {
             Ok(()) => {}
             Err(err) => eprintln!("[watcher] {err}"),
         }
@@ -1842,6 +2779,7 @@ async fn dispatcher(
     config: Config,
     client: reqwest::Client,
     session: Arc<Mutex<SessionState>>,
+    ai: AiShared,
     mut rx: mpsc::Receiver<Trigger>,
 ) {
     let flight = SingleFlight::default();
@@ -1852,7 +2790,7 @@ async fn dispatcher(
                 // `offer` decides queue-vs-drop from the latch state; when it
                 // says `Immediate` nothing is running and we dispatch here.
                 if flight.offer(trigger.clone()) == Offer::Immediate {
-                    handle_trigger(&config, &client, &trigger, &flight, &session).await;
+                    handle_trigger(&config, &client, &trigger, &flight, &session, &ai).await;
                 }
             }
             // A flight ended: fall through and drain the pending slot.
@@ -1867,7 +2805,7 @@ async fn dispatcher(
                 "[watcher] dispatching the queued {} trigger ({})",
                 next.event_type, next.detail
             );
-            handle_trigger(&config, &client, &next, &flight, &session).await;
+            handle_trigger(&config, &client, &next, &flight, &session, &ai).await;
         }
     }
 }
@@ -1887,7 +2825,7 @@ async fn main() {
         }
     };
 
-    let rules = Rules::load(cli.rules_path.as_deref());
+    let (rules, rules_path) = Rules::load_with_path(cli.rules_path.as_deref());
     let config = Config::resolve(cli, rules);
 
     eprintln!(
@@ -1898,22 +2836,49 @@ async fn main() {
         if config.ack_emote.is_empty() { "<off>" } else { &config.ack_emote },
         if config.dry_run { "dry run" } else { "live" }
     );
-    match (&config.hermes_cmd, &config.webhook_url) {
-        (Some(cmd), _) => {
+    let ai = AiShared::new(&config.rules, rules_path.clone());
+    {
+        let runtime = lock_ai(&ai);
+        if runtime.profiles.is_empty() {
             eprintln!(
-                "[watcher] dispatch: spawn {cmd:?} (timeout {}s, one at a time)",
-                config.hermes_timeout.as_secs()
+                "[watcher] dispatch: no ai_profiles and no hermes_cmd (triggers are webhook/log only)"
             );
-            if !cmd.contains("{session}") {
+        } else {
+            eprintln!(
+                "[watcher] dispatch: active ai profile {:?} of {} ({}), one at a time",
+                runtime.active,
+                runtime.names().len(),
+                runtime.names().join(", ")
+            );
+            for (name, profile) in &runtime.profiles {
+                let target = profile
+                    .endpoint()
+                    .map(str::to_string)
+                    .or_else(|| profile.model().map(str::to_string))
+                    .unwrap_or_default();
                 eprintln!(
-                    "[watcher] hermes_cmd has no {{session}} placeholder: rotation cannot reach the \
-                     CLI (add a --continue {{session}} flag to make New chat effective)"
+                    "[watcher]   profile {name:?} [{}] {}{}",
+                    profile.kind(),
+                    profile.label(name),
+                    if target.is_empty() { String::new() } else { format!(" -> {target}") }
                 );
             }
         }
-        (None, Some(url)) => eprintln!("[watcher] dispatch: webhook {url}"),
-        (None, None) if config.dry_run => eprintln!("[watcher] dispatch: stdout only (dry run)"),
-        (None, None) => eprintln!("[watcher] dispatch: none configured (triggers are logged only)"),
+        for (name, profile) in &runtime.profiles {
+            if let AiProfile::HermesCli { cmd, .. } = profile {
+                if !cmd.contains("{session}") {
+                    eprintln!(
+                        "[watcher] profile {name:?} has no {{session}} placeholder: rotation cannot \
+                         reach the CLI (add --continue {{session}} to make New chat effective)"
+                    );
+                }
+            }
+        }
+    }
+    match &config.webhook_url {
+        Some(url) => eprintln!("[watcher] dispatch: webhook {url}"),
+        None if config.dry_run => eprintln!("[watcher] dispatch: stdout only (dry run)"),
+        None => {}
     }
     if !config.rules.quick_tasks.is_empty() {
         eprintln!(
@@ -1939,10 +2904,11 @@ async fn main() {
         client.clone(),
         Arc::clone(&shared),
         Arc::clone(&session),
+        ai.clone(),
         tx.clone(),
     ));
     let context = tokio::spawn(context_loop(config.clone(), client.clone(), Arc::clone(&shared), tx.clone()));
-    let dispatch = tokio::spawn(dispatcher(config, client, Arc::clone(&session), rx));
+    let dispatch = tokio::spawn(dispatcher(config, client, Arc::clone(&session), ai, rx));
 
     // Any task ending means the watcher is useless: stop everything.
     let _ = tokio::select! {
@@ -2928,6 +3894,7 @@ mod tests {
         let rules = Rules::default();
         let shared = Arc::new(Mutex::new(Shared::default()));
         let session = Arc::new(Mutex::new(SessionState::default()));
+        let ai = AiShared::default();
         let (tx, mut rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
 
         let reply = SseFrame {
@@ -2939,7 +3906,7 @@ mod tests {
             })
             .to_string(),
         };
-        handle_frame(&reply, &rules, &shared, &session, &tx).await;
+        handle_frame(&reply, &rules, &shared, &session, &ai, &tx).await;
         let trigger = rx.try_recv().expect("a user_reply frame is a trigger");
         assert_eq!(trigger.event_type, "user_reply");
         assert_eq!(trigger.text.as_deref(), Some("hello there"));
@@ -2953,7 +3920,7 @@ mod tests {
             })
             .to_string(),
         };
-        handle_frame(&alert, &rules, &shared, &session, &tx).await;
+        handle_frame(&alert, &rules, &shared, &session, &ai, &tx).await;
         let trigger = rx.try_recv().expect("an alert frame is a trigger");
         assert_eq!(trigger.event_type, "alert");
         assert_eq!(trigger.severity.as_deref(), Some("error"));
@@ -2965,10 +3932,10 @@ mod tests {
             json!({ "type": "interaction", "payload": { "x": 1.0, "y": 2.0 } }),
         ] {
             let frame = SseFrame { event: "message".to_string(), data: data.to_string() };
-            handle_frame(&frame, &rules, &shared, &session, &tx).await;
+            handle_frame(&frame, &rules, &shared, &session, &ai, &tx).await;
         }
         let junk = SseFrame { event: "message".to_string(), data: "not json".to_string() };
-        handle_frame(&junk, &rules, &shared, &session, &tx).await;
+        handle_frame(&junk, &rules, &shared, &session, &ai, &tx).await;
         assert!(rx.try_recv().is_err(), "nothing else was queued");
     }
 
@@ -3167,6 +4134,7 @@ mod tests {
             turns: 4,
             ..SessionState::default()
         }));
+        let ai = AiShared::default();
         let (tx, mut rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
 
         let frame = SseFrame {
@@ -3178,7 +4146,7 @@ mod tests {
             })
             .to_string(),
         };
-        handle_frame(&frame, &rules, &shared, &session, &tx).await;
+        handle_frame(&frame, &rules, &shared, &session, &ai, &tx).await;
 
         let state = lock_session(&session);
         assert_eq!(state.id, "char-rig-42-2", "the reset rotated the session");
@@ -3336,5 +4304,685 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert!(!flight.is_busy(), "the killed child must release the dispatch permit");
+    }
+
+    /* ---------- AI profiles & the OpenAI-compatible backend ---------- */
+
+    const PROFILE_RULES: &str = r#"{
+        "active_profile": "lfm3-fast",
+        "ai_profiles": {
+            "lfm3-fast": {
+                "kind": "openai_compat",
+                "label": "LFM3 1.7B (llama.cpp)",
+                "endpoint": "http://127.0.0.1:8080",
+                "model": "lfm3-1.7b",
+                "max_tokens": 320,
+                "timeout_secs": 45
+            },
+            "hermes": {
+                "kind": "hermes_cli",
+                "label": "Hermes CLI",
+                "cmd": "hermes chat --continue {session} -Q -q",
+                "timeout_secs": 120
+            }
+        }
+    }"#;
+
+    #[test]
+    fn ai_profiles_parse_both_kinds_and_keep_the_legacy_runner() {
+        let parsed = rules(PROFILE_RULES);
+        assert_eq!(parsed.active_profile, "lfm3-fast");
+        assert_eq!(parsed.ai_profiles.len(), 2);
+        assert_eq!(parsed.ai_profiles["lfm3-fast"].kind(), "openai_compat");
+        assert_eq!(parsed.ai_profiles["hermes"].kind(), "hermes_cli");
+        assert_eq!(
+            parsed.ai_profiles["lfm3-fast"].label("lfm3-fast"),
+            "LFM3 1.7B (llama.cpp)"
+        );
+
+        // A rules file that predates profiles still dispatches: the runtime
+        // synthesises `hermes` from `hermes_cmd`.
+        let legacy = rules(r#"{"hermes_cmd":"hermes chat -q","hermes_timeout_secs":90}"#);
+        let runtime = AiRuntime::from_rules(&legacy);
+        assert_eq!(runtime.active, DEFAULT_AI_PROFILE);
+        assert_eq!(runtime.names(), vec![DEFAULT_AI_PROFILE.to_string()]);
+        assert_eq!(runtime.profile("hermes").map(AiProfile::kind), Some("hermes_cli"));
+        assert_eq!(
+            runtime.profile("hermes").map(|profile| profile.timeout(Duration::from_secs(1))),
+            Some(Duration::from_secs(90)),
+            "the legacy timeout is carried onto the synthesised profile"
+        );
+
+        // Nothing configured at all: an empty runtime, never a panic.
+        let empty = AiRuntime::from_rules(&Rules::default());
+        assert!(empty.active.is_empty());
+        assert!(empty.resolved(None).is_none());
+    }
+
+    #[test]
+    fn the_active_profile_reacts_to_explicit_names_and_per_trigger_overrides() {
+        let parsed = rules(PROFILE_RULES);
+        let mut runtime = AiRuntime::from_rules(&parsed);
+        assert_eq!(runtime.active, "lfm3-fast");
+
+        // A per-trigger override wins…
+        assert_eq!(
+            runtime.resolved(Some("hermes")).map(|(name, _)| name).as_deref(),
+            Some("hermes")
+        );
+        // …an unknown one falls back to the active profile instead of failing…
+        assert_eq!(
+            runtime.resolved(Some("ghost")).map(|(name, _)| name).as_deref(),
+            Some("lfm3-fast")
+        );
+        // …and a blank one means "whatever is active".
+        assert_eq!(runtime.resolved(Some("  ")).map(|(name, _)| name).as_deref(), Some("lfm3-fast"));
+
+        // Switching is validated against the configured names.
+        assert!(runtime.set_active("hermes"));
+        assert_eq!(runtime.active, "hermes");
+        assert!(!runtime.set_active("ghost"));
+        assert_eq!(runtime.active, "hermes", "a rejected switch changes nothing");
+
+        // The escalation target is the CLI profile, whatever the active one is.
+        let mut runtime = AiRuntime::from_rules(&parsed);
+        assert_eq!(
+            runtime.cli_fallback().map(|(name, _)| name).as_deref(),
+            Some(DEFAULT_AI_PROFILE)
+        );
+        runtime.set_active("hermes");
+        assert_eq!(
+            runtime.cli_fallback().map(|(name, _)| name).as_deref(),
+            Some(DEFAULT_AI_PROFILE),
+            "a CLI profile can still name itself as the fallback"
+        );
+
+        // A file with no CLI profile simply cannot escalate.
+        let http_only = rules(
+            r#"{"ai_profiles":{"only":{"kind":"openai_compat","endpoint":"http://127.0.0.1:1","model":"m"}}}"#,
+        );
+        assert!(AiRuntime::from_rules(&http_only).cli_fallback().is_none());
+    }
+
+    #[test]
+    fn an_app_rule_and_a_quick_task_can_pin_a_profile() {
+        let parsed = rules(
+            r#"{
+                "app_rules": [{"process":"Code.exe","profile":"lfm3-fast","prompt_hint":"coded"}],
+                "quick_tasks": [{"label":"One-liner","prompt":"say hi","profile":"lfm3-fast"}]
+            }"#,
+        );
+        assert_eq!(parsed.app_rules[0].profile.as_deref(), Some("lfm3-fast"));
+        assert_eq!(parsed.quick_tasks[0].profile.as_deref(), Some("lfm3-fast"));
+
+        // An app rule's profile rides onto the trigger.
+        let base = Instant::now();
+        let mut state = shared();
+        context_triggers(&parsed, &mut state, &snap("Desktop", 1), base);
+        let triggers = context_triggers(
+            &parsed,
+            &mut state,
+            &snap_app("main.rs - Visual Studio Code", "Code.exe", 1),
+            base + Duration::from_secs(20),
+        );
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].profile.as_deref(), Some("lfm3-fast"));
+
+        // A chip's profile arrives in the `user_reply` frame.
+        let state = shared();
+        let trigger = user_reply_trigger(
+            &state,
+            &json!({"text":"say hi","profile":"lfm3-fast"}),
+            base,
+        )
+        .expect("reply");
+        assert_eq!(trigger.profile.as_deref(), Some("lfm3-fast"));
+        let plain = user_reply_trigger(&state, &json!({"text":"say hi"}), base).expect("reply");
+        assert!(plain.profile.is_none(), "no profile means the active one");
+    }
+
+    #[test]
+    fn ai_reply_parses_plain_fenced_and_padded_json() {
+        let reply = AiReply::parse(
+            r#"{"speech":"Build failed","expression":"SURPRISED","perch_edge":"RIGHT","window_process":"code","details":"error[E0308]","escalate":true}"#,
+        )
+        .expect("plain json");
+        assert_eq!(reply.speech, "Build failed");
+        assert_eq!(reply.expression.as_deref(), Some("surprised"), "expressions are normalised");
+        assert_eq!(reply.perch_edge.as_deref(), Some("right"));
+        assert_eq!(reply.window_process.as_deref(), Some("code"));
+        assert_eq!(reply.details.as_deref(), Some("error[E0308]"));
+        assert!(reply.escalate);
+
+        let fenced = AiReply::parse(
+            "Sure!\n```json\n{\"speech\":\"hi\"}\n```\nthere you go",
+        )
+        .expect("fenced json");
+        assert_eq!(fenced.speech, "hi");
+        assert!(!fenced.escalate, "escalate defaults to false");
+
+        // Unknown enum values are dropped rather than forwarded to the API.
+        let sloppy = AiReply::parse(r#"{"speech":"x","expression":"smug","perch_edge":"diagonal"}"#)
+            .expect("json");
+        assert!(sloppy.expression.is_none());
+        assert!(sloppy.perch_edge.is_none());
+
+        // Not JSON at all: an error the caller turns into the fallback bubble.
+        assert!(AiReply::parse("I think the build failed.").is_err());
+        assert!(AiReply::parse("").is_err());
+    }
+
+    #[test]
+    fn ai_reply_actions_are_ordered_and_the_bubble_is_truncated() {
+        let long = "word ".repeat(80);
+        let reply = AiReply::parse(
+            &json!({
+                "speech": long,
+                "expression": "happy",
+                "perch_edge": "top_left",
+                "window_process": "Code.exe",
+                "details": "a
+b
+c",
+            })
+            .to_string(),
+        )
+        .expect("json");
+
+        let actions = reply.actions();
+        assert_eq!(actions.len(), 3);
+        assert!(matches!(&actions[0], AvatarAction::Perch { edge, window_process }
+            if edge == "top_left" && window_process.as_deref() == Some("Code.exe")));
+        assert!(matches!(&actions[1], AvatarAction::Emote { expression } if expression == "happy"));
+        match &actions[2] {
+            AvatarAction::Speak { text, expression, details } => {
+                assert_eq!(text.chars().count(), MAX_SPEECH_CHARS, "the bubble is capped");
+                assert!(text.ends_with('…'), "truncation is visible: {text}");
+                assert_eq!(expression.as_deref(), Some("happy"));
+                assert_eq!(details.as_deref(), Some("a
+b
+c"));
+            }
+            other => panic!("expected a speak action, got {other:?}"),
+        }
+
+        // A short bubble is untouched, and an empty reply does nothing.
+        let short = AiReply::parse(r#"{"speech":"done"}"#).expect("json");
+        assert_eq!(
+            short.actions(),
+            vec![AvatarAction::Speak { text: "done".into(), expression: None, details: None }]
+        );
+        assert!(AiReply::default().actions().is_empty());
+    }
+
+    #[test]
+    fn the_openai_request_asks_for_a_json_object() {
+        let parsed = rules(PROFILE_RULES);
+        let backend = OpenaiCompatBackend::from_profile(
+            "lfm3-fast",
+            &parsed.ai_profiles["lfm3-fast"],
+            Duration::from_secs(120),
+        )
+        .expect("openai profile");
+
+        assert_eq!(backend.timeout, Duration::from_secs(45), "timeout_secs is honoured");
+        let body = backend.request_body("the user double-clicked");
+        assert_eq!(body["model"], "lfm3-1.7b");
+        assert_eq!(body["response_format"]["type"], "json_object");
+        assert_eq!(body["max_tokens"], 320);
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap_or("")
+                .contains("ONE JSON object"),
+            "the system message carries the reply contract: {}",
+            body["messages"][0]["content"]
+        );
+        assert!(body["messages"][0]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("perch_edge"));
+        assert_eq!(body["messages"][1]["content"], "the user double-clicked");
+
+        // A custom system prompt is kept and still ends with the contract.
+        let custom = rules(
+            r#"{"ai_profiles":{"x":{"kind":"openai_compat","endpoint":"http://127.0.0.1:1","model":"m","system_prompt":"Be terse."}}}"#,
+        );
+        let backend =
+            OpenaiCompatBackend::from_profile("x", &custom.ai_profiles["x"], Duration::from_secs(5))
+                .expect("profile");
+        assert_eq!(backend.timeout, Duration::from_secs(DEFAULT_OPENAI_TIMEOUT_SECS));
+        let system = backend.system_message();
+        assert!(system.starts_with("Be terse."), "{system}");
+        assert!(system.contains("escalate"), "{system}");
+
+        // A CLI profile never builds an HTTP backend.
+        assert!(OpenaiCompatBackend::from_profile("hermes", &parsed.ai_profiles["hermes"], Duration::from_secs(5)).is_none());
+    }
+
+    #[test]
+    fn chat_url_accepts_a_base_a_v1_base_and_a_full_path() {
+        assert_eq!(
+            OpenaiCompatBackend::chat_url("http://127.0.0.1:8080"),
+            "http://127.0.0.1:8080/v1/chat/completions"
+        );
+        assert_eq!(
+            OpenaiCompatBackend::chat_url("http://127.0.0.1:11434/v1/"),
+            "http://127.0.0.1:11434/v1/chat/completions"
+        );
+        assert_eq!(
+            OpenaiCompatBackend::chat_url("http://127.0.0.1:8080/v1/chat/completions"),
+            "http://127.0.0.1:8080/v1/chat/completions"
+        );
+    }
+
+    /// Read one whole HTTP request (headers + `content-length` body).
+    fn read_request(socket: &mut std::net::TcpStream) -> String {
+        use std::io::Read;
+        socket.set_read_timeout(Some(Duration::from_secs(10))).ok();
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            if let Some(head) = data.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&data[..head]).to_string();
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                if data.len() >= head + 4 + length {
+                    break;
+                }
+            }
+            match socket.read(&mut buf) {
+                Ok(0) => break,
+                Ok(read) => data.extend_from_slice(&buf[..read]),
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&data).to_string()
+    }
+
+    /// Accept `count` connections, answer each with the matching body.
+    fn serve(
+        listener: std::net::TcpListener,
+        bodies: Vec<&'static str>,
+    ) -> std::thread::JoinHandle<Vec<String>> {
+        use std::io::Write;
+        std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for body in bodies {
+                let Ok((mut socket, _)) = listener.accept() else { break };
+                requests.push(read_request(&mut socket));
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes());
+            }
+            requests
+        })
+    }
+
+    #[tokio::test]
+    async fn the_openai_backend_answers_and_applies_every_action() {
+        let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"Build failed in main.rs\",\"expression\":\"surprised\",\"perch_edge\":\"right\",\"window_process\":\"code\",\"details\":\"error[E0308]\"}"}}]}"#;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        // GET /context, chat completion, then /perch, /emote, /speak
+        let server = serve(listener, vec!["{}", chat, "{}", "{}", "{}"]);
+
+        let parsed = rules(PROFILE_RULES);
+        let backend = OpenaiCompatBackend::from_profile(
+            "lfm3-fast",
+            &parsed.ai_profiles["lfm3-fast"],
+            Duration::from_secs(120),
+        )
+        .expect("profile");
+        let backend = OpenaiCompatBackend {
+            endpoint: format!("http://{addr}"),
+            api_key: Some("secret".to_string()),
+            ..backend
+        };
+
+        let client = build_client();
+        let api_url = format!("http://{addr}");
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        let report = backend
+            .dispatch(DispatchCtx {
+                client: &client,
+                api_url: &api_url,
+                prompt: "[char-rig user_reply] build broke",
+                session: "char-rig-test",
+                flight: guard,
+            })
+            .await;
+
+        let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
+            .await
+            .expect("join");
+
+        assert_eq!(report.backend, "lfm3-fast");
+        assert_eq!(report.kind, "openai_compat");
+        assert!(report.failure.is_none(), "{report:?}");
+        assert!(!report.escalated);
+        assert_eq!(report.actions.len(), 3);
+        assert!(!flight.is_busy(), "the permit is released when the dispatch ends");
+
+        assert_eq!(
+            requests.len(),
+            5,
+            "one context read + one chat call + three avatar actions: {requests:#?}"
+        );
+        assert!(requests[0].starts_with("GET /context "), "{}", requests[0]);
+        assert!(requests[1].starts_with("POST /v1/chat/completions "), "{}", requests[1]);
+        assert!(
+            requests[1].to_ascii_lowercase().contains("authorization: bearer secret"),
+            "the api_key is sent: {}",
+            requests[1]
+        );
+        assert!(
+            requests[1].contains("Live avatar context:"),
+            "the model sees the refreshed /context: {}",
+            requests[1]
+        );
+        assert!(requests[2].starts_with("POST /perch "), "{}", requests[2]);
+        assert!(requests[2].contains("\"edge\":\"right\""), "{}", requests[2]);
+        assert!(requests[2].contains("\"window_process\":\"code\""), "{}", requests[2]);
+        assert!(requests[3].starts_with("POST /emote "), "{}", requests[3]);
+        assert!(requests[3].contains("\"expression\":\"surprised\""), "{}", requests[3]);
+        assert!(requests[4].starts_with("POST /speak "), "{}", requests[4]);
+        assert!(requests[4].contains("Build failed in main.rs"), "{}", requests[4]);
+        assert!(requests[4].contains("error[E0308]"), "the details block is forwarded: {}", requests[4]);
+    }
+
+    #[tokio::test]
+    async fn a_dead_openai_endpoint_posts_the_sad_bubble() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        // The context read succeeds; only the fallback `/speak` follows.
+        let server = serve(listener, vec!["{}", "{}"]);
+
+        let parsed = rules(PROFILE_RULES);
+        let backend = OpenaiCompatBackend {
+            endpoint: "http://127.0.0.1:1".to_string(),
+            timeout: Duration::from_millis(300),
+            ..OpenaiCompatBackend::from_profile(
+                "lfm3-fast",
+                &parsed.ai_profiles["lfm3-fast"],
+                Duration::from_secs(120),
+            )
+            .expect("profile")
+        };
+
+        let client = build_client();
+        let api_url = format!("http://{addr}");
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        let report = backend
+            .dispatch(DispatchCtx {
+                client: &client,
+                api_url: &api_url,
+                prompt: "anything",
+                session: "char-rig-test",
+                flight: guard,
+            })
+            .await;
+
+        let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
+            .await
+            .expect("join");
+
+        assert!(report.failure.is_some(), "the failure is reported: {report:?}");
+        assert!(report.actions.is_empty());
+        assert!(!flight.is_busy());
+        assert_eq!(requests.len(), 2, "context + only the fallback bubble: {requests:#?}");
+        assert!(requests[0].starts_with("GET /context "), "{}", requests[0]);
+        assert!(requests[1].starts_with("POST /speak "), "{}", requests[1]);
+        assert!(requests[1].contains(FALLBACK_SPEECH_TEXT), "{}", requests[1]);
+        assert!(requests[1].contains("\"expression\":\"sad\""), "{}", requests[1]);
+    }
+
+    #[test]
+    fn clipboard_questions_are_recognised_narrowly() {
+        assert!(mentions_clipboard("what is on my clipboard?"));
+        assert!(mentions_clipboard("summarise my CLIPBOARD"));
+        assert!(mentions_clipboard("explain what i copied"));
+        assert!(mentions_clipboard("what did i copy?"));
+        assert!(!mentions_clipboard("build failed in main.rs"));
+        assert!(!mentions_clipboard("copy the file to the server"));
+    }
+
+    #[tokio::test]
+    async fn the_test_server_helper_answers_a_plain_get() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = serve(listener, vec!["{\"ok\":true}"]);
+        // Raw TCP client: isolates the helper from reqwest's connection pool,
+        // system-proxy sniffing and HTTP/1.1 keep-alive.
+        let response = tokio::task::spawn_blocking(move || {
+            use std::io::{Read, Write};
+            let mut stream = std::net::TcpStream::connect(addr).expect("connect");
+            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            stream
+                .write_all(b"GET /context HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
+                .expect("write");
+            let mut text = String::new();
+            stream.read_to_string(&mut text).expect("read");
+            text
+        })
+        .await
+        .expect("client thread");
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(response.ends_with("{\"ok\":true}"), "{response}");
+        server.join().expect("server");
+    }
+
+    #[tokio::test]
+    async fn the_openai_backend_inlines_context_and_clipboard_when_asked() {
+        let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"It is a cargo command\"}"}}]}"#;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        // GET /context, GET /clipboard, chat completion, then the speak action.
+        let server = serve(
+            listener,
+            vec![
+                r#"{"window_title":"char-rig","process_name":"Code.exe","idle_secs":12}"#,
+                r#"{"ok":true,"text":"cargo test --lib","truncated":false}"#,
+                chat,
+                "{}",
+            ],
+        );
+
+        let parsed = rules(PROFILE_RULES);
+        let backend = OpenaiCompatBackend {
+            endpoint: format!("http://{addr}"),
+            ..OpenaiCompatBackend::from_profile(
+                "lfm3-fast",
+                &parsed.ai_profiles["lfm3-fast"],
+                Duration::from_secs(120),
+            )
+            .expect("profile")
+        };
+
+        let client = build_client();
+        let api_url = format!("http://{addr}");
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        let report = backend
+            .dispatch(DispatchCtx {
+                client: &client,
+                api_url: &api_url,
+                prompt: "what is on my clipboard?",
+                session: "char-rig-test",
+                flight: guard,
+            })
+            .await;
+        let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
+            .await
+            .expect("join");
+
+        assert!(report.failure.is_none(), "{report:?}");
+        assert_eq!(requests.len(), 4, "context + clipboard + chat + speak: {requests:#?}");
+        assert!(requests[0].starts_with("GET /context "), "{}", requests[0]);
+        assert!(requests[1].starts_with("GET /clipboard "), "{}", requests[1]);
+        let body = &requests[2];
+        assert!(body.contains("Live avatar context:"), "{body}");
+        assert!(body.contains("Code.exe"), "the process reaches the model: {body}");
+        assert!(body.contains("idle 12s"), "{body}");
+        assert!(body.contains("cargo test --lib"), "the clipboard is inlined: {body}");
+        assert!(requests[3].starts_with("POST /speak "), "{}", requests[3]);
+    }
+
+    #[tokio::test]
+    async fn the_openai_backend_does_not_read_the_clipboard_unasked() {
+        let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"ok\"}"}}]}"#;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        // Context + chat + speak only: no GET /clipboard may appear.
+        let server = serve(listener, vec!["{}", chat, "{}"]);
+
+        let parsed = rules(PROFILE_RULES);
+        let backend = OpenaiCompatBackend {
+            endpoint: format!("http://{addr}"),
+            ..OpenaiCompatBackend::from_profile(
+                "lfm3-fast",
+                &parsed.ai_profiles["lfm3-fast"],
+                Duration::from_secs(120),
+            )
+            .expect("profile")
+        };
+
+        let client = build_client();
+        let api_url = format!("http://{addr}");
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        backend
+            .dispatch(DispatchCtx {
+                client: &client,
+                api_url: &api_url,
+                prompt: "build failed in main.rs",
+                session: "char-rig-test",
+                flight: guard,
+            })
+            .await;
+        let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
+            .await
+            .expect("join");
+
+        assert_eq!(requests.len(), 3, "no clipboard read: {requests:#?}");
+        assert!(
+            !requests.iter().any(|request| request.starts_with("GET /clipboard ")),
+            "the clipboard is private until the user asks: {requests:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_escalating_reply_marks_the_report_and_exposes_the_cli_target() {
+        let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"On it\",\"escalate\":true}"}}]}"#;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = serve(listener, vec!["{}", chat, "{}"]);
+
+        let parsed = rules(PROFILE_RULES);
+        let backend = OpenaiCompatBackend {
+            endpoint: format!("http://{addr}"),
+            ..OpenaiCompatBackend::from_profile(
+                "lfm3-fast",
+                &parsed.ai_profiles["lfm3-fast"],
+                Duration::from_secs(120),
+            )
+            .expect("profile")
+        };
+
+        let ai = AiShared::new(&parsed, None);
+        let client = build_client();
+        let api_url = format!("http://{addr}");
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+        let report = backend
+            .dispatch(DispatchCtx {
+                client: &client,
+                api_url: &api_url,
+                prompt: "summarise this repo",
+                session: "char-rig-test",
+                flight: guard,
+            })
+            .await;
+        let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
+            .await
+            .expect("join");
+
+        assert!(report.escalated, "escalate:true is carried on the report");
+        assert!(report.failure.is_none());
+        assert_eq!(requests.len(), 3, "context + chat + the short ack bubble: {requests:#?}");
+
+        // The hand-off target is a real CLI backend built from the profile.
+        let (name, profile) = ai.cli_fallback().expect("a hermes_cli profile exists");
+        assert_eq!(name, DEFAULT_AI_PROFILE);
+        assert_eq!(profile.kind(), "hermes_cli");
+        let cli = backend_for(&name, &profile, Duration::from_secs(120)).expect("cli backend");
+        assert_eq!(cli.kind(), "hermes_cli");
+    }
+
+    #[tokio::test]
+    async fn an_ai_profile_frame_reloads_the_rules_file() {
+        let root = std::env::temp_dir().join(format!("char-rig-watcher-ai-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let path = root.join("watcher_rules.json");
+        std::fs::write(&path, PROFILE_RULES).expect("write rules");
+
+        let parsed = rules(PROFILE_RULES);
+        let ai = AiShared::new(&parsed, Some(path.clone()));
+        assert_eq!(lock_ai(&ai).active, "lfm3-fast");
+
+        // The panel persists the switch, then broadcasts; the watcher re-reads.
+        let switched = PROFILE_RULES.replace(r#""lfm3-fast","#, r#""hermes","#);
+        std::fs::write(&path, &switched).expect("rewrite rules");
+
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let session = Arc::new(Mutex::new(SessionState::default()));
+        let (tx, mut rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
+        let frame = SseFrame {
+            event: "ai_profile".to_string(),
+            data: json!({"seq": 3, "type": "ai_profile", "payload": {"name": "hermes"}}).to_string(),
+        };
+        handle_frame(&frame, &parsed, &shared, &session, &ai, &tx).await;
+
+        assert_eq!(lock_ai(&ai).active, "hermes", "the runtime adopted the file's value");
+        assert!(rx.try_recv().is_err(), "a switch is an instruction, not a trigger");
+
+        // A frame with an unreadable file keeps the current profile.
+        std::fs::write(&path, "{not json").expect("break the file");
+        handle_frame(&frame, &parsed, &shared, &session, &ai, &tx).await;
+        assert_eq!(lock_ai(&ai).active, "hermes", "a broken file does not change the brain");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rules_can_be_loaded_from_an_explicit_path() {
+        let root = std::env::temp_dir().join(format!("char-rig-watcher-load-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let path = root.join("custom_rules.json");
+        std::fs::write(&path, PROFILE_RULES).expect("write");
+
+        let loaded = Rules::load(Some(&path.to_string_lossy()));
+        assert_eq!(loaded.active_profile, "lfm3-fast");
+        assert_eq!(loaded.ai_profiles.len(), 2);
+
+        let (rules, resolved) = Rules::load_with_path(Some(&path.to_string_lossy()));
+        assert_eq!(resolved.as_deref(), Some(path.as_path()), "the used path is reported back");
+        assert_eq!(rules.ai_profiles.len(), 2);
+
+        let (fallback, none) = Rules::load_with_path(Some("Z:/definitely/not/here.json"));
+        assert!(none.is_none());
+        assert!(fallback.ai_profiles.is_empty(), "a missing file falls back to defaults");
+        std::fs::remove_dir_all(&root).ok();
     }
 }

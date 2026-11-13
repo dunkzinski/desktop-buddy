@@ -545,6 +545,59 @@ as soon as that turn's child exits or is killed by the timeout. Routine triggers
 (`interaction`, `window_title`, `idle_return`) are dropped while busy, so
 background noise never stacks up behind a task.
 
+### `GET /ai-profiles` / `POST /ai-profile`
+
+Which **brain** answers a watcher trigger: the `ai_profiles` block in
+`watcher_rules.json` (an `openai_compat` server such as `llama.cpp` / Ollama, or
+the `hermes_cli` agent), plus the live health of the active one.
+
+```bash
+curl -s localhost:8765/ai-profiles
+```
+
+```json
+{
+  "ok": true,
+  "active_profile": "hermes",
+  "active_health": {
+    "reachable": true,
+    "status": "cli",
+    "detail": "hermes found at C:\\Users\\me\\AppData\\Local\\hermes\\hermes.exe"
+  },
+  "profiles": [
+    {"name": "hermes", "label": "Hermes CLI", "kind": "hermes_cli", "model": ""},
+    {"name": "lfm3-fast", "label": "LFM3 1.7B (llama.cpp)", "kind": "openai_compat",
+     "model": "lfm3-1.7b", "endpoint": "http://127.0.0.1:8080"}
+  ]
+}
+```
+
+`active_health.status` is one of:
+
+| status | meaning |
+| --- | --- |
+| `online` | an `openai_compat` profile answered a probe (its own /health, then /v1/models, 800 ms cap) |
+| `offline` | nothing answered — `detail` names the endpoint and the error |
+| `cli` | a `hermes_cli` profile; `reachable` says whether `hermes` resolves on `PATH` |
+
+Switch it:
+
+```bash
+curl -s -X POST localhost:8765/ai-profile \
+     -H 'content-type: application/json' -d '{"name": "lfm3-fast"}'
+```
+
+The switch is persisted to `watcher_rules.json` (`active_profile`, written to a
+sibling file and renamed, so the file is never half-written), the new profile is
+probed, and the app broadcasts an `ai_profile` frame plus the
+`ai-profile-changed` Tauri event. The running `char-rig-watcher.exe` re-reads the
+file when it sees the frame, so the **next** trigger uses the new backend — no
+restart. An unknown name is a **400** that lists the valid profiles.
+
+Per-trigger overrides: `app_rules[].profile` (a window rule) and
+`quick_tasks[].profile` (a command-bar chip, forwarded in the `user_reply`
+frame's `profile`). Both fall back to `active_profile` when absent.
+
 ### `POST /shutdown`
 
 Closes the app (window + API) after flushing the response.
@@ -782,6 +835,7 @@ Every `data:` line is one JSON object:
 | `user_reply` | the user submits the bubble's quick-reply box (`notify_reply`) or `POST /reply` | `{text}` |
 | `alert` | `POST /alert` from an external monitor | `{source, summary, severity}` with `severity` ∈ `info` \| `warn` \| `error` |
 | `session_reset` | `POST /session/reset`, the command bar's **↺** or the control panel's **New chat** | `{reason}` with `reason` ∈ `ui` \| `api` |
+| `ai_profile` | `POST /ai-profile`, the panel's **AI Brain** dropdown, or the `set_ai_profile` command | `{name, active_profile, source}` with `source` ∈ `ui` \| `api` |
 | `watcher` | the supervised `char-rig-watcher.exe` starts, stops, or writes a line | full status `{ok, enabled, running, pid, binary_path, rules_path, logs}` on a lifecycle change, or `{kind: "log", line, enabled, running, pid}` for one log line |
 
 Behaviour worth knowing:
@@ -858,15 +912,22 @@ target_position, state, expression, joints?, talking?, speech?)`,
 and log tail behind the control panel's **Watcher** row and the pop-out console;
 `set_watcher_enabled` returns the same status object as `GET /watcher`.
 
+**AI brain** — `get_ai_profiles` (the same object as `GET /ai-profiles`, health
+probe included) and `set_ai_profile(name)` (the **AI Brain** dropdown; persists,
+probes and broadcasts exactly like `POST /ai-profile`, and returns the new
+status; an unknown name is an error).
+
 `notify_interaction` takes `kind` ∈ `click | double_click | drag_end` with `x`,
 `y` in CSS pixels relative to the window, and returns
 `{ok, kind, subscribers}` where `subscribers` is how many `GET /events` clients
 received the frame. It is a pure notification — unlike every other command it
 does not change `AvatarState`.
 
-`notify_reply(text)` is the mirror image for the bubble's quick-reply box: the
-user's text (≤ 500 characters) becomes a `user_reply` frame, the bubble is
-dismissed and `{ok, text, subscribers}` comes back. Its HTTP twin is
+`notify_reply(text, profile?)` is the mirror image for the bubble's quick-reply
+box: the user's text (≤ 500 characters) becomes a `user_reply` frame, the bubble
+is dismissed and `{ok, text, profile, subscribers}` comes back. The optional
+`profile` pins that one prompt to a specific AI profile (what a
+`quick_tasks[].profile` chip does).
 `POST /reply`, and `char-rig-watcher.exe` treats the frame as a direct
 instruction that bypasses the interaction cooldowns.
 
@@ -916,6 +977,7 @@ Base URL: `CHAR_RIG_API_URL`, default `http://127.0.0.1:8765`.
 | `avatar_switch_model` | `name` (required) | `POST /model` |
 | `avatar_list_animations` | — | `GET /animations` |
 | `avatar_animate` | `name` (required), `loop?` | `POST /animate` |
+| `avatar_switch_ai` | `name` (required; an `ai_profiles` key) | `POST /ai-profile` |
 
 `expression` accepts the same six names as the HTTP API (`neutral`, `happy`,
 `sad`, `surprised`, `thinking`, `angry`) and is validated locally before any
@@ -927,6 +989,7 @@ of starting a clip, and `loop: true` together with a stop is rejected locally.
 
 `avatar_get_context` returns a single text block: a one-line human summary, then
 JSON with `window_title`, `process_name`, `idle_secs`, `source`, `window_rect`,
+`active_profile`, `ai_profiles`, `active_health`,
 `visible_windows`, `avatar_state`, `state_source` (`"state"` when the fresh
 `/state` read answered, `"context"` when it fell back to the copy embedded in
 `/context`) and `recent_events` (the last 15 SSE frames, oldest first). The

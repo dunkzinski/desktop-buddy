@@ -45,6 +45,7 @@ import {
   applyApiStatus, refreshApiStatus,
   setWatcherEnabled, refreshWatcher, clearWatcherLogs,
   toggleWatcherDrawer, isWatcherDrawerOpen,
+  refreshAiProfiles, setAiProfile, aiActiveLabel,
 } from "./bridge.js";
 
 import { call, listen } from "./ipc.js";
@@ -493,16 +494,18 @@ const DEFAULT_QUICK_TASKS = [
  * bubble so the `speech-clear` Rust emits (dismissing the old prompt) becomes a
  * "Thinking…" card instead of a blank screen.
  */
-async function sendUserMessage(text) {
+async function sendUserMessage(text, profile) {
   const body = String(text == null ? "" : text).trim();
   if (!body) return false;
+  // Empty/absent profile = whatever the panel has active.
+  const pinned = typeof profile === "string" && profile.trim() ? profile.trim() : null;
 
   setExpression("thinking");
   markManual(30);
   call("set_avatar_expression", { expression: "thinking" });
   beginThinking("Thinking…");
 
-  const result = await call("notify_reply", { text: body });
+  const result = await call("notify_reply", { text: body, profile: pinned });
   if (result && result.__error) {
     endThinking();
     toast("Send failed: " + result.__error, true);
@@ -578,15 +581,16 @@ function renderQuickTasks() {
     chip.className = "chip";
     chip.textContent = task.label;
     chip.title = task.prompt;
-    chip.addEventListener("click", () => runQuickTask(task.prompt));
+    if (task.profile) chip.dataset.profile = task.profile;
+    chip.addEventListener("click", () => runQuickTask(task.prompt, task.profile));
     host.appendChild(chip);
   }
 }
 
 /** A chip is one click → one task: close the bar and send it. */
-function runQuickTask(prompt) {
+function runQuickTask(prompt, profile) {
   closeCommandBar();
-  sendUserMessage(prompt);
+  sendUserMessage(prompt, profile);
 }
 
 /** Wipe the conversation context (the watcher rotates its session id). */
@@ -788,6 +792,20 @@ function setupUI() {
     await refreshWatcher();
     await notifyInteraction("double_click", { x: avatar.x, y: avatar.y });
     toast("Test ping sent (double_click)");
+  });
+
+  // ---- AI Brain: profile dropdown + health badge ----
+  document.getElementById("ai-profile-select").addEventListener("change", async (event) => {
+    const name = event.target.value;
+    if (!name) return;
+    const status = await setAiProfile(name);
+    if (!status) {
+      toast("Could not switch the AI brain", true);
+      await refreshAiProfiles();
+      return;
+    }
+    const health = (status.active_health && status.active_health.status) || "unknown";
+    toast(`AI brain: ${aiActiveLabel()} (${health})`);
   });
 
   document.getElementById("model-select").addEventListener("change", async (event) => {
@@ -1099,6 +1117,10 @@ async function init() {
 
   // The supervised watcher's switch, badge, log drawer and command-bar chips.
   refreshWatcher().then(renderQuickTasks);
+  // AI profiles + the live health dot. The probe is capped at 800 ms in Rust,
+  // so a dead endpoint cannot make this interval pile up.
+  refreshAiProfiles();
+  setInterval(() => { refreshAiProfiles(); }, 12000);
 
   if (window.__avatarDebug) window.__avatarDebug.ready = true;
 

@@ -354,7 +354,7 @@ fn api_base_for_error() -> String {
  * ------------------------------------------------------------------ */
 
 /// Tool names, in the order they appear in `tools/list`.
-const TOOL_NAMES: [&str; 13] = [
+const TOOL_NAMES: [&str; 14] = [
     "avatar_speak",
     "avatar_emote",
     "avatar_move",
@@ -368,6 +368,7 @@ const TOOL_NAMES: [&str; 13] = [
     "avatar_switch_model",
     "avatar_list_animations",
     "avatar_animate",
+    "avatar_switch_ai",
 ];
 
 fn tools() -> Value {
@@ -553,6 +554,21 @@ the model currently has an unsaved editor override (`rig.json`).",
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "Model folder name, e.g. `demo-blob` or `xenomorph-7`." }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "avatar_switch_ai",
+            "description": "Switch which AI brain answers the desktop triggers: a local OpenAI-compatible \
+server (llama.cpp / Ollama, fast models like LFM3-1.7B) or the Hermes CLI agent. The name must come from \
+`avatar_get_context`'s `ai_profiles` (or `GET /ai-profiles`); the switch is persisted to `watcher_rules.json` \
+and the running watcher adopts it on its next trigger — no restart. Returns the new active profile and its \
+live health (`online` / `offline` / `cli`).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "AI profile name, e.g. `lfm3-fast` or `hermes`." }
                 },
                 "required": ["name"]
             }
@@ -770,6 +786,43 @@ Context source: {source}. Recent events ({n}): {recent}",
         n = recent_events.len()
     );
 
+    // The brain behind the avatar, so an agent can route a task to the fast
+    // local model (`avatar_switch_ai`) or see it is on the CLI already.
+    let ai = api.get("/ai-profiles").ok().unwrap_or(Value::Null);
+    let active_profile = ai
+        .get("active_profile")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let ai_profile_names: Vec<String> = ai
+        .get("profiles")
+        .and_then(Value::as_array)
+        .map(|profiles| {
+            profiles
+                .iter()
+                .filter_map(|profile| profile.get("name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let ai_health = ai.get("active_health").cloned().unwrap_or(Value::Null);
+    let ai_note = if active_profile.is_empty() {
+        "AI profile: none configured.".to_string()
+    } else {
+        let status = ai_health
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        format!(
+            "AI profile: {active_profile} ({status}); available: {}.",
+            if ai_profile_names.is_empty() {
+                "none".to_string()
+            } else {
+                ai_profile_names.join(", ")
+            }
+        )
+    };
+
     let body = json!({
         "ok": context.get("ok").cloned().unwrap_or(json!(true)),
         "window_title": window_title,
@@ -781,9 +834,12 @@ Context source: {source}. Recent events ({n}): {recent}",
         "avatar_state": avatar_state,
         "state_source": state_source,
         "recent_events": recent_events,
+        "active_profile": active_profile,
+        "ai_profiles": ai_profile_names,
+        "active_health": ai_health,
     });
     Ok(Value::String(format!(
-        "{summary}\n\n{}",
+        "{summary} {ai_note}\n\n{}",
         serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string())
     )))
 }
@@ -897,6 +953,21 @@ fn tool_switch_model(api: &Api, args: &Map<String, Value>) -> Result<Value, Tool
     api.post("/model", json!({ "name": name })).map_err(ToolError::Api)
 }
 
+/// `avatar_switch_ai`: persist a new active AI profile and report its health.
+///
+/// The avatar API owns validation (it reads `watcher_rules.json` and answers 400
+/// with the valid names), so the tool only checks that the argument is present
+/// and non-blank.
+fn tool_switch_ai(api: &Api, args: &Map<String, Value>) -> Result<Value, ToolError> {
+    let name = req_str(args, "name")?.trim().to_string();
+    if name.is_empty() {
+        return Err(ToolError::Invalid(
+            "`name` must be a non-empty AI profile name; call `avatar_get_context` to list them".to_string(),
+        ));
+    }
+    api.post("/ai-profile", json!({ "name": name })).map_err(ToolError::Api)
+}
+
 fn tool_list_animations(api: &Api, _args: &Map<String, Value>) -> Result<Value, ToolError> {
     api.get("/animations").map_err(ToolError::Api)
 }
@@ -946,6 +1017,7 @@ fn run_tool(api: &Api, name: &str, args: &Map<String, Value>) -> Result<Value, T
         "avatar_switch_model" => tool_switch_model(api, args),
         "avatar_list_animations" => tool_list_animations(api, args),
         "avatar_animate" => tool_animate(api, args),
+        "avatar_switch_ai" => tool_switch_ai(api, args),
         // `tools/call` rejects unknown names before we get here.
         other => Err(ToolError::Invalid(format!("unknown tool `{other}`"))),
     }
@@ -1129,8 +1201,9 @@ mod tests {
     }
 
     #[test]
-    fn thirteen_tools_are_declared_and_dispatched() {
-        assert_eq!(TOOL_NAMES.len(), 13);
+    fn fourteen_tools_are_declared_and_dispatched() {
+        assert_eq!(TOOL_NAMES.len(), 14);
+        assert!(TOOL_NAMES.contains(&"avatar_switch_ai"));
         assert!(TOOL_NAMES.contains(&"avatar_perch"));
 
         let listed = tools();
@@ -1291,5 +1364,73 @@ mod tests {
             "Code.exe@(400, 300) 800x500 | firefox.exe@(0, 0) 1920x40"
         );
         assert_eq!(describe_windows(&[]), "none");
+    }
+
+    /* ---------- avatar_switch_ai ---------- */
+
+    #[test]
+    fn avatar_switch_ai_is_declared_with_a_required_name() {
+        let listed = tools();
+        let entry = listed
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|tool| tool["name"] == "avatar_switch_ai")
+            .expect("avatar_switch_ai must be advertised");
+
+        assert_eq!(entry["inputSchema"]["type"], "object");
+        assert_eq!(entry["inputSchema"]["required"], json!(["name"]));
+        assert_eq!(entry["inputSchema"]["properties"]["name"]["type"], "string");
+        assert!(
+            entry["description"].as_str().unwrap_or("").contains("ai_profiles")
+                || entry["description"].as_str().unwrap_or("").contains("/ai-profiles"),
+            "the description must say where the names come from: {entry}"
+        );
+    }
+
+    #[test]
+    fn avatar_switch_ai_validates_before_it_calls_the_api() {
+        // A missing or blank name is a validation error, not an unreachable
+        // avatar error: the HTTP layer is never touched.
+        let api = offline_api();
+        for bad in [json!({}), json!({"name": ""}), json!({"name": "   "})] {
+            let err = run_tool(&api, "avatar_switch_ai", &args(bad)).expect_err("rejected");
+            assert!(matches!(err, ToolError::Invalid(_)), "{err:?}");
+        }
+        let err = run_tool(&api, "avatar_switch_ai", &args(json!({"name": 7}))).expect_err("rejected");
+        assert!(matches!(err, ToolError::Invalid(_)), "a non-string name is invalid: {err:?}");
+    }
+
+    #[test]
+    fn avatar_switch_ai_posts_the_name_to_the_profile_route() {
+        let api = offline_api();
+        // A valid name reaches the API and fails as unreachable there, which
+        // proves the tool targets the switch route rather than failing early.
+        let err = run_tool(&api, "avatar_switch_ai", &args(json!({"name": "lfm3-fast"})))
+            .expect_err("offline api");
+        // Any API-level failure is fine (the scratch port is closed: unreachable,
+        // transport or timeout); what matters is that the tool sent the request.
+        assert!(
+            matches!(err, ToolError::Api(_)),
+            "a valid name must reach the API, not fail validation: {err:?}"
+        );
+    }
+
+    #[test]
+    fn tools_call_wraps_a_switch_failure_as_iserror() {
+        let api = offline_api();
+        let response = match tools_call(
+            &api,
+            &json!({
+                "name": "avatar_switch_ai",
+                "arguments": { "name": "" }
+            }),
+        ) {
+            Ok(value) => value,
+            Err(_) => panic!("a tool-level failure must be an isError result, not an RPC error"),
+        };
+        assert_eq!(response["isError"], json!(true));
+        let text = response["content"][0]["text"].as_str().unwrap_or("");
+        assert!(text.to_lowercase().contains("name"), "hint should mention the argument: {text}");
     }
 }

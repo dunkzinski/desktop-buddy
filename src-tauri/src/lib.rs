@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{broadcast, oneshot};
 
@@ -905,6 +905,18 @@ fn notify_interaction(
 /// not race a stale bubble). The frame carries the trimmed text only — no
 /// window title — because the watcher quotes it straight into a Hermes prompt.
 pub fn do_user_reply(ctx: &AppCtx, text: &str) -> Result<Value, String> {
+    do_user_reply_with_profile(ctx, text, None)
+}
+
+/// Same, but a quick-task chip may pin the AI profile its prompt should run on.
+///
+/// The profile rides along in the `user_reply` frame, so the watcher can honour
+/// it per trigger instead of switching the global active profile for one chip.
+pub fn do_user_reply_with_profile(
+    ctx: &AppCtx,
+    text: &str,
+    profile: Option<&str>,
+) -> Result<Value, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("text must not be empty".to_string());
@@ -920,10 +932,15 @@ pub fn do_user_reply(ctx: &AppCtx, text: &str) -> Result<Value, String> {
     *lock_or_recover(&ctx.speech) = None;
     lock_or_recover(&ctx.avatar).talking = false;
 
-    let subscribers = ctx.emit_event("user_reply", serde_json::json!({ "text": text }));
+    let mut payload = serde_json::json!({ "text": text });
+    if let Some(profile) = profile.map(str::trim).filter(|name| !name.is_empty()) {
+        payload["profile"] = serde_json::json!(profile);
+    }
+    let subscribers = ctx.emit_event("user_reply", payload);
     Ok(serde_json::json!({
         "ok": true,
         "text": text,
+        "profile": profile.map(str::trim).filter(|name| !name.is_empty()),
         "subscribers": subscribers,
     }))
 }
@@ -937,9 +954,10 @@ pub fn do_user_reply(ctx: &AppCtx, text: &str) -> Result<Value, String> {
 fn notify_reply(
     app: AppHandle,
     text: String,
+    profile: Option<String>,
     ctx: tauri::State<'_, Arc<AppCtx>>,
 ) -> Result<Value, String> {
-    let result = do_user_reply(&ctx, &text)?;
+    let result = do_user_reply_with_profile(&ctx, &text, profile.as_deref())?;
     // The bubble is transient page state: tell the page to drop it.
     if let Err(err) = app.emit("speech-clear", serde_json::json!({})) {
         log::warn!("failed to emit speech-clear: {err}");
@@ -988,6 +1006,49 @@ fn set_watcher_enabled(
     ctx: tauri::State<'_, Arc<AppCtx>>,
 ) -> Result<Value, String> {
     ctx.inner().set_watcher_enabled(&app, enabled)
+}
+
+/// Every AI profile in `watcher_rules.json`, the active one and its live health.
+#[tauri::command(rename_all = "snake_case")]
+fn get_ai_profiles(ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<Value, String> {
+    Ok(ai_status_json(ctx.ai_rules_path().as_deref()))
+}
+
+/// Switch the active AI profile from the control panel.
+///
+/// Persists it, then tells both audiences: the page (`ai-profile-changed`, so the
+/// dropdown and badge update) and the watcher (`ai_profile` SSE frame, so the next
+/// trigger dispatches to the new backend without a restart).
+#[tauri::command(rename_all = "snake_case")]
+fn set_ai_profile(
+    app: AppHandle,
+    name: String,
+    ctx: tauri::State<'_, Arc<AppCtx>>,
+) -> Result<Value, String> {
+    do_set_ai_profile(ctx.inner(), &app, &name)
+}
+
+/// Core of `POST /ai-profile` and [`set_ai_profile`].
+pub fn do_set_ai_profile(ctx: &Arc<AppCtx>, app: &AppHandle, name: &str) -> Result<Value, String> {
+    let path = ctx.ai_rules_path();
+    let status = set_active_ai_profile(path.as_deref(), name)?;
+    if let Err(err) = app.emit("ai-profile-changed", status.clone()) {
+        log::warn!("failed to emit ai-profile-changed: {err}");
+    }
+    // The watcher re-reads the file when it sees this frame.
+    let subscribers = ctx.emit_event(
+        "ai_profile",
+        json!({
+            "name": name.trim(),
+            "active_profile": status.get("active_profile").cloned().unwrap_or(Value::Null),
+            "source": "ui",
+        }),
+    );
+    let mut status = status;
+    if let Some(object) = status.as_object_mut() {
+        object.insert("subscribers".to_string(), json!(subscribers));
+    }
+    Ok(status)
 }
 
 #[tauri::command]
@@ -2453,6 +2514,26 @@ impl AppCtx {
         })
     }
 
+    /// The `watcher_rules.json` the AI profile lives in.
+    ///
+    /// Prefers the file the supervised watcher was actually started with, then
+    /// the same lookup the watcher uses, so a stopped watcher does not make the
+    /// panel unable to switch profiles.
+    pub fn ai_rules_path(&self) -> Option<PathBuf> {
+        let from_watcher = lock_or_recover(&self.watcher).rules.clone();
+        from_watcher.or_else(|| {
+            let models = crate::models::models_root();
+            watcher_rules_path(
+                std::env::current_dir().ok(),
+                std::env::current_exe()
+                    .ok()
+                    .as_deref()
+                    .and_then(|exe| exe.parent()),
+                models.parent(),
+            )
+        })
+    }
+
     /// Fan one watcher payload out as the `watcher-status` Tauri event and its
     /// `watcher` SSE twin, so the page and external agents see the same thing.
     fn emit_watcher(&self, app: Option<&AppHandle>, payload: Value) {
@@ -2741,6 +2822,354 @@ pub fn quick_tasks(rules_path: Option<&std::path::Path>) -> Vec<Value> {
     tasks
 }
 
+/* ------------------------------------------------------------------ *
+ * AI profiles (`GET /ai-profiles`, `POST /ai-profile`)
+ * ------------------------------------------------------------------ */
+
+/// Profile name a rules file means when it does not say.
+///
+/// Mirrors `DEFAULT_AI_PROFILE` in `char-rig-watcher.rs`; the watcher synthesises
+/// a `hermes` profile from `hermes_cmd`, so the API reports the same name.
+pub const DEFAULT_AI_PROFILE_NAME: &str = "hermes";
+
+/// Kinds `ai_profiles.<name>.kind` may name.
+pub const AI_PROFILE_KINDS: [&str; 2] = ["openai_compat", "hermes_cli"];
+
+/// Budget for the health probe.
+///
+/// Deliberately short: the panel refreshes this while it is open, so a dead
+/// `llama.cpp` must read as "offline" almost immediately rather than hanging
+/// the dropdown.
+const AI_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
+
+/// One AI profile as `GET /ai-profiles` and the panel see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiProfileInfo {
+    pub name: String,
+    pub label: String,
+    /// `openai_compat` or `hermes_cli`.
+    pub kind: String,
+    /// Model id (empty for a CLI profile).
+    pub model: String,
+    /// Base URL (empty for a CLI profile).
+    pub endpoint: String,
+    /// Command template (empty for an HTTP profile).
+    pub cmd: String,
+}
+
+impl AiProfileInfo {
+    /// JSON for the `profiles` array (`endpoint` only when there is one).
+    pub fn summary(&self) -> Value {
+        let mut map = serde_json::Map::new();
+        map.insert("name".to_string(), json!(self.name));
+        map.insert("label".to_string(), json!(self.label));
+        map.insert("kind".to_string(), json!(self.kind));
+        map.insert("model".to_string(), json!(self.model));
+        if !self.endpoint.trim().is_empty() {
+            map.insert("endpoint".to_string(), json!(self.endpoint));
+        }
+        Value::Object(map)
+    }
+}
+
+fn string_field(entry: &Value, key: &str) -> String {
+    entry
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// Parse `active_profile` + `ai_profiles` out of a rules document.
+///
+/// Backwards compatible with the pre-profiles schema: a file that only has
+/// `hermes_cmd` reports a synthesised `hermes` / `hermes_cli` profile, exactly
+/// like the watcher's own runtime does.
+pub fn ai_profiles_from_document(document: &Value) -> (String, Vec<AiProfileInfo>) {
+    let mut profiles = Vec::new();
+    if let Some(map) = document.get("ai_profiles").and_then(Value::as_object) {
+        for (name, entry) in map {
+            let kind = string_field(entry, "kind").to_ascii_lowercase();
+            if !AI_PROFILE_KINDS.contains(&kind.as_str()) {
+                continue;
+            }
+            let model = string_field(entry, "model");
+            let endpoint = string_field(entry, "endpoint");
+            let cmd = string_field(entry, "cmd");
+            let mut label = string_field(entry, "label");
+            if label.is_empty() {
+                label = if model.is_empty() { name.clone() } else { model.clone() };
+            }
+            profiles.push(AiProfileInfo {
+                name: name.clone(),
+                label,
+                kind,
+                model,
+                endpoint,
+                cmd,
+            });
+        }
+    }
+
+    // A pre-profiles rules file still has an agent behind `hermes_cmd`.
+    if !profiles.iter().any(|profile| profile.name == DEFAULT_AI_PROFILE_NAME) {
+        let cmd = string_field(document, "hermes_cmd");
+        if !cmd.is_empty() {
+            profiles.push(AiProfileInfo {
+                name: DEFAULT_AI_PROFILE_NAME.to_string(),
+                label: "Hermes CLI".to_string(),
+                kind: "hermes_cli".to_string(),
+                model: String::new(),
+                endpoint: String::new(),
+                cmd,
+            });
+        }
+    }
+
+    let requested = string_field(document, "active_profile");
+    let active = if profiles.iter().any(|profile| profile.name == requested) {
+        requested
+    } else if profiles
+        .iter()
+        .any(|profile| profile.name == DEFAULT_AI_PROFILE_NAME)
+    {
+        DEFAULT_AI_PROFILE_NAME.to_string()
+    } else {
+        profiles.first().map(|profile| profile.name.clone()).unwrap_or_default()
+    };
+    (active, profiles)
+}
+
+/// Read `watcher_rules.json` and report its profiles (no file → empty set).
+pub fn ai_profiles(path: Option<&std::path::Path>) -> (String, Vec<AiProfileInfo>) {
+    let document = path
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({}));
+    ai_profiles_from_document(&document)
+}
+
+/// Look for `bin` on the directories in `path_var`.
+///
+/// Pure (the caller supplies `PATH` and the suffixes) so the lookup can be
+/// pinned down in a test with a scratch directory instead of the real machine.
+pub fn find_on_path(bin: &str, path_var: Option<&str>, suffixes: &[&str]) -> Option<PathBuf> {
+    let path_var = path_var?;
+    for dir in std::env::split_paths(path_var) {
+        for suffix in suffixes {
+            let candidate = dir.join(format!("{bin}{suffix}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Executable suffixes a `hermes` lookup should try on this platform.
+fn path_suffixes() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat", ".com"]
+    } else {
+        &[""]
+    }
+}
+
+/// Where the `hermes` CLI lives, if it is on `PATH` at all.
+pub fn hermes_on_path() -> Option<PathBuf> {
+    find_on_path("hermes", std::env::var("PATH").ok().as_deref(), path_suffixes())
+}
+
+/// URLs the openai-compatible probe tries, in order.
+///
+/// `/health` first because llama.cpp answers it without touching the model;
+/// `/v1/models` catches Ollama and anything else that only speaks the OpenAI
+/// surface.
+pub fn health_probe_urls(endpoint: &str) -> Vec<String> {
+    let base = endpoint.trim().trim_end_matches('/');
+    let base = ["/v1/chat/completions", "/chat/completions", "/v1"]
+        .iter()
+        .find_map(|suffix| base.strip_suffix(suffix))
+        .unwrap_or(base)
+        .trim_end_matches('/')
+        .to_string();
+    vec![format!("{base}/health"), format!("{base}/v1/models")]
+}
+
+/// Probe an OpenAI-compatible base URL with a short, blocking GET.
+///
+/// Returns the `active_health` JSON object: `online` when either probe answers
+/// 2xx, `offline` (with the last error) otherwise.
+pub fn probe_openai_health(endpoint: &str) -> Value {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(AI_PROBE_TIMEOUT)
+        .connect_timeout(AI_PROBE_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(err) => {
+            return json!({
+                "reachable": false,
+                "status": "offline",
+                "detail": format!("cannot build the probe client: {err}"),
+            })
+        }
+    };
+
+    let mut detail = String::from("no probe was sent");
+    for url in health_probe_urls(endpoint) {
+        match client.get(&url).send() {
+            Ok(response) if response.status().is_success() => {
+                return json!({
+                    "reachable": true,
+                    "status": "online",
+                    "detail": format!("{url} answered {}", response.status()),
+                })
+            }
+            Ok(response) => detail = format!("{url} answered {}", response.status()),
+            Err(err) => detail = format!("{url}: {err}"),
+        }
+    }
+    json!({ "reachable": false, "status": "offline", "detail": detail })
+}
+
+/// `active_health` for one profile.
+pub fn ai_health(profile: Option<&AiProfileInfo>) -> Value {
+    let Some(profile) = profile else {
+        return json!({
+            "reachable": false,
+            "status": "offline",
+            "detail": "no AI profile is configured in watcher_rules.json",
+        });
+    };
+    match profile.kind.as_str() {
+        // A CLI profile is never "online": there is no server to probe, only a
+        // binary to find. `reachable` still says whether it would run.
+        "hermes_cli" => match hermes_on_path() {
+            Some(path) => json!({
+                "reachable": true,
+                "status": "cli",
+                "detail": format!("hermes found at {}", path.display()),
+            }),
+            None => json!({
+                "reachable": false,
+                "status": "cli",
+                "detail": "hermes is not on PATH (the watcher would fail to spawn it)",
+            }),
+        },
+        _ => probe_openai_health(&profile.endpoint),
+    }
+}
+
+/// Full `GET /ai-profiles` body.
+pub fn ai_status_json(path: Option<&std::path::Path>) -> Value {
+    let (active, profiles) = ai_profiles(path);
+    let profile = profiles.iter().find(|profile| profile.name == active);
+    json!({
+        "ok": true,
+        "active_profile": active,
+        "active_health": ai_health(profile),
+        "profiles": profiles.iter().map(AiProfileInfo::summary).collect::<Vec<Value>>(),
+    })
+}
+
+/// Replace `path`'s contents in one step (write a sibling, then rename).
+///
+/// `active_profile` has to be persisted without ever leaving a half-written
+/// rules file behind: the watcher re-reads it on every `ai_profile` frame, and
+/// the app reads it for the panel. `std::fs::rename` replaces atomically on both
+/// Windows and Unix when the target is on the same volume.
+pub fn write_rules_atomically(path: &std::path::Path, text: &str) -> Result<(), String> {
+    let temp = path.with_extension("json.tmp");
+    std::fs::write(&temp, text).map_err(|err| format!("cannot write {}: {err}", temp.display()))?;
+    std::fs::rename(&temp, path).map_err(|err| {
+        let _ = std::fs::remove_file(&temp);
+        format!("cannot replace {}: {err}", path.display())
+    })
+}
+
+/// Persist `active_profile` and return the new status.
+///
+/// Validates against the file itself (400 territory for the API), so an unknown
+/// name can never be written — that would leave the watcher on a profile it
+/// cannot resolve.
+pub fn set_active_ai_profile(
+    path: Option<&std::path::Path>,
+    name: &str,
+) -> Result<Value, String> {
+    let Some(path) = path else {
+        return Err(
+            "no watcher_rules.json was found, so the active AI profile cannot be saved".to_string(),
+        );
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("`name` must not be empty".to_string());
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
+    let document: Value = serde_json::from_str(&text)
+        .map_err(|err| format!("{} is not valid JSON: {err}", path.display()))?;
+    let (_, profiles) = ai_profiles_from_document(&document);
+    if !profiles.iter().any(|profile| profile.name == name) {
+        let names: Vec<&str> = profiles.iter().map(|profile| profile.name.as_str()).collect();
+        return Err(format!(
+            "unknown AI profile {name:?}; valid profiles: {}",
+            if names.is_empty() { "(none configured)".to_string() } else { names.join(", ") }
+        ));
+    }
+
+    let updated = with_active_profile(&text, name)?;
+    // Prove the edit before it lands: a rules file the watcher cannot parse would
+    // be worse than a failed switch.
+    let check: Value = serde_json::from_str(&updated)
+        .map_err(|err| format!("the edited rules file would not parse: {err}"))?;
+    if check.get("active_profile").and_then(Value::as_str) != Some(name) {
+        return Err("the edited rules file did not take the new active_profile".to_string());
+    }
+    write_rules_atomically(path, &updated)?;
+    Ok(ai_status_json(Some(path)))
+}
+
+/// Rewrite **only** the `active_profile` value in the raw rules text.
+///
+/// `watcher_rules.json` is a file people hand-edit (comments in spirit, compact
+/// one-line arrays, deliberate key order), so a switch must not round-trip it
+/// through `serde_json` — that would sort every key and explode the formatting.
+/// This edits the exact span instead, and inserts the key after the opening
+/// brace when the file predates it.
+pub fn with_active_profile(text: &str, name: &str) -> Result<String, String> {
+    let key = "\"active_profile\"";
+    let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+
+    if let Some(index) = text.find(key) {
+        let after_key = &text[index + key.len()..];
+        let colon = after_key
+            .find(':')
+            .ok_or("`active_profile` has no `:` after it")?;
+        let rest = &after_key[colon + 1..];
+        let quote = rest.find('"').ok_or("`active_profile` is not a string")?;
+        let value_start = index + key.len() + colon + 1 + quote + 1;
+        let tail = &text[value_start..];
+        let end = tail.find('"').ok_or("`active_profile` string is not closed")?;
+
+        let mut updated = String::with_capacity(text.len() + name.len());
+        updated.push_str(&text[..value_start]);
+        updated.push_str(&escaped);
+        updated.push_str(&text[value_start + end..]);
+        return Ok(updated);
+    }
+
+    let brace = text.find('{').ok_or("the rules file is not a JSON object")?;
+    let insertion = format!("\n  \"active_profile\": \"{escaped}\",");
+    let mut updated = String::with_capacity(text.len() + insertion.len());
+    updated.push_str(&text[..=brace]);
+    updated.push_str(&insertion);
+    updated.push_str(&text[brace + 1..]);
+    Ok(updated)
+}
+
 /// `HH:MM:SS` in the machine's local time (UTC off Windows).
 fn clock_stamp() -> String {
     #[cfg(windows)]
@@ -3010,6 +3439,8 @@ pub fn run() {
             get_joints,
             get_watcher_status,
             set_watcher_enabled,
+            get_ai_profiles,
+            set_ai_profile,
         ])
         .setup({
             let ctx = Arc::clone(&ctx);
@@ -3815,5 +4246,264 @@ mod tests {
         assert_eq!(cut.chars().count(), MAX_SPEECH_DETAILS_CHARS);
         assert_eq!(MAX_SPEECH_DETAILS_CHARS, 8000);
         assert_eq!(MAX_CLIPBOARD_WRITE_CHARS, 32_000);
+    }
+
+    /* ---------- AI profiles ---------- */
+
+    /// A scratch rules-file path, removed by the caller.
+    fn scratch_rules(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("char-rig-ai-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        root.join("watcher_rules.json")
+    }
+
+    const PROFILES_DOC: &str = r#"{
+        "active_profile": "lfm3-fast",
+        "ai_profiles": {
+            "lfm3-fast": {
+                "kind": "openai_compat",
+                "label": "LFM3 1.7B (llama.cpp)",
+                "endpoint": "http://127.0.0.1:8080",
+                "model": "lfm3-1.7b"
+            },
+            "hermes": {
+                "kind": "hermes_cli",
+                "label": "Hermes CLI",
+                "cmd": "hermes chat -q"
+            },
+            "broken": { "kind": "mystery" }
+        }
+    }"#;
+
+    #[test]
+    fn ai_profiles_parse_the_tagged_schema_and_skip_unknown_kinds() {
+        let document: Value = serde_json::from_str(PROFILES_DOC).expect("json");
+        let (active, profiles) = ai_profiles_from_document(&document);
+
+        assert_eq!(active, "lfm3-fast");
+        assert_eq!(profiles.len(), 2, "the unknown `kind` is ignored: {profiles:?}");
+        let http = profiles.iter().find(|p| p.name == "lfm3-fast").expect("http profile");
+        assert_eq!(http.kind, "openai_compat");
+        assert_eq!(http.label, "LFM3 1.7B (llama.cpp)");
+        assert_eq!(http.model, "lfm3-1.7b");
+        assert_eq!(http.endpoint, "http://127.0.0.1:8080");
+
+        let cli = profiles.iter().find(|p| p.name == "hermes").expect("cli profile");
+        assert_eq!(cli.kind, "hermes_cli");
+        assert_eq!(cli.cmd, "hermes chat -q");
+        assert!(cli.endpoint.is_empty());
+
+        // `endpoint` is only reported for the HTTP flavour (the panel tooltip).
+        assert_eq!(http.summary()["endpoint"], "http://127.0.0.1:8080");
+        assert!(cli.summary().get("endpoint").is_none(), "no endpoint key for a CLI profile");
+        assert_eq!(cli.summary()["name"], "hermes");
+    }
+
+    #[test]
+    fn a_rules_file_without_ai_profiles_still_reports_the_hermes_profile() {
+        let document: Value = serde_json::from_str(
+            r#"{"hermes_cmd":"hermes chat --continue {session} -Q -q","hermes_timeout_secs":120}"#,
+        )
+        .expect("json");
+        let (active, profiles) = ai_profiles_from_document(&document);
+        assert_eq!(active, DEFAULT_AI_PROFILE_NAME);
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].kind, "hermes_cli");
+        assert_eq!(profiles[0].cmd, "hermes chat --continue {session} -Q -q");
+    }
+
+    #[test]
+    fn an_unknown_active_profile_falls_back_to_hermes_then_to_the_first() {
+        let document: Value = serde_json::from_str(
+            r#"{"active_profile":"ghost","ai_profiles":{
+                "a_fast":{"kind":"openai_compat","endpoint":"http://127.0.0.1:1","model":"x"},
+                "hermes":{"kind":"hermes_cli","cmd":"hermes chat -q"}
+            }}"#,
+        )
+        .expect("json");
+        assert_eq!(ai_profiles_from_document(&document).0, "hermes");
+
+        // No `hermes` profile: the first configured one wins (BTreeMap order).
+        let document: Value = serde_json::from_str(
+            r#"{"active_profile":"ghost","ai_profiles":{
+                "zz_fast":{"kind":"openai_compat","endpoint":"http://127.0.0.1:1","model":"x"}
+            }}"#,
+        )
+        .expect("json");
+        assert_eq!(ai_profiles_from_document(&document).0, "zz_fast");
+
+        // Nothing configured at all: empty, never a panic.
+        let (active, profiles) = ai_profiles_from_document(&json!({}));
+        assert!(active.is_empty());
+        assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn health_probe_urls_strip_the_endpoint_down_to_its_base() {
+        assert_eq!(
+            health_probe_urls("http://127.0.0.1:8080"),
+            vec!["http://127.0.0.1:8080/health", "http://127.0.0.1:8080/v1/models"]
+        );
+        assert_eq!(
+            health_probe_urls("http://127.0.0.1:8080/v1/"),
+            vec!["http://127.0.0.1:8080/health", "http://127.0.0.1:8080/v1/models"]
+        );
+        assert_eq!(
+            health_probe_urls("http://127.0.0.1:11434/v1/chat/completions"),
+            vec!["http://127.0.0.1:11434/health", "http://127.0.0.1:11434/v1/models"]
+        );
+    }
+
+    #[test]
+    fn a_cli_profile_reports_status_cli_and_a_missing_profile_reports_offline() {
+        let document: Value = serde_json::from_str(PROFILES_DOC).expect("json");
+        let (_, profiles) = ai_profiles_from_document(&document);
+        let cli = profiles.iter().find(|p| p.name == "hermes").expect("cli");
+        let health = ai_health(Some(cli));
+        assert_eq!(health["status"], "cli", "a CLI profile is never 'online': {health}");
+        // `reachable` depends on this machine's PATH, so only assert the shape.
+        assert!(health["reachable"].is_boolean(), "{health}");
+        assert!(health["detail"].as_str().unwrap_or("").contains("hermes"), "{health}");
+
+        let none = ai_health(None);
+        assert_eq!(none["status"], "offline");
+        assert_eq!(none["reachable"], false);
+    }
+
+    #[test]
+    fn an_openai_profile_is_probed_and_reports_online() {
+        use std::io::{Read, Write};
+        // A listener that answers 200 to the first GET (`/health`).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf);
+            let _ = socket.write_all(
+                b"HTTP/1.1 200 OK
+\ncontent-length: 2
+\nconnection: close
+\n
+\n{}",
+            );
+        });
+
+        let health = probe_openai_health(&format!("http://{addr}"));
+        assert_eq!(health["reachable"], true, "{health}");
+        assert_eq!(health["status"], "online");
+        assert!(
+            health["detail"].as_str().unwrap_or("").contains("/health"),
+            "detail names the probe that answered: {health}"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_endpoint_is_offline_with_a_detail() {
+        let health = probe_openai_health("http://127.0.0.1:1");
+        assert_eq!(health["reachable"], false);
+        assert_eq!(health["status"], "offline");
+        assert!(!health["detail"].as_str().unwrap_or("").is_empty(), "{health}");
+    }
+
+    #[test]
+    fn ai_status_json_reports_the_documented_keys() {
+        let path = scratch_rules("status");
+        std::fs::write(&path, PROFILES_DOC).expect("write");
+        let status = ai_status_json(Some(&path));
+        assert_eq!(status["ok"], true);
+        assert_eq!(status["active_profile"], "lfm3-fast");
+        let profiles = status["profiles"].as_array().expect("array");
+        assert_eq!(profiles.len(), 2);
+        for profile in profiles {
+            for key in ["name", "label", "kind", "model"] {
+                assert!(profile.get(key).is_some(), "profile is missing {key}: {profile}");
+            }
+        }
+        let health = &status["active_health"];
+        for key in ["reachable", "status", "detail"] {
+            assert!(health.get(key).is_some(), "active_health is missing {key}: {health}");
+        }
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
+    #[test]
+    fn switching_the_active_profile_persists_it_atomically() {
+        let path = scratch_rules("switch");
+        std::fs::write(&path, PROFILES_DOC).expect("write");
+
+        let status = set_active_ai_profile(Some(&path), "hermes").expect("switch");
+        assert_eq!(status["active_profile"], "hermes");
+
+        // The file really changed, keeps every other key, and has no temp sibling.
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read"))
+            .expect("json");
+        assert_eq!(saved["active_profile"], "hermes");
+        assert_eq!(saved["ai_profiles"].as_object().map(|map| map.len()), Some(3));
+        assert!(!path.with_extension("json.tmp").exists(), "no temp file is left behind");
+        assert_eq!(ai_profiles(Some(&path)).0, "hermes", "a re-read sees the new value");
+
+        // The rest of the file is left byte-for-byte alone: a switch must not
+        // round-trip the rules through serde_json (which sorts every key).
+        let saved_text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            saved_text.contains("\"broken\": { \"kind\": \"mystery\" }"),
+            "a compact one-liner in the file survives (no serde round-trip): {saved_text}"
+        );
+        assert!(
+            saved_text.find("\"active_profile\"").unwrap() < saved_text.find("\"ai_profiles\"").unwrap(),
+            "key order is preserved: {saved_text}"
+        );
+
+        // Unknown names are rejected and change nothing.
+        let err = set_active_ai_profile(Some(&path), "ghost").expect_err("must reject");
+        assert!(err.contains("unknown AI profile"), "{err}");
+        assert!(err.contains("hermes") && err.contains("lfm3-fast"), "the 400 lists the valid names: {err}");
+        assert_eq!(ai_profiles(Some(&path)).0, "hermes", "the file was untouched");
+
+        assert!(set_active_ai_profile(Some(&path), "  ").is_err(), "blank names are rejected");
+        assert!(
+            set_active_ai_profile(Some(std::path::Path::new("Z:/nope/watcher_rules.json")), "hermes").is_err(),
+            "a missing file is an error, not a silent success"
+        );
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
+    #[test]
+    fn with_active_profile_edits_only_that_value() {
+        let text = "{\n  \"context\": { \"window_keywords\": [\"error\", \"failed\"] },\n  \"active_profile\": \"hermes\",\n  \"ack_emote\": \"thinking\"\n}\n";
+        let updated = with_active_profile(text, "lfm3-fast").expect("edit");
+        assert_eq!(
+            updated,
+            "{\n  \"context\": { \"window_keywords\": [\"error\", \"failed\"] },\n  \"active_profile\": \"lfm3-fast\",\n  \"ack_emote\": \"thinking\"\n}\n",
+            "only the value changed"
+        );
+        assert_eq!(&updated[..20], &text[..20]);
+
+        // A file that predates the key grows it right after the opening brace.
+        let old_file = "{\n  \"ack_emote\": \"thinking\"\n}";
+        let grown = with_active_profile(old_file, "hermes").expect("insert");
+        assert!(grown.starts_with("{\n  \"active_profile\": \"hermes\","), "{grown}");
+        let parsed: Value = serde_json::from_str(&grown).expect("still valid JSON");
+        assert_eq!(parsed["active_profile"], "hermes");
+        assert_eq!(parsed["ack_emote"], "thinking", "the existing key survived");
+
+        // Nothing object-like to edit: an error rather than a corrupt write.
+        assert!(with_active_profile("not json at all", "hermes").is_err());
+    }
+
+    #[test]
+    fn find_on_path_resolves_an_executable_in_a_scratch_directory() {
+        let root = std::env::temp_dir().join(format!("char-rig-path-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let bin = root.join("hermes.bat");
+        std::fs::write(&bin, "@echo off\n").expect("write");
+
+        let path_var = std::env::join_paths([root.as_path()]).expect("join").to_string_lossy().to_string();
+        let found = find_on_path("hermes", Some(&path_var), &["", ".bat"]).expect("found");
+        assert_eq!(found, bin);
+        assert!(find_on_path("not-a-real-binary", Some(&path_var), &[""]).is_none());
+        assert!(find_on_path("hermes", None, &[""]).is_none(), "no PATH means no answer");
+        std::fs::remove_dir_all(&root).ok();
     }
 }

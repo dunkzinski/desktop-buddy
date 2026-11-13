@@ -540,6 +540,33 @@ input[type="range"]::-webkit-slider-thumb {
 .watcher-badge.running { background: rgba(61, 220, 132, 0.16); color: #3ddc84; border-color: rgba(61, 220, 132, 0.40); }
 .watcher-badge.missing { background: rgba(232, 17, 35, 0.18); color: #ff6b75; border-color: rgba(232, 17, 35, 0.45); }
 
+.ai-row { display: flex; align-items: center; gap: 8px; }
+#ai-profile-select {
+  flex: 1 1 auto; min-width: 0; padding: 5px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06); color: #e8e8f2;
+  font-family: inherit; font-size: 11.5px; cursor: pointer;
+  appearance: none;
+}
+#ai-profile-select:hover { border-color: rgba(255, 255, 255, 0.28); }
+#ai-profile-select:focus-visible { outline: none; border-color: #4a90d9; }
+/* Health dot + word: green = server answering, red = dead endpoint, blue = CLI
+   (there is no server to probe, only a binary to find). */
+.ai-health {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+  background: rgba(255, 255, 255, 0.07); color: #8a8aa0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.ai-health::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor; opacity: 0.9;
+}
+.ai-health.online { background: rgba(61, 220, 132, 0.16); color: #3ddc84; border-color: rgba(61, 220, 132, 0.40); }
+.ai-health.offline { background: rgba(232, 17, 35, 0.18); color: #ff6b75; border-color: rgba(232, 17, 35, 0.45); }
+.ai-health.cli { background: rgba(74, 144, 217, 0.18); color: #7ab6f0; border-color: rgba(74, 144, 217, 0.42); }
+
 .log-btn {
   margin-left: auto; padding: 5px 9px;
   border: 1px solid rgba(255, 255, 255, 0.10); border-radius: 8px;

@@ -143,8 +143,8 @@ else:
     tool_block = re.search(r"const TOOL_NAMES: \[&str; \d+\] = \[(.*?)\];", mcp_rs, re.S)
     tool_names = set(re.findall(r'"([a-z_]+)"', tool_block.group(1))) if tool_block else set()
     print(f"\nMCP tools ({len(tool_names)}): {', '.join(sorted(tool_names))}")
-    if len(tool_names) != 13:
-        problems.append(f"char-rig-mcp.rs: expected 13 tools, found {len(tool_names)}")
+    if len(tool_names) != 14:
+        problems.append(f"char-rig-mcp.rs: expected 14 tools, found {len(tool_names)}")
 
     # every declared tool must have a schema entry in tools()
     for name in sorted(tool_names):
@@ -175,13 +175,13 @@ else:
         print(f"expression enums match lib.rs: {mcp_expressions}")
 
     # every path the bridge calls must be a real route
-    mcp_paths = set(re.findall(r'api\.(?:get|post)\(\s*"(/[a-z_/]+)"', mcp_rs))
+    mcp_paths = set(re.findall(r'api\.(?:get|post)\(\s*"(/[a-z_/-]+)"', mcp_rs))
     print(f"paths used by the MCP bridge: {', '.join(sorted(mcp_paths))}")
     unknown_paths = {p for p in mcp_paths if p not in routes}
     if unknown_paths:
         problems.append(f"char-rig-mcp.rs calls non-existent routes: {sorted(unknown_paths)}")
-    if len(mcp_paths) < 13:
-        problems.append(f"char-rig-mcp.rs only maps {len(mcp_paths)} routes; expected 13")
+    if len(mcp_paths) < 14:
+        problems.append(f"char-rig-mcp.rs only maps {len(mcp_paths)} routes; expected 14")
 
     # the documented Windows path must match where cargo puts the binary
     if r"src-tauri\target\debug\char-rig-mcp.exe" not in readme:
@@ -292,10 +292,60 @@ else:
                 "hermes_timeout_secs",
                 "webhook_url",
                 "hotkey",
+                "active_profile",
+                "ai_profiles",
             }
             unknown = set(shipped) - known
             if unknown:
                 problems.append(f"watcher_rules.json: unknown keys {sorted(unknown)}")
+
+            # ai_profiles: tagged by `kind`, and every field the watcher reads
+            # must be present for that kind (the serde enum is deny-nothing, so
+            # drift here would only fail at runtime).
+            ai_profiles = shipped.get("ai_profiles")
+            active = shipped.get("active_profile")
+            if not isinstance(ai_profiles, dict) or not ai_profiles:
+                problems.append("watcher_rules.json: ai_profiles must be a non-empty object")
+            else:
+                if not isinstance(active, str) or active not in ai_profiles:
+                    problems.append(
+                        "watcher_rules.json: active_profile "
+                        f"{active!r} is not one of {sorted(ai_profiles)}"
+                    )
+                kinds = {"openai_compat", "hermes_cli"}
+                for name, profile in ai_profiles.items():
+                    if not isinstance(profile, dict):
+                        problems.append(f"watcher_rules.json: ai_profiles.{name} is not an object")
+                        continue
+                    kind = profile.get("kind")
+                    if kind not in kinds:
+                        problems.append(
+                            f"watcher_rules.json: ai_profiles.{name}.kind {kind!r} "
+                            f"is not one of {sorted(kinds)}"
+                        )
+                        continue
+                    allowed = {
+                        "openai_compat": {"kind", "label", "endpoint", "model", "api_key",
+                                          "max_tokens", "timeout_secs", "system_prompt"},
+                        "hermes_cli": {"kind", "label", "cmd", "timeout_secs"},
+                    }[kind]
+                    stray = set(profile) - allowed
+                    if stray:
+                        problems.append(
+                            f"watcher_rules.json: ai_profiles.{name} has unknown keys {sorted(stray)}"
+                        )
+                    needed = ("endpoint", "model") if kind == "openai_compat" else ("cmd",)
+                    for field in needed:
+                        value = profile.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            problems.append(
+                                f"watcher_rules.json: ai_profiles.{name}.{field} must be a non-empty string"
+                            )
+                if not any(p.get("kind") == "hermes_cli" for p in ai_profiles.values() if isinstance(p, dict)):
+                    problems.append(
+                        "watcher_rules.json: no hermes_cli profile — an openai_compat profile "
+                        "could never escalate, and New chat would not reach an agent"
+                    )
 
             # The hotkey is registered from this file at startup, so a value the
             # parser cannot read would silently fall back to Alt+Space.
@@ -310,7 +360,7 @@ else:
 
             # quick_tasks: the command bar reads these straight out of the file,
             # so a typo there means a silently missing chip.
-            quick_task_keys = {"label", "prompt"}
+            quick_task_keys = {"label", "prompt", "profile"}
             chips = shipped.get("quick_tasks")
             if chips is not None:
                 if not isinstance(chips, list):
@@ -347,7 +397,7 @@ else:
 
             # per-app rules: the schema is `{process, title_contains, animation,
             # prompt_hint}` — a typo there would silently never match.
-            app_rule_keys = {"process", "title_contains", "animation", "prompt_hint"}
+            app_rule_keys = {"process", "title_contains", "animation", "prompt_hint", "profile"}
             for index, rule in enumerate(shipped.get("app_rules") or []):
                 if not isinstance(rule, dict):
                     problems.append(f"watcher_rules.json: app_rules[{index}] is not an object")

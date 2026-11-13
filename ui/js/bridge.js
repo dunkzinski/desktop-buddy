@@ -6,7 +6,7 @@
  */
 
 import {
-  avatar, RT, speech, watcher,
+  avatar, RT, speech, watcher, ai,
   round,
   toast, setExpression, markManual, updateStatusUI,
 } from "./state.js";
@@ -264,6 +264,7 @@ export async function setupEventListeners() {
   });
   await listen("speech-clear", () => hideSpeech());
   await listen("watcher-status", (event) => applyWatcherStatus(event.payload));
+  await listen("ai-profile-changed", (event) => applyAiProfiles(event.payload));
   await listen("avatar-animate", (event) => {
     const payload = event.payload || {};
     const loop = typeof payload.loop === "boolean" ? payload.loop : undefined;
@@ -277,6 +278,95 @@ export async function setupEventListeners() {
   });
 
   await refreshWatcher();
+  await refreshAiProfiles();
+}
+
+/* ---------- AI Brain (profile dropdown + health badge) ---------- */
+
+/** Status word for the health badge: `online`, `offline` or `cli`. */
+export function aiHealthStatus() {
+  const status = ai.health && ai.health.status;
+  return status === "online" || status === "cli" ? status : "offline";
+}
+
+/** Label of the active profile (falls back to its name, then a placeholder). */
+export function aiActiveLabel() {
+  const profile = ai.profiles.find((entry) => entry.name === ai.active);
+  return (profile && (profile.label || profile.name)) || ai.active || "no profile";
+}
+
+/**
+ * Apply one `GET /ai-profiles` / `set_ai_profile` payload.
+ *
+ * The dropdown is rebuilt only when the *set* of profiles changed, so an open
+ * native select does not collapse every time the health probe refreshes.
+ */
+export function applyAiProfiles(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (typeof payload.active_profile === "string") ai.active = payload.active_profile;
+  if (Array.isArray(payload.profiles)) {
+    ai.profiles = payload.profiles.filter((entry) => entry && typeof entry.name === "string");
+  }
+  if (payload.active_health && typeof payload.active_health === "object") {
+    ai.health = payload.active_health;
+  }
+  ai.checked = true;
+  renderAiProfiles();
+}
+
+export function renderAiProfiles() {
+  const select = document.getElementById("ai-profile-select");
+  if (select) {
+    const key = ai.profiles.map((entry) => entry.name).join("|");
+    if (select.dataset.profiles !== key) {
+      select.textContent = "";
+      if (!ai.profiles.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = ai.checked ? "no profiles configured" : "loading…";
+        select.appendChild(option);
+      }
+      for (const profile of ai.profiles) {
+        const option = document.createElement("option");
+        option.value = profile.name;
+        option.textContent = profile.label || profile.name;
+        option.title =
+          profile.kind === "openai_compat"
+            ? `openai_compat · ${profile.model || "model?"}${profile.endpoint ? " @ " + profile.endpoint : ""}`
+            : "hermes_cli · the local agent (tools, sessions)";
+        select.appendChild(option);
+      }
+      select.dataset.profiles = key;
+    }
+    if (ai.active) select.value = ai.active;
+    select.title = `AI brain: ${aiActiveLabel()} — switching applies to the next trigger`;
+  }
+
+  const badge = document.getElementById("ai-health-badge");
+  if (badge) {
+    const status = aiHealthStatus();
+    badge.textContent = status;
+    badge.className = "ai-health " + status;
+    const detail = (ai.health && ai.health.detail) || "";
+    badge.title = detail ? `${aiActiveLabel()}: ${detail}` : aiActiveLabel();
+  }
+}
+
+/** Reload profiles + health from Rust (cheap: one 800 ms-capped probe). */
+export async function refreshAiProfiles() {
+  if (!isTauri()) return null;
+  const status = await call("get_ai_profiles");
+  if (status && !status.__error) applyAiProfiles(status);
+  return status;
+}
+
+/** Switch the brain. Returns the new status, or null on failure. */
+export async function setAiProfile(name) {
+  if (!isTauri()) return null;
+  const status = await call("set_ai_profile", { name });
+  if (!status || status.__error) return null;
+  applyAiProfiles(status);
+  return status;
 }
 
 /* ---------- watcher console (switch, badge, pop-out log) ---------- */
@@ -307,7 +397,12 @@ export function applyWatcherStatus(payload) {
     if (Array.isArray(payload.quick_tasks)) {
       watcher.quickTasks = payload.quick_tasks
         .filter((task) => task && typeof task.label === "string" && typeof task.prompt === "string")
-        .map((task) => ({ label: task.label, prompt: task.prompt }));
+        .map((task) => ({
+          label: task.label,
+          prompt: task.prompt,
+          // A chip may pin its own AI profile (a fast model for a one-liner).
+          profile: typeof task.profile === "string" ? task.profile : "",
+        }));
     }
     watcher.checked = true;
   }

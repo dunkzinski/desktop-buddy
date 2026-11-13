@@ -157,6 +157,9 @@ struct ClipboardBody {
 #[derive(Debug, Deserialize)]
 struct ReplyBody {
     text: String,
+    /// Optional AI profile this prompt should run on (quick-task chips pin one).
+    #[serde(default)]
+    profile: Option<String>,
 }
 
 /// `POST /alert`: an external monitor (network, cron, script) waking the user.
@@ -330,6 +333,8 @@ fn router(api: ApiCtx) -> Router {
         .route("/animate", post(animate))
         .route("/animate/stop", post(stop_animation))
         .route("/watcher", get(watcher_status).post(set_watcher))
+        .route("/ai-profiles", get(ai_profiles))
+        .route("/ai-profile", post(switch_ai_profile))
         .route("/shutdown", post(shutdown_app))
         .with_state(api)
 }
@@ -431,7 +436,8 @@ async fn reply(
     State(api): State<ApiCtx>,
     Json(body): Json<ReplyBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let result = crate::do_user_reply(&api.shared, &body.text).map_err(ApiError::bad_request)?;
+    let result = crate::do_user_reply_with_profile(&api.shared, &body.text, body.profile.as_deref())
+        .map_err(ApiError::bad_request)?;
     if let Err(err) = api.app.emit("speech-clear", json!({})) {
         log::warn!("failed to emit speech-clear: {err}");
     }
@@ -558,6 +564,7 @@ fn event_name(kind: &str) -> &'static str {
         "session_reset" => "session_reset",
         "animate" => "animate",
         "watcher" => "watcher",
+        "ai_profile" => "ai_profile",
         "hello" => "hello",
         _ => "message",
     }
@@ -746,6 +753,53 @@ async fn set_watcher(
         .set_watcher_enabled(&api.app, body.enabled)
         .map(Json)
         .map_err(ApiError::bad_request)
+}
+
+/// `GET /ai-profiles` — every configured AI profile, the active one and its
+/// **live** health.
+///
+/// The probe does blocking HTTP with a ~800 ms budget, so it runs on a blocking
+/// thread: a dead model server must not stall the API's async workers.
+async fn ai_profiles(State(api): State<ApiCtx>) -> Json<Value> {
+    let path = api.shared.ai_rules_path();
+    match tokio::task::spawn_blocking(move || crate::ai_status_json(path.as_deref())).await {
+        Ok(status) => Json(status),
+        Err(err) => Json(json!({
+            "ok": false,
+            "active_profile": "",
+            "active_health": {
+                "reachable": false,
+                "status": "offline",
+                "detail": format!("health probe task failed: {err}"),
+            },
+            "profiles": [],
+        })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AiProfileBody {
+    name: String,
+}
+
+/// `POST /ai-profile {"name": "lfm3-fast"}` — switch the brain.
+///
+/// Persists `active_profile` to `watcher_rules.json`, probes the new profile,
+/// then broadcasts an `ai_profile` SSE frame (the running watcher adopts it on
+/// its next trigger) plus the `ai-profile-changed` Tauri event (the panel).
+/// An unknown name is a 400 that lists the valid ones.
+async fn switch_ai_profile(
+    State(api): State<ApiCtx>,
+    Json(body): Json<AiProfileBody>,
+) -> Result<Json<Value>, ApiError> {
+    let shared = api.shared.clone();
+    let app = api.app.clone();
+    let name = body.name.clone();
+    match tokio::task::spawn_blocking(move || crate::do_set_ai_profile(&shared, &app, &name)).await {
+        Ok(Ok(status)) => Ok(Json(status)),
+        Ok(Err(err)) => Err(ApiError::bad_request(err)),
+        Err(err) => Err(ApiError::bad_request(format!("the switch task failed: {err}"))),
+    }
 }
 
 async fn shutdown_app(State(api): State<ApiCtx>) -> Json<Value> {
@@ -1229,5 +1283,35 @@ mod tests {
         );
         assert_eq!((x, y), (510.0, 150.0));
         assert_eq!(y + half.down, target_rect.y);
+    }
+
+    /* ---------- AI profile bodies ---------- */
+
+    #[test]
+    fn ai_profile_body_requires_a_name() {
+        let body: AiProfileBody = serde_json::from_str(r#"{"name":"lfm3-fast"}"#).expect("valid");
+        assert_eq!(body.name, "lfm3-fast");
+        assert!(
+            serde_json::from_str::<AiProfileBody>(r#"{}"#).is_err(),
+            "POST /ai-profile without a name is a deserialization error (422/400), not a no-op"
+        );
+        // An unknown name still deserializes; the handler is what answers 400
+        // with the valid list, so the message can name them.
+        assert_eq!(
+            serde_json::from_str::<AiProfileBody>(r#"{"name":"nope"}"#)
+                .expect("valid")
+                .name,
+            "nope"
+        );
+    }
+
+    #[test]
+    fn reply_body_accepts_an_optional_profile() {
+        let plain: ReplyBody = serde_json::from_str(r#"{"text":"hi"}"#).expect("profile is optional");
+        assert!(plain.profile.is_none(), "`POST /reply` did not grow a required field");
+
+        let pinned: ReplyBody =
+            serde_json::from_str(r#"{"text":"hi","profile":"lfm3-fast"}"#).expect("valid");
+        assert_eq!(pinned.profile.as_deref(), Some("lfm3-fast"));
     }
 }

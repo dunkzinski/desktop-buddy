@@ -59,5 +59,31 @@
   "ack_emote": "thinking",
   "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
+  "active_profile": "hermes",
+  "ai_profiles": {
+    "lfm3-fast": {
+      "kind": "openai_compat",
+      "label": "LFM3 1.7B (llama.cpp)",
+      "endpoint": "http://127.0.0.1:8080",
+      "model": "lfm3-1.7b",
+      "max_tokens": 320,
+      "timeout_secs": 45,
+      "system_prompt": "You are a tiny, fast assistant riding along on the user's desktop. Answer in one short bubble, never more than two sentences, and escalate when the task needs tools."
+    },
+    "ollama-fast": {
+      "kind": "openai_compat",
+      "label": "Ollama (local)",
+      "endpoint": "http://127.0.0.1:11434/v1",
+      "model": "llama3.2:3b",
+      "timeout_secs": 60,
+      "system_prompt": "You are a small local model answering a desktop avatar's trigger. One or two sentences, no lists."
+    },
+    "hermes": {
+      "kind": "hermes_cli",
+      "label": "Hermes CLI",
+      "cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
+      "timeout_secs": 120
+    }
+  },
   "webhook_url": null
 }
