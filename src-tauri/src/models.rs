@@ -651,33 +651,20 @@ pub fn clear_rig(root: &Path, name: &str) -> Result<bool, String> {
  * import
  * ------------------------------------------------------------------ */
 
-fn copy_tree(src: &Path, dst: &Path, skip: Option<&Path>) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|err| format!("cannot create {}: {err}", dst.display()))?;
-    for entry in fs::read_dir(src)
-        .map_err(|err| format!("cannot read {}: {err}", src.display()))?
-        .flatten()
-    {
-        let from = entry.path();
-        if let Some(skip) = skip {
-            if from == *skip {
-                continue;
-            }
-        }
-        let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            copy_tree(&from, &to, skip)?;
-        } else if from.is_file() {
-            fs::copy(&from, &to)
-                .map_err(|err| format!("cannot copy {}: {err}", from.display()))?;
-        }
-    }
-    Ok(())
-}
-
-/// Import a model folder into `models/`, given the path of its manifest file.
+/// Import a model into `models/`, given the path of its manifest file.
 ///
-/// Returns the name it was installed as. The folder is copied so the import
-/// keeps working after the original is moved or deleted.
+/// **Only the files the rig references are copied.** The manifest's folder is
+/// never mirrored: a standalone `model.json` living in `Downloads/`, `Desktop/`
+/// or `Documents/` would otherwise drag that whole user folder into `models/`
+/// — gigabytes of installers and personal files, and a copy that takes minutes.
+/// The copy set is `part_images(&rig)` (`part.image` plus every `part.variants`
+/// entry), already resolved and validated by [`inline_images`], so absolute
+/// paths, `..` traversal, missing files and oversized sprites fail *before*
+/// anything is written.
+///
+/// Returns the name it was installed as. Sprite paths keep their relative
+/// layout (`parts/body.png` stays `parts/body.png`), so the copied rig loads
+/// unchanged after the original is moved or deleted.
 pub fn import_model(root: &Path, manifest: &Path, requested_name: Option<&str>) -> Result<String, String> {
     if !manifest.is_file() {
         return Err(format!("{} is not a file", manifest.display()));
@@ -692,7 +679,9 @@ pub fn import_model(root: &Path, manifest: &Path, requested_name: Option<&str>) 
         .ok_or_else(|| "manifest has no parent directory".to_string())?;
     let rig: Value = read_rig(manifest)?;
     validate_rig(&rig)?;
-    inline_images(source_dir, &rig)?;
+    // Resolves + validates every referenced sprite and returns them keyed by
+    // their folder-relative path; these exact keys are what gets copied.
+    let referenced = inline_images(source_dir, &rig)?;
 
     let wanted = requested_name
         .map(str::to_string)
@@ -710,7 +699,20 @@ pub fn import_model(root: &Path, manifest: &Path, requested_name: Option<&str>) 
     let target_dir = root.join(&target_name);
 
     fs::create_dir_all(root).map_err(|err| format!("cannot create {}: {err}", root.display()))?;
-    copy_tree(source_dir, &target_dir, Some(&target_dir))?;
+    fs::create_dir_all(&target_dir)
+        .map_err(|err| format!("cannot create {}: {err}", target_dir.display()))?;
+
+    let mut copied = 0usize;
+    for reference in referenced.keys() {
+        let from = resolve_inside(source_dir, reference)?;
+        let to = resolve_inside(&target_dir, reference)?;
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+        }
+        fs::copy(&from, &to).map_err(|err| format!("cannot copy {}: {err}", from.display()))?;
+        copied += 1;
+    }
 
     // Always land a normalised JSON manifest, even when the source was TOML.
     let target_manifest = target_dir.join("model.json");
@@ -718,7 +720,7 @@ pub fn import_model(root: &Path, manifest: &Path, requested_name: Option<&str>) 
         .map_err(|err| format!("cannot write {}: {err}", target_manifest.display()))?;
 
     log::info!(
-        "imported model {:?} from {} -> {}",
+        "imported model {:?} from {} -> {} ({copied} sprite file(s), manifest only)",
         target_name,
         manifest.display(),
         target_dir.display()
@@ -1077,5 +1079,151 @@ mod tests {
             "wave": clip(900, json!([{ "t": 0.5, "bones": { "arm": { "rotation": "spin" } } }]))
         }));
         assert!(validate_rig(&bad_transform).unwrap_err().contains("rotation"));
+    }
+
+    /* ---------- importing a rig: selective copy ---------- */
+
+    /// Smallest valid 1x1 PNG; the import path only reads bytes, but
+    /// `load_model` hands them to the page as a data URI, so keep it real.
+    const PNG_1PX: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "char-rig-{tag}-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    /// A manifest that references three sprites, sitting in a folder full of
+    /// things that are not part of the model — the `Downloads/` case.
+    #[test]
+    fn import_copies_only_the_referenced_sprites() {
+        let scratch = scratch_dir("import-selective");
+        let source = scratch.join("Downloads");
+        let models = scratch.join("models");
+        fs::create_dir_all(source.join("parts")).expect("parts dir");
+        fs::create_dir_all(source.join("unrelated")).expect("unrelated dir");
+
+        // Referenced by the rig.
+        for name in ["body.png", "mouth_closed.png", "mouth_open.png"] {
+            fs::write(source.join("parts").join(name), PNG_1PX).expect("sprite");
+        }
+        // Everything below must be ignored: an installer, a note, a sprite the
+        // rig does not use, and a whole unrelated sub-folder.
+        fs::write(source.join("setup.exe"), vec![0u8; 64 * 1024]).expect("installer");
+        fs::write(source.join("notes.txt"), b"private notes").expect("note");
+        fs::write(source.join("parts/unused.png"), PNG_1PX).expect("unused sprite");
+        fs::write(source.join("unrelated/holiday.png"), PNG_1PX).expect("unrelated sprite");
+
+        let rig = json!({
+            "format": FORMAT_TAG,
+            "name": "selective-import",
+            "bones": [{
+                "id": "root",
+                "parent": Value::Null,
+                "pos": [0, 0],
+                "parts": [
+                    { "id": "body", "image": "parts/body.png" },
+                    {
+                        "id": "mouth", "tag": "mouth",
+                        "image": "parts/mouth_closed.png",
+                        "state": "closed",
+                        "variants": {
+                            "closed": "parts/mouth_closed.png",
+                            "open": "parts/mouth_open.png"
+                        }
+                    }
+                ]
+            }]
+        });
+        fs::write(
+            source.join("model.json"),
+            serde_json::to_string_pretty(&rig).expect("manifest json"),
+        )
+        .expect("manifest");
+
+        let name = import_model(&models, &source.join("model.json"), None).expect("import");
+        assert_eq!(name, "selective-import");
+        let target = models.join(&name);
+
+        // Referenced sprites land at their relative paths, byte-identical.
+        for relative in ["model.json", "parts/body.png", "parts/mouth_closed.png", "parts/mouth_open.png"] {
+            let copied = target.join(relative);
+            assert!(copied.is_file(), "{relative} should have been copied");
+        }
+        assert_eq!(
+            fs::read(target.join("parts/body.png")).expect("read copy"),
+            PNG_1PX,
+            "the sprite bytes must be preserved"
+        );
+
+        // Nothing else travels with it.
+        for relative in [
+            "setup.exe",
+            "notes.txt",
+            "parts/unused.png",
+            "unrelated",
+            "unrelated/holiday.png",
+        ] {
+            assert!(
+                !target.join(relative).exists(),
+                "{relative} is not referenced by the rig and must not be copied"
+            );
+        }
+
+        // The installed model is self-contained: loading it resolves every
+        // referenced image from the new folder.
+        let loaded = load_model(&models, &name).expect("the copy must load");
+        let mut resolved: Vec<&str> = loaded.images.keys().map(String::as_str).collect();
+        resolved.sort_unstable();
+        assert_eq!(
+            resolved,
+            vec!["parts/body.png", "parts/mouth_closed.png", "parts/mouth_open.png"]
+        );
+        assert_eq!(loaded.rig["name"], "selective-import");
+
+        fs::remove_dir_all(&scratch).ok();
+    }
+
+    /// A manifest that points outside its folder is still rejected before the
+    /// destination is created — the traversal guard runs during validation.
+    #[test]
+    fn import_rejects_traversal_without_writing_a_model() {
+        let scratch = scratch_dir("import-traversal");
+        let source = scratch.join("Downloads");
+        let models = scratch.join("models");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::write(scratch.join("secret.png"), PNG_1PX).expect("secret");
+
+        let rig = json!({
+            "format": FORMAT_TAG,
+            "name": "escape",
+            "bones": [{ "id": "root", "parts": [{ "id": "body", "image": "../secret.png" }] }]
+        });
+        fs::write(
+            source.join("model.json"),
+            serde_json::to_string_pretty(&rig).expect("manifest json"),
+        )
+        .expect("manifest");
+
+        let err = import_model(&models, &source.join("model.json"), None).expect_err("must fail");
+        assert!(err.contains(".."), "{err}");
+        assert!(
+            !models.join("escape").exists(),
+            "a rejected import must not leave a half-built model folder"
+        );
+
+        fs::remove_dir_all(&scratch).ok();
     }
 }

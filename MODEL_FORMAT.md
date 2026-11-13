@@ -360,12 +360,20 @@ the whole list, and the dropdown shows them as `name (broken)`.
 
 | file | becomes |
 | --- | --- |
-| `.json` | rig manifest → new model (folder is copied into `models/<slug>/`) |
+| `.json` | rig manifest → new model: the manifest plus **only the sprites it references**, copied into `models/<slug>/` |
 | `.toml` | rig manifest (converted to JSON on install) |
 | `.png` `.jpg` `.jpeg` `.webp` `.svg` | an image — either a new character or a part |
 
 The picker filters to exactly these types. Anything else is rejected with a
 message naming the accepted formats.
+
+A rig import is **selective**: only the manifest plus the files it names
+(`part.image` and every `part.variants` entry, kept at their relative paths)
+are copied into `models/<slug>/`. Everything else in the source folder is left
+alone, so importing a `model.json` that happens to sit in `Downloads/` or on the
+Desktop does not drag that folder — or its gigabytes of unrelated files — into
+`models/`. A sprite path that escapes the folder (`../x.png`), is absolute, is
+missing, or is larger than 16 MB fails the import before anything is written.
 
 TOML has no `null`, so a root bone simply omits `parent` (or uses `""`/`"none"`):
 

@@ -260,7 +260,10 @@ Imports a **rig manifest** (`.json`, `.toml`) or a **single image**
 { "path": "D:/art/hat.png", "mode": "part", "tag": "accessory" }     // image -> part of current rig
 ```
 
-* manifest imports copy the folder into `models/<slug>/` and load it
+* manifest imports copy the manifest plus **only the sprites the rig references**
+  (`part.image` and every `part.variants` entry, relative paths preserved) into
+  `models/<slug>/` and load it — unrelated files next to the source manifest are
+  never copied, so a manifest sitting in `Downloads/` stays a one-folder import
   (`name` overrides the folder name; collisions get `-2`, `-3`, …)
 * `mode: "model"` builds a one-bone model whose body is that image
 * `mode: "part"` (default for images) copies the sprite into the current

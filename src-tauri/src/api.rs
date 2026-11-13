@@ -1086,7 +1086,6 @@ async fn get_speech(State(api): State<ApiCtx>) -> Json<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AvatarBounds;
     use crate::VisibleWindow;
 
     fn rect(x: f64, y: f64, width: f64, height: f64) -> WindowRect {
