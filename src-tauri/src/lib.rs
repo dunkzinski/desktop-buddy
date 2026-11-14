@@ -14,7 +14,9 @@
 pub mod api;
 pub mod models;
 pub mod platform;
+pub mod plugins;
 pub mod stt;
+pub mod survival;
 pub mod tts;
 
 // The OS-specific half of the app lives in `platform`; these re-exports keep
@@ -598,6 +600,9 @@ impl AppCtx {
         // The PTT worker holds a `waveIn` handle and may be mid-Whisper; tell it
         // to stop so the mic is released before the process exits.
         crate::stt::shutdown();
+        // Stop the plugin ticker and let every plugin run its teardown hook
+        // while the process still has its event loop.
+        crate::plugins::stop();
         // Give the hotkey thread a moment to run its `UnregisterHotKey`: some
         // shutdown paths (`POST /shutdown`) call `app.exit(0)` immediately after
         // this, which would otherwise kill the thread mid-cleanup.
@@ -2048,6 +2053,72 @@ pub fn hotkey_spec(rules_path: Option<&std::path::Path>) -> String {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .unwrap_or(fallback)
+}
+
+/// The app's side of the plugin contract.
+///
+/// Plugins only ever see [`plugins::PluginHost`], so nothing here leaks a
+/// `WebviewWindow`, a Win32 handle or a Tauri detail into them. Events go to
+/// both surfaces: the page (so a `survival-changed` listener can repaint) and
+/// the `GET /events` bus (an agent's feed) — the same split `do_speak` uses.
+struct AppHost {
+    app: AppHandle,
+    ctx: Arc<AppCtx>,
+    stats: plugins::SurvivalHandle,
+}
+
+impl plugins::PluginHost for AppHost {
+    fn emit(&self, event: &str, payload: Value) {
+        // The SSE bus and the remembered-event ring go first, so a subscriber
+        // that connects a moment later still sees the frame.
+        self.ctx.emit_event(event, payload.clone());
+        if let Err(err) = self.app.emit(event, payload) {
+            log::debug!("could not emit {event} to the page: {err}");
+        }
+    }
+
+    fn notify(&self, text: &str, expression: &str) {
+        // ~45 ms per character, clamped: long enough to read, short enough that
+        // a hungry avatar does not hold the bubble for a minute.
+        let chars = text.chars().count() as u64;
+        let duration = (chars * 45).clamp(1200, 15_000);
+        if let Err(err) = do_speak(&self.app, &self.ctx, text, expression, duration, 45, None) {
+            log::warn!("survival: could not speak {text:?}: {err}");
+        }
+    }
+
+    fn survival(&self) -> plugins::SurvivalHandle {
+        Arc::clone(&self.stats)
+    }
+}
+
+/// Load the `survival` block, seed the stats and hand them to the plugin host.
+///
+/// One warning, never an error: a broken block falls back to the defaults, so
+/// the app always starts with *some* appetite.
+fn start_plugins(handle: &AppHandle, ctx: &Arc<AppCtx>) {
+    let (config, warning) = survival::SurvivalConfig::load(ctx.ai_rules_path().as_deref());
+    if let Some(warning) = warning {
+        log::warn!("survival: {warning} — using the built-in defaults");
+    }
+    let stats: plugins::SurvivalHandle =
+        Arc::new(Mutex::new(survival::SurvivalStats::from_config(&config)));
+    let host: Arc<dyn plugins::PluginHost> = Arc::new(AppHost {
+        app: handle.clone(),
+        ctx: Arc::clone(ctx),
+        stats,
+    });
+    let status = plugins::install(host, &config);
+    log::info!(
+        "plugins: {} of {} active{}",
+        status["active"],
+        status["count"],
+        if config.enabled {
+            ""
+        } else {
+            " (survival disabled in watcher_rules.json)"
+        }
+    );
 }
 
 /// Register the system-wide hotkey on a background thread and pump its events.
@@ -3557,7 +3628,12 @@ pub fn run() {
                 // file as everything else; a failure is logged and ignored.
                 let rules_file = { lock_or_recover(&ctx.watcher).rules.clone() };
                 let hotkey = hotkey_spec(rules_file.as_deref());
-                spawn_hotkey_listener(handle, Arc::clone(&ctx), hotkey);
+                spawn_hotkey_listener(handle.clone(), Arc::clone(&ctx), hotkey);
+
+                // Hunger/saturation plus the plugin host that owns the ticker.
+                // Everything a plugin may touch is behind `PluginHost`, so a
+                // third-party plugin never needs a window handle.
+                start_plugins(&handle, &ctx);
                 Ok(())
             }
         });

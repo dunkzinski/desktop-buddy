@@ -719,6 +719,167 @@ Per-trigger overrides: `app_rules[].profile` (a window rule) and
 `quick_tasks[].profile` (a command-bar chip, forwarded in the `user_reply`
 frame's `profile`). Both fall back to `active_profile` when absent.
 
+### `GET /survival` / `POST /survival`
+
+The avatar's appetite — hunger and saturation on a 0–100 scale, the metabolic
+drain rate and the current hunger tier. It is driven by the survival plugin
+(see `GET /plugins`), ticks in the background, and starts from the `survival`
+block in `watcher_rules.json` (omitting the block uses the built-in defaults).
+
+```bash
+curl -s localhost:8765/survival
+```
+
+```json
+{
+  "ok": true,
+  "config": {
+    "enabled": true,
+    "start_hunger": 25.0,
+    "start_saturation": 40.0,
+    "notify": true,
+    "telemetry_secs": 60,
+    "metabolism": {"hunger_per_min": 0.5, "saturation_per_min": 0.9}
+  },
+  "stats": {
+    "hunger": 25.0,
+    "saturation": 40.0,
+    "tier": "peckish",
+    "label": "Peckish",
+    "expression": "thinking",
+    "metabolism": {
+      "hunger_per_min": 0.5,
+      "saturation_per_min": 0.9,
+      "minutes_to_empty": 50.0
+    },
+    "simulated_secs": 0,
+    "meals": 0,
+    "last_meal": null,
+    "seconds_to_next_tier": 900,
+    "seconds_to_starving": 1800
+  },
+  "hunger": 25.0,
+  "saturation": 40.0,
+  "tier": "peckish",
+  "label": "Peckish",
+  "expression": "thinking",
+  "plugins": [ /* the same array as GET /plugins */ ]
+}
+```
+
+`tier` is one of `satiated`, `peckish`, `hungry`, `starving`; `label` is the
+human wording and `expression` the face the avatar wears in that tier.
+`seconds_to_next_tier` counts down to the next *worse* tier (or `null` when
+already starving) and `seconds_to_starving` to the `hungry` floor.
+
+Override the bars by hand — used by tests, the UI's debug drawer and automation
+that wants to force a state:
+
+```bash
+curl -s -X POST localhost:8765/survival \
+     -H 'content-type: application/json' -d '{"hunger": 12, "saturation": 5}'
+```
+
+Both fields are optional (send at least one; neither ⇒ **400**). Values are
+clamped to 0–100. A tier change caused here emits the same `survival-threshold`
+frame a natural crossing would.
+
+### `POST /survival/feed`
+
+Eat one item from the catalog (`GET /foods`):
+
+```bash
+curl -s -X POST localhost:8765/survival/feed \
+     -H 'content-type: application/json' -d '{"food": "apple"}'
+```
+
+`id` is accepted as an alias for `food`, so an agent can round-trip the
+catalog's `id` field. The response is the `EatOutcome`:
+
+```json
+{
+  "ok": true,
+  "accepted": true,
+  "food": "apple",
+  "label": "Apple",
+  "hunger_before": 12.0,
+  "hunger_after": 22.0,
+  "saturation_before": 5.0,
+  "saturation_after": 14.0,
+  "tier_before": "starving",
+  "tier_after": "hungry",
+  "effects": [],
+  "refusal": null,
+  "cooldown_remaining_secs": 0
+}
+```
+
+A refused meal returns **409** with `accepted: false` and `refusal` set to
+`too_full` (already satiated) or `still_digesting` (the meal cooldown has not
+elapsed; `cooldown_remaining_secs` says how long). An unknown id is a **400**
+that lists the valid ids. An accepted meal emits `survival-meal` and, when the
+tier changes, `survival-threshold`.
+
+### `GET /foods`
+
+The static food catalog — the ids `POST /survival/feed` accepts, with what each
+one restores and any cosmetic side effect:
+
+```bash
+curl -s localhost:8765/foods
+```
+
+```json
+{
+  "ok": true,
+  "count": 4,
+  "foods": [
+    {
+      "id": "apple",
+      "label": "Apple",
+      "hunger": 10.0,
+      "saturation": 9.0,
+      "cooldown_secs": 30,
+      "effects": []
+    }
+  ]
+}
+```
+
+### `GET /plugins`
+
+The plugin registry: every registered plugin, its lifecycle state, tick and
+error counters and the last error it raised.
+
+```bash
+curl -s localhost:8765/plugins
+```
+
+```json
+{
+  "ok": true,
+  "ticks": 42,
+  "count": 1,
+  "active": 1,
+  "plugins": [
+    {
+      "id": "survival",
+      "description": "Tracks hunger and saturation and announces tier changes.",
+      "state": "active",
+      "ticks": 42,
+      "errors": 0,
+      "last_error": null,
+      "status": { "hunger": 24.9, "saturation": 39.9, "tier": "peckish" }
+    }
+  ]
+}
+```
+
+`state` is `registered`, `active`, `failed` or `stopped`. A plugin that panics
+repeatedly in its tick is parked as `failed` and its `shutdown` hook runs; the
+registry keeps the rest running. `GET /plugins` also emits the `plugins` frame
+whenever the registry's own status changes.
+
 ### `POST /shutdown`
 
 Closes the app (window + API) after flushing the response.
@@ -789,13 +950,13 @@ curl -s localhost:8765/context
 | Key | Meaning |
 | --- | --- |
 | `window_title` | title of the foreground window (`""` when there is none) |
-| `process_name` | executable that owns the foreground window, e.g. `"Code.exe"` (`""` when it cannot be read, and always `""` off Windows) |
+| `process_name` | executable that owns the foreground window, e.g. `"Code.exe"` (`""` when it cannot be read — a protected process, or a Linux/macOS backend that cannot resolve the owner) |
 | `idle_secs` | seconds since the last keyboard/mouse input anywhere on the machine |
-| `window_rect` | bounds of the foreground window in CSS px — `{x, y, width, height}`, or `null` when nothing is focused / off Windows. This is the rect `POST /perch` uses when no `window_process` is given |
+| `window_rect` | bounds of the foreground window in CSS px — `{x, y, width, height}`, or `null` when nothing is focused / the backend cannot probe it. This is the rect `POST /perch` uses when no `window_process` is given |
 | `visible_windows` | up to **5** front-most top-level windows (`{title, process_name, rect}`), skipping minimized, cloaked, untitled and the avatar's own window — what an agent can perch on by process name |
 | `avatar_state` | identical shape to `GET /state` |
 | `recent_events` | the last **15** SSE frames, oldest first, in the same `{seq, type, ts_ms, payload}` envelope `GET /events` pushes — the agent's short-term memory of what just happened |
-| `source` | `win32` when the Win32 probes ran, `unsupported` elsewhere |
+| `source` | which probe ran: `win32`, `xdotool`, `wayland`, `osascript`, or `unsupported` when none could be used |
 
 The handler queries the OS directly and never touches the avatar state machine,
 so it is safe to poll at any rate. `process_name` is best-effort: a protected

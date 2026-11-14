@@ -380,7 +380,7 @@ The local voice. One module, one worker thread, one config block.
 | `TtsConfig::load` | read the block out of `watcher_rules.json`; a missing file/block is silent, a malformed one returns one warning and the defaults |
 | `TtsConfig::path_problem` | validate `piper.exe`, the `.onnx` and the espeak-ng directory **once** at startup |
 | `init`, `status_json`, `set_enabled`, `is_speaking_enabled`, `enqueue_speech` | the process-wide `OnceLock<TtsRuntime>`: start the worker, report `{enabled, ready, reason, paths}`, mute/unmute (mute also purges playback), and the hook `do_speak` calls (sanitize → skip if empty → `try_send`) |
-| `run_worker`, `synthesize`, `temp_wav_path` | the `avatar-tts` thread: one `piper.exe` spawn per line (`--model`, `--espeak_data`, `--speaker`, `--length_scale`, `--output_file`, `CREATE_NO_WINDOW`, UTF-8 text on **stdin**), a `> 44`-byte wav check, then delete. Before playing, the wav is read back, its envelope emitted (`tts-envelope`) and `tts-envelope-stop` sent when `PlaySoundW` returns |
+| `run_worker`, `synthesize`, `temp_wav_path` | the `avatar-tts` thread: one `piper.exe` spawn per line (`--model`, `--espeak_data`, `--speaker`, `--length_scale`, `--output_file`, `CREATE_NO_WINDOW`, UTF-8 text on **stdin**), a `> 44`-byte wav check, then delete. Before playing, the wav is read back and its envelope emitted (`tts-envelope`); playback goes through `rodio::Sink` (cpal backend: WASAPI/ALSA/PipeWire/CoreAudio) and `tts-envelope-stop` is sent when the sink drains |
 | `set_emitter`, `emit`, `emit_envelope_stop` | the worker has no Tauri handle, so the app installs one emitter at startup and the module emits `tts-envelope` / `tts-envelope-stop` through it (a no-op in tests) |
 | `wav_envelope`, `parse_wav`, `sample_at`, `envelope_payload`, `ENVELOPE_BUCKET_MS` | audio-driven lip sync: walk the RIFF chunks, read 8/16-bit PCM (mono or stereo, `WAVE_FORMAT_EXTENSIBLE` included), average the channels, compute the RMS of each **25 ms** bucket and normalize the loudest bucket to `1.0`. Silence, an unreadable file or a non-PCM wav returns an empty envelope, and the page keeps the character-driven mouth |
 | `play_file`, `stop_playback` | `rodio`: one `OutputStream` per worker, a `Sink` per line (`append` + `sleep_until_end`, sequential by construction), and `Sink::stop()` for mute/interrupt. The sink is shared with `stop_playback` through an `Arc`, so a cut from another thread also unblocks the worker |
@@ -1665,6 +1665,29 @@ the API can read and mute, not press the button. The panel uses
 `get_stt_status` / `ptt_start` / `ptt_stop` / `set_stt_enabled` and receives
 `stt-status` events.
 
+### `/survival`, `/survival/feed`, `/foods`, `/plugins`
+
+The survival plugin's HTTP surface. `GET /survival` returns the appetite
+(`config`, `stats`, and the tier duplicated at the top level) plus the plugin
+list; `POST /survival` overrides `hunger`/`saturation` (at least one, clamped
+0–100, **400** if neither); `POST /survival/feed` eats one catalog id and returns
+the `EatOutcome` (**409** when refused as `too_full` or `still_digesting`, **400**
+for an unknown id); `GET /foods` lists the static catalog; `GET /plugins` returns
+the registry's lifecycle state, tick/error counters and each plugin's `status`.
+
+```bash
+curl -s localhost:8765/survival
+curl -s -X POST localhost:8765/survival -H 'content-type: application/json' -d '{"hunger": 12}'
+curl -s -X POST localhost:8765/survival/feed -H 'content-type: application/json' -d '{"food": "apple"}'
+curl -s localhost:8765/foods
+curl -s localhost:8765/plugins
+```
+
+Tiers are `satiated`, `peckish`, `hungry`, `starving`. An accepted meal emits
+`survival-meal`; a tier crossing (natural or manual) emits `survival-threshold`;
+the registry's own status changes emit `plugins`. See API.md for the full JSON
+shapes.
+
 ### `/shutdown`
 
 ```bash
@@ -1711,8 +1734,13 @@ CSS-pixel space as the avatar; `visible_windows` comes from `EnumWindows`
 (z-order, front first) keeping visible, non-minimized, non-cloaked, titled
 windows owned by another process, capped at `MAX_VISIBLE_WINDOWS` (5).
 `recent_events` is the last `EVENT_HISTORY_CAPACITY` (15) SSE frames, oldest
-first. Off Windows the values are empty/`0`/`null` and `source` is
-`"unsupported"`.
+first. The probes live in `src-tauri/src/platform/`: the Windows backend
+(`win32.rs`) runs the Win32 calls above, while the Linux/macOS backend
+(`unix.rs`) shells out to `xprop`/`wmctrl`/`xdotool` (X11), `osascript` (macOS)
+and `xrandr`/`NSScreen`-equivalent metrics. `source` names the probe that ran —
+`win32`, `xdotool`, `wayland`, `osascript` — or `unsupported` when none could be
+used (no display server, missing CLI tools, or a denied accessibility
+permission); in that case the fields are empty/`0`/`null`.
 
 ### `/clipboard`
 
@@ -1834,7 +1862,9 @@ history served in `/context`. Full payload table in `API.md` §
   `VecDeque` (50 turns, oldest evicted), is never written to disk, and dies with
   the process or a `POST /session/reset`. There is no search, no paging, no
   export, and no per-turn token/cost accounting.
-* **The command bar's hotkey is Windows-only and registered once.** `Enter`/`/`
+* **The command bar's hotkey is registered once per process** (`RegisterHotKey`
+  on Windows, the `global-hotkey` crate on Linux/macOS; Wayland sessions may
+  refuse it). `Enter`/`/`
   only reach the page when the overlay window has focus — which is exactly what
   the `Alt+Space` hotkey arranges by focusing the window first. `RegisterHotKey`
   is Win32, so off Windows the shortcut is skipped with a warning; a hotkey

@@ -213,6 +213,20 @@ impl ApiError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self { status: StatusCode::BAD_REQUEST, message: message.into() }
     }
+
+    /// A refusal carries its own status: "not installed" and "no such food" are
+    /// 400s, while "the avatar is too full to eat" is a 409 — the request was
+    /// well-formed, the creature simply said no.
+    fn status(status: StatusCode, message: impl Into<String>) -> Self {
+        Self { status, message: message.into() }
+    }
+}
+
+impl From<crate::plugins::FeedError> for ApiError {
+    fn from(err: crate::plugins::FeedError) -> Self {
+        let status = StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
+        Self::status(status, err.to_string())
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -354,6 +368,10 @@ fn router(api: ApiCtx) -> Router {
         .route("/stt", get(get_stt).post(set_stt))
         .route("/ai-profiles", get(ai_profiles))
         .route("/ai-profile", post(switch_ai_profile))
+        .route("/survival", get(survival_state).post(set_survival))
+        .route("/survival/feed", post(survival_feed))
+        .route("/foods", get(foods))
+        .route("/plugins", get(plugins_status))
         .route("/shutdown", post(shutdown_app))
         .with_state(api)
 }
@@ -863,6 +881,76 @@ async fn switch_ai_profile(
         Ok(Err(err)) => Err(ApiError::bad_request(err)),
         Err(err) => Err(ApiError::bad_request(format!("the switch task failed: {err}"))),
     }
+}
+
+/* ------------------------------------------------------------------ *
+ * Survival: hunger, saturation and the food that refills them.
+ * ------------------------------------------------------------------ */
+
+/// `GET /survival` — the live stats, the effective config and the plugin list.
+///
+/// Everything here is read under the stats mutex, so `hunger` and `tier` in one
+/// response always describe the same instant.
+async fn survival_state() -> Json<Value> {
+    Json(crate::plugins::survival_status())
+}
+
+#[derive(Debug, Deserialize)]
+struct SurvivalBody {
+    /// New hunger level, 0–100. Absent ⇒ leave it alone.
+    #[serde(default)]
+    hunger: Option<f32>,
+    /// New saturation level, 0–100. Absent ⇒ leave it alone.
+    #[serde(default)]
+    saturation: Option<f32>,
+}
+
+/// `POST /survival {"hunger": 12}` — override the bars by hand.
+///
+/// Used by tests, by the UI's debug drawer and by automation that wants to force
+/// a state. A tier change caused here emits the same `survival-threshold` event
+/// a natural crossing would, so listeners never miss one.
+async fn set_survival(Json(body): Json<SurvivalBody>) -> Result<Json<Value>, ApiError> {
+    if body.hunger.is_none() && body.saturation.is_none() {
+        return Err(ApiError::bad_request(
+            "send at least one of `hunger` or `saturation`",
+        ));
+    }
+    crate::plugins::set_levels(body.hunger, body.saturation)
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+#[derive(Debug, Deserialize)]
+struct FeedBody {
+    /// Catalog id, e.g. `"apple"`. `id` is accepted as an alias so an agent that
+    /// read the catalog's `id` field can round-trip it without guessing.
+    #[serde(default)]
+    food: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+}
+
+/// `POST /survival/feed {"food": "apple"}` — eat one item from the catalog.
+///
+/// Returns 409 when the avatar refuses (full, or still digesting), 400 for an
+/// unknown id. A successful feed emits `survival-meal` and announces the tier.
+async fn survival_feed(Json(body): Json<FeedBody>) -> Result<Json<Value>, ApiError> {
+    let food = body
+        .food
+        .or(body.id)
+        .ok_or_else(|| ApiError::bad_request("send `food` (a catalog id)"))?;
+    crate::plugins::feed(&food).map(Json).map_err(ApiError::from)
+}
+
+/// `GET /foods` — the static catalog, so an agent can pick a valid id.
+async fn foods() -> Json<Value> {
+    Json(crate::survival::food_catalog())
+}
+
+/// `GET /plugins` — every registered plugin, its state and its last error.
+async fn plugins_status() -> Json<Value> {
+    Json(crate::plugins::status())
 }
 
 async fn shutdown_app(State(api): State<ApiCtx>) -> Json<Value> {

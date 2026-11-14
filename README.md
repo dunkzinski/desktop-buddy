@@ -258,9 +258,10 @@ The shipped setup (override in the `stt` block of `watcher_rules.json`):
 | `min_speech_ms` | `250` — shorter presses are thrown away as accidental taps |
 
 **What happens on a hold:** the panel's badge goes `listening`, the mic opens
-through winmm at 16 kHz mono 16-bit (falling back to 48/44.1 kHz, downmixed and
-resampled to 16 kHz), and the audio is buffered while you hold. Releasing stops
-the device immediately; the badge turns `transcribing`, the clip is written to
+through [`cpal`](https://docs.rs/cpal) at the device's native rate and channel
+count (stereo is averaged to mono, then resampled to 16 kHz), and the audio is
+buffered while you hold. Releasing stops the device immediately; the badge turns
+`transcribing`, the clip is written to
 `%TEMP%` and handed to `whisper-cli.exe -m … -f … -l … -nt -np --vad --vad-model …
 --vad-threshold …` with `CREATE_NO_WINDOW`. Its stdout is cleaned — `[BLANK_AUDIO]`,
 `(music)`, `[inaudible]`, timestamps and control characters are stripped — and an
@@ -733,7 +734,8 @@ src-tauri/            Rust application (Tauri 2)
   src/api.rs          axum HTTP API (own thread + Tokio runtime)
   src/models.rs       model/rig storage, validation, import pipeline
   src/tts.rs          local Piper voice: config, text sanitizing, `avatar-tts` playback thread
-  src/stt.rs          push-to-talk: `stt` config, winmm capture, 16 kHz resample, whisper-cli + Silero VAD, `avatar-ptt` worker
+  src/stt.rs          push-to-talk: `stt` config, cpal capture (mono downmix), 16 kHz resample, whisper-cli + Silero VAD, `avatar-ptt` worker
+  src/platform/       the OS boundary: types, hotkey grammar, win32.rs, unix.rs (Linux/macOS)
   src/bin/
     char-rig-mcp.rs   second binary: stdio MCP server exposing the avatar_* tools over HTTP
     char-rig-watcher.rs  third binary: SSE + /context watcher that wakes Hermes on triggers
@@ -765,7 +767,8 @@ the tree above is the whole app.
 
 ## Status
 
-Prototype / hobby project. Windows-only click-through and desktop context,
+Prototype / hobby project. Click-through and desktop context are portable
+(Win32 on Windows, `xprop`/`xdotool`/`osascript` on Linux/macOS),
 unauthenticated localhost API. The overlay spans the **whole virtual desktop**
 (mixed per-monitor DPI scaling is the remaining rough edge). Live events over
 SSE; polling `/state` still works and is still the simplest read path. See
