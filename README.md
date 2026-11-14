@@ -175,10 +175,13 @@ emoji-only or code-only bubble never makes a sound.
 
 **How it plays:** `piper.exe` is spawned with `CREATE_NO_WINDOW` (no console
 flash) on the dedicated `avatar-tts` thread, which writes the text to its stdin,
-waits, then plays the temp `.wav` with `PlaySoundW` (`SND_FILENAME | SND_SYNC`)
-and deletes it. One thread means lines **queue** — they never overlap, and the
-HTTP server / render loop never waits on the speakers. The queue holds 8 lines;
-anything past that is dropped rather than narrating stale bubbles.
+waits, then plays the temp `.wav` through [`rodio`](https://docs.rs/rodio) and
+deletes it. `rodio` sits on `cpal`, so playback is WASAPI on Windows,
+ALSA/PulseAudio/PipeWire on Linux and CoreAudio on macOS from the same code
+path — there is no `PlaySoundW` and no OS audio binding in the crate. One thread
+means lines **queue** — they never overlap, and the HTTP server / render loop
+never waits on the speakers. The queue holds 8 lines; anything past that is
+dropped rather than narrating stale bubbles.
 
 **If Piper is missing** (no `piper.exe`, no `.onnx`, or a bad path) the app logs
 one warning at startup, the Voice badge says `missing`, and everything else keeps
@@ -188,10 +191,55 @@ only and is never written back to `watcher_rules.json`.
 
 ---
 
+## Running on Linux and macOS
+
+The app was written on Windows, and its OS calls used to sit inline in `lib.rs`.
+They now live behind one facade — `src-tauri/src/platform/` — so the rest of the
+crate is portable Rust:
+
+| Concern | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| Audio out (`tts.rs`) | WASAPI via `rodio` | ALSA / PulseAudio / PipeWire via `rodio` | CoreAudio via `rodio` |
+| Mic capture (`stt.rs`) | WASAPI via `cpal` | ALSA / PipeWire via `cpal` | CoreAudio via `cpal` |
+| Active window | `GetForegroundWindow` + DWM | `xdotool` / `wmctrl` (X11) | `osascript` + System Events |
+| Clipboard | `CF_UNICODETEXT` | `xclip` / `xsel`, `wl-copy` on Wayland | `pbcopy` / `pbpaste` |
+| Global cursor + key state | `GetCursorPos` / `GetAsyncKeyState` | `rdev` | `rdev` |
+| Global hotkey | `RegisterHotKey` | `global-hotkey` (X11 grab) | `global-hotkey` |
+
+What that buys you, honestly:
+
+* **Voice in and out works everywhere** — the two things the refactor was for.
+* **Window context, clipboard and the `Alt+Space` bar work on X11 and macOS**
+  (macOS needs the Accessibility permission; grant it once to the app).
+* **Wayland is a partial session.** No compositor offers a portable "read the
+  focused window's title" API, so `GET /context` reports `"source":"wayland"`
+  with empty values and window-rule triggers do not fire. Voice, chat and the
+  avatar itself are unaffected.
+* **Screen vision still needs Windows.** The watcher's capture is GDI `BitBlt`.
+* **Click-through uses Tauri's cross-platform API**, so the overlay behaves the
+  same, but the always-on-top/focus tweaks that need `WS_EX_*` and DWM are
+  Windows-only by nature.
+
+To type-check the platform layer for another OS without a full Tauri toolchain
+(no GTK/WebKit, no C cross-compiler):
+
+```bash
+cd tools/platform-check
+cargo check --target x86_64-unknown-linux-gnu   # or aarch64-apple-darwin
+```
+
+It compiles the real `src-tauri/src/platform/` tree for that target, so a
+`windows::` import that leaked into portable code fails there instead of on a
+user's machine.
+
+---
+
 ## Talking to it (push to talk)
 
-The reverse of the voice: hold **`Alt+V`** anywhere in Windows — or the **Hold to
-talk** button in the control panel — speak, and let go. The clip is filtered by
+The reverse of the voice: hold **`Alt+V`** anywhere on the desktop — or the
+**Hold to talk** button in the control panel — speak, and let go. Capture is
+`cpal` (WASAPI / ALSA / CoreAudio), so the same code runs on all three
+platforms; the device's own rate is downmixed to mono and resampled to 16 kHz. The clip is filtered by
 [Silero VAD](https://github.com/snakers4/silero-vad) and transcribed locally by
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp); the text is posted to
 `POST /reply` exactly as if you had typed it, so the watcher wakes your agent and

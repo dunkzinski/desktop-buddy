@@ -58,9 +58,6 @@ windows = { version = "0.58", features = [
     "Win32_System_Ole",
     "Win32_Graphics_Dwm",
     "Win32_UI_HiDpi",
-    # PlaySoundW for the local Piper voice (`src/tts.rs`): FILENAME|SYNC on the
-    # dedicated `avatar-tts` worker thread, so lines queue instead of overlapping.
-    "Win32_Media_Audio",
     # GDI BitBlt/GetDIBits for the watcher's screen-vision capture
     # (`src/bin/screen.rs`): no DXGI session handshake, works over RDP.
     "Win32_Graphics_Gdi",
@@ -71,3 +68,16 @@ base64 = "0.22"
 rfd = "0.15"
 toml = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+# Cross-platform audio. `rodio` owns playback (WASAPI on Windows, ALSA/Pulse/
+# PipeWire on Linux, CoreAudio on macOS — all through cpal, no OS bindings of
+# our own) and `cpal` owns microphone capture for push-to-talk.
+rodio = { version = "0.19", default-features = false, features = ["wav"] }
+cpal = "0.15"
+
+# Cross-platform desktop integration for the non-Windows backends
+# (`src/platform/unix.rs`): global hotkeys and the global cursor/key state.
+# Windows keeps its native Win32 paths, which are already proven.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+global-hotkey = "0.6"
+rdev = "0.5"

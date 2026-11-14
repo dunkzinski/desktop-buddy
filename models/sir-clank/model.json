@@ -1,0 +1,1167 @@
+{
+  "animations": {
+    "alert": {
+      "duration_ms": 850,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "plume": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": -0.45
+            },
+            "arm_r": {
+              "rotation": -0.8
+            },
+            "plume": {
+              "rotation": -0.4
+            },
+            "root": {
+              "y": -8.0
+            }
+          },
+          "t": 0.18
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": -0.2
+            },
+            "arm_r": {
+              "rotation": -0.35
+            },
+            "plume": {
+              "rotation": 0.2
+            },
+            "root": {
+              "y": -2.0
+            }
+          },
+          "t": 0.48
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "plume": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": false
+    },
+    "breathe": {
+      "duration_ms": 2600,
+      "keyframes": [
+        {
+          "bones": {
+            "plume": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "plume": {
+              "rotation": 0.1
+            },
+            "root": {
+              "y": 3.0
+            },
+            "torso": {
+              "scale": 1.025
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "plume": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": true
+    },
+    "scan": {
+      "duration_ms": 3400,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "plume": {
+              "rotation": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": -0.15
+            },
+            "head": {
+              "rotation": 0.24
+            },
+            "plume": {
+              "rotation": -0.18
+            }
+          },
+          "t": 0.25
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.1
+            },
+            "head": {
+              "rotation": -0.24
+            },
+            "plume": {
+              "rotation": 0.18
+            }
+          },
+          "t": 0.55
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "plume": {
+              "rotation": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": true
+    },
+    "wave": {
+      "duration_ms": 1400,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "forearm_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -1.9
+            },
+            "forearm_r": {
+              "rotation": -0.3
+            },
+            "head": {
+              "rotation": -0.05
+            }
+          },
+          "t": 0.25
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -2.15
+            },
+            "forearm_r": {
+              "rotation": 0.2
+            },
+            "head": {
+              "rotation": 0.05
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -1.9
+            },
+            "forearm_r": {
+              "rotation": -0.3
+            },
+            "head": {
+              "rotation": -0.04
+            }
+          },
+          "t": 0.75
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "forearm_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": false
+    }
+  },
+  "bones": [
+    {
+      "anim": {
+        "bob": 3.5,
+        "phase": 0.0,
+        "sway": 0.02
+      },
+      "id": "root",
+      "length": 0.0,
+      "parent": null,
+      "parts": [],
+      "pos": [
+        0,
+        0
+      ],
+      "rotation": 0.0,
+      "scale": 0.55,
+      "z": 10
+    },
+    {
+      "id": "pelvis",
+      "length": 0.0,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#6c7a89",
+          "id": "fauld_skirt",
+          "offset": [
+            0,
+            2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            82,
+            42
+          ],
+          "z": 0
+        },
+        {
+          "color": "#5c3a21",
+          "id": "belt",
+          "offset": [
+            0,
+            -10
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            84,
+            14
+          ],
+          "z": 1
+        },
+        {
+          "color": "#f4b942",
+          "id": "belt_gold",
+          "offset": [
+            0,
+            -10
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            18,
+            18
+          ],
+          "z": 2
+        }
+      ],
+      "pos": [
+        0,
+        44
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 15
+    },
+    {
+      "anim": {
+        "sway": 0.02,
+        "walk": 0.04
+      },
+      "id": "torso",
+      "length": 0.0,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#95a5a6",
+          "id": "breastplate",
+          "offset": [
+            0,
+            -52
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            98,
+            108
+          ],
+          "z": 0
+        },
+        {
+          "color": "#bdc3c7",
+          "id": "chest_highlight",
+          "offset": [
+            0,
+            -56
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            64,
+            72
+          ],
+          "z": 1
+        },
+        {
+          "color": "#d63031",
+          "id": "crest_emblem",
+          "offset": [
+            0,
+            -56
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            24,
+            28
+          ],
+          "z": 2
+        },
+        {
+          "color": "#7f8c8d",
+          "id": "gorget",
+          "offset": [
+            0,
+            -98
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            72,
+            22
+          ],
+          "z": 3
+        }
+      ],
+      "pos": [
+        0,
+        4
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 20
+    },
+    {
+      "anim": {
+        "sway": 0.03,
+        "walk": 0.07
+      },
+      "id": "head",
+      "length": 0.0,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#95a5a6",
+          "id": "helm_dome",
+          "offset": [
+            0,
+            -40
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            84,
+            92
+          ],
+          "z": 0
+        },
+        {
+          "color": "#7f8c8d",
+          "id": "visor_plate",
+          "offset": [
+            0,
+            -32
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            76,
+            44
+          ],
+          "z": 1
+        },
+        {
+          "color": "#1e272e",
+          "id": "visor_slit",
+          "offset": [
+            0,
+            -34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            62,
+            16
+          ],
+          "z": 2
+        },
+        {
+          "color": "#ffeaa7",
+          "id": "eye_l",
+          "offset": [
+            -14,
+            -34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            12,
+            10
+          ],
+          "tag": "eye",
+          "z": 3
+        },
+        {
+          "color": "#ffeaa7",
+          "id": "eye_r",
+          "offset": [
+            14,
+            -34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            12,
+            10
+          ],
+          "tag": "eye",
+          "z": 3
+        },
+        {
+          "color": "#2d3436",
+          "id": "mouth",
+          "offset": [
+            0,
+            -16
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            26,
+            6
+          ],
+          "tag": "mouth",
+          "z": 2
+        }
+      ],
+      "pos": [
+        0,
+        -114
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 30
+    },
+    {
+      "anim": {
+        "sway": 0.12,
+        "walk": 0.18
+      },
+      "id": "plume",
+      "length": 44,
+      "parent": "head",
+      "parts": [
+        {
+          "color": "#d63031",
+          "id": "plume_feather",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            44,
+            22
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ff7675",
+          "id": "plume_crest",
+          "offset": [
+            12,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            24,
+            16
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        0,
+        -84
+      ],
+      "rotation": -1.9,
+      "scale": 1.0,
+      "z": 29
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.05,
+        "walk": 0.35
+      },
+      "id": "arm_l",
+      "length": 54,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#bdc3c7",
+          "id": "pauldron_l",
+          "offset": [
+            4,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            38,
+            34
+          ],
+          "z": 2
+        },
+        {
+          "color": "#7f8c8d",
+          "id": "vambrace_up_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            54,
+            20
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -50,
+        -84
+      ],
+      "rotation": 2.05,
+      "scale": 1.0,
+      "z": 24
+    },
+    {
+      "anim": {
+        "phase": 0.3,
+        "walk": 0.15
+      },
+      "id": "forearm_l",
+      "length": 42,
+      "parent": "arm_l",
+      "parts": [
+        {
+          "color": "#95a5a6",
+          "id": "gauntlet_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            42,
+            18
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f4b942",
+          "id": "shield_rim",
+          "offset": [
+            24,
+            6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.4,
+          "shape": "ellipse",
+          "size": [
+            58,
+            74
+          ],
+          "z": 3
+        },
+        {
+          "color": "#2980b9",
+          "id": "shield_body",
+          "offset": [
+            24,
+            6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.4,
+          "shape": "ellipse",
+          "size": [
+            48,
+            64
+          ],
+          "z": 4
+        },
+        {
+          "color": "#bdc3c7",
+          "id": "shield_boss",
+          "offset": [
+            24,
+            6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            16,
+            16
+          ],
+          "z": 5
+        }
+      ],
+      "pos": [
+        50,
+        0
+      ],
+      "rotation": 0.35,
+      "scale": 1.0,
+      "z": 26
+    },
+    {
+      "anim": {
+        "phase": 3.141592653589793,
+        "sway": 0.05,
+        "walk": 0.35,
+        "wave": 1.0
+      },
+      "id": "arm_r",
+      "length": 54,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#bdc3c7",
+          "id": "pauldron_r",
+          "offset": [
+            4,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            38,
+            34
+          ],
+          "z": 2
+        },
+        {
+          "color": "#7f8c8d",
+          "id": "vambrace_up_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            54,
+            20
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        50,
+        -84
+      ],
+      "rotation": 1.1,
+      "scale": 1.0,
+      "z": 24
+    },
+    {
+      "anim": {
+        "phase": 3.441592653589793,
+        "walk": 0.18,
+        "wave": 0.5
+      },
+      "id": "forearm_r",
+      "length": 42,
+      "parent": "arm_r",
+      "parts": [
+        {
+          "color": "#95a5a6",
+          "id": "gauntlet_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            42,
+            18
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        50,
+        0
+      ],
+      "rotation": -0.35,
+      "scale": 1.0,
+      "z": 25
+    },
+    {
+      "id": "sword",
+      "length": 88,
+      "parent": "forearm_r",
+      "parts": [
+        {
+          "color": "#5c3a21",
+          "id": "sword_hilt",
+          "offset": [
+            -12,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            24,
+            8
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f4b942",
+          "id": "sword_guard",
+          "offset": [
+            10,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            10,
+            34
+          ],
+          "z": 1
+        },
+        {
+          "color": "#dfe6e9",
+          "id": "sword_blade",
+          "offset": [
+            12,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            84,
+            14
+          ],
+          "z": 0
+        },
+        {
+          "color": "#95a5a6",
+          "id": "sword_fuller",
+          "offset": [
+            16,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            68,
+            4
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        40,
+        0
+      ],
+      "rotation": -1.3,
+      "scale": 1.0,
+      "z": 27
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "walk": 0.48
+      },
+      "id": "leg_l",
+      "length": 52,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#7f8c8d",
+          "id": "cuisses_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            52,
+            24
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -20,
+        56
+      ],
+      "rotation": 1.72,
+      "scale": 1.0,
+      "z": 12
+    },
+    {
+      "anim": {
+        "phase": 0.3,
+        "walk": 0.28
+      },
+      "id": "shin_l",
+      "length": 44,
+      "parent": "leg_l",
+      "parts": [
+        {
+          "color": "#95a5a6",
+          "id": "greave_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            44,
+            20
+          ],
+          "z": 0
+        },
+        {
+          "color": "#7f8c8d",
+          "id": "sabaton_l",
+          "offset": [
+            44,
+            -4
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -1.57,
+          "shape": "ellipse",
+          "size": [
+            26,
+            16
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        48,
+        0
+      ],
+      "rotation": -0.05,
+      "scale": 1.0,
+      "z": 11
+    },
+    {
+      "anim": {
+        "phase": 3.141592653589793,
+        "walk": 0.48
+      },
+      "id": "leg_r",
+      "length": 52,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#7f8c8d",
+          "id": "cuisses_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            52,
+            24
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        20,
+        56
+      ],
+      "rotation": 1.42,
+      "scale": 1.0,
+      "z": 12
+    },
+    {
+      "anim": {
+        "phase": 3.441592653589793,
+        "walk": 0.28
+      },
+      "id": "shin_r",
+      "length": 44,
+      "parent": "leg_r",
+      "parts": [
+        {
+          "color": "#95a5a6",
+          "id": "greave_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            44,
+            20
+          ],
+          "z": 0
+        },
+        {
+          "color": "#7f8c8d",
+          "id": "sabaton_r",
+          "offset": [
+            44,
+            4
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 1.57,
+          "shape": "ellipse",
+          "size": [
+            26,
+            16
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        48,
+        0
+      ],
+      "rotation": 0.05,
+      "scale": 1.0,
+      "z": 11
+    }
+  ],
+  "format": "char-rig/model@1",
+  "label": "Sir Clank (knight)",
+  "name": "sir-clank",
+  "notes": "Procedural-shape knight: steel plate armor, red helmet plume, heater shield, broadsword, tagged visor eyes/mouth, and four keyframe clips (wave, breathe, scan, alert)."
+}

@@ -1,0 +1,1671 @@
+{
+  "animations": {
+    "alert": {
+      "duration_ms": 850,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "dish": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.5
+            },
+            "arm_r": {
+              "rotation": -0.5
+            },
+            "dish": {
+              "rotation": -0.4
+            },
+            "head": {
+              "rotation": -0.08
+            },
+            "root": {
+              "y": -10.0
+            },
+            "torso": {
+              "scale": 1.05
+            }
+          },
+          "t": 0.2
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.2
+            },
+            "arm_r": {
+              "rotation": -0.2
+            },
+            "dish": {
+              "rotation": 0.2
+            },
+            "head": {
+              "rotation": 0.04
+            },
+            "root": {
+              "y": -3.0
+            },
+            "torso": {
+              "scale": 1.02
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "dish": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": false
+    },
+    "breathe": {
+      "duration_ms": 2600,
+      "keyframes": [
+        {
+          "bones": {
+            "dish": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "thruster": {
+              "scale": 1.0
+            },
+            "torso": {
+              "rotation": 0.0,
+              "scale": 1.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "dish": {
+              "rotation": 0.12
+            },
+            "head": {
+              "rotation": 0.025
+            },
+            "root": {
+              "y": 3.5
+            },
+            "thruster": {
+              "scale": 1.12
+            },
+            "torso": {
+              "rotation": 0.015,
+              "scale": 1.03
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "dish": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "thruster": {
+              "scale": 1.0
+            },
+            "torso": {
+              "rotation": 0.0,
+              "scale": 1.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": true
+    },
+    "scan": {
+      "duration_ms": 3600,
+      "keyframes": [
+        {
+          "bones": {
+            "dish": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0,
+              "x": 0.0
+            },
+            "torso": {
+              "rotation": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "dish": {
+              "rotation": 0.35
+            },
+            "head": {
+              "rotation": 0.28,
+              "x": 4.0
+            },
+            "torso": {
+              "rotation": 0.04
+            }
+          },
+          "t": 0.25
+        },
+        {
+          "bones": {
+            "dish": {
+              "rotation": -0.35
+            },
+            "head": {
+              "rotation": -0.28,
+              "x": -4.0
+            },
+            "torso": {
+              "rotation": -0.04
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "dish": {
+              "rotation": 0.15
+            },
+            "head": {
+              "rotation": 0.1,
+              "x": 1.5
+            },
+            "torso": {
+              "rotation": 0.02
+            }
+          },
+          "t": 0.75
+        },
+        {
+          "bones": {
+            "dish": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0,
+              "x": 0.0
+            },
+            "torso": {
+              "rotation": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": true
+    },
+    "wave": {
+      "duration_ms": 1500,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "dish": {
+              "rotation": 0.0
+            },
+            "forearm_r": {
+              "rotation": 0.0
+            },
+            "hand_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -1.9
+            },
+            "dish": {
+              "rotation": 0.25
+            },
+            "forearm_r": {
+              "rotation": -0.3
+            },
+            "hand_r": {
+              "rotation": 0.25
+            },
+            "head": {
+              "rotation": -0.06
+            }
+          },
+          "t": 0.18
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -2.1
+            },
+            "dish": {
+              "rotation": -0.15
+            },
+            "forearm_r": {
+              "rotation": 0.3
+            },
+            "hand_r": {
+              "rotation": -0.25
+            },
+            "head": {
+              "rotation": 0.05
+            }
+          },
+          "t": 0.38
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -1.9
+            },
+            "dish": {
+              "rotation": 0.22
+            },
+            "forearm_r": {
+              "rotation": -0.3
+            },
+            "hand_r": {
+              "rotation": 0.25
+            },
+            "head": {
+              "rotation": -0.05
+            }
+          },
+          "t": 0.58
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -2.1
+            },
+            "dish": {
+              "rotation": -0.12
+            },
+            "forearm_r": {
+              "rotation": 0.3
+            },
+            "hand_r": {
+              "rotation": -0.25
+            },
+            "head": {
+              "rotation": 0.05
+            }
+          },
+          "t": 0.78
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "dish": {
+              "rotation": 0.0
+            },
+            "forearm_r": {
+              "rotation": 0.0
+            },
+            "hand_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": false
+    }
+  },
+  "bones": [
+    {
+      "anim": {
+        "bob": 3.5,
+        "phase": 0.0,
+        "sway": 0.015
+      },
+      "id": "root",
+      "length": 0.0,
+      "parent": null,
+      "parts": [],
+      "pos": [
+        0,
+        0
+      ],
+      "rotation": 0.0,
+      "scale": 0.55,
+      "z": 10
+    },
+    {
+      "id": "pelvis",
+      "length": 0.0,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#52637a",
+          "id": "chassis_base",
+          "offset": [
+            -38,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            76,
+            36
+          ],
+          "z": 0
+        },
+        {
+          "color": "#94a3b8",
+          "id": "hip_bolt_l",
+          "offset": [
+            -24,
+            2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            14,
+            14
+          ],
+          "z": 1
+        },
+        {
+          "color": "#94a3b8",
+          "id": "hip_bolt_r",
+          "offset": [
+            24,
+            2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            14,
+            14
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        0,
+        44
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 9
+    },
+    {
+      "anim": {
+        "bob": 1.0,
+        "sway": 0.02
+      },
+      "id": "thruster",
+      "length": 0.0,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#3b4759",
+          "id": "jetpack",
+          "offset": [
+            -55,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            110,
+            48
+          ],
+          "z": 0
+        },
+        {
+          "color": "#1e293b",
+          "id": "nozzle_l",
+          "offset": [
+            -48,
+            22
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            18,
+            22
+          ],
+          "z": 1
+        },
+        {
+          "color": "#1e293b",
+          "id": "nozzle_r",
+          "offset": [
+            48,
+            22
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            18,
+            22
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38bdf8",
+          "id": "flame_l",
+          "offset": [
+            -48,
+            34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            12,
+            20
+          ],
+          "z": 2
+        },
+        {
+          "color": "#38bdf8",
+          "id": "flame_r",
+          "offset": [
+            48,
+            34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            12,
+            20
+          ],
+          "z": 2
+        }
+      ],
+      "pos": [
+        0,
+        -32
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 15
+    },
+    {
+      "anim": {
+        "sway": 0.025,
+        "walk": 0.035
+      },
+      "id": "torso",
+      "length": 0.0,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#cbd5e1",
+          "id": "chest_plate",
+          "offset": [
+            0,
+            -52
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            104,
+            114
+          ],
+          "z": 0
+        },
+        {
+          "color": "#64748b",
+          "id": "chest_trim",
+          "offset": [
+            0,
+            -52
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            82,
+            88
+          ],
+          "z": 1
+        },
+        {
+          "color": "#0f172a",
+          "id": "reactor_ring",
+          "offset": [
+            0,
+            -54
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            36,
+            36
+          ],
+          "z": 2
+        },
+        {
+          "color": "#f97316",
+          "id": "reactor_core",
+          "offset": [
+            0,
+            -54
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            22,
+            22
+          ],
+          "z": 3
+        },
+        {
+          "color": "#334155",
+          "id": "vent_l",
+          "offset": [
+            -34,
+            -26
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            20,
+            6
+          ],
+          "z": 2
+        },
+        {
+          "color": "#334155",
+          "id": "vent_r",
+          "offset": [
+            14,
+            -26
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            20,
+            6
+          ],
+          "z": 2
+        },
+        {
+          "color": "#475569",
+          "id": "waist_servo",
+          "offset": [
+            -26,
+            12
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            52,
+            22
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        0,
+        4
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 20
+    },
+    {
+      "anim": {
+        "sway": 0.04,
+        "walk": 0.08
+      },
+      "id": "head",
+      "length": 0.0,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#475569",
+          "id": "neck_piston",
+          "offset": [
+            -14,
+            10
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            28,
+            26
+          ],
+          "z": -1
+        },
+        {
+          "color": "#e2e8f0",
+          "id": "helmet",
+          "offset": [
+            0,
+            -42
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            116,
+            98
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f97316",
+          "id": "ear_pod_l",
+          "offset": [
+            -58,
+            -42
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            16,
+            34
+          ],
+          "z": 1
+        },
+        {
+          "color": "#f97316",
+          "id": "ear_pod_r",
+          "offset": [
+            58,
+            -42
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            16,
+            34
+          ],
+          "z": 1
+        },
+        {
+          "color": "#0f172a",
+          "id": "visor",
+          "offset": [
+            -46,
+            -46
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            92,
+            46
+          ],
+          "z": 2
+        },
+        {
+          "color": "#38bdf8",
+          "id": "eye_l",
+          "offset": [
+            -22,
+            -46
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            22,
+            22
+          ],
+          "tag": "eye",
+          "z": 3
+        },
+        {
+          "color": "#38bdf8",
+          "id": "eye_r",
+          "offset": [
+            22,
+            -46
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            22,
+            22
+          ],
+          "tag": "eye",
+          "z": 3
+        },
+        {
+          "color": "#38bdf8",
+          "id": "mouth_grille",
+          "offset": [
+            -22,
+            -12
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            44,
+            12
+          ],
+          "tag": "mouth",
+          "z": 3
+        }
+      ],
+      "pos": [
+        0,
+        -118
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 30
+    },
+    {
+      "anim": {
+        "phase": 0.2,
+        "sway": 0.16,
+        "walk": 0.18,
+        "wave": 0.28
+      },
+      "id": "dish",
+      "length": 36,
+      "parent": "head",
+      "parts": [
+        {
+          "color": "#64748b",
+          "id": "antenna_mast",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            36,
+            6
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f97316",
+          "id": "beacon_bulb",
+          "offset": [
+            36,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            16,
+            16
+          ],
+          "z": 1
+        },
+        {
+          "color": "#fef08a",
+          "id": "beacon_glow",
+          "offset": [
+            36,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            8,
+            8
+          ],
+          "z": 2
+        }
+      ],
+      "pos": [
+        0,
+        -90
+      ],
+      "rotation": -1.5708,
+      "scale": 1.0,
+      "z": 32
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.06,
+        "walk": 0.42,
+        "wave": 1.0
+      },
+      "id": "arm_l",
+      "length": 58,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#f97316",
+          "id": "shoulder_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            24,
+            24
+          ],
+          "z": 1
+        },
+        {
+          "color": "#94a3b8",
+          "id": "upper_arm_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            58,
+            18
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -54,
+        -80
+      ],
+      "rotation": 1.95,
+      "scale": 1.0,
+      "z": 24
+    },
+    {
+      "anim": {
+        "phase": 0.4,
+        "sway": 0.04,
+        "walk": 0.2,
+        "wave": 0.5
+      },
+      "id": "forearm_l",
+      "length": 48,
+      "parent": "arm_l",
+      "parts": [
+        {
+          "color": "#475569",
+          "id": "elbow_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            18,
+            18
+          ],
+          "z": 1
+        },
+        {
+          "color": "#cbd5e1",
+          "id": "lower_arm_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            48,
+            20
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        54,
+        0
+      ],
+      "rotation": 0.25,
+      "scale": 1.0,
+      "z": 25
+    },
+    {
+      "anim": {
+        "phase": 0.8,
+        "walk": 0.1,
+        "wave": 0.3
+      },
+      "id": "hand_l",
+      "length": 0.0,
+      "parent": "forearm_l",
+      "parts": [
+        {
+          "color": "#475569",
+          "id": "wrist_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            16,
+            16
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f97316",
+          "id": "pincer_l_top",
+          "offset": [
+            6,
+            -7
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.25,
+          "shape": "capsule",
+          "size": [
+            18,
+            7
+          ],
+          "z": 1
+        },
+        {
+          "color": "#f97316",
+          "id": "pincer_l_bot",
+          "offset": [
+            6,
+            7
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": -0.25,
+          "shape": "capsule",
+          "size": [
+            18,
+            7
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        44,
+        0
+      ],
+      "rotation": 0.1,
+      "scale": 1.0,
+      "z": 26
+    },
+    {
+      "anim": {
+        "phase": 3.141592653589793,
+        "sway": 0.06,
+        "walk": 0.42,
+        "wave": 1.0
+      },
+      "id": "arm_r",
+      "length": 58,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#f97316",
+          "id": "shoulder_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            24,
+            24
+          ],
+          "z": 1
+        },
+        {
+          "color": "#94a3b8",
+          "id": "upper_arm_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            58,
+            18
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        54,
+        -80
+      ],
+      "rotation": 1.19,
+      "scale": 1.0,
+      "z": 24
+    },
+    {
+      "anim": {
+        "phase": 3.541592653589793,
+        "sway": 0.04,
+        "walk": 0.2,
+        "wave": 0.5
+      },
+      "id": "forearm_r",
+      "length": 48,
+      "parent": "arm_r",
+      "parts": [
+        {
+          "color": "#475569",
+          "id": "elbow_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            18,
+            18
+          ],
+          "z": 1
+        },
+        {
+          "color": "#cbd5e1",
+          "id": "lower_arm_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            48,
+            20
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        54,
+        0
+      ],
+      "rotation": -0.25,
+      "scale": 1.0,
+      "z": 25
+    },
+    {
+      "anim": {
+        "phase": 3.941592653589793,
+        "walk": 0.1,
+        "wave": 0.3
+      },
+      "id": "hand_r",
+      "length": 0.0,
+      "parent": "forearm_r",
+      "parts": [
+        {
+          "color": "#475569",
+          "id": "wrist_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            16,
+            16
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f97316",
+          "id": "pincer_r_top",
+          "offset": [
+            6,
+            -7
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.25,
+          "shape": "capsule",
+          "size": [
+            18,
+            7
+          ],
+          "z": 1
+        },
+        {
+          "color": "#f97316",
+          "id": "pincer_r_bot",
+          "offset": [
+            6,
+            7
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": -0.25,
+          "shape": "capsule",
+          "size": [
+            18,
+            7
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        44,
+        0
+      ],
+      "rotation": -0.1,
+      "scale": 1.0,
+      "z": 26
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.015,
+        "walk": 0.48
+      },
+      "id": "leg_l",
+      "length": 56,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#94a3b8",
+          "id": "thigh_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            56,
+            22
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -24,
+        58
+      ],
+      "rotation": 1.72,
+      "scale": 1.0,
+      "z": 12
+    },
+    {
+      "anim": {
+        "phase": 0.3,
+        "walk": 0.28
+      },
+      "id": "shin_l",
+      "length": 48,
+      "parent": "leg_l",
+      "parts": [
+        {
+          "color": "#f97316",
+          "id": "knee_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            18,
+            18
+          ],
+          "z": 1
+        },
+        {
+          "color": "#cbd5e1",
+          "id": "calf_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            48,
+            24
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        52,
+        0
+      ],
+      "rotation": -0.05,
+      "scale": 1.0,
+      "z": 11
+    },
+    {
+      "anim": {
+        "phase": 0.6,
+        "walk": 0.24
+      },
+      "id": "foot_l",
+      "length": 28,
+      "parent": "shin_l",
+      "parts": [
+        {
+          "color": "#475569",
+          "id": "boot_l",
+          "offset": [
+            -6,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            34,
+            18
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f97316",
+          "id": "toe_cap_l",
+          "offset": [
+            22,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            16
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        44,
+        0
+      ],
+      "rotation": 1.42,
+      "scale": 1.0,
+      "z": 11
+    },
+    {
+      "anim": {
+        "phase": 3.141592653589793,
+        "sway": 0.015,
+        "walk": 0.48
+      },
+      "id": "leg_r",
+      "length": 56,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#94a3b8",
+          "id": "thigh_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            56,
+            22
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        24,
+        58
+      ],
+      "rotation": 1.42,
+      "scale": 1.0,
+      "z": 12
+    },
+    {
+      "anim": {
+        "phase": 3.441592653589793,
+        "walk": 0.28
+      },
+      "id": "shin_r",
+      "length": 48,
+      "parent": "leg_r",
+      "parts": [
+        {
+          "color": "#f97316",
+          "id": "knee_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            18,
+            18
+          ],
+          "z": 1
+        },
+        {
+          "color": "#cbd5e1",
+          "id": "calf_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            48,
+            24
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        52,
+        0
+      ],
+      "rotation": 0.05,
+      "scale": 1.0,
+      "z": 11
+    },
+    {
+      "anim": {
+        "phase": 3.741592653589793,
+        "walk": 0.24
+      },
+      "id": "foot_r",
+      "length": 28,
+      "parent": "shin_r",
+      "parts": [
+        {
+          "color": "#475569",
+          "id": "boot_r",
+          "offset": [
+            -6,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            34,
+            18
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f97316",
+          "id": "toe_cap_r",
+          "offset": [
+            22,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            16
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        44,
+        0
+      ],
+      "rotation": -1.72,
+      "scale": 1.0,
+      "z": 11
+    }
+  ],
+  "format": "char-rig/model@1",
+  "label": "Bot-MK4 (retro robot)",
+  "name": "bot-mk4",
+  "notes": "Procedural-shape retro robot: 19-bone rig, spring-loaded head dish, thruster pack, tagged visor eyes/mouth for expressions + gaze, articulated claw arms, and four keyframe clips (wave, breathe, scan, alert)."
+}

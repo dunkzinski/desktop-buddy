@@ -1,0 +1,1254 @@
+{
+  "animations": {
+    "alert": {
+      "duration_ms": 900,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "hat_tip": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.5
+            },
+            "arm_r": {
+              "rotation": -0.6
+            },
+            "hat_tip": {
+              "rotation": -0.35
+            },
+            "root": {
+              "y": -8.0
+            }
+          },
+          "t": 0.2
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.2
+            },
+            "arm_r": {
+              "rotation": -0.25
+            },
+            "hat_tip": {
+              "rotation": 0.15
+            },
+            "root": {
+              "y": -2.0
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "hat_tip": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": false
+    },
+    "breathe": {
+      "duration_ms": 2800,
+      "keyframes": [
+        {
+          "bones": {
+            "beard": {
+              "rotation": 0.0
+            },
+            "hat_tip": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "beard": {
+              "rotation": 0.06
+            },
+            "hat_tip": {
+              "rotation": -0.08
+            },
+            "root": {
+              "y": 3.5
+            },
+            "torso": {
+              "scale": 1.03
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "beard": {
+              "rotation": 0.0
+            },
+            "hat_tip": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": true
+    },
+    "scan": {
+      "duration_ms": 3600,
+      "keyframes": [
+        {
+          "bones": {
+            "beard": {
+              "rotation": 0.0
+            },
+            "hat_tip": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0,
+              "x": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "beard": {
+              "rotation": -0.1
+            },
+            "hat_tip": {
+              "rotation": -0.15
+            },
+            "head": {
+              "rotation": 0.25,
+              "x": 3.0
+            }
+          },
+          "t": 0.25
+        },
+        {
+          "bones": {
+            "beard": {
+              "rotation": 0.1
+            },
+            "hat_tip": {
+              "rotation": 0.15
+            },
+            "head": {
+              "rotation": -0.25,
+              "x": -3.0
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "beard": {
+              "rotation": 0.0
+            },
+            "hat_tip": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0,
+              "x": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": true
+    },
+    "wave": {
+      "duration_ms": 1500,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "forearm_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "staff": {
+              "rotation": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -1.4
+            },
+            "forearm_r": {
+              "rotation": -0.4
+            },
+            "head": {
+              "rotation": -0.05
+            },
+            "staff": {
+              "rotation": 0.3
+            }
+          },
+          "t": 0.25
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -1.7
+            },
+            "forearm_r": {
+              "rotation": -0.2
+            },
+            "head": {
+              "rotation": 0.05
+            },
+            "staff": {
+              "rotation": 0.5
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -1.4
+            },
+            "forearm_r": {
+              "rotation": -0.4
+            },
+            "head": {
+              "rotation": -0.04
+            },
+            "staff": {
+              "rotation": 0.3
+            }
+          },
+          "t": 0.75
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "forearm_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "staff": {
+              "rotation": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": false
+    }
+  },
+  "bones": [
+    {
+      "anim": {
+        "bob": 3.5,
+        "phase": 0.0,
+        "sway": 0.02
+      },
+      "id": "root",
+      "length": 0.0,
+      "parent": null,
+      "parts": [],
+      "pos": [
+        0,
+        0
+      ],
+      "rotation": 0.0,
+      "scale": 0.55,
+      "z": 10
+    },
+    {
+      "anim": {
+        "sway": 0.03,
+        "walk": 0.06
+      },
+      "id": "robe_hem",
+      "length": 0.0,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#2b2d6e",
+          "id": "robe_base",
+          "offset": [
+            0,
+            10
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            104,
+            68
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f4b942",
+          "id": "robe_trim_bottom",
+          "offset": [
+            0,
+            38
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            106,
+            16
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        0,
+        48
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 12
+    },
+    {
+      "anim": {
+        "sway": 0.03,
+        "walk": 0.04
+      },
+      "id": "torso",
+      "length": 0.0,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#3b3e99",
+          "id": "tunic",
+          "offset": [
+            0,
+            -48
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            92,
+            114
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f4b942",
+          "id": "sash",
+          "offset": [
+            0,
+            2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            84,
+            18
+          ],
+          "z": 1
+        },
+        {
+          "color": "#ffe082",
+          "id": "sash_buckle",
+          "offset": [
+            0,
+            2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            20,
+            22
+          ],
+          "z": 2
+        },
+        {
+          "color": "#4e52bf",
+          "id": "collar_shawl",
+          "offset": [
+            0,
+            -96
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            96,
+            34
+          ],
+          "z": 3
+        }
+      ],
+      "pos": [
+        0,
+        4
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 20
+    },
+    {
+      "anim": {
+        "sway": 0.04,
+        "walk": 0.08
+      },
+      "id": "head",
+      "length": 0.0,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#f7c9a6",
+          "id": "face_skin",
+          "offset": [
+            0,
+            -34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            72,
+            74
+          ],
+          "z": 0
+        },
+        {
+          "color": "#1a1c33",
+          "id": "eye_l",
+          "offset": [
+            -15,
+            -38
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            16
+          ],
+          "tag": "eye",
+          "z": 2
+        },
+        {
+          "color": "#1a1c33",
+          "id": "eye_r",
+          "offset": [
+            15,
+            -38
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            16
+          ],
+          "tag": "eye",
+          "z": 2
+        },
+        {
+          "color": "#e8edf5",
+          "id": "brow_l",
+          "offset": [
+            -16,
+            -48
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.12,
+          "shape": "ellipse",
+          "size": [
+            18,
+            6
+          ],
+          "z": 3
+        },
+        {
+          "color": "#e8edf5",
+          "id": "brow_r",
+          "offset": [
+            16,
+            -48
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.12,
+          "shape": "ellipse",
+          "size": [
+            18,
+            6
+          ],
+          "z": 3
+        },
+        {
+          "color": "#e6a981",
+          "id": "nose",
+          "offset": [
+            0,
+            -28
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            16
+          ],
+          "z": 3
+        },
+        {
+          "color": "#7a3b3b",
+          "id": "mouth",
+          "offset": [
+            0,
+            -14
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            22,
+            8
+          ],
+          "tag": "mouth",
+          "z": 2
+        }
+      ],
+      "pos": [
+        0,
+        -116
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 30
+    },
+    {
+      "anim": {
+        "sway": 0.08,
+        "walk": 0.12
+      },
+      "id": "beard",
+      "length": 54,
+      "parent": "head",
+      "parts": [
+        {
+          "color": "#eef2f7",
+          "id": "beard_main",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            52,
+            46
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ffffff",
+          "id": "beard_upper",
+          "offset": [
+            4,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            58,
+            28
+          ],
+          "z": 1
+        },
+        {
+          "color": "#ffffff",
+          "id": "mustache_l",
+          "offset": [
+            -4,
+            14
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.35,
+          "shape": "ellipse",
+          "size": [
+            14,
+            24
+          ],
+          "z": 2
+        },
+        {
+          "color": "#ffffff",
+          "id": "mustache_r",
+          "offset": [
+            -4,
+            -14
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.35,
+          "shape": "ellipse",
+          "size": [
+            14,
+            24
+          ],
+          "z": 2
+        }
+      ],
+      "pos": [
+        0,
+        -12
+      ],
+      "rotation": 1.5708,
+      "scale": 1.0,
+      "z": 31
+    },
+    {
+      "id": "hat",
+      "length": 0.0,
+      "parent": "head",
+      "parts": [
+        {
+          "color": "#2b2d6e",
+          "id": "hat_brim",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            136,
+            28
+          ],
+          "z": 0
+        },
+        {
+          "color": "#3b3e99",
+          "id": "hat_cone_low",
+          "offset": [
+            0,
+            -22
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            76,
+            54
+          ],
+          "z": 1
+        },
+        {
+          "color": "#f4b942",
+          "id": "hat_band",
+          "offset": [
+            0,
+            -10
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            74,
+            14
+          ],
+          "z": 2
+        },
+        {
+          "color": "#fff3b0",
+          "id": "hat_star",
+          "offset": [
+            -14,
+            -28
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            16,
+            16
+          ],
+          "z": 3
+        }
+      ],
+      "pos": [
+        0,
+        -64
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 35
+    },
+    {
+      "anim": {
+        "sway": 0.1,
+        "walk": 0.14
+      },
+      "id": "hat_tip",
+      "length": 44,
+      "parent": "hat",
+      "parts": [
+        {
+          "color": "#3b3e99",
+          "id": "hat_upper",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            42,
+            34
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f4b942",
+          "id": "hat_pom",
+          "offset": [
+            42,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            14
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        0,
+        -40
+      ],
+      "rotation": -1.35,
+      "scale": 1.0,
+      "z": 36
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.06,
+        "walk": 0.35
+      },
+      "id": "arm_l",
+      "length": 58,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#3b3e99",
+          "id": "sleeve_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            58,
+            26
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -44,
+        -84
+      ],
+      "rotation": 2.0,
+      "scale": 1.0,
+      "z": 24
+    },
+    {
+      "anim": {
+        "phase": 0.4,
+        "sway": 0.05,
+        "walk": 0.2
+      },
+      "id": "forearm_l",
+      "length": 44,
+      "parent": "arm_l",
+      "parts": [
+        {
+          "color": "#4e52bf",
+          "id": "cuff_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            42,
+            32
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f4b942",
+          "id": "cuff_trim_l",
+          "offset": [
+            38,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            10,
+            32
+          ],
+          "z": 1
+        },
+        {
+          "color": "#f7c9a6",
+          "id": "hand_l_part",
+          "offset": [
+            46,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            18,
+            16
+          ],
+          "z": 2
+        }
+      ],
+      "pos": [
+        54,
+        0
+      ],
+      "rotation": 0.2,
+      "scale": 1.0,
+      "z": 25
+    },
+    {
+      "anim": {
+        "phase": 3.141592653589793,
+        "sway": 0.06,
+        "walk": 0.35,
+        "wave": 0.9
+      },
+      "id": "arm_r",
+      "length": 58,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#3b3e99",
+          "id": "sleeve_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            58,
+            26
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        44,
+        -84
+      ],
+      "rotation": 1.15,
+      "scale": 1.0,
+      "z": 24
+    },
+    {
+      "anim": {
+        "phase": 3.541592653589793,
+        "sway": 0.05,
+        "walk": 0.2,
+        "wave": 0.5
+      },
+      "id": "forearm_r",
+      "length": 44,
+      "parent": "arm_r",
+      "parts": [
+        {
+          "color": "#4e52bf",
+          "id": "cuff_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            42,
+            32
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f4b942",
+          "id": "cuff_trim_r",
+          "offset": [
+            38,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            10,
+            32
+          ],
+          "z": 1
+        },
+        {
+          "color": "#f7c9a6",
+          "id": "hand_r_part",
+          "offset": [
+            46,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            18,
+            16
+          ],
+          "z": 2
+        }
+      ],
+      "pos": [
+        54,
+        0
+      ],
+      "rotation": -0.35,
+      "scale": 1.0,
+      "z": 25
+    },
+    {
+      "id": "staff",
+      "length": 110,
+      "parent": "forearm_r",
+      "parts": [
+        {
+          "color": "#7a4928",
+          "id": "staff_shaft",
+          "offset": [
+            -45,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            150,
+            10
+          ],
+          "z": 0
+        },
+        {
+          "color": "#f4b942",
+          "id": "staff_cradle",
+          "offset": [
+            -52,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            24,
+            14
+          ],
+          "z": 1
+        },
+        {
+          "color": "#64f5ff",
+          "id": "orb_glow",
+          "offset": [
+            -68,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            34,
+            34
+          ],
+          "z": 2
+        },
+        {
+          "color": "#ffffff",
+          "id": "orb_core",
+          "offset": [
+            -68,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            20,
+            20
+          ],
+          "z": 3
+        }
+      ],
+      "pos": [
+        46,
+        0
+      ],
+      "rotation": 0.75,
+      "scale": 1.0,
+      "z": 28
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "walk": 0.45
+      },
+      "id": "leg_l",
+      "length": 36,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#4a2c18",
+          "id": "boot_l",
+          "offset": [
+            26,
+            4
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            26,
+            20
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -20,
+        66
+      ],
+      "rotation": 1.65,
+      "scale": 1.0,
+      "z": 11
+    },
+    {
+      "anim": {
+        "phase": 3.141592653589793,
+        "walk": 0.45
+      },
+      "id": "leg_r",
+      "length": 36,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#4a2c18",
+          "id": "boot_r",
+          "offset": [
+            26,
+            -4
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            26,
+            20
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        20,
+        66
+      ],
+      "rotation": 1.49,
+      "scale": 1.0,
+      "z": 11
+    }
+  ],
+  "format": "char-rig/model@1",
+  "label": "Archmage Pip (wizard)",
+  "name": "archmage-pip",
+  "notes": "Procedural-shape wizard: flowing indigo robes, long beard, pointed hat with gold band, glowing orb staff, tagged eyes/mouth, and four keyframe clips (wave, breathe, scan, alert)."
+}

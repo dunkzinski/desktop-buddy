@@ -12,3 +12,7 @@ spikes/
 # OS / editor noise
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Local experiment logs
+*.log

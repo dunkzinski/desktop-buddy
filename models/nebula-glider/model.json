@@ -1,0 +1,857 @@
+{
+  "animations": {
+    "alert": {
+      "duration_ms": 900,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.3
+            },
+            "arm_r": {
+              "rotation": -0.3
+            },
+            "head": {
+              "rotation": -0.1
+            },
+            "root": {
+              "y": -5.0
+            },
+            "torso": {
+              "scale": 1.1
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.6
+            },
+            "arm_r": {
+              "rotation": -0.6
+            },
+            "head": {
+              "rotation": -0.2
+            },
+            "root": {
+              "y": -12.0
+            },
+            "torso": {
+              "scale": 1.25
+            }
+          },
+          "t": 0.3
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.4
+            },
+            "arm_r": {
+              "rotation": -0.4
+            },
+            "head": {
+              "rotation": -0.1
+            },
+            "root": {
+              "y": -6.0
+            },
+            "torso": {
+              "scale": 1.15
+            }
+          },
+          "t": 0.6
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": false
+    },
+    "drift": {
+      "duration_ms": 4000,
+      "keyframes": [
+        {
+          "bones": {
+            "head": {
+              "rotation": 0.02
+            },
+            "root": {
+              "y": 2.0
+            },
+            "torso": {
+              "scale": 1.02
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "head": {
+              "rotation": -0.03
+            },
+            "root": {
+              "y": 1.0
+            },
+            "torso": {
+              "scale": 0.98
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "head": {
+              "rotation": 0.01
+            },
+            "root": {
+              "y": 3.0
+            },
+            "torso": {
+              "scale": 1.01
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": true
+    },
+    "glide": {
+      "duration_ms": 3000,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": -0.3
+            },
+            "arm_r": {
+              "rotation": 0.3
+            },
+            "head": {
+              "rotation": -0.05
+            },
+            "root": {
+              "y": -2.0
+            },
+            "torso": {
+              "scale": 1.05
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": true
+    }
+  },
+  "bones": [
+    {
+      "anim": {
+        "bob": 2.0,
+        "phase": 0.0,
+        "sway": 0.01
+      },
+      "id": "root",
+      "length": 0.0,
+      "parent": null,
+      "parts": [],
+      "pos": [
+        0,
+        0
+      ],
+      "rotation": 0.0,
+      "scale": 0.5,
+      "z": 15
+    },
+    {
+      "id": "pelvis",
+      "length": 0.0,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#1e2b4b",
+          "id": "gasbag",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            96,
+            48
+          ],
+          "z": 0
+        },
+        {
+          "color": "#475569",
+          "id": "core_anchor",
+          "offset": [
+            0,
+            30
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            24,
+            24
+          ],
+          "z": 1
+        },
+        {
+          "color": "#64748b",
+          "id": "stabilizer_fin",
+          "offset": [
+            -30,
+            12
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            60,
+            12
+          ],
+          "z": 1
+        },
+        {
+          "color": "#64748b",
+          "id": "stabilizer_fin_r",
+          "offset": [
+            30,
+            12
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            60,
+            12
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        0,
+        42
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 10
+    },
+    {
+      "id": "torso",
+      "length": 0.0,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#0f172a",
+          "id": "energy_core",
+          "offset": [
+            0,
+            -30
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            40,
+            40
+          ],
+          "z": 2
+        },
+        {
+          "color": "#1e2b4b",
+          "id": "nebula_veil",
+          "offset": [
+            0,
+            -44
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            120,
+            96
+          ],
+          "z": 0
+        },
+        {
+          "color": "#3b4759",
+          "id": "radiator_l",
+          "offset": [
+            -28,
+            -20
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            16,
+            40
+          ],
+          "z": 1
+        },
+        {
+          "color": "#3b4759",
+          "id": "radiator_r",
+          "offset": [
+            28,
+            -20
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            16,
+            40
+          ],
+          "z": 1
+        },
+        {
+          "color": "#a855f7",
+          "id": "wing_mount_l",
+          "offset": [
+            -40,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            20,
+            30
+          ],
+          "z": 3
+        },
+        {
+          "color": "#a855f7",
+          "id": "wing_mount_r",
+          "offset": [
+            40,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            20,
+            30
+          ],
+          "z": 3
+        }
+      ],
+      "pos": [
+        0,
+        4
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 20
+    },
+    {
+      "id": "head",
+      "length": 0.0,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#f87171",
+          "id": "sensor_lens",
+          "offset": [
+            0,
+            -36
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            36,
+            36
+          ],
+          "z": 3
+        },
+        {
+          "color": "#1e2b4b",
+          "id": "atmospheric_shield",
+          "offset": [
+            0,
+            -48
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            80,
+            40
+          ],
+          "z": 0
+        },
+        {
+          "color": "#3b82f6",
+          "id": "gravity_sail",
+          "offset": [
+            0,
+            -54
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            64,
+            24
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        0,
+        -96
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 30
+    },
+    {
+      "anim": {
+        "phase": 0.1,
+        "sway": 0.03,
+        "walk": 0.0
+      },
+      "id": "arm_l",
+      "length": 42,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#a855f7",
+          "id": "wing_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            50,
+            12
+          ],
+          "z": 0
+        },
+        {
+          "color": "#e2e8f0",
+          "id": "arm_fin_l",
+          "offset": [
+            0,
+            28
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            16,
+            28
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        -36,
+        -72
+      ],
+      "rotation": 1.5,
+      "scale": 1.0,
+      "z": 25
+    },
+    {
+      "anim": {
+        "phase": 3.2,
+        "sway": 0.03,
+        "walk": 0.0
+      },
+      "id": "arm_r",
+      "length": 42,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#a855f7",
+          "id": "wing_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            50,
+            12
+          ],
+          "z": 0
+        },
+        {
+          "color": "#e2e8f0",
+          "id": "arm_fin_r",
+          "offset": [
+            0,
+            28
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            16,
+            28
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        36,
+        -72
+      ],
+      "rotation": -1.5,
+      "scale": 1.0,
+      "z": 25
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.04,
+        "walk": 0.25
+      },
+      "id": "leg_l",
+      "length": 48,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#1e2b4b",
+          "id": "thigh_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            48,
+            20
+          ],
+          "z": 0
+        },
+        {
+          "color": "#64748b",
+          "id": "knee_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            16,
+            16
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        -20,
+        62
+      ],
+      "rotation": 1.6,
+      "scale": 1.0,
+      "z": 12
+    },
+    {
+      "anim": {
+        "phase": 3.14159,
+        "sway": 0.04,
+        "walk": 0.25
+      },
+      "id": "leg_r",
+      "length": 48,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#1e2b4b",
+          "id": "thigh_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            48,
+            20
+          ],
+          "z": 0
+        },
+        {
+          "color": "#64748b",
+          "id": "knee_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "circle",
+          "size": [
+            16,
+            16
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        20,
+        62
+      ],
+      "rotation": -1.6,
+      "scale": 1.0,
+      "z": 12
+    },
+    {
+      "anim": {
+        "phase": 0.3,
+        "walk": 0.18
+      },
+      "id": "foot_l",
+      "length": 24,
+      "parent": "leg_l",
+      "parts": [
+        {
+          "color": "#0f172a",
+          "id": "boot_l",
+          "offset": [
+            -4,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            28,
+            14
+          ],
+          "z": 0
+        },
+        {
+          "color": "#a855f7",
+          "id": "thruster_nozzle_l",
+          "offset": [
+            18,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            10,
+            14
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        36,
+        0
+      ],
+      "rotation": 1.3,
+      "scale": 1.0,
+      "z": 10
+    },
+    {
+      "anim": {
+        "phase": 3.44159,
+        "walk": 0.18
+      },
+      "id": "foot_r",
+      "length": 24,
+      "parent": "leg_r",
+      "parts": [
+        {
+          "color": "#0f172a",
+          "id": "boot_r",
+          "offset": [
+            -4,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            28,
+            14
+          ],
+          "z": 0
+        },
+        {
+          "color": "#a855f7",
+          "id": "thruster_nozzle_r",
+          "offset": [
+            18,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            10,
+            14
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        36,
+        0
+      ],
+      "rotation": -1.3,
+      "scale": 1.0,
+      "z": 10
+    }
+  ],
+  "format": "char-rig/model@1",
+  "label": "Nebula Glider",
+  "name": "nebula-glider",
+  "notes": "Procedural-shape floating entity: 12-bone rig with gaseous gasbag core, dual wing arrays, gravity-sail head, thruster feet, and three keyframe clips (drift/loop, glide/loop, alert/one-shot). Designed for continuous ambient animation without sprite assets."
+}

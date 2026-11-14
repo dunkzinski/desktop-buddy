@@ -1,0 +1,7 @@
+[package]
+name = "rdev"
+version = "0.5.3"
+edition = "2021"
+
+# A stand-in for the real `rdev` (see src/lib.rs): it exists so the platform
+# layer can be type-checked for Linux/macOS without X11 dev packages.

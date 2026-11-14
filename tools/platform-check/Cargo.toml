@@ -1,0 +1,48 @@
+[package]
+name = "platform-check"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Type-checks src-tauri/src/platform for a non-host OS without the Tauri toolchain"
+
+# This crate exists only to answer one question on a machine that cannot build
+# the whole app for another OS: "does the platform layer still compile there?"
+#
+#   cargo check --target x86_64-unknown-linux-gnu
+#
+# It pulls in the real `src-tauri/src/platform/` tree through `#[path]`, so a
+# `windows::` import that leaked into portable code, or a Linux-only API used
+# without a `cfg`, fails here instead of on a user's machine. It deliberately
+# does NOT depend on tauri/wry: those need GTK/WebKit dev packages, which is
+# exactly what a cross-check box usually lacks.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+log = "0.4"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+global-hotkey = "0.6"
+rdev = "0.5"
+
+# Same feature set as `src-tauri/Cargo.toml`, so checking the host (Windows)
+# backend exercises exactly the APIs the app uses.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_SystemInformation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_HiDpi",
+    "Win32_Graphics_Gdi",
+] }
+
+# `rdev`'s Linux backend links X11 through a pkg-config build script, which a
+# cross-check box does not have. The stub keeps the same API so our own code is
+# still type-checked; the shipped binary uses the real crate.
+[patch.crates-io]
+rdev = { path = "stubs/rdev" }

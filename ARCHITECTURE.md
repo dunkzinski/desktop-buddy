@@ -7,7 +7,7 @@ constants and payloads are quoted from the code, not from memory.
 Last verified against: `src-tauri/src/{lib,api,models}.rs`, `ui/index.html`,
 `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, `models/*/model.json`,
 `src-tauri/src/bin/{char-rig-mcp,char-rig-watcher}.rs`,
-`src-tauri/src/bin/capture/mod.rs`.
+`src-tauri/src/bin/capture/mod.rs`, `src-tauri/src/platform/*.rs`.
 
 ---
 
@@ -32,10 +32,10 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | **Life signs** | Auto-blink every 3–6 s (~120 ms); **text-driven lip sync** — the mouth follows the typewriter character by character (vowels wide open, soft consonants mid-open, spaces and punctuation closed) for both sprite variants and the procedural shape; **global eye tracking** — the `avatar-cursor` poll publishes a deadbanded `cursor-pos` event (3 CSS px, ~20 Hz), so the pupils follow the **OS cursor anywhere on the virtual desktop**, even while the overlay is click-through and unfocused. Gaze priority: explicit `look_at` (`POST /move`) > focused command bar > perch rectangle > global cursor (for 4 s after it last moved) > idle glance every 2–4 s; pupils are clamped to ±4 px so they never leave the socket. The same eased gaze drives a **head-bone yaw bias** (≤ 0.22 rad, ~13°) that is damped and clamped by the bone's `limits`; **hover response** — an extra soft head tilt when the cursor enters the avatar's bounds |
 | **Speech bubbles** | Head-anchored DOM card, re-anchored to the head **every animation frame** (no lag while the avatar walks), typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss; the avatar stands still while a bubble is up (automatic wandering is paused — an explicit `/move` or keypress still wins); an optional **quick-reply box** (click the bubble, or just hover) with `Enter` to send and `Esc` to dismiss; an optional **details drawer** — a `details` string renders a monospace, scrollable pre block behind a **Details ▾** toggle plus a **Copy** button, and an open drawer holds the bubble up |
 | **Conversation history** | The session's turns are kept **in memory** by `AppCtx::push_chat` — a bounded `VecDeque<ChatMessage>` (capacity 50, oldest evicted) recording `{id, role, text, details?, expression?, ts_ms}`. `"user"` turns are recorded in `do_user_reply_with_profile`, `"assistant"` turns in `do_speak` (with their `details` and expression), and `do_session_reset` clears the lot. A **History** drawer (panel **History** button, command-bar **☰**, or `H`) renders the transcript with per-turn timestamps, expandable monospace `details` blocks and **Copy**; it hydrates through `get_chat_history`, appends live from `chat-message`, empties on `chat-history-cleared`, and stays clickable over a click-through desktop by publishing its own hit region while open. `GET /history` exposes the same log to agents. Nothing is persisted — a restart starts a new chat |
-| **Local voice** | Every spoken bubble is also **read out loud** by a local **Piper** voice — no network, no API key. `do_speak` is the single hook, so it covers `POST /speak`, the `speak` command, MCP `avatar_speak` and every agent reply, whichever model (`lfm3-fast`, `hermes_cli`, …) produced the words. Text is sanitized first (markdown, fenced code, links, emoji and `<tag>` control markers are not spoken) and an empty result is skipped; `piper.exe` runs with `CREATE_NO_WINDOW` on the FIFO `avatar-tts` worker thread, which synthesizes one temp `.wav`, plays it with `PlaySoundW` (`SND_FILENAME\|SND_SYNC`) and deletes it — lines queue instead of overlapping, and the HTTP server never blocks. Configured by the `tts` block of `watcher_rules.json`, with a **Voice** mute switch in the control panel, `GET`/`POST /tts` and the `get_tts_status` / `set_tts_enabled` commands |
-| **Push-to-talk voice input** | Hold **Alt+V** anywhere (or the panel's **Hold to talk** button), speak, let go: the mic is captured through winmm (`waveIn`), downmixed to mono and resampled to **16 kHz PCM**, written to a temp `.wav`, and transcribed locally by `whisper-cli.exe` with its built-in **Silero VAD** (`--vad --vad-model --vad-threshold`). The cleaned transcript (no `[BLANK_AUDIO]`, `(music)`, timestamps or control chars) is posted to `POST /reply`, so it wakes the agent exactly like a typed message and the answer is spoken by the Piper voice. One `avatar-ptt` thread owns the whole state machine (`idle` → `listening` → `transcribing`); holding the button cuts the avatar's own voice off first so the mic never transcribes it. Configured by the `stt` block, with `GET`/`POST /stt` and a badge in the panel |
+| **Local voice** | Every spoken bubble is also **read out loud** by a local **Piper** voice — no network, no API key. `do_speak` is the single hook, so it covers `POST /speak`, the `speak` command, MCP `avatar_speak` and every agent reply, whichever model (`lfm3-fast`, `hermes_cli`, …) produced the words. Text is sanitized first (markdown, fenced code, links, emoji and `<tag>` control markers are not spoken) and an empty result is skipped; `piper.exe` runs with `CREATE_NO_WINDOW` on the FIFO `avatar-tts` worker thread, which synthesizes one temp `.wav`, plays it through **`rodio`** (WASAPI / ALSA / CoreAudio — no OS audio binding in this crate) and deletes it — lines queue instead of overlapping, and the HTTP server never blocks. Configured by the `tts` block of `watcher_rules.json`, with a **Voice** mute switch in the control panel, `GET`/`POST /tts` and the `get_tts_status` / `set_tts_enabled` commands |
+| **Push-to-talk voice input** | Hold **Alt+V** anywhere (or the panel's **Hold to talk** button), speak, let go: the mic is captured through **`cpal`** (WASAPI / ALSA / CoreAudio), downmixed to mono and resampled to **16 kHz PCM**, written to a temp `.wav`, and transcribed locally by `whisper-cli.exe` with its built-in **Silero VAD** (`--vad --vad-model --vad-threshold`). The cleaned transcript (no `[BLANK_AUDIO]`, `(music)`, timestamps or control chars) is posted to `POST /reply`, so it wakes the agent exactly like a typed message and the answer is spoken by the Piper voice. One `avatar-ptt` thread owns the whole state machine (`idle` → `listening` → `transcribing`); holding the button cuts the avatar's own voice off first so the mic never transcribes it. Configured by the `stt` block, with `GET`/`POST /stt` and a badge in the panel |
 | **Screen vision** | **"What's on screen?"** in the command bar (or the panel's screen button, or simply asking *what's on my screen?*) makes the watcher screenshot the focused window and answer with a **local vision-language model** — no network, no API key. `GET /context` now carries the foreground window's `window_rect`, and `char-rig-watcher` grabs exactly that rectangle with GDI (`GetDC` + `BitBlt` + `GetDIBits`), falls back to the full primary monitor when the rect is missing, zero-sized or the overlay itself is focused, downscales the longest edge to `max_image_dim`, encodes JPEG (`jpeg_quality`) and inlines it as a `data:image/jpeg;base64,…` URL in one OpenAI-shaped `chat/completions` request against the named `vision` AI profile. A failed capture or an unreachable endpoint is one spoken apology, never a crashed or blocked reply. Configured by the `vision` block of `watcher_rules.json` |
-| **Audio-driven lip sync** | The Piper clip that is about to play is read back as **16-bit PCM**, its RMS is bucketed at **25 ms** and normalized, and the page indexes that envelope by playback time — so the mouth follows the actual voice instead of the typing speed. `tts-envelope` carries `{bucket_ms, samples}` and is emitted right before `PlaySoundW`; `tts-envelope-stop` ends it. A muted, missing or already-finished voice silently falls back to the per-character mapping, so a rig without audio still lip-syncs |
+| **Audio-driven lip sync** | The Piper clip that is about to play is read back as **16-bit PCM**, its RMS is bucketed at **25 ms** and normalized, and the page indexes that envelope by playback time — so the mouth follows the actual voice instead of the typing speed. `tts-envelope` carries `{bucket_ms, samples}` and is emitted right before playback starts; `tts-envelope-stop` ends it. A muted, missing or already-finished voice silently falls back to the per-character mapping, so a rig without audio still lip-syncs |
 | **Live window tether** | `POST /perch` remembers the target's `HWND`, edge and offset, and a 60 ms poll re-reads its DWM frame bounds: the avatar walks along with the window as it is dragged or resized, and drops back to `idle` (clearing `perched`/`perch_rect`) when the window is minimized or closed. A drag of the avatar itself, or any `/move`, breaks the perch immediately |
 | **Multi-monitor overlay** | The overlay window is positioned and sized to the **whole virtual desktop** (`SM_XVIRTUALSCREEN` …), and every screen-space value — cursor, window rects, `visible_windows`, the watcher's GDI capture — is expressed relative to that virtual origin, so a monitor to the left of (or above) the primary has positive CSS coordinates instead of negatives. `POST /perch` clamps to the monitor the target window is on |
 | **Agent API** | 38 local HTTP paths (46 method routes): state, movement, expressions, speech, **conversation history**, models, rigs, parts, custom animations, desktop context, clipboard read **and write**, quick replies, external alerts, session reset, watcher control, **AI profile switching + health**, shutdown |
@@ -132,9 +132,9 @@ ui/
 | `avatar-cursor` | `spawn_cursor_tracker` | until `AppCtx::running` is false | Global cursor poll: publishes the deadbanded `cursor-pos` gaze event every ≥ 3 CSS px / ≥ 50 ms and toggles `WS_EX_TRANSPARENT` per hit region |
 | `avatar-watcher-log` (x2) | `spawn_log_reader` | until the child closes stdout/stderr | Drain the watcher's pipes into the `AppCtx` ring buffer and echo each line to stderr |
 | `avatar-watcher-supervisor` | `supervise_watcher` | until `AppCtx::running` is false | `try_wait`s the supervised `char-rig-watcher.exe` every 250 ms and respawns it after a crash (2 s, doubling to 30 s); parks while the switch is off |
-| `avatar-tts` | `tts::init` | process lifetime | The only caller of `piper.exe` and `PlaySoundW`: drains a `SyncSender<String>` FIFO, synthesizes each line into `%TEMP%\char-rig-tts-<pid>-<n>.wav` with `CREATE_NO_WINDOW`, plays it synchronously (`SND_FILENAME\|SND_SYNC`) and deletes it. One thread, so lines queue instead of cutting each other off |
-| `avatar-ptt` | `stt::init` | process lifetime | Push-to-talk state machine: polls `GetAsyncKeyState` for the hold hotkey, drains the `waveIn` buffers while held, resamples to 16 kHz mono, writes a temp `.wav`, runs `whisper-cli.exe` (with Silero VAD) and posts the cleaned transcript to `/reply`. One thread, so a hold and a transcription can never overlap |
-| `avatar-hotkey` | `spawn_hotkey_listener` | until `AppCtx::running` is false | Registers the system-wide hotkey (`RegisterHotKey`) and polls its thread message queue every 120 ms; on `WM_HOTKEY` it disables click-through, focuses the overlay and emits `summon-command-bar`, then `UnregisterHotKey` on the way out |
+| `avatar-tts` | `tts::init` | process lifetime | The only caller of `piper.exe` and of the `rodio` output stream: drains a `SyncSender<String>` FIFO, synthesizes each line into `%TEMP%\char-rig-tts-<pid>-<n>.wav` with `CREATE_NO_WINDOW`, plays it synchronously (`Sink::sleep_until_end`) and deletes it. One thread, so lines queue instead of cutting each other off |
+| `avatar-ptt` | `stt::init` | process lifetime | Push-to-talk state machine: polls `platform::key_is_down` for the hold hotkey, drains the `cpal` input stream while held, resamples to 16 kHz mono, writes a temp `.wav`, runs `whisper-cli.exe` (with Silero VAD) and posts the cleaned transcript to `/reply`. One thread, so a hold and a transcription can never overlap |
+| `avatar-hotkey` | `spawn_hotkey_listener` | until `AppCtx::running` is false | Registers the system-wide hotkey through `platform::HotkeyListener` (`RegisterHotKey` on Windows, the `global-hotkey` crate on Linux/macOS) and polls it every 25 ms; on a press it disables click-through, focuses the overlay and emits `summon-command-bar`, then releases the shortcut on the way out |
 
 Nothing on the API side ever touches the GUI thread directly: handlers mutate
 shared state and emit Tauri events; the page applies them on its next frame.
@@ -294,7 +294,7 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 
 ## 3. Codebase map
 
-### `src-tauri/src/lib.rs` (5917 lines)
+### `src-tauri/src/lib.rs` (5000 lines)
 
 | Section | Responsibility |
 | --- | --- |
@@ -334,6 +334,24 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `api_port`, `run` | startup |
 | `tests` | 110 unit tests over the event envelope, `reported_window` / `is_self_foreground` (PID and exe-name matching, the front-most-window fallback and its rect, the blank overlay-alone case), sequence numbers, the 15-frame history ring buffer, interaction validation, quick replies (trim, caps, bubble dismissal, `user_reply` frame), `session_reset` (frame + bubble dismissal), `quick_tasks` (defaults, file parse, blank-entry filtering, cap, missing/broken fallback), `truncate_chars`, the clipboard contract (read cap + write cap + char boundary), the desktop-context shape, the hotkey grammar (`parse_hotkey`) and the `hotkey` rules lookup, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
 
+### `src-tauri/src/platform/` (the OS boundary)
+
+Every OS call in the crate lives here; `lib.rs`, `api.rs`, `stt.rs` and `tts.rs`
+are portable Rust that only ever see this facade. Adding a third OS means one
+file plus two `cfg` lines in `mod.rs`.
+
+| File | Contents |
+| --- | --- |
+| `mod.rs` | The facade: `#[cfg(target_os = "windows")] mod win32;` / `#[cfg(any(target_os = "linux", target_os = "macos"))] mod unix;` and the re-exports both backends must provide (`desktop_context`, `clipboard_text`, `write_clipboard_text`, `screen_metrics`, `primary_scale`, `monitor_bounds_for`, `cursor_position`, `tracked_window_rect`, `key_is_down`, `HotkeyListener`) |
+| `types.rs` | The shared coordinate space — `DesktopContext`, `WindowRect`, `VisibleWindow`, `ScreenMetrics`, `ClipboardText`/`ClipboardWrite`, `ReportedWindow`, `is_self_foreground`, `reported_window`, `truncate_chars` and the clipboard caps. Pure data, so it compiles everywhere |
+| `hotkey.rs` | The `"Ctrl+Shift+A"` grammar (`parse_hotkey`), the portable `Hotkey {modifiers, vk}` and the modifier/virtual-key constants. Pure and unit-tested on every target; only *registration* is OS-specific |
+| `win32.rs` | `GetForegroundWindow`/`GetWindowTextW`/`DwmGetWindowAttribute`/`EnumWindows` for `/context`, `CF_UNICODETEXT` for the clipboard, `GetCursorPos`, `RegisterHotKey` + `PeekMessageW`, `GetAsyncKeyState` |
+| `unix.rs` | Linux/macOS: `xdotool`/`wmctrl`/`xrandr`/`xprop` and `osascript` for window context, `xclip`/`xsel`/`wl-copy`/`pbcopy` for the clipboard, `rdev` for the global cursor and key state, `global-hotkey` for the shortcut |
+
+`tools/platform-check/` compiles this tree for another target without the Tauri
+toolchain (`cargo check --target x86_64-unknown-linux-gnu`), which is how the
+Linux and macOS backends are verified from a Windows box.
+
 ### `src-tauri/src/stt.rs`
 
 Push-to-talk voice input. One module, one worker thread, one config block.
@@ -345,7 +363,7 @@ Push-to-talk voice input. One module, one worker thread, one config block.
 | `SttConfig::load`, `path_problem`, `threshold`, `language`, `vad_model` | read the block, validate the three files + the microphone once, clamp the threshold to 0.01–0.99, fall back to `en` for a blank language |
 | `init`, `status_json`, `start`, `stop`, `set_enabled`, `shutdown`, `is_live` | the process-wide `OnceLock<SttRuntime>`: start the worker, report `{enabled, ready, state, hotkey, last_transcript, last_error, reason, …}`, and the two edges the panel/hotkey drive. `start` also calls `tts::interrupt()` |
 | `run_worker` | the `avatar-ptt` state machine: idle (hotkey rising edge via `GetAsyncKeyState`, or `PttCommand::Start`) → `listening` → `transcribing` → post → idle. Stale commands are drained after a transcription so a tap mid-run cannot start a surprise recording |
-| `capture_until_stop`, `MicStream` | winmm `waveInOpen`/`waveInPrepareHeader`/`waveInAddBuffer`/`waveInStart`/`waveInStop`/`waveInReset` at 16 kHz mono 16-bit (falling back to 48/44.1 kHz mono or stereo), 8 × 200 ms buffers drained every 15 ms, `min_speech_ms` gate and a 60 s cap |
+| `capture_until_stop`, `MicStream` | `cpal` default input device at its own preferred format; the callback downmixes interleaved frames to mono `i16` (`append_mono`), the worker drains the buffer every 15 ms, `resample_pcm16` brings it to 16 kHz, then the `min_speech_ms` gate and a 60 s cap |
 | `downmix_pcm16`, `resample_pcm16`, `wav_bytes`, `temp_wav_path` | interleaved 16-bit PCM → mono, linear-interpolation resampling to 16 kHz, a 44-byte-header PCM WAV, and `%TEMP%\char-rig-stt-<pid>-<n>.wav` (deleted right after transcription) |
 | `transcribe`, `run_whisper` | write the clip, spawn `whisper-cli.exe` with `-m`, `-f`, `-l`, `-nt`, `-np` and `--vad --vad-model --vad-threshold` when a VAD model is configured, `CREATE_NO_WINDOW`, stdout captured / stderr dropped, then delete the file |
 | `sanitize_transcript`, `is_non_speech` | strip `[BLANK_AUDIO]`, `(music)`, `[inaudible]`, timestamp brackets and control characters, collapse whitespace; an empty result is never posted |
@@ -365,7 +383,7 @@ The local voice. One module, one worker thread, one config block.
 | `run_worker`, `synthesize`, `temp_wav_path` | the `avatar-tts` thread: one `piper.exe` spawn per line (`--model`, `--espeak_data`, `--speaker`, `--length_scale`, `--output_file`, `CREATE_NO_WINDOW`, UTF-8 text on **stdin**), a `> 44`-byte wav check, then delete. Before playing, the wav is read back, its envelope emitted (`tts-envelope`) and `tts-envelope-stop` sent when `PlaySoundW` returns |
 | `set_emitter`, `emit`, `emit_envelope_stop` | the worker has no Tauri handle, so the app installs one emitter at startup and the module emits `tts-envelope` / `tts-envelope-stop` through it (a no-op in tests) |
 | `wav_envelope`, `parse_wav`, `sample_at`, `envelope_payload`, `ENVELOPE_BUCKET_MS` | audio-driven lip sync: walk the RIFF chunks, read 8/16-bit PCM (mono or stereo, `WAVE_FORMAT_EXTENSIBLE` included), average the channels, compute the RMS of each **25 ms** bucket and normalize the loudest bucket to `1.0`. Silence, an unreadable file or a non-PCM wav returns an empty envelope, and the page keeps the character-driven mouth |
-| `play_file`, `stop_playback` | `PlaySoundW(SND_FILENAME \| SND_SYNC \| SND_NODEFAULT)` on the same thread (sequential by construction) and `SND_PURGE` for mute; both no-ops off Windows |
+| `play_file`, `stop_playback` | `rodio`: one `OutputStream` per worker, a `Sink` per line (`append` + `sleep_until_end`, sequential by construction), and `Sink::stop()` for mute/interrupt. The sink is shared with `stop_playback` through an `Arc`, so a cut from another thread also unblocks the worker |
 | `sanitize_for_speech`, `strip_code_fences`, `strip_links`, `strip_urls`, `strip_tags`, `is_emoji`, `is_markup_marker`, `truncate_chars` | the "Piper reads clean prose" half: fenced code blocks, links (the label stays, the URL goes), bare URLs, `<tag>` control/expression markers, markdown emphasis and code markers, emoji and control characters are removed; whitespace collapses; an empty result is never spoken |
 
 ### `src-tauri/src/api.rs` (1425 lines)
@@ -585,7 +603,11 @@ the process dies before `main` with `STATUS_ENTRYPOINT_NOT_FOUND`
 | `rfd` 0.15 | native file picker |
 | `toml` 0.8 | TOML rig manifests |
 | `image` 0.25 (`png`, `jpeg`, `webp`, no defaults) | image dimension probing |
-| `windows` 0.58 (`Win32_Foundation`, `Win32_UI_WindowsAndMessaging`, `Win32_System_SystemInformation`, `Win32_UI_Input_KeyboardAndMouse`, `Win32_Graphics_Dwm`, `Win32_UI_HiDpi`) | `GetCursorPos` for the click-through tracker; `GetForegroundWindow`/`GetWindowTextW`/`GetLastInputInfo`/`GetTickCount64`/`DwmGetWindowAttribute`/`EnumWindows`/`GetSystemMetrics`/`GetDpiForSystem` for `GET /context` and `POST /perch` |
+| `rodio` 0.19 (`wav`) | audio playback for the Piper voice — WASAPI / ALSA / PulseAudio / PipeWire / CoreAudio through `cpal`, so `tts.rs` has no OS audio code |
+| `cpal` 0.15 | microphone capture for push-to-talk (`stt.rs`), replacing winmm `waveIn` |
+| `global-hotkey` 0.6 (Linux/macOS only) | the system-wide command-bar shortcut on X11 and macOS |
+| `rdev` 0.5 (Linux/macOS only) | global cursor position and held-key state for gaze tracking and push-to-talk |
+| `windows` 0.58 (`Win32_Foundation`, `Win32_UI_WindowsAndMessaging`, `Win32_System_SystemInformation`, `Win32_UI_Input_KeyboardAndMouse`, `Win32_Graphics_Dwm`, `Win32_UI_HiDpi`, `Win32_System_DataExchange`, `Win32_System_Memory`, `Win32_System_Ole`, `Win32_System_Threading`, `Win32_Graphics_Gdi`) | the Windows backend in `src/platform/win32.rs`: `GetCursorPos`, `GetForegroundWindow`/`GetWindowTextW`/`GetLastInputInfo`/`GetTickCount64`/`DwmGetWindowAttribute`/`EnumWindows`/`GetSystemMetrics`/`GetDpiForSystem`, the clipboard, `RegisterHotKey` and `GetAsyncKeyState` |
 
 ---
 
@@ -1770,10 +1792,16 @@ history served in `/context`. Full payload table in `API.md` §
 
 ## 8. Known limitations
 
-* **Windows-only click-through and context.** The tracker uses `GetCursorPos`
-  and `GET /context` uses `GetForegroundWindow`/`GetLastInputInfo`; on other
-  platforms the window stays fully interactive and `/context` returns
-  `{"window_title":"","idle_secs":0,"source":"unsupported"}`.
+* **Wayland has no window context.** `GET /context` reads the focused window
+  through `xdotool`/`wmctrl` on X11 and System Events on macOS; a Wayland
+  session reports `"source":"wayland"` with empty values, so window-title
+  triggers do not fire there. Voice, chat and the avatar are unaffected.
+* **Screen vision is Windows-only.** The watcher's capture is GDI `BitBlt`
+  (`src/bin/capture/mod.rs`); on Linux/macOS a vision ask posts the apology
+  bubble instead of a screenshot.
+* **macOS needs the Accessibility permission** for window titles, the global
+  cursor and the hotkey. Without it those probes return empty values and log one
+  warning; the app keeps running.
 * **One DPI scale for window geometry.** The overlay itself spans the whole
   virtual desktop (`SM_X/Y/CX/CYVIRTUALSCREEN`), and every rect is converted
   relative to that origin, so a monitor to the left of or above the primary maps

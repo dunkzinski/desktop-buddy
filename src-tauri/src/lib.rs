@@ -13,8 +13,20 @@
 
 pub mod api;
 pub mod models;
+pub mod platform;
 pub mod stt;
 pub mod tts;
+
+// The OS-specific half of the app lives in `platform`; these re-exports keep
+// the historical `crate::desktop_context()` / `crate::ScreenMetrics` paths
+// working for `api.rs`, `stt.rs` and the tests.
+pub use platform::hotkey::{parse_hotkey, Hotkey, HOTKEY_MOD_ALT, HOTKEY_MOD_CONTROL,
+    HOTKEY_MOD_SHIFT, HOTKEY_MOD_WIN};
+pub use platform::types::{is_self_foreground, reported_window, truncate_chars, ClipboardText,
+    ClipboardWrite, DesktopContext, ReportedWindow, ScreenMetrics, VisibleWindow, WindowRect,
+    MAX_CLIPBOARD_CHARS, MAX_CLIPBOARD_WRITE_CHARS, MAX_VISIBLE_WINDOWS};
+pub use platform::{clipboard_text, desktop_context, monitor_bounds_for, primary_scale,
+    screen_metrics, write_clipboard_text};
 
 // The lib **unit-test** harness links wry, whose `comctl32` v6 imports
 // (`TaskDialogIndirect`, `SetWindowSubclass`, …) only load with the app's
@@ -57,9 +69,6 @@ pub const EVENT_CHANNEL_CAPACITY: usize = 64;
 /// happened", not a replay log.
 pub const EVENT_HISTORY_CAPACITY: usize = 15;
 
-/// Longest clipboard excerpt `GET /clipboard` will hand out.
-pub const MAX_CLIPBOARD_CHARS: usize = 2000;
-
 /// Longest quick-reply / command-bar text accepted by `POST /reply` and
 /// `notify_reply`.
 pub const MAX_REPLY_CHARS: usize = 500;
@@ -74,12 +83,6 @@ pub const MAX_QUICK_TASKS: usize = 6;
 /// under 180 characters); `details` is the long half — a code snippet, a diff,
 /// a log tail — folded into a scrollable drawer with its own **Copy** button.
 pub const MAX_SPEECH_DETAILS_CHARS: usize = 8_000;
-
-/// Longest text `POST /clipboard` will put on the clipboard.
-///
-/// Larger than [`MAX_CLIPBOARD_CHARS`] on purpose: the reader is a summary
-/// probe, the writer is how a full snippet or log actually reaches the user.
-pub const MAX_CLIPBOARD_WRITE_CHARS: usize = 32_000;
 
 /// System-wide hotkey that summons the command bar when `watcher_rules.json`
 /// has no `hotkey` key.
@@ -1837,145 +1840,6 @@ fn get_joints(ctx: tauri::State<'_, Arc<ModelCtx>>) -> Value {
     })
 }
 
-/* ------------------------------------------------------------------ *
- * Desktop context
- * ------------------------------------------------------------------ */
-
-/// What the user is currently doing, for `GET /context`.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct DesktopContext {
-    /// Title of the foreground window (empty when there is none / off Windows).
-    pub window_title: String,
-    /// Executable file name of the process that owns the foreground window
-    /// (e.g. `"Code.exe"`); empty when it cannot be read / off Windows.
-    pub process_name: String,
-    /// Seconds since the last keyboard or mouse input anywhere on the machine.
-    pub idle_secs: u64,
-    /// Which probe produced the values: `"win32"` or `"unsupported"`.
-    pub source: &'static str,
-    /// Bounds of the foreground window in CSS pixels (virtual-desktop space),
-    /// so `POST /perch` and the overlay agree on coordinates.
-    pub window_rect: Option<WindowRect>,
-    /// `HWND` of the foreground window as an integer (0/absent when none). The
-    /// live perch tracker is the only consumer.
-    #[serde(default)]
-    pub foreground_hwnd: Option<isize>,
-    /// Up to [`MAX_VISIBLE_WINDOWS`] top-level windows, front-most first.
-    pub visible_windows: Vec<VisibleWindow>,
-    /// The virtual desktop this context is expressed in: origin (physical px),
-    /// size and the CSS scale factor. `/context` consumers that need physical
-    /// pixels (the watcher's GDI capture) convert with it.
-    pub screen: ScreenMetrics,
-}
-
-/// A rectangle in CSS pixels, relative to the **virtual desktop's** top-left.
-///
-/// The overlay covers the whole virtual desktop (every monitor) and draws in
-/// CSS px, so every coordinate an agent sees — the avatar's position, window
-/// rects, perch targets — is measured from the virtual origin
-/// (`SM_XVIRTUALSCREEN`, which is negative when a monitor sits left of or above
-/// the primary one) and scaled by [`ScreenMetrics::scale`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct WindowRect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-impl WindowRect {
-    pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
-        Self { x, y, width, height }
-    }
-
-    pub fn right(&self) -> f64 {
-        self.x + self.width
-    }
-
-    pub fn bottom(&self) -> f64 {
-        self.y + self.height
-    }
-
-    pub fn center(&self) -> (f64, f64) {
-        (self.x + self.width / 2.0, self.y + self.height / 2.0)
-    }
-}
-
-/// One top-level window in `GET /context.visible_windows`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct VisibleWindow {
-    pub title: String,
-    pub process_name: String,
-    pub rect: WindowRect,
-    /// The window handle as an integer, so `POST /perch` can remember which
-    /// window it picked and follow it. `null` when it could not be read.
-    #[serde(default)]
-    pub hwnd: Option<isize>,
-}
-
-/// The virtual desktop, in physical pixels plus the one CSS scale factor.
-///
-/// `x`/`y` are `SM_XVIRTUALSCREEN`/`SM_YVIRTUALSCREEN` — the physical origin of
-/// the bounding box of **all** monitors, negative when a secondary display sits
-/// left of or above the primary one. The overlay window is placed at that
-/// origin and sized to `width × height`, and every CSS coordinate is
-/// `(physical - origin) / scale`, so an avatar dragged onto a left-hand monitor
-/// has a positive x.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct ScreenMetrics {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-    /// Physical px per CSS px (the overlay's scale factor; 1.0 at 100 %).
-    pub scale: f64,
-}
-
-impl Default for ScreenMetrics {
-    fn default() -> Self {
-        Self { x: 0.0, y: 0.0, width: 0.0, height: 0.0, scale: 1.0 }
-    }
-}
-
-impl ScreenMetrics {
-    /// The CSS size of the whole virtual desktop; `None` when it is unknown.
-    pub fn css_size(&self) -> Option<(f64, f64)> {
-        let scale = if self.scale.is_finite() && self.scale > 0.0 { self.scale } else { 1.0 };
-        let width = self.width / scale;
-        let height = self.height / scale;
-        (width > 0.0 && height > 0.0).then_some((width, height))
-    }
-
-    /// A physical window rect → CSS virtual-desktop coordinates.
-    ///
-    /// This is the single conversion every screen-space value goes through, so
-    /// the overlay, `POST /perch` and the watcher's capture agree on where a
-    /// window is.
-    pub fn physical_rect(&self, left: i32, top: i32, right: i32, bottom: i32) -> Option<WindowRect> {
-        let scale = if self.scale.is_finite() && self.scale > 0.0 { self.scale } else { 1.0 };
-        let width = (right - left) as f64 / scale;
-        let height = (bottom - top) as f64 / scale;
-        if !(width > 0.0) || !(height > 0.0) {
-            return None;
-        }
-        Some(WindowRect {
-            x: (left as f64 - self.x) / scale,
-            y: (top as f64 - self.y) / scale,
-            width,
-            height,
-        })
-    }
-
-    /// A CSS point (virtual-desktop space) → physical screen pixels.
-    pub fn to_physical(&self, x: f64, y: f64) -> (f64, f64) {
-        let scale = if self.scale.is_finite() && self.scale > 0.0 { self.scale } else { 1.0 };
-        (x * scale + self.x, y * scale + self.y)
-    }
-}
-
-/// How many `visible_windows` entries `/context` reports: an agent needs the
-/// windows it might perch on, not an inventory of the desktop.
-pub const MAX_VISIBLE_WINDOWS: usize = 5;
 
 /// The edges `POST /perch` accepts.
 pub const PERCH_EDGES: [&str; 5] = ["top_left", "top_right", "left", "right", "bottom"];
@@ -2144,79 +2008,9 @@ pub fn perch_update(
     }
 }
 
-/// Longest window title we copy out of the foreground window.
-#[cfg(windows)]
-const MAX_TITLE_CHARS: usize = 512;
-/// Longest image path we accept from `QueryFullProcessImageNameW` (UTF-16 units).
-#[cfg(windows)]
-const MAX_PROCESS_PATH_CHARS: usize = 1024;
 
-/// Physical px per CSS px on the primary monitor (`devicePixelRatio`).
-#[cfg(windows)]
-pub fn primary_scale() -> f64 {
-    use windows::Win32::UI::HiDpi::GetDpiForSystem;
 
-    // SAFETY: GetDpiForSystem only reads the system DPI.
-    let dpi = unsafe { GetDpiForSystem() };
-    if dpi == 0 {
-        1.0
-    } else {
-        dpi as f64 / 96.0
-    }
-}
 
-#[cfg(not(windows))]
-pub fn primary_scale() -> f64 {
-    1.0
-}
-
-/// The live virtual desktop: physical origin, size and the CSS scale factor.
-///
-/// `SM_*VIRTUALSCREEN` is the bounding box of every monitor, so this is what the
-/// overlay window is sized and positioned to. It falls back to the primary
-/// monitor's metrics when the virtual metrics read as zero (a locked/never
-/// composed session), which keeps `GET /context` and `POST /perch` usable.
-#[cfg(windows)]
-pub fn screen_metrics() -> ScreenMetrics {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_CXSCREEN, SM_CYSCREEN,
-        SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    };
-
-    let scale = primary_scale();
-    // SAFETY: GetSystemMetrics is a pure query of display metrics.
-    let (x, y, w, h) = unsafe {
-        (
-            GetSystemMetrics(SM_XVIRTUALSCREEN),
-            GetSystemMetrics(SM_YVIRTUALSCREEN),
-            GetSystemMetrics(SM_CXVIRTUALSCREEN),
-            GetSystemMetrics(SM_CYVIRTUALSCREEN),
-        )
-    };
-    if w > 0 && h > 0 {
-        return ScreenMetrics {
-            x: x as f64,
-            y: y as f64,
-            width: w as f64,
-            height: h as f64,
-            scale,
-        };
-    }
-    // SAFETY: same pure query, primary-monitor metrics.
-    let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-    ScreenMetrics {
-        x: 0.0,
-        y: 0.0,
-        width: w.max(0) as f64,
-        height: h.max(0) as f64,
-        scale,
-    }
-}
-
-#[cfg(not(windows))]
-pub fn screen_metrics() -> ScreenMetrics {
-    ScreenMetrics::default()
-}
 
 /// The whole virtual desktop in CSS px (every monitor); `None` when unreadable.
 ///
@@ -2225,674 +2019,17 @@ pub fn virtual_viewport() -> Option<(f64, f64)> {
     screen_metrics().css_size()
 }
 
-/// The monitor that contains `(x, y)` (CSS px), or the nearest one.
-///
-/// Returned in the same CSS virtual-desktop space as [`WindowRect`], so
-/// `POST /perch` can clamp an avatar to the screen its window actually lives on
-/// instead of dragging it back to the primary monitor.
-#[cfg(windows)]
-pub fn monitor_bounds_for(x: f64, y: f64) -> Option<WindowRect> {
-    use std::mem::size_of;
 
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
 
-    if !x.is_finite() || !y.is_finite() {
-        return None;
-    }
-    let screen = screen_metrics();
-    let (px, py) = screen.to_physical(x, y);
-    let point = POINT { x: px.round() as i32, y: py.round() as i32 };
-    // SAFETY: MonitorFromPoint is a pure query; the MONITORINFO we hand over is
-    // owned here, sized before the call and only read afterwards.
-    let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
-    if monitor.0.is_null() {
-        return None;
-    }
-    let mut info = MONITORINFO {
-        cbSize: size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    let ok = unsafe { GetMonitorInfoW(monitor, &mut info) };
-    if !ok.as_bool() {
-        return None;
-    }
-    let rect = info.rcMonitor;
-    screen.physical_rect(rect.left, rect.top, rect.right, rect.bottom)
-}
 
-#[cfg(not(windows))]
-pub fn monitor_bounds_for(_x: f64, _y: f64) -> Option<WindowRect> {
-    None
-}
 
-/// The window `/context` reports as "what the user is looking at".
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReportedWindow {
-    pub window_title: String,
-    pub process_name: String,
-    pub window_rect: Option<WindowRect>,
-}
 
-/// Is this foreground window the overlay itself?
-///
-/// PID is the reliable test (two instances of any exe share a name); the exe
-/// name is the fallback for the odd window whose PID cannot be read. A blank
-/// `self_name` (an exe path we could not resolve) must never match, or every
-/// window would look like ours and `/context` would go blank.
-pub fn is_self_foreground(
-    foreground_pid: Option<u32>,
-    process_name: &str,
-    self_pid: u32,
-    self_name: &str,
-) -> bool {
-    foreground_pid == Some(self_pid)
-        || (!self_name.is_empty() && process_name.eq_ignore_ascii_case(self_name))
-}
 
-/// Pick the window to report, ignoring the overlay itself.
-///
-/// The overlay is a full-screen transparent window: the moment the user drags
-/// the avatar or clicks a quick-task chip, Windows hands it foreground, and a
-/// naive `GetForegroundWindow()` then tells every trigger that the user is
-/// looking at `avatar-desktop.exe` — which poisons the model's context *and*
-/// makes an unqualified `POST /perch` walk to the overlay's own full-screen
-/// rect. When the foreground window is ours, the front-most *other* window is
-/// reported instead; `visible_windows` is already z-ordered front-to-back and
-/// already excludes this process. With nothing else on screen the context is
-/// blank rather than self-referential, so a caller can tell "nothing focused"
-/// from "the overlay is focused".
-pub fn reported_window(
-    foreground: ReportedWindow,
-    foreground_pid: Option<u32>,
-    self_pid: u32,
-    self_name: &str,
-    visible: &[VisibleWindow],
-) -> ReportedWindow {
-    if !is_self_foreground(foreground_pid, &foreground.process_name, self_pid, self_name) {
-        return foreground;
-    }
-    match visible.first() {
-        Some(front) => ReportedWindow {
-            window_title: front.title.clone(),
-            process_name: front.process_name.clone(),
-            window_rect: Some(front.rect),
-        },
-        None => ReportedWindow {
-            window_title: String::new(),
-            process_name: String::new(),
-            window_rect: None,
-        },
-    }
-}
 
-#[cfg(windows)]
-pub fn desktop_context() -> DesktopContext {
-    use windows::Win32::System::SystemInformation::GetTickCount64;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
-    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
-    // SAFETY: every call below is a read-only query of process/OS state. The
-    // buffers we hand over are owned by this function and sized before use;
-    // GetWindowTextW and QueryFullProcessImageNameW are told exactly how many
-    // UTF-16 units they may write. The process handle is closed in all paths.
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        // One snapshot of the desktop geometry: every rect below is converted
-        // with it, so the virtual origin cannot change mid-read.
-        let screen = screen_metrics();
 
-        // Read the visible list first: it is both a `DesktopContext` field and
-        // the fallback source when the overlay holds foreground.
-        let visible_windows = visible_windows(screen, MAX_VISIBLE_WINDOWS);
-        let foreground = ReportedWindow {
-            window_title: window_title_of(hwnd),
-            process_name: foreground_process_name(hwnd),
-            window_rect: window_rect_of(hwnd, &screen),
-        };
-        let foreground_pid = foreground_pid(hwnd);
-        let own_name = own_process_name();
-        // The overlay is a full-screen window: when it holds foreground the
-        // context reports the front-most *other* window instead, so the handle
-        // must come from that same window — tracking our own overlay would
-        // tether the avatar to the whole desktop.
-        let foreground_is_self = is_self_foreground(
-            foreground_pid,
-            &foreground.process_name,
-            std::process::id(),
-            &own_name,
-        );
-        let reported = reported_window(
-            foreground,
-            foreground_pid,
-            std::process::id(),
-            &own_name,
-            &visible_windows,
-        );
-        let reported_hwnd = if foreground_is_self {
-            visible_windows.first().and_then(|window| window.hwnd)
-        } else {
-            (!hwnd.0.is_null()).then_some(hwnd.0 as isize)
-        };
 
-        let idle_secs = {
-            let mut info = LASTINPUTINFO {
-                cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
-                dwTime: 0,
-            };
-            if GetLastInputInfo(&mut info).as_bool() {
-                // Both counters are 32-bit milliseconds wrapped to u64 by the
-                // API; a reboot or 49-day wrap can make `dwTime` "newer" than
-                // the tick count, which saturating_sub clamps to 0.
-                let now = GetTickCount64();
-                now.saturating_sub(u64::from(info.dwTime)) / 1000
-            } else {
-                0
-            }
-        };
 
-        DesktopContext {
-            window_title: reported.window_title,
-            process_name: reported.process_name,
-            idle_secs,
-            source: "win32",
-            window_rect: reported.window_rect,
-            foreground_hwnd: reported_hwnd,
-            visible_windows,
-            screen,
-        }
-    }
-}
-
-/// PID that owns `hwnd` (`None` when the window is gone).
-#[cfg(windows)]
-unsafe fn foreground_pid(hwnd: windows::Win32::Foundation::HWND) -> Option<u32> {
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
-
-    if hwnd.0.is_null() {
-        return None;
-    }
-    let mut pid = 0u32;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    (pid != 0).then_some(pid)
-}
-
-/// Title of `hwnd`, capped at [`MAX_TITLE_CHARS`]; empty for a window without one.
-#[cfg(windows)]
-unsafe fn window_title_of(hwnd: windows::Win32::Foundation::HWND) -> String {
-    use windows::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
-
-    let length = GetWindowTextLengthW(hwnd);
-    if length <= 0 {
-        return String::new();
-    }
-    let capacity = (length as usize).saturating_add(1).min(MAX_TITLE_CHARS);
-    let mut buffer = vec![0u16; capacity];
-    let written = GetWindowTextW(hwnd, &mut buffer).max(0) as usize;
-    buffer.truncate(written);
-    String::from_utf16_lossy(&buffer)
-}
-
-/// Bounds of `hwnd` in CSS px.
-///
-/// `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` is preferred because it
-/// excludes the invisible resize border Windows 10+ reports from
-/// `GetWindowRect`; if DWM cannot answer (a destroyed window, a fully
-/// software-composited session) the plain rect is used.
-#[cfg(windows)]
-unsafe fn window_rect_of(
-    hwnd: windows::Win32::Foundation::HWND,
-    screen: &ScreenMetrics,
-) -> Option<WindowRect> {
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
-
-    if hwnd.0.is_null() {
-        return None;
-    }
-
-    let mut rect = RECT::default();
-    let mut have_rect = DwmGetWindowAttribute(
-        hwnd,
-        DWMWA_EXTENDED_FRAME_BOUNDS,
-        &mut rect as *mut _ as *mut core::ffi::c_void,
-        std::mem::size_of::<RECT>() as u32,
-    )
-    .is_ok();
-
-    if !have_rect {
-        have_rect = GetWindowRect(hwnd, &mut rect).is_ok();
-    }
-    if !have_rect {
-        return None;
-    }
-
-    screen.physical_rect(rect.left, rect.top, rect.right, rect.bottom)
-}
-
-/// Is the window cloaked (a UWP app on another virtual desktop, a suspended
-/// app)? Cloaked windows are visible to `EnumWindows` but not on screen.
-#[cfg(windows)]
-unsafe fn is_cloaked(hwnd: windows::Win32::Foundation::HWND) -> bool {
-    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
-
-    let mut cloaked: u32 = 0;
-    let ok = DwmGetWindowAttribute(
-        hwnd,
-        DWMWA_CLOAKED,
-        &mut cloaked as *mut _ as *mut core::ffi::c_void,
-        std::mem::size_of::<u32>() as u32,
-    )
-    .is_ok();
-    ok && cloaked != 0
-}
-
-/// Executable name of this process, so the overlay never lists itself.
-#[cfg(windows)]
-fn own_process_name() -> String {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
-        .unwrap_or_default()
-}
-
-/// The front-most visible top-level windows, up to `limit`.
-///
-/// `EnumWindows` walks in z-order (top first). A window is kept when it is
-/// visible, not minimized, not cloaked, has a title, owns a readable process
-/// name that is not ours, and has a non-empty rect — the same set a person
-/// would call "the windows I can see".
-#[cfg(windows)]
-unsafe fn visible_windows(screen: ScreenMetrics, limit: usize) -> Vec<VisibleWindow> {
-    use windows::Win32::Foundation::{BOOL, LPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, IsIconic, IsWindowVisible};
-
-    struct Acc {
-        out: Vec<VisibleWindow>,
-        screen: ScreenMetrics,
-        own: String,
-        limit: usize,
-    }
-
-    unsafe extern "system" fn callback(
-        hwnd: windows::Win32::Foundation::HWND,
-        lparam: LPARAM,
-    ) -> BOOL {
-        // SAFETY: `lparam` is the `&mut Acc` `EnumWindows` was called with; the
-        // callback outlives that borrow for the duration of the enumeration.
-        let acc = &mut *(lparam.0 as *mut Acc);
-        if acc.out.len() >= acc.limit {
-            return BOOL(0); // stop: the cap is reached
-        }
-        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() || is_cloaked(hwnd) {
-            return BOOL(1);
-        }
-        let title = window_title_of(hwnd);
-        if title.trim().is_empty() {
-            return BOOL(1);
-        }
-        let process_name = foreground_process_name(hwnd);
-        if process_name.is_empty() || process_name.eq_ignore_ascii_case(&acc.own) {
-            return BOOL(1);
-        }
-        let Some(rect) = window_rect_of(hwnd, &acc.screen) else {
-            return BOOL(1);
-        };
-        acc.out.push(VisibleWindow { title, process_name, rect, hwnd: Some(hwnd.0 as isize) });
-        BOOL(1)
-    }
-
-    let mut acc = Acc {
-        out: Vec::with_capacity(limit),
-        screen,
-        own: own_process_name(),
-        limit,
-    };
-    let _ = EnumWindows(Some(callback), LPARAM(&mut acc as *mut Acc as isize));
-    acc.out
-}
-
-/// `GetWindowThreadProcessId` → `OpenProcess` → `QueryFullProcessImageNameW`,
-/// reduced to the executable's file name.
-///
-/// Returns `""` for the desktop/secure windows (no owning process), for a
-/// protected process (access denied) — the caller only ever needs the
-/// *name*, so nothing here is allowed to fail loudly. `PROCESS_QUERY_LIMITED_INFORMATION`
-/// is used instead of `PROCESS_QUERY_INFORMATION` because it also works on
-/// elevated and AppContainer processes.
-#[cfg(windows)]
-unsafe fn foreground_process_name(hwnd: windows::Win32::Foundation::HWND) -> String {
-    use windows::core::PWSTR;
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
-
-    let mut pid = 0u32;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    if pid == 0 {
-        return String::new();
-    }
-
-    let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-        return String::new();
-    };
-
-    let mut buffer = vec![0u16; MAX_PROCESS_PATH_CHARS];
-    let mut size = buffer.len() as u32;
-    let queried = QueryFullProcessImageNameW(
-        handle,
-        PROCESS_NAME_WIN32,
-        PWSTR(buffer.as_mut_ptr()),
-        &mut size,
-    )
-    .is_ok();
-    let _ = CloseHandle(handle);
-
-    if !queried {
-        return String::new();
-    }
-    let path = String::from_utf16_lossy(&buffer[..size as usize]);
-    path.rsplit(['\\', '/']).next().unwrap_or("").to_string()
-}
-
-#[cfg(not(windows))]
-pub fn desktop_context() -> DesktopContext {
-    DesktopContext {
-        window_title: String::new(),
-        process_name: String::new(),
-        idle_secs: 0,
-        source: "unsupported",
-        window_rect: None,
-        foreground_hwnd: None,
-        visible_windows: Vec::new(),
-        screen: ScreenMetrics::default(),
-    }
-}
-
-/* ------------------------------------------------------------------ *
- * Clipboard
- * ------------------------------------------------------------------ */
-
-/// A clipboard excerpt, already capped at [`MAX_CLIPBOARD_CHARS`].
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct ClipboardText {
-    pub text: String,
-    /// True when the clipboard was longer and had to be cut.
-    pub truncated: bool,
-}
-
-/// Cut `text` to at most `max` **characters** (not bytes), reporting whether
-/// anything was dropped. Shared by the clipboard reader and its tests.
-pub fn truncate_chars(text: &str, max: usize) -> (String, bool) {
-    match text.char_indices().nth(max) {
-        Some((byte_index, _)) => (text[..byte_index].to_string(), true),
-        None => (text.to_string(), false),
-    }
-}
-
-/// Read the clipboard's text (`CF_UNICODETEXT`), capped at
-/// [`MAX_CLIPBOARD_CHARS`].
-///
-/// The clipboard is a machine-wide singleton: another app may hold it open for
-/// a few milliseconds, so the open is retried a handful of times before giving
-/// up. Every path balances `OpenClipboard` with `CloseClipboard` and
-/// `GlobalLock` with `GlobalUnlock`; a format that is not there is simply empty
-/// text, never an error — `GET /clipboard` always answers `ok: true`.
-#[cfg(windows)]
-pub fn clipboard_text() -> ClipboardText {
-    use windows::Win32::System::DataExchange::{
-        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    };
-    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
-    use windows::Win32::System::Ole::CF_UNICODETEXT;
-
-    // SAFETY: OpenClipboard/CloseClipboard are balanced below; the HGLOBAL we
-    // lock is owned by the clipboard and only read while it is locked.
-    unsafe {
-        let mut opened = false;
-        for _ in 0..5 {
-            if OpenClipboard(None).is_ok() {
-                opened = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(8));
-        }
-        if !opened {
-            return ClipboardText::default();
-        }
-
-        let text = if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_ok() {
-            match GetClipboardData(CF_UNICODETEXT.0 as u32) {
-                Ok(handle) if !handle.is_invalid() => {
-                    let global = windows::Win32::Foundation::HGLOBAL(handle.0);
-                    let pointer = GlobalLock(global) as *const u16;
-                    if pointer.is_null() {
-                        String::new()
-                    } else {
-                        let units = (GlobalSize(global) / std::mem::size_of::<u16>()).max(1);
-                        // The buffer is NUL-terminated; stop at the terminator
-                        // so a stale tail can never leak into the excerpt.
-                        let mut length = 0usize;
-                        while length < units && *pointer.add(length) != 0 {
-                            length += 1;
-                        }
-                        let slice = std::slice::from_raw_parts(pointer, length);
-                        let decoded = String::from_utf16_lossy(slice);
-                        let _ = GlobalUnlock(global);
-                        decoded
-                    }
-                }
-                _ => String::new(),
-            }
-        } else {
-            String::new()
-        };
-
-        let _ = CloseClipboard();
-        let (text, truncated) = truncate_chars(&text, MAX_CLIPBOARD_CHARS);
-        ClipboardText { text, truncated }
-    }
-}
-
-#[cfg(not(windows))]
-pub fn clipboard_text() -> ClipboardText {
-    ClipboardText::default()
-}
-
-/// What a clipboard write actually stored.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct ClipboardWrite {
-    /// Characters written (after the [`MAX_CLIPBOARD_WRITE_CHARS`] cap).
-    pub chars: usize,
-    /// True when the caller's text was longer than the cap and was cut.
-    pub truncated: bool,
-}
-
-/// Put `text` on the clipboard as `CF_UNICODETEXT`, capped at
-/// [`MAX_CLIPBOARD_WRITE_CHARS`].
-///
-/// This is the write half of [`clipboard_text`], and it is how an agent hands
-/// over something too big for a bubble (a full file, a diff, a log tail). The
-/// clipboard is a machine-wide singleton, so the open is retried; every path
-/// balances `OpenClipboard` with `CloseClipboard`, and ownership of the
-/// `GMEM_MOVEABLE` block passes to the system only on a successful
-/// `SetClipboardData` (a failure frees it here instead of leaking).
-#[cfg(windows)]
-pub fn write_clipboard_text(text: &str) -> Result<ClipboardWrite, String> {
-    use windows::Win32::Foundation::{GlobalFree, HANDLE};
-    use windows::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
-    };
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-    use windows::Win32::System::Ole::CF_UNICODETEXT;
-
-    let (text, truncated) = truncate_chars(text, MAX_CLIPBOARD_WRITE_CHARS);
-    let chars = text.chars().count();
-    // NUL-terminated UTF-16, as CF_UNICODETEXT requires.
-    let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    let bytes = units.len() * std::mem::size_of::<u16>();
-
-    // SAFETY: the open/close pair is balanced on every path below, the HGLOBAL
-    // we lock is the one we allocated, and the buffer we copy from is a Vec we
-    // own for the duration of the copy.
-    unsafe {
-        let mut opened = false;
-        for _ in 0..8 {
-            if OpenClipboard(None).is_ok() {
-                opened = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        if !opened {
-            return Err("the clipboard is held open by another process; try again".to_string());
-        }
-
-        let outcome = (|| -> Result<(), String> {
-            EmptyClipboard().map_err(|err| format!("cannot empty the clipboard: {err}"))?;
-
-            let global = GlobalAlloc(GMEM_MOVEABLE, bytes)
-                .map_err(|err| format!("cannot allocate {bytes} bytes for the clipboard: {err}"))?;
-            if global.is_invalid() {
-                return Err("cannot allocate memory for the clipboard".to_string());
-            }
-
-            let pointer = GlobalLock(global) as *mut u16;
-            if pointer.is_null() {
-                let _ = GlobalFree(global);
-                return Err("cannot lock the clipboard buffer".to_string());
-            }
-            std::ptr::copy_nonoverlapping(units.as_ptr(), pointer, units.len());
-            let _ = GlobalUnlock(global);
-
-            // On success the system owns the block, so freeing it afterwards
-            // would corrupt the clipboard.
-            if let Err(err) = SetClipboardData(CF_UNICODETEXT.0 as u32, HANDLE(global.0)) {
-                let _ = GlobalFree(global);
-                return Err(format!("cannot set the clipboard text: {err}"));
-            }
-            Ok(())
-        })();
-
-        let _ = CloseClipboard();
-        outcome.map(|()| ClipboardWrite { chars, truncated })
-    }
-}
-
-#[cfg(not(windows))]
-pub fn write_clipboard_text(_text: &str) -> Result<ClipboardWrite, String> {
-    Err("clipboard writes are only supported on Windows".to_string())
-}
-
-/* ------------------------------------------------------------------ *
- * Global hotkey
- * ------------------------------------------------------------------ */
-
-/// Win32 modifier bits, spelled out locally so [`parse_hotkey`] stays pure and
-/// unit-testable on every platform (and so the parser is the one place that
-/// knows the `"Ctrl+Shift+A"` grammar).
-const HOTKEY_MOD_ALT: u32 = 0x0001;
-const HOTKEY_MOD_CONTROL: u32 = 0x0002;
-const HOTKEY_MOD_SHIFT: u32 = 0x0004;
-const HOTKEY_MOD_WIN: u32 = 0x0008;
-/// `MOD_NOREPEAT`: holding the key must not machine-gun the command bar.
-const HOTKEY_MOD_NOREPEAT: u32 = 0x4000;
-/// Windows requires a per-window/thread id for a registered hotkey; any value
-/// not used elsewhere in this process is fine, and it is what `UnregisterHotKey`
-/// is given on the way out.
-const HOTKEY_ID: i32 = 0xC0DE;
-/// How often the listener wakes to notice that the app is shutting down.
-///
-/// Tight on purpose: `request_shutdown` only gives the process ~120 ms before
-/// `app.exit(0)`, and the `UnregisterHotKey` on the way out has to land inside
-/// that window. A `PeekMessageW` + `sleep` at 25 ms costs nothing.
-const HOTKEY_POLL_INTERVAL: Duration = Duration::from_millis(25);
-
-/// A parsed hotkey spec: Win32 modifier bits plus a virtual-key code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Hotkey {
-    pub modifiers: u32,
-    pub vk: u32,
-}
-
-/// Parse `"Alt+Space"`, `"Ctrl+Shift+A"`, `"F9"`, `"Win+Shift+Enter"`, …
-///
-/// The grammar is `modifier(+modifier)*+key`, where the key is one letter, one
-/// digit, `Space`/`Enter`/`Tab`/`Esc`/`Backspace`/the arrows, or `F1`…`F24`.
-/// Parsing is separate from registration so a bad value in `watcher_rules.json`
-/// is a logged warning instead of a dead app.
-pub fn parse_hotkey(spec: &str) -> Result<Hotkey, String> {
-    let trimmed = spec.trim();
-    if trimmed.is_empty() {
-        return Err("the hotkey is empty".to_string());
-    }
-    let parts: Vec<&str> = trimmed.split('+').map(str::trim).collect();
-    let (key, modifier_parts) = parts
-        .split_last()
-        .ok_or_else(|| format!("{spec:?} is not a hotkey"))?;
-
-    let mut modifiers = 0u32;
-    for part in modifier_parts {
-        modifiers |= match part.to_ascii_lowercase().as_str() {
-            "alt" => HOTKEY_MOD_ALT,
-            "ctrl" | "control" => HOTKEY_MOD_CONTROL,
-            "shift" => HOTKEY_MOD_SHIFT,
-            "win" | "super" | "meta" => HOTKEY_MOD_WIN,
-            "" => return Err(format!("hotkey {spec:?} has an empty modifier")),
-            other => {
-                return Err(format!(
-                    "unknown hotkey modifier {other:?}; use Alt, Ctrl, Shift or Win"
-                ))
-            }
-        };
-    }
-    Ok(Hotkey { modifiers, vk: virtual_key(key, spec)? })
-}
-
-/// The virtual-key code for the non-modifier part of a spec.
-fn virtual_key(key: &str, spec: &str) -> Result<u32, String> {
-    let key = key.trim();
-    if key.is_empty() {
-        return Err(format!("hotkey {spec:?} has no key after the last '+'"));
-    }
-    let upper = key.to_ascii_uppercase();
-    let mut chars = upper.chars();
-    if let (Some(first), None) = (chars.next(), chars.next()) {
-        // Letters and digits use their ASCII code as the virtual-key code.
-        if first.is_ascii_uppercase() || first.is_ascii_digit() {
-            return Ok(first as u32);
-        }
-    }
-    let named = match upper.as_str() {
-        "SPACE" => Some(0x20),
-        "ENTER" | "RETURN" => Some(0x0D),
-        "TAB" => Some(0x09),
-        "ESC" | "ESCAPE" => Some(0x1B),
-        "BACKSPACE" => Some(0x08),
-        "LEFT" => Some(0x25),
-        "UP" => Some(0x26),
-        "RIGHT" => Some(0x27),
-        "DOWN" => Some(0x28),
-        _ => None,
-    };
-    if let Some(vk) = named {
-        return Ok(vk);
-    }
-    if let Some(number) = upper.strip_prefix('F').and_then(|rest| rest.parse::<u32>().ok()) {
-        if (1..=24).contains(&number) {
-            return Ok(0x70 + number - 1);
-        }
-    }
-    Err(format!(
-        "unknown hotkey key {key:?}; use A-Z, 0-9, Space, Enter, Tab, Esc, the arrows or F1-F24"
-    ))
-}
 
 /// The `hotkey` string from `watcher_rules.json`, or [`DEFAULT_HOTKEY`].
 ///
@@ -2911,6 +2048,56 @@ pub fn hotkey_spec(rules_path: Option<&std::path::Path>) -> String {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .unwrap_or(fallback)
+}
+
+/// Register the system-wide hotkey on a background thread and pump its events.
+///
+/// The *registration* is the platform layer's job ([`platform::HotkeyListener`]
+/// is `RegisterHotKey` on Windows, the `global-hotkey` crate on Linux/macOS);
+/// this function owns the portable part: the thread, the shutdown handshake and
+/// the call into [`summon_command_bar`]. A failure (another app already holds
+/// the shortcut, a Wayland session, an invalid spec) is a warning, never a
+/// panic: the overlay keeps working and `Enter`/`/` still reach the bar once the
+/// window has focus.
+fn spawn_hotkey_listener(app: AppHandle, ctx: Arc<AppCtx>, spec: String) {
+    let hotkey = match parse_hotkey(&spec) {
+        Ok(hotkey) => hotkey,
+        Err(err) => {
+            log::warn!("global hotkey {spec:?} ignored: {err}");
+            return;
+        }
+    };
+
+    let spawned = std::thread::Builder::new()
+        .name("avatar-hotkey".to_string())
+        .spawn(move || {
+            let mut listener = match platform::HotkeyListener::register(hotkey, &spec) {
+                Ok(listener) => listener,
+                Err(err) => {
+                    log::warn!(
+                        "{err}; Enter or / still opens the command bar when the overlay has focus"
+                    );
+                    return;
+                }
+            };
+            ctx.hotkey_registered.store(true, Ordering::Relaxed);
+
+            while ctx.running.load(Ordering::Relaxed) {
+                if listener.poll() {
+                    summon_command_bar(&app, &ctx, &spec);
+                }
+                std::thread::sleep(platform::hotkey::HOTKEY_POLL_INTERVAL);
+            }
+
+            // The release has to land before `app.exit(0)`; `request_shutdown`
+            // waits on `hotkey_registered` for exactly this handshake.
+            listener.release();
+            ctx.hotkey_registered.store(false, Ordering::Relaxed);
+        });
+
+    if let Err(err) = spawned {
+        log::warn!("could not spawn the global hotkey listener: {err}");
+    }
 }
 
 /// Summon the command bar: make the overlay interactive, focus it, and tell the
@@ -2939,94 +2126,13 @@ pub fn summon_command_bar(app: &AppHandle, ctx: &AppCtx, spec: &str) {
     }
 }
 
-/// Register the system-wide hotkey on a background thread and pump its messages.
-///
-/// `RegisterHotKey` runs on the thread that owns the message queue, so the
-/// thread both registers and polls. A failure (another app already holds the
-/// shortcut, or the spec is invalid) is a warning, never a panic: the overlay
-/// keeps working and `Enter`/`/` still reach the bar once the window has focus.
-#[cfg(windows)]
-fn spawn_hotkey_listener(app: AppHandle, ctx: Arc<AppCtx>, spec: String) {
-    let hotkey = match parse_hotkey(&spec) {
-        Ok(hotkey) => hotkey,
-        Err(err) => {
-            log::warn!("global hotkey {spec:?} ignored: {err}");
-            return;
-        }
-    };
 
-    let spawned = std::thread::Builder::new()
-        .name("avatar-hotkey".to_string())
-        .spawn(move || {
-            use windows::Win32::Foundation::HWND;
-            use windows::Win32::UI::Input::KeyboardAndMouse::{
-                RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
-            };
-            use windows::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_REMOVE, WM_HOTKEY};
-
-            let modifiers = HOT_KEY_MODIFIERS(hotkey.modifiers | HOTKEY_MOD_NOREPEAT);
-            // SAFETY: `HWND::default()` associates the hotkey with this thread's
-            // message queue; the id is ours and is unregistered before the
-            // thread ends.
-            if let Err(err) = unsafe { RegisterHotKey(HWND::default(), HOTKEY_ID, modifiers, hotkey.vk) } {
-                log::warn!(
-                    "could not register the global hotkey {spec:?} ({err}); another app may hold it — \
-                     Enter or / still opens the command bar when the overlay has focus"
-                );
-                return;
-            }
-            log::info!("global hotkey {spec:?} summons the command bar");
-            ctx.hotkey_registered.store(true, Ordering::Relaxed);
-
-            let mut message = MSG::default();
-            while ctx.running.load(Ordering::Relaxed) {
-                // SAFETY: PeekMessageW only writes into the MSG we own.
-                let had_message =
-                    unsafe { PeekMessageW(&mut message, HWND::default(), 0, 0, PM_REMOVE) }.as_bool();
-                if had_message {
-                    if message.message == WM_HOTKEY {
-                        summon_command_bar(&app, &ctx, &spec);
-                    }
-                    continue;
-                }
-                std::thread::sleep(HOTKEY_POLL_INTERVAL);
-            }
-            // SAFETY: same id/handle pair as the registration above.
-            let _ = unsafe { UnregisterHotKey(HWND::default(), HOTKEY_ID) };
-            ctx.hotkey_registered.store(false, Ordering::Relaxed);
-            log::info!("global hotkey released");
-        });
-
-    if let Err(err) = spawned {
-        log::warn!("could not spawn the global hotkey listener: {err}");
-    }
-}
-
-#[cfg(not(windows))]
-fn spawn_hotkey_listener(_app: AppHandle, _ctx: Arc<AppCtx>, spec: String) {
-    log::warn!("global hotkeys are only supported on Windows; {spec:?} was not registered");
-}
 
 /* ------------------------------------------------------------------ *
  * Click-through tracking
  * ------------------------------------------------------------------ */
 
-#[cfg(windows)]
-fn cursor_position() -> Option<(f64, f64)> {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-    let mut point = POINT::default();
-    // SAFETY: GetCursorPos only writes to the POINT we own and is safe to call
-    // from any thread.
-    unsafe { GetCursorPos(&mut point).ok()? };
-    Some((f64::from(point.x), f64::from(point.y)))
-}
-
-#[cfg(not(windows))]
-fn cursor_position() -> Option<(f64, f64)> {
-    None
-}
 
 /// How far (CSS px) the cursor must travel before `cursor-pos` is emitted again.
 ///
@@ -3103,7 +2209,7 @@ fn spawn_cursor_tracker(app: AppHandle, ctx: Arc<AppCtx>) {
                     continue;
                 }
 
-                let Some((cursor_x, cursor_y)) = cursor_position() else { continue };
+                let Some((cursor_x, cursor_y)) = platform::cursor_position() else { continue };
                 let Ok(origin) = window.outer_position() else { continue };
                 let scale = window.scale_factor().unwrap_or(1.0);
                 let local_x = (cursor_x - f64::from(origin.x)) / scale;
@@ -3159,30 +2265,7 @@ fn spawn_cursor_tracker(app: AppHandle, ctx: Arc<AppCtx>) {
 /// border and slow enough that the poll is invisible in a profile.
 pub const PERCH_POLL_MS: u64 = 60;
 
-/// Bounds of a tracked `HWND`, or `None` when it is gone or minimized.
-#[cfg(windows)]
-fn tracked_window_rect(hwnd: isize) -> Option<WindowRect> {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow};
 
-    if hwnd == 0 {
-        return None;
-    }
-    let hwnd = HWND(hwnd as *mut core::ffi::c_void);
-    // SAFETY: `IsWindow`/`IsIconic` are pure queries and a stale handle is
-    // exactly what they are for; `window_rect_of` only reads DWM state.
-    unsafe {
-        if !IsWindow(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
-            return None;
-        }
-        window_rect_of(hwnd, &screen_metrics())
-    }
-}
-
-#[cfg(not(windows))]
-fn tracked_window_rect(_hwnd: isize) -> Option<WindowRect> {
-    None
-}
 
 /// Follow the perched window as it moves, and drop the perch when it is gone.
 ///
@@ -3226,7 +2309,7 @@ fn spawn_perch_tracker(app: AppHandle, ctx: Arc<AppCtx>) {
                 };
                 let Some(edge) = edge else { continue };
 
-                let window = tracked_window_rect(hwnd);
+                let window = platform::tracked_window_rect(hwnd);
                 let viewport =
                     window.and_then(|rect| monitor_bounds_for(rect.center().0, rect.center().1));
                 // The extents frozen at perch time: the live ones wobble with
