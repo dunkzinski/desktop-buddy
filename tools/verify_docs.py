@@ -335,6 +335,7 @@ else:
                 "vision",
                 "active_profile",
                 "ai_profiles",
+                "survival",
             }
             unknown = set(shipped) - known
             if unknown:
