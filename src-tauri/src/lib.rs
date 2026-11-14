@@ -13,6 +13,19 @@
 
 pub mod api;
 pub mod models;
+pub mod stt;
+pub mod tts;
+
+// The lib **unit-test** harness links wry, whose `comctl32` v6 imports
+// (`TaskDialogIndirect`, `SetWindowSubclass`, …) only load with the app's
+// Windows manifest. `build.rs` puts `resource.lib` — the resource tauri-build
+// generates, which carries that manifest — on the search path; this attribute
+// pulls it into the test binary and nowhere else. The bins get the same
+// resource from tauri-build, so linking it there as well would be a
+// duplicate-resource error (CVT1100).
+#[cfg(all(test, windows))]
+#[link(name = "resource", kind = "static")]
+extern "C" {}
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -110,9 +123,29 @@ pub struct AvatarState {
     /// The page pauses idle wandering and aims the gaze at `perch_rect`.
     #[serde(default)]
     pub perched: bool,
-    /// The window the avatar is perched on, in CSS px (primary-monitor space).
+    /// The window the avatar is perched on, in CSS px (virtual-desktop space).
     #[serde(default)]
     pub perch_rect: Option<WindowRect>,
+    /// The perching target's `HWND`, so the live tracker can re-read its bounds.
+    ///
+    /// Not serialized: a raw handle is meaningless to the page and would leak
+    /// into every `state` frame; it exists only for the Rust-side poll.
+    #[serde(skip)]
+    pub perch_hwnd: Option<isize>,
+    /// Which edge the avatar perched on (`"top_right"`, …), replayed every time
+    /// the window moves.
+    #[serde(skip)]
+    pub perch_edge: Option<String>,
+    /// Slide along that edge, in CSS px (the `POST /perch` `offset`).
+    #[serde(skip)]
+    pub perch_offset: f64,
+    /// The painted extents captured when the perch was requested.
+    ///
+    /// Frozen on purpose: `bounds` is re-reported from the live animated pose,
+    /// so a walking bob changes it by ~10 px — a tracker that kept re-reading it
+    /// would re-target the avatar on every step and never settle.
+    #[serde(skip)]
+    pub perch_bounds: AvatarBounds,
     /// Explicit gaze target from `POST /move {"look_at": [x, y]}`; cleared by a
     /// later move/perch/state change. The page looks here instead of its
     /// default target.
@@ -131,6 +164,10 @@ impl AvatarState {
             talking: false,
             perched: false,
             perch_rect: None,
+            perch_hwnd: None,
+            perch_edge: None,
+            perch_offset: 0.0,
+            perch_bounds: AvatarBounds::default(),
             look_at: None,
         }
     }
@@ -141,7 +178,26 @@ impl AvatarState {
     pub fn clear_perch(&mut self) {
         self.perched = false;
         self.perch_rect = None;
+        self.perch_hwnd = None;
+        self.perch_edge = None;
+        self.perch_offset = 0.0;
+        self.perch_bounds = AvatarBounds::default();
         self.look_at = None;
+    }
+
+    /// Remember the window (`HWND`) and edge a perch request resolved to, so
+    /// the live tracker can follow that window as it moves.
+    pub fn set_perch_tracking(
+        &mut self,
+        hwnd: Option<isize>,
+        edge: &str,
+        offset: f64,
+        bounds: AvatarBounds,
+    ) {
+        self.perch_hwnd = hwnd;
+        self.perch_edge = Some(edge.to_string());
+        self.perch_offset = if offset.is_finite() { offset } else { 0.0 };
+        self.perch_bounds = bounds.sanitized();
     }
 }
 
@@ -232,6 +288,15 @@ pub struct AppCtx {
     /// the feet on a window edge; the fallback applies only before the first
     /// report.
     pub bounds: Mutex<AvatarBounds>,
+    /// The session's conversation turns, oldest first, bounded to
+    /// [`CHAT_HISTORY_CAPACITY`]. In memory only: a restart starts a new chat.
+    chat: Mutex<VecDeque<ChatMessage>>,
+    /// Monotonic id stamped on every [`ChatMessage`].
+    chat_seq: AtomicU64,
+    /// The main window, installed in `setup` so core functions that only take
+    /// `&AppCtx` (`do_user_reply_with_profile`, `do_session_reset`) can emit
+    /// page-local events such as `chat-message`. `None` in unit tests.
+    app: Mutex<Option<AppHandle>>,
 }
 
 /// How far the avatar's painted artwork reaches from its root, per direction.
@@ -285,6 +350,55 @@ impl AvatarBounds {
 /// [`AppCtx::bounds`]); roughly the shipped models' footprint.
 pub const DEFAULT_BOUNDS: AvatarBounds = AvatarBounds::symmetric((70.0, 90.0));
 
+/* ------------------------------------------------------------------ *
+ * In-memory conversation history
+ * ------------------------------------------------------------------ */
+
+/// How many turns the chat log keeps.
+///
+/// The History drawer is a *session* view, not an archive: 50 turns is roughly
+/// 25 exchanges — enough to scroll back through the thread the user is actually
+/// in, without the overlay holding unbounded state. The oldest turn is evicted
+/// on overflow.
+pub const CHAT_HISTORY_CAPACITY: usize = 50;
+
+/// The only roles a [`ChatMessage`] may carry.
+pub const CHAT_ROLES: [&str; 2] = ["user", "assistant"];
+
+/// One turn of the on-screen conversation.
+///
+/// Mirrors what the bubble showed: the summary `text`, the optional `details`
+/// drawer (code / diff / log tail) and the expression the avatar wore. `id` is
+/// a per-process monotonic counter so the page can key its list and drop a
+/// duplicate `chat-message` event that arrives right after a hydrate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: u64,
+    /// `"user"` or `"assistant"` (see [`CHAT_ROLES`]).
+    pub role: String,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    /// Wall-clock milliseconds since the Unix epoch.
+    pub ts_ms: u64,
+}
+
+/// Milliseconds since the Unix epoch, or 0 if the clock is before 1970.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// `{"ok": true, "messages": [...]}` — the one body `GET /history` and the
+/// `get_chat_history` command both return, so the two can never disagree.
+pub fn chat_history_json(ctx: &AppCtx) -> Value {
+    serde_json::json!({ "ok": true, "messages": ctx.chat_history() })
+}
+
 impl AppCtx {
     fn new(api_port: u16) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
@@ -307,7 +421,82 @@ impl AppCtx {
             shutdown_tx: Mutex::new(None),
             watcher: Mutex::new(WatcherState::new()),
             bounds: Mutex::new(DEFAULT_BOUNDS),
+            chat: Mutex::new(VecDeque::with_capacity(CHAT_HISTORY_CAPACITY)),
+            chat_seq: AtomicU64::new(0),
+            app: Mutex::new(None),
         }
+    }
+
+    /* ---------- conversation history ---------- */
+
+    /// Install the main-window handle (called once from `setup`).
+    pub fn set_app_handle(&self, app: AppHandle) {
+        *lock_or_recover(&self.app) = Some(app);
+    }
+
+    /// Emit a page-local event, if a window handle is installed.
+    ///
+    /// The handle is cloned out from under the lock before emitting, so a slow
+    /// listener can never stall a caller that is holding no other lock.
+    pub fn emit_to_page(&self, event: &str, payload: Value) {
+        let app = lock_or_recover(&self.app).clone();
+        if let Some(app) = app {
+            if let Err(err) = app.emit(event, payload) {
+                log::warn!("failed to emit {event}: {err}");
+            }
+        }
+    }
+
+    /// Record one conversation turn and tell the page about it.
+    ///
+    /// Bounded: the oldest turn is evicted once [`CHAT_HISTORY_CAPACITY`] is
+    /// reached, so a long session cannot grow the log without limit. The
+    /// `chat-message` event is page-local — it is never put on the `GET /events`
+    /// bus, because the transcript is cosmetic UI state, not something an agent
+    /// acts on (and the agent already sees `user_reply` / `speech` frames).
+    pub fn push_chat(
+        &self,
+        role: &str,
+        text: &str,
+        details: Option<&str>,
+        expression: Option<&str>,
+    ) -> ChatMessage {
+        debug_assert!(CHAT_ROLES.contains(&role), "unknown chat role {role:?}");
+        let message = ChatMessage {
+            id: self.chat_seq.fetch_add(1, Ordering::Relaxed) + 1,
+            role: role.to_string(),
+            text: text.to_string(),
+            details: details.map(str::to_string),
+            expression: expression.map(str::to_string),
+            ts_ms: now_ms(),
+        };
+        {
+            let mut chat = lock_or_recover(&self.chat);
+            while chat.len() >= CHAT_HISTORY_CAPACITY {
+                chat.pop_front();
+            }
+            chat.push_back(message.clone());
+        }
+        self.emit_to_page("chat-message", serde_json::to_value(&message).unwrap_or(Value::Null));
+        message
+    }
+
+    /// The session's turns, oldest first.
+    pub fn chat_history(&self) -> Vec<ChatMessage> {
+        lock_or_recover(&self.chat).iter().cloned().collect()
+    }
+
+    /// Drop every turn (a new chat) and tell the page to empty the drawer.
+    /// Returns how many turns were dropped.
+    pub fn clear_chat(&self) -> usize {
+        let cleared = {
+            let mut chat = lock_or_recover(&self.chat);
+            let len = chat.len();
+            chat.clear();
+            len
+        };
+        self.emit_to_page("chat-history-cleared", serde_json::json!({ "count": cleared }));
+        cleared
     }
 
     /// Mark the expression as freshly commanded (see `report_state`).
@@ -403,6 +592,9 @@ impl AppCtx {
     pub fn request_shutdown(&self) {
         self.running.store(false, Ordering::Relaxed);
         self.stop_watcher();
+        // The PTT worker holds a `waveIn` handle and may be mid-Whisper; tell it
+        // to stop so the mic is released before the process exits.
+        crate::stt::shutdown();
         // Give the hotkey thread a moment to run its `UnregisterHotKey`: some
         // shutdown paths (`POST /shutdown`) call `app.exit(0)` immediately after
         // this, which would otherwise kill the thread mid-cleanup.
@@ -721,6 +913,17 @@ fn set_avatar_position(
     Ok(())
 }
 
+/// Drop a live perch because the user grabbed the avatar.
+///
+/// The page calls this the moment a press turns into a drag: without it the
+/// 60 ms perch tracker would keep re-targeting the avatar to the window border
+/// while the pointer is dragging it somewhere else.
+#[tauri::command]
+fn break_perch(ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<(), String> {
+    lock_or_recover(&ctx.avatar).clear_perch();
+    Ok(())
+}
+
 #[tauri::command]
 fn set_avatar_expression(
     app: AppHandle,
@@ -866,6 +1069,11 @@ pub fn do_notify_interaction(ctx: &AppCtx, kind: &str, x: f64, y: f64) -> Result
     if !x.is_finite() || !y.is_finite() {
         return Err("x and y must be finite numbers".to_string());
     }
+    // A drag is the user taking the avatar somewhere: the perch it was on is
+    // over, and the live tracker must stop pulling it back.
+    if kind == "drag_end" {
+        lock_or_recover(&ctx.avatar).clear_perch();
+    }
     let state = snapshot(&ctx.avatar);
     let subscribers = ctx.emit_event(
         "interaction",
@@ -905,17 +1113,20 @@ fn notify_interaction(
 /// not race a stale bubble). The frame carries the trimmed text only — no
 /// window title — because the watcher quotes it straight into a Hermes prompt.
 pub fn do_user_reply(ctx: &AppCtx, text: &str) -> Result<Value, String> {
-    do_user_reply_with_profile(ctx, text, None)
+    do_user_reply_with_profile(ctx, text, None, false)
 }
 
 /// Same, but a quick-task chip may pin the AI profile its prompt should run on.
 ///
 /// The profile rides along in the `user_reply` frame, so the watcher can honour
 /// it per trigger instead of switching the global active profile for one chip.
+/// `include_screen` is the screen-vision switch: the watcher captures a
+/// screenshot and answers from it instead of routing the text to a text model.
 pub fn do_user_reply_with_profile(
     ctx: &AppCtx,
     text: &str,
     profile: Option<&str>,
+    include_screen: bool,
 ) -> Result<Value, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -936,11 +1147,19 @@ pub fn do_user_reply_with_profile(
     if let Some(profile) = profile.map(str::trim).filter(|name| !name.is_empty()) {
         payload["profile"] = serde_json::json!(profile);
     }
+    if include_screen {
+        // Only present when asked for: a frame without it stays byte-identical
+        // to the pre-vision contract.
+        payload["include_screen"] = serde_json::json!(true);
+    }
     let subscribers = ctx.emit_event("user_reply", payload);
+    // Bubbles auto-dismiss, the History drawer does not: remember the prompt.
+    ctx.push_chat("user", text, None, None);
     Ok(serde_json::json!({
         "ok": true,
         "text": text,
         "profile": profile.map(str::trim).filter(|name| !name.is_empty()),
+        "include_screen": include_screen,
         "subscribers": subscribers,
     }))
 }
@@ -955,9 +1174,15 @@ fn notify_reply(
     app: AppHandle,
     text: String,
     profile: Option<String>,
+    include_screen: Option<bool>,
     ctx: tauri::State<'_, Arc<AppCtx>>,
 ) -> Result<Value, String> {
-    let result = do_user_reply_with_profile(&ctx, &text, profile.as_deref())?;
+    let result = do_user_reply_with_profile(
+        &ctx,
+        &text,
+        profile.as_deref(),
+        include_screen.unwrap_or(false),
+    )?;
     // The bubble is transient page state: tell the page to drop it.
     if let Err(err) = app.emit("speech-clear", serde_json::json!({})) {
         log::warn!("failed to emit speech-clear: {err}");
@@ -977,6 +1202,9 @@ pub fn do_session_reset(ctx: &AppCtx, reason: &str) -> Value {
     ctx.speech_seen.store(false, Ordering::Relaxed);
     *lock_or_recover(&ctx.speech) = None;
     lock_or_recover(&ctx.avatar).talking = false;
+    // A new chat is a new transcript: the drawer empties with the context, and
+    // the page is told so it can drop the rows it is showing.
+    ctx.clear_chat();
     let subscribers = ctx.emit_event("session_reset", serde_json::json!({ "reason": reason }));
     serde_json::json!({ "ok": true, "reason": reason, "subscribers": subscribers })
 }
@@ -1012,6 +1240,59 @@ fn set_watcher_enabled(
 #[tauri::command(rename_all = "snake_case")]
 fn get_ai_profiles(ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<Value, String> {
     Ok(ai_status_json(ctx.ai_rules_path().as_deref()))
+}
+
+/// Voice output status (ready / muted / why), for the control panel's speaker
+/// switch and the `tts-status` event.
+#[tauri::command(rename_all = "snake_case")]
+fn get_tts_status() -> Result<Value, String> {
+    Ok(tts::status_json())
+}
+
+/// Mute or unmute the local Piper voice without restarting the app.
+///
+/// Runtime only: the mute is deliberately **not** written back to
+/// `watcher_rules.json` (that file is hand-edited and never re-serialised), so
+/// a restart returns to whatever `tts.enabled` says.
+#[tauri::command(rename_all = "snake_case")]
+fn set_tts_enabled(app: AppHandle, enabled: bool) -> Result<Value, String> {
+    let status = tts::set_enabled(enabled);
+    if let Err(err) = app.emit("tts-status", status.clone()) {
+        log::warn!("failed to emit tts-status: {err}");
+    }
+    Ok(status)
+}
+
+/// Every push-to-talk setting, the live state (`idle`/`listening`/`transcribing`)
+/// and the last transcript/failure — the control panel's **Push to talk** row.
+#[tauri::command(rename_all = "snake_case")]
+fn get_stt_status() -> Result<Value, String> {
+    Ok(stt::status_json())
+}
+
+/// Begin a push-to-talk hold from the panel's mic button.
+///
+/// Also cuts the Piper voice off: the microphone must not hear the avatar.
+#[tauri::command(rename_all = "snake_case")]
+fn ptt_start(app: AppHandle) -> Result<Value, String> {
+    Ok(stt::start(&app))
+}
+
+/// End a push-to-talk hold: the worker stops the mic, runs Whisper and posts
+/// the transcript to `POST /reply` exactly like a typed message.
+#[tauri::command(rename_all = "snake_case")]
+fn ptt_stop(app: AppHandle) -> Result<Value, String> {
+    Ok(stt::stop(&app))
+}
+
+/// Mute or unmute push-to-talk without restarting the app (runtime only).
+#[tauri::command(rename_all = "snake_case")]
+fn set_stt_enabled(app: AppHandle, enabled: bool) -> Result<Value, String> {
+    let status = stt::set_enabled(enabled);
+    if let Err(err) = app.emit("stt-status", status.clone()) {
+        log::warn!("failed to emit stt-status: {err}");
+    }
+    Ok(status)
 }
 
 /// Switch the active AI profile from the control panel.
@@ -1122,6 +1403,24 @@ pub fn do_speak(
     char_ms: u64,
     details: Option<&str>,
 ) -> Result<Value, String> {
+    do_speak_opt(Some(app), ctx, text, expression, duration_ms, char_ms, details)
+}
+
+/// Core of [`do_speak`], with an *optional* window handle.
+///
+/// The `speak` command, `POST /speak`, MCP `avatar_speak` and every agent reply
+/// pass a real handle; a unit test passes `None`, which records the turn and
+/// broadcasts the SSE frame but skips the window-only publishing. That keeps
+/// the history contract testable without booting Tauri.
+pub fn do_speak_opt(
+    app: Option<&AppHandle>,
+    ctx: &AppCtx,
+    text: &str,
+    expression: &str,
+    duration_ms: u64,
+    char_ms: u64,
+    details: Option<&str>,
+) -> Result<Value, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("text must not be empty".to_string());
@@ -1161,11 +1460,24 @@ pub fn do_speak(
     }
     *lock_or_recover(&ctx.speech) = Some(payload.clone());
 
-    publish(app, ctx);
-    if let Err(err) = app.emit("speak", payload.clone()) {
-        log::warn!("failed to emit speak: {err}");
+    // Window-only publishing: a headless caller has no page to show it on.
+    if let Some(app) = app {
+        publish(app, ctx);
+        if let Err(err) = app.emit("speak", payload.clone()) {
+            log::warn!("failed to emit speak: {err}");
+        }
     }
     ctx.emit_event("speech", payload.clone());
+
+    // Every spoken line reaches this function (HTTP `/speak`, the `speak`
+    // command, MCP `avatar_speak`, agent replies), so it is the single place
+    // that starts the local voice. Enqueuing never blocks: Piper and the
+    // speakers live on the `avatar-tts` worker thread.
+    tts::enqueue_speech(text);
+
+    // The bubble is transient; the History drawer is not. Record the reply
+    // (bounded, in memory) so it survives the bubble auto-dismissing.
+    ctx.push_chat("assistant", text, details.as_deref(), Some(expression));
 
     let mut response = payload;
     response["ok"] = Value::Bool(true);
@@ -1451,6 +1763,15 @@ fn get_speech(ctx: tauri::State<'_, Arc<AppCtx>>) -> Value {
     })
 }
 
+/// The session's conversation turns, oldest first — the History drawer's
+/// hydrate call, and the page-side twin of `GET /history`.
+///
+/// `{"ok": true, "messages": [{id, role, text, details?, expression?, ts_ms}]}`
+#[tauri::command(rename_all = "snake_case")]
+fn get_chat_history(ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<Value, String> {
+    Ok(chat_history_json(&ctx))
+}
+
 #[tauri::command]
 fn get_parts(ctx: tauri::State<'_, Arc<ModelCtx>>) -> Vec<Value> {
     ctx.parts_snapshot()
@@ -1532,17 +1853,28 @@ pub struct DesktopContext {
     pub idle_secs: u64,
     /// Which probe produced the values: `"win32"` or `"unsupported"`.
     pub source: &'static str,
-    /// Bounds of the foreground window in CSS pixels (primary-monitor space),
+    /// Bounds of the foreground window in CSS pixels (virtual-desktop space),
     /// so `POST /perch` and the overlay agree on coordinates.
     pub window_rect: Option<WindowRect>,
+    /// `HWND` of the foreground window as an integer (0/absent when none). The
+    /// live perch tracker is the only consumer.
+    #[serde(default)]
+    pub foreground_hwnd: Option<isize>,
     /// Up to [`MAX_VISIBLE_WINDOWS`] top-level windows, front-most first.
     pub visible_windows: Vec<VisibleWindow>,
+    /// The virtual desktop this context is expressed in: origin (physical px),
+    /// size and the CSS scale factor. `/context` consumers that need physical
+    /// pixels (the watcher's GDI capture) convert with it.
+    pub screen: ScreenMetrics,
 }
 
-/// A rectangle in CSS pixels, relative to the primary monitor's top-left.
+/// A rectangle in CSS pixels, relative to the **virtual desktop's** top-left.
 ///
-/// The WebView2 overlay covers that monitor and draws in CSS px, so every
-/// coordinate an agent sees (avatar position, window rects) is in this space.
+/// The overlay covers the whole virtual desktop (every monitor) and draws in
+/// CSS px, so every coordinate an agent sees — the avatar's position, window
+/// rects, perch targets — is measured from the virtual origin
+/// (`SM_XVIRTUALSCREEN`, which is negative when a monitor sits left of or above
+/// the primary one) and scaled by [`ScreenMetrics::scale`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct WindowRect {
     pub x: f64,
@@ -1552,6 +1884,10 @@ pub struct WindowRect {
 }
 
 impl WindowRect {
+    pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self { x, y, width, height }
+    }
+
     pub fn right(&self) -> f64 {
         self.x + self.width
     }
@@ -1571,6 +1907,70 @@ pub struct VisibleWindow {
     pub title: String,
     pub process_name: String,
     pub rect: WindowRect,
+    /// The window handle as an integer, so `POST /perch` can remember which
+    /// window it picked and follow it. `null` when it could not be read.
+    #[serde(default)]
+    pub hwnd: Option<isize>,
+}
+
+/// The virtual desktop, in physical pixels plus the one CSS scale factor.
+///
+/// `x`/`y` are `SM_XVIRTUALSCREEN`/`SM_YVIRTUALSCREEN` — the physical origin of
+/// the bounding box of **all** monitors, negative when a secondary display sits
+/// left of or above the primary one. The overlay window is placed at that
+/// origin and sized to `width × height`, and every CSS coordinate is
+/// `(physical - origin) / scale`, so an avatar dragged onto a left-hand monitor
+/// has a positive x.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScreenMetrics {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    /// Physical px per CSS px (the overlay's scale factor; 1.0 at 100 %).
+    pub scale: f64,
+}
+
+impl Default for ScreenMetrics {
+    fn default() -> Self {
+        Self { x: 0.0, y: 0.0, width: 0.0, height: 0.0, scale: 1.0 }
+    }
+}
+
+impl ScreenMetrics {
+    /// The CSS size of the whole virtual desktop; `None` when it is unknown.
+    pub fn css_size(&self) -> Option<(f64, f64)> {
+        let scale = if self.scale.is_finite() && self.scale > 0.0 { self.scale } else { 1.0 };
+        let width = self.width / scale;
+        let height = self.height / scale;
+        (width > 0.0 && height > 0.0).then_some((width, height))
+    }
+
+    /// A physical window rect → CSS virtual-desktop coordinates.
+    ///
+    /// This is the single conversion every screen-space value goes through, so
+    /// the overlay, `POST /perch` and the watcher's capture agree on where a
+    /// window is.
+    pub fn physical_rect(&self, left: i32, top: i32, right: i32, bottom: i32) -> Option<WindowRect> {
+        let scale = if self.scale.is_finite() && self.scale > 0.0 { self.scale } else { 1.0 };
+        let width = (right - left) as f64 / scale;
+        let height = (bottom - top) as f64 / scale;
+        if !(width > 0.0) || !(height > 0.0) {
+            return None;
+        }
+        Some(WindowRect {
+            x: (left as f64 - self.x) / scale,
+            y: (top as f64 - self.y) / scale,
+            width,
+            height,
+        })
+    }
+
+    /// A CSS point (virtual-desktop space) → physical screen pixels.
+    pub fn to_physical(&self, x: f64, y: f64) -> (f64, f64) {
+        let scale = if self.scale.is_finite() && self.scale > 0.0 { self.scale } else { 1.0 };
+        (x * scale + self.x, y * scale + self.y)
+    }
 }
 
 /// How many `visible_windows` entries `/context` reports: an agent needs the
@@ -1622,12 +2022,13 @@ impl PerchEdge {
     }
 }
 
-/// Physical window rect (Win32 `RECT`, physical px) → logical CSS rect.
+/// Physical window rect (Win32 `RECT`, physical px) → logical CSS rect with the
+/// virtual origin at `(0, 0)`.
 ///
-/// `scale` is the primary monitor's DPI factor (physical px per CSS px), the
-/// same ratio the WebView2 page reports as `devicePixelRatio`. A degenerate
-/// rect returns `None`: minimized windows report 0×0 at (-32000, -32000) and
-/// would otherwise place the avatar a long way off screen.
+/// The scale-only form is kept for callers that already work in a
+/// primary-anchored space (mostly tests); everything that follows the live
+/// desktop goes through [`ScreenMetrics::physical_rect`] so a monitor to the
+/// left of the primary maps to negative physical pixels and a *positive* CSS x.
 pub fn physical_rect_to_logical(
     left: i32,
     top: i32,
@@ -1635,18 +2036,7 @@ pub fn physical_rect_to_logical(
     bottom: i32,
     scale: f64,
 ) -> Option<WindowRect> {
-    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
-    let width = (right - left) as f64 / scale;
-    let height = (bottom - top) as f64 / scale;
-    if !(width > 0.0) || !(height > 0.0) {
-        return None;
-    }
-    Some(WindowRect {
-        x: left as f64 / scale,
-        y: top as f64 / scale,
-        width,
-        height,
-    })
+    ScreenMetrics { scale, ..ScreenMetrics::default() }.physical_rect(left, top, right, bottom)
 }
 
 /// Where the avatar's **root** goes to perch on `edge` of `rect`.
@@ -1654,15 +2044,19 @@ pub fn physical_rect_to_logical(
 /// `bounds` is how far the painted art reaches from that root, so the artwork —
 /// not the root — touches the border: the feet land on the top/bottom edge and
 /// the body stands just outside the left/right edge. `offset` slides the avatar
-/// along its edge (x for top/bottom, y for left/right). The result is clamped to
-/// the primary monitor so a window at the screen edge cannot push the avatar out
-/// of view; `viewport` `None` skips the clamp (non-Windows builds).
+/// along its edge (x for top/bottom, y for left/right).
+///
+/// `viewport` is the **monitor** the target window lives on
+/// ([`monitor_bounds_for`]), in CSS virtual-desktop px: a window on a secondary
+/// screen clamps to *that* screen instead of being dragged back to the primary
+/// one. `None` skips the clamp entirely (non-Windows builds, or a rect that does
+/// not resolve to a monitor).
 pub fn perch_target(
     rect: &WindowRect,
     edge: PerchEdge,
     bounds: AvatarBounds,
     offset: f64,
-    viewport: Option<(f64, f64)>,
+    viewport: Option<WindowRect>,
 ) -> (f64, f64) {
     let b = bounds.sanitized();
     let offset = if offset.is_finite() { offset } else { 0.0 };
@@ -1678,14 +2072,76 @@ pub fn perch_target(
         PerchEdge::Right => (rect.right() + b.left, cy + offset),
         PerchEdge::Bottom => (cx + offset, rect.bottom() + b.up),
     };
-    let Some((vw, vh)) = viewport else {
+    let Some(viewport) = viewport else {
         return (x, y);
     };
-    // A viewport smaller than the avatar cannot honour both bounds; centring is
-    // the least surprising result.
-    let x = if vw > b.width() { x.clamp(b.left, vw - b.right) } else { vw / 2.0 };
-    let y = if vh > b.height() { y.clamp(b.up, vh - b.down) } else { vh / 2.0 };
+    let left = viewport.x + b.left;
+    let right = viewport.right() - b.right;
+    let top = viewport.y + b.up;
+    let bottom = viewport.bottom() - b.down;
+    // A monitor smaller than the avatar cannot honour both bounds; centring the
+    // art on it is the least surprising result.
+    let x = if right >= left { x.clamp(left, right) } else { viewport.center().0 };
+    let y = if bottom >= top { y.clamp(top, bottom) } else { viewport.center().1 };
     (x, y)
+}
+
+/// How far the tracked window may drift before the avatar walks again, in CSS
+/// px. Below this the DWM frame bounds wobble by a sub-pixel on every poll and
+/// a follower that reacted would jitter in place.
+pub const PERCH_FOLLOW_TOLERANCE: f64 = 1.0;
+
+/// What one reading of the perching target window means for the avatar.
+///
+/// Pure data, produced by [`perch_update`] and applied by the tracker thread —
+/// which is what lets the movement/loss maths be unit-tested without a desktop.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PerchUpdate {
+    /// The window is gone, minimized, or has no usable rect: drop the perch.
+    Lost,
+    /// Same place (within [`PERCH_FOLLOW_TOLERANCE`]): leave the avatar alone.
+    Still,
+    /// Moved or resized: walk to the new target and re-anchor the gaze rect.
+    Moved { rect: WindowRect, target: (f64, f64) },
+}
+
+/// Decide what a live perch poll should do, given the window's current rect.
+///
+/// `window` is `None` when the tracked `HWND` is no longer there (closed,
+/// minimized, or never resolved). `current_target` is where the avatar is
+/// already walking to, so an unchanged window produces [`PerchUpdate::Still`]
+/// rather than a stream of duplicate `state` frames.
+pub fn perch_update(
+    window: Option<WindowRect>,
+    edge: PerchEdge,
+    bounds: AvatarBounds,
+    offset: f64,
+    viewport: Option<WindowRect>,
+    current_target: (f64, f64),
+) -> PerchUpdate {
+    let Some(rect) = window else {
+        return PerchUpdate::Lost;
+    };
+    // A NaN/∞ coordinate or a zero-sized rect is not a window anyone can perch
+    // on (DWM reports garbage for a destroyed one), and letting it through
+    // would poison every later target with NaN.
+    if !(rect.x.is_finite()
+        && rect.y.is_finite()
+        && rect.width.is_finite()
+        && rect.height.is_finite())
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+    {
+        return PerchUpdate::Lost;
+    }
+    let target = perch_target(&rect, edge, bounds, offset, viewport);
+    let moved = (target.0 - current_target.0).abs() > PERCH_FOLLOW_TOLERANCE
+        || (target.1 - current_target.1).abs() > PERCH_FOLLOW_TOLERANCE;
+    if moved {
+        PerchUpdate::Moved { rect, target }
+    } else {
+        PerchUpdate::Still
+    }
 }
 
 /// Longest window title we copy out of the foreground window.
@@ -1714,24 +2170,101 @@ pub fn primary_scale() -> f64 {
     1.0
 }
 
-/// The primary monitor's size in CSS px; `None` when it cannot be read.
+/// The live virtual desktop: physical origin, size and the CSS scale factor.
+///
+/// `SM_*VIRTUALSCREEN` is the bounding box of every monitor, so this is what the
+/// overlay window is sized and positioned to. It falls back to the primary
+/// monitor's metrics when the virtual metrics read as zero (a locked/never
+/// composed session), which keeps `GET /context` and `POST /perch` usable.
 #[cfg(windows)]
-pub fn primary_viewport() -> Option<(f64, f64)> {
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+pub fn screen_metrics() -> ScreenMetrics {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_CXSCREEN, SM_CYSCREEN,
+        SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    };
 
     let scale = primary_scale();
-    // SAFETY: GetSystemMetrics only reads display metrics.
+    // SAFETY: GetSystemMetrics is a pure query of display metrics.
+    let (x, y, w, h) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    };
+    if w > 0 && h > 0 {
+        return ScreenMetrics {
+            x: x as f64,
+            y: y as f64,
+            width: w as f64,
+            height: h as f64,
+            scale,
+        };
+    }
+    // SAFETY: same pure query, primary-monitor metrics.
     let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-    let (w, h) = (w as f64 / scale, h as f64 / scale);
-    if w > 0.0 && h > 0.0 {
-        Some((w, h))
-    } else {
-        None
+    ScreenMetrics {
+        x: 0.0,
+        y: 0.0,
+        width: w.max(0) as f64,
+        height: h.max(0) as f64,
+        scale,
     }
 }
 
 #[cfg(not(windows))]
-pub fn primary_viewport() -> Option<(f64, f64)> {
+pub fn screen_metrics() -> ScreenMetrics {
+    ScreenMetrics::default()
+}
+
+/// The whole virtual desktop in CSS px (every monitor); `None` when unreadable.
+///
+/// This is the overlay's viewport: the page's `window.innerWidth/innerHeight`.
+pub fn virtual_viewport() -> Option<(f64, f64)> {
+    screen_metrics().css_size()
+}
+
+/// The monitor that contains `(x, y)` (CSS px), or the nearest one.
+///
+/// Returned in the same CSS virtual-desktop space as [`WindowRect`], so
+/// `POST /perch` can clamp an avatar to the screen its window actually lives on
+/// instead of dragging it back to the primary monitor.
+#[cfg(windows)]
+pub fn monitor_bounds_for(x: f64, y: f64) -> Option<WindowRect> {
+    use std::mem::size_of;
+
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let screen = screen_metrics();
+    let (px, py) = screen.to_physical(x, y);
+    let point = POINT { x: px.round() as i32, y: py.round() as i32 };
+    // SAFETY: MonitorFromPoint is a pure query; the MONITORINFO we hand over is
+    // owned here, sized before the call and only read afterwards.
+    let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    if monitor.0.is_null() {
+        return None;
+    }
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let ok = unsafe { GetMonitorInfoW(monitor, &mut info) };
+    if !ok.as_bool() {
+        return None;
+    }
+    let rect = info.rcMonitor;
+    screen.physical_rect(rect.left, rect.top, rect.right, rect.bottom)
+}
+
+#[cfg(not(windows))]
+pub fn monitor_bounds_for(_x: f64, _y: f64) -> Option<WindowRect> {
     None
 }
 
@@ -1807,23 +2340,42 @@ pub fn desktop_context() -> DesktopContext {
     // UTF-16 units they may write. The process handle is closed in all paths.
     unsafe {
         let hwnd = GetForegroundWindow();
-        let scale = primary_scale();
+        // One snapshot of the desktop geometry: every rect below is converted
+        // with it, so the virtual origin cannot change mid-read.
+        let screen = screen_metrics();
 
         // Read the visible list first: it is both a `DesktopContext` field and
         // the fallback source when the overlay holds foreground.
-        let visible_windows = visible_windows(scale, MAX_VISIBLE_WINDOWS);
+        let visible_windows = visible_windows(screen, MAX_VISIBLE_WINDOWS);
         let foreground = ReportedWindow {
             window_title: window_title_of(hwnd),
             process_name: foreground_process_name(hwnd),
-            window_rect: window_rect_of(hwnd, scale),
+            window_rect: window_rect_of(hwnd, &screen),
         };
+        let foreground_pid = foreground_pid(hwnd);
+        let own_name = own_process_name();
+        // The overlay is a full-screen window: when it holds foreground the
+        // context reports the front-most *other* window instead, so the handle
+        // must come from that same window — tracking our own overlay would
+        // tether the avatar to the whole desktop.
+        let foreground_is_self = is_self_foreground(
+            foreground_pid,
+            &foreground.process_name,
+            std::process::id(),
+            &own_name,
+        );
         let reported = reported_window(
             foreground,
-            foreground_pid(hwnd),
+            foreground_pid,
             std::process::id(),
-            &own_process_name(),
+            &own_name,
             &visible_windows,
         );
+        let reported_hwnd = if foreground_is_self {
+            visible_windows.first().and_then(|window| window.hwnd)
+        } else {
+            (!hwnd.0.is_null()).then_some(hwnd.0 as isize)
+        };
 
         let idle_secs = {
             let mut info = LASTINPUTINFO {
@@ -1847,7 +2399,9 @@ pub fn desktop_context() -> DesktopContext {
             idle_secs,
             source: "win32",
             window_rect: reported.window_rect,
+            foreground_hwnd: reported_hwnd,
             visible_windows,
+            screen,
         }
     }
 }
@@ -1888,7 +2442,10 @@ unsafe fn window_title_of(hwnd: windows::Win32::Foundation::HWND) -> String {
 /// `GetWindowRect`; if DWM cannot answer (a destroyed window, a fully
 /// software-composited session) the plain rect is used.
 #[cfg(windows)]
-unsafe fn window_rect_of(hwnd: windows::Win32::Foundation::HWND, scale: f64) -> Option<WindowRect> {
+unsafe fn window_rect_of(
+    hwnd: windows::Win32::Foundation::HWND,
+    screen: &ScreenMetrics,
+) -> Option<WindowRect> {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
@@ -1913,7 +2470,7 @@ unsafe fn window_rect_of(hwnd: windows::Win32::Foundation::HWND, scale: f64) -> 
         return None;
     }
 
-    physical_rect_to_logical(rect.left, rect.top, rect.right, rect.bottom, scale)
+    screen.physical_rect(rect.left, rect.top, rect.right, rect.bottom)
 }
 
 /// Is the window cloaked (a UWP app on another virtual desktop, a suspended
@@ -1949,13 +2506,13 @@ fn own_process_name() -> String {
 /// name that is not ours, and has a non-empty rect — the same set a person
 /// would call "the windows I can see".
 #[cfg(windows)]
-unsafe fn visible_windows(scale: f64, limit: usize) -> Vec<VisibleWindow> {
+unsafe fn visible_windows(screen: ScreenMetrics, limit: usize) -> Vec<VisibleWindow> {
     use windows::Win32::Foundation::{BOOL, LPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, IsIconic, IsWindowVisible};
 
     struct Acc {
         out: Vec<VisibleWindow>,
-        scale: f64,
+        screen: ScreenMetrics,
         own: String,
         limit: usize,
     }
@@ -1981,16 +2538,16 @@ unsafe fn visible_windows(scale: f64, limit: usize) -> Vec<VisibleWindow> {
         if process_name.is_empty() || process_name.eq_ignore_ascii_case(&acc.own) {
             return BOOL(1);
         }
-        let Some(rect) = window_rect_of(hwnd, acc.scale) else {
+        let Some(rect) = window_rect_of(hwnd, &acc.screen) else {
             return BOOL(1);
         };
-        acc.out.push(VisibleWindow { title, process_name, rect });
+        acc.out.push(VisibleWindow { title, process_name, rect, hwnd: Some(hwnd.0 as isize) });
         BOOL(1)
     }
 
     let mut acc = Acc {
         out: Vec::with_capacity(limit),
-        scale,
+        screen,
         own: own_process_name(),
         limit,
     };
@@ -2052,7 +2609,9 @@ pub fn desktop_context() -> DesktopContext {
         idle_secs: 0,
         source: "unsupported",
         window_rect: None,
+        foreground_hwnd: None,
         visible_windows: Vec::new(),
+        screen: ScreenMetrics::default(),
     }
 }
 
@@ -2469,16 +3028,63 @@ fn cursor_position() -> Option<(f64, f64)> {
     None
 }
 
-/// Poll the global cursor and flip `WS_EX_TRANSPARENT` when it is (not) over a
-/// region the page declared clickable.
+/// How far (CSS px) the cursor must travel before `cursor-pos` is emitted again.
 ///
-/// A global poll is required: once the window is click-through it stops
-/// receiving mouse messages, so the page cannot report "the cursor came back".
+/// A sub-pixel jitter would otherwise put ~28 events/s on the IPC bridge for a
+/// cursor that is not really moving.
+pub const CURSOR_EMIT_DEADBAND: f64 = 3.0;
+
+/// Minimum gap between two `cursor-pos` emissions (~20 Hz).
+///
+/// The tracker polls at 35 ms, but the page only needs enough samples to ease
+/// the pupils toward the cursor; 50 ms keeps the whole event stream under a few
+/// hundred bytes per second.
+pub const CURSOR_EMIT_INTERVAL_MS: u64 = 50;
+
+/// Should the tracker publish this position?
+///
+/// Pure so the throttle is unit-testable: emit when the cursor moved at least
+/// [`CURSOR_EMIT_DEADBAND`] CSS px since the last emission *and* at least
+/// [`CURSOR_EMIT_INTERVAL_MS`] have passed. The first sample always passes (the
+/// page must learn where the cursor is without waiting for a move).
+pub fn cursor_emit_due(
+    last: Option<(f64, f64)>,
+    since_last_ms: u64,
+    x: f64,
+    y: f64,
+) -> bool {
+    if !x.is_finite() || !y.is_finite() {
+        return false;
+    }
+    match last {
+        None => true,
+        Some((last_x, last_y)) => {
+            let distance = ((x - last_x).powi(2) + (y - last_y).powi(2)).sqrt();
+            distance >= CURSOR_EMIT_DEADBAND && since_last_ms >= CURSOR_EMIT_INTERVAL_MS
+        }
+    }
+}
+
+/// Poll the global cursor, publish `cursor-pos` to the page and flip
+/// `WS_EX_TRANSPARENT` when it is (not) over a region the page declared
+/// clickable.
+///
+/// A global poll is required twice over: once the window is click-through it
+/// stops receiving mouse messages, so the page cannot report that the cursor
+/// came back — and the eyes are supposed to follow the OS cursor even while the
+/// overlay is unfocused and click-through, which is only observable here.
+///
+/// `cursor-pos` is deliberately page-local (`app.emit`, never `emit_event`): it
+/// is cosmetic gaze data, it must not appear on the `GET /events` bus and it
+/// must not bump `AvatarState::revision`.
 fn spawn_cursor_tracker(app: AppHandle, ctx: Arc<AppCtx>) {
     let spawned = std::thread::Builder::new()
         .name("avatar-cursor".to_string())
         .spawn(move || {
             let mut ignoring = false;
+            // Last position the page was told about, and when.
+            let mut emitted: Option<(f64, f64)> = None;
+            let mut emitted_at = std::time::Instant::now();
             while ctx.running.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(35));
 
@@ -2489,7 +3095,8 @@ fn spawn_cursor_tracker(app: AppHandle, ctx: Arc<AppCtx>) {
                         ctx.apply_ignore_cursor(&app, false);
                         ignoring = false;
                     }
-                    continue;
+                    // Do not `continue`: gaze tracking must keep working while
+                    // the overlay is interactive (it is the same thread).
                 }
 
                 if window.is_minimized().unwrap_or(false) || !window.is_visible().unwrap_or(true) {
@@ -2501,6 +3108,25 @@ fn spawn_cursor_tracker(app: AppHandle, ctx: Arc<AppCtx>) {
                 let scale = window.scale_factor().unwrap_or(1.0);
                 let local_x = (cursor_x - f64::from(origin.x)) / scale;
                 let local_y = (cursor_y - f64::from(origin.y)) / scale;
+
+                // Global eye tracking: the pupils follow the OS cursor wherever
+                // it is, deadbanded to 3 px and rate-limited to ~20 Hz.
+                let since_last_ms = emitted_at.elapsed().as_millis() as u64;
+                if cursor_emit_due(emitted, since_last_ms, local_x, local_y) {
+                    if let Err(err) =
+                        app.emit("cursor-pos", serde_json::json!({ "x": local_x, "y": local_y }))
+                    {
+                        log::warn!("failed to emit cursor-pos: {err}");
+                    }
+                    emitted = Some((local_x, local_y));
+                    emitted_at = std::time::Instant::now();
+                }
+
+                // The click-through state machine below is meaningless while the
+                // page asked for an interactive window.
+                if !ctx.is_click_through() {
+                    continue;
+                }
 
                 let interactive = {
                     let regions = lock_or_recover(&ctx.regions);
@@ -2520,6 +3146,128 @@ fn spawn_cursor_tracker(app: AppHandle, ctx: Arc<AppCtx>) {
 
     if let Err(err) = spawned {
         log::warn!("could not spawn cursor tracker: {err}");
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * Live perch tracking (dynamic window tether)
+ * ------------------------------------------------------------------ */
+
+/// How often a perched window's bounds are re-read.
+///
+/// 60 ms is fast enough that a dragged window keeps the avatar glued to its
+/// border and slow enough that the poll is invisible in a profile.
+pub const PERCH_POLL_MS: u64 = 60;
+
+/// Bounds of a tracked `HWND`, or `None` when it is gone or minimized.
+#[cfg(windows)]
+fn tracked_window_rect(hwnd: isize) -> Option<WindowRect> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow};
+
+    if hwnd == 0 {
+        return None;
+    }
+    let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+    // SAFETY: `IsWindow`/`IsIconic` are pure queries and a stale handle is
+    // exactly what they are for; `window_rect_of` only reads DWM state.
+    unsafe {
+        if !IsWindow(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            return None;
+        }
+        window_rect_of(hwnd, &screen_metrics())
+    }
+}
+
+#[cfg(not(windows))]
+fn tracked_window_rect(_hwnd: isize) -> Option<WindowRect> {
+    None
+}
+
+/// Follow the perched window as it moves, and drop the perch when it is gone.
+///
+/// The 60 ms poll reads the window's DWM frame bounds, recomputes the perch
+/// target for the edge that was requested, and publishes a `state` frame only
+/// when the target actually moved more than [`PERCH_FOLLOW_TOLERANCE`] — so a
+/// still window produces no traffic and a dragged one slides the avatar along.
+/// A closed or minimized window clears `perched` and returns the avatar to
+/// `idle`, which also releases the page's gaze pin.
+fn spawn_perch_tracker(app: AppHandle, ctx: Arc<AppCtx>) {
+    let spawned = std::thread::Builder::new()
+        .name("avatar-perch".to_string())
+        .spawn(move || {
+            while ctx.running.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(PERCH_POLL_MS));
+
+                // Snapshot under the lock, then release it before any Win32
+                // call or event emission: a slow emit must never hold the
+                // avatar mutex the page reports into.
+                let tracked = {
+                    let avatar = lock_or_recover(&ctx.avatar);
+                    if !avatar.perched {
+                        None
+                    } else {
+                        avatar.perch_hwnd.map(|hwnd| {
+                            (
+                                hwnd,
+                                avatar
+                                    .perch_edge
+                                    .as_deref()
+                                    .and_then(|edge| PerchEdge::parse(edge).ok()),
+                                avatar.perch_offset,
+                                avatar.target_position,
+                                avatar.perch_bounds,
+                            )
+                        })
+                    }
+                };
+                let Some((hwnd, edge, offset, current_target, frozen)) = tracked else {
+                    continue;
+                };
+                let Some(edge) = edge else { continue };
+
+                let window = tracked_window_rect(hwnd);
+                let viewport =
+                    window.and_then(|rect| monitor_bounds_for(rect.center().0, rect.center().1));
+                // The extents frozen at perch time: the live ones wobble with
+                // the walk animation and would make the target chase its tail.
+                let bounds = if frozen.width() > 0.0 && frozen.height() > 0.0 {
+                    frozen
+                } else {
+                    *lock_or_recover(&ctx.bounds)
+                };
+
+                match perch_update(window, edge, bounds, offset, viewport, current_target) {
+                    PerchUpdate::Still => {}
+                    PerchUpdate::Lost => {
+                        {
+                            let mut avatar = lock_or_recover(&ctx.avatar);
+                            avatar.clear_perch();
+                            avatar.state = "idle".to_string();
+                        }
+                        publish(&app, &ctx);
+                        log::info!(
+                            "perch: the tracked window is gone or minimized — back to idle"
+                        );
+                    }
+                    PerchUpdate::Moved { rect, target } => {
+                        {
+                            let mut avatar = lock_or_recover(&ctx.avatar);
+                            avatar.target_position = target;
+                            avatar.perch_rect = Some(rect);
+                            if avatar.state != "walking" {
+                                avatar.state = "walking".to_string();
+                            }
+                        }
+                        publish(&app, &ctx);
+                    }
+                }
+            }
+            log::info!("perch tracker stopped");
+        });
+
+    if let Err(err) = spawned {
+        log::warn!("could not spawn perch tracker: {err}");
     }
 }
 
@@ -2862,6 +3610,12 @@ say what it is (code, error, notes, link) and the one thing I most likely want t
 I am probably doing. Offer one concrete next step. Keep it under 180 characters.",
         }),
         serde_json::json!({
+            "label": "What's on my screen?",
+            "prompt": "Look at my screen and tell me what I am working on, naming the app and the one thing \
+that most needs my attention. If there is an error or a question on screen, quote it.",
+            "include_screen": true,
+        }),
+        serde_json::json!({
             "label": "Quick diagnostic",
             "prompt": "Run a quick diagnostic from the desktop context: call avatar_get_context and \
 avatar_get_clipboard, check idle time, the focused process and anything copied that looks like an \
@@ -2897,7 +3651,22 @@ pub fn quick_tasks(rules_path: Option<&std::path::Path>) -> Vec<Value> {
                         if label.is_empty() || prompt.is_empty() {
                             continue;
                         }
-                        tasks.push(serde_json::json!({ "label": label, "prompt": prompt }));
+                        let mut chip = serde_json::json!({ "label": label, "prompt": prompt });
+                        // A chip may pin its brain (`profile`) and/or ask for a
+                        // screenshot (`include_screen`); both are optional and
+                        // absent keys keep the payload byte-identical.
+                        if let Some(profile) = entry
+                            .get("profile")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                        {
+                            chip["profile"] = serde_json::json!(profile);
+                        }
+                        if entry.get("include_screen").and_then(Value::as_bool).unwrap_or(false) {
+                            chip["include_screen"] = serde_json::json!(true);
+                        }
+                        tasks.push(chip);
                         if tasks.len() == MAX_QUICK_TASKS {
                             break;
                         }
@@ -3554,6 +4323,7 @@ pub fn run() {
             get_avatar_state,
             get_runtime_info,
             set_avatar_position,
+            break_perch,
             set_avatar_expression,
             set_avatar_state,
             trigger_wave,
@@ -3578,6 +4348,7 @@ pub fn run() {
             set_clipboard,
             clear_speech,
             get_speech,
+            get_chat_history,
             save_rig,
             reset_rig,
             set_pose,
@@ -3587,6 +4358,12 @@ pub fn run() {
             set_watcher_enabled,
             get_ai_profiles,
             set_ai_profile,
+            get_tts_status,
+            set_tts_enabled,
+            get_stt_status,
+            ptt_start,
+            ptt_stop,
+            set_stt_enabled,
         ])
         .setup({
             let ctx = Arc::clone(&ctx);
@@ -3595,9 +4372,29 @@ pub fn run() {
                 let handle = app.handle().clone();
                 let port = ctx.api_port;
 
-                // Cover the whole primary monitor with the transparent overlay.
+                // Core helpers that only see `&AppCtx` (user replies, session
+                // resets) need a window handle to publish page-local events
+                // such as `chat-message` / `chat-history-cleared`.
+                ctx.set_app_handle(handle.clone());
+
+                // Cover the whole **virtual desktop** (every monitor) with the
+                // transparent overlay. The page then has one CSS coordinate
+                // space spanning all displays, so a window on a secondary
+                // monitor — including one to the left or above the primary,
+                // whose physical x/y are negative — is positioned correctly.
                 if let Some(window) = app.get_webview_window("main") {
-                    if let Ok(Some(monitor)) = window.primary_monitor() {
+                    let screen = screen_metrics();
+                    if screen.width > 0.0 && screen.height > 0.0 {
+                        let _ = window.set_position(tauri::Position::Physical(
+                            tauri::PhysicalPosition::new(screen.x.round() as i32, screen.y.round() as i32),
+                        ));
+                        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+                            screen.width.round() as u32,
+                            screen.height.round() as u32,
+                        )));
+                    } else if let Ok(Some(monitor)) = window.primary_monitor() {
+                        // No virtual metrics (a session that never composed):
+                        // the primary monitor is still better than nothing.
                         let _ =
                             window.set_position(tauri::Position::Physical(*monitor.position()));
                         let _ = window.set_size(tauri::Size::Physical(*monitor.size()));
@@ -3633,6 +4430,44 @@ pub fn run() {
                 }
 
                 spawn_cursor_tracker(handle.clone(), Arc::clone(&ctx));
+                // Dynamic window tether: follows a perched window as it moves
+                // and releases the perch when it closes or minimizes.
+                spawn_perch_tracker(handle.clone(), Arc::clone(&ctx));
+
+                // Local voice output (Piper). `do_speak` is the single hook, so
+                // this covers every model and every API client. The `tts` block
+                // lives in the same rules file as everything else; a missing or
+                // broken block falls back to the shipped Piper paths with one
+                // warning and never stops the app.
+                let tts_rules = ctx.ai_rules_path();
+                let (tts_config, tts_warning) = tts::TtsConfig::load(tts_rules.as_deref());
+                if let Some(warning) = tts_warning {
+                    log::warn!("tts: {warning} — using the built-in Piper defaults");
+                }
+                // The TTS worker is a plain thread with no Tauri handle, so it
+                // gets one emitter for the lip-sync envelope events.
+                {
+                    let emit_handle = handle.clone();
+                    tts::set_emitter(std::sync::Arc::new(move |event: &str, payload: Value| {
+                        if let Err(err) = emit_handle.emit(event, payload) {
+                            log::debug!("tts: could not emit {event}: {err}");
+                        }
+                    }));
+                }
+                let tts_status = tts::init(tts_config);
+                let _ = handle.emit("tts-status", tts_status);
+
+                // Push-to-talk voice input (mic → Silero VAD → whisper-cli).
+                // One worker thread owns the whole state machine; the panel's
+                // mic button and the global hotkey both drive it. A missing
+                // binary/model/microphone is one warning and `ready: false`.
+                let stt_rules = ctx.ai_rules_path();
+                let (stt_config, stt_warning) = stt::SttConfig::load(stt_rules.as_deref());
+                if let Some(warning) = stt_warning {
+                    log::warn!("stt: {warning} — using the built-in whisper defaults");
+                }
+                let stt_status = stt::init(stt_config, handle.clone(), ctx.api_url());
+                let _ = handle.emit("stt-status", stt_status);
 
                 // The system-wide shortcut that summons the command bar from any
                 // application. Registered once at startup from the same rules
@@ -3837,6 +4672,7 @@ mod tests {
             title: title.to_string(),
             process_name: process.to_string(),
             rect: WindowRect { x, y: 0.0, width: 800.0, height: 600.0 },
+            hwnd: None,
         }
     }
 
@@ -4060,7 +4896,7 @@ mod tests {
         assert!(status["logs"].as_array().unwrap().is_empty());
         assert_eq!(
             status["quick_tasks"].as_array().map(Vec::len),
-            Some(3),
+            Some(4),
             "no rules file → the built-in chips"
         );
     }
@@ -4070,18 +4906,28 @@ mod tests {
     #[test]
     fn default_quick_tasks_are_well_formed() {
         let tasks = default_quick_tasks();
-        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks.len(), 4);
         for task in &tasks {
             let label = task["label"].as_str().unwrap_or("");
             let prompt = task["prompt"].as_str().unwrap_or("");
             assert!(!label.is_empty() && !prompt.is_empty(), "blank chip: {task}");
             assert!(prompt.len() > 20, "a chip prompt should be a real instruction");
         }
-        // The three documented intents are present.
+        // The four documented intents are present.
         let labels: Vec<&str> = tasks.iter().filter_map(|task| task["label"].as_str()).collect();
         assert!(labels.iter().any(|label| label.contains("clipboard")));
         assert!(labels.iter().any(|label| label.contains("looking at")));
         assert!(labels.iter().any(|label| label.contains("diagnostic")));
+        assert!(
+            labels.iter().any(|label| label.contains("screen")),
+            "the vision chip is built in too"
+        );
+        // The screen chip is the one that asks for a capture.
+        let screen = tasks
+            .iter()
+            .find(|task| task["label"].as_str().unwrap_or("").contains("screen"))
+            .expect("screen chip");
+        assert_eq!(screen["include_screen"], true);
     }
 
     #[test]
@@ -4104,6 +4950,33 @@ mod tests {
         assert_eq!(tasks.len(), 2, "blank entries are dropped: {tasks:?}");
         assert_eq!(tasks[0]["label"], "Summarize clipboard");
         assert_eq!(tasks[1]["label"], "Scan");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn quick_tasks_carry_their_optional_profile_and_screen_flag() {
+        let root = std::env::temp_dir().join(format!("char-rig-quick-opt-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let path = root.join("watcher_rules.json");
+        std::fs::write(
+            &path,
+            r#"{"quick_tasks":[
+                {"label":"Plain","prompt":"just talk"},
+                {"label":"Screen","prompt":"look at my screen","include_screen":true},
+                {"label":"Pinned","prompt":"use the fast brain","profile":"lfm3-fast"},
+                {"label":"Both","prompt":"see it with the agent","profile":"hermes","include_screen":true}
+            ]}"#,
+        )
+        .expect("write rules");
+
+        let tasks = quick_tasks(Some(&path));
+        assert_eq!(tasks.len(), 4);
+        assert!(tasks[0].get("profile").is_none(), "absent keys stay absent");
+        assert!(tasks[0].get("include_screen").is_none());
+        assert_eq!(tasks[1]["include_screen"], true);
+        assert_eq!(tasks[2]["profile"], "lfm3-fast");
+        assert_eq!(tasks[3]["profile"], "hermes");
+        assert_eq!(tasks[3]["include_screen"], true);
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -4352,7 +5225,7 @@ mod tests {
         // is about the geometry, not the clamp (see below for that).
         let rect = WindowRect { x: 300.0, y: 300.0, width: 800.0, height: 500.0 };
         let half = AvatarBounds::symmetric((70.0, 90.0));
-        let viewport = Some((1920.0, 1080.0));
+        let viewport = Some(WindowRect::new(0.0, 0.0, 1920.0, 1080.0));
 
         // Standing on the top border: the avatar's bottom edge touches y=300.
         let (x, y) = perch_target(&rect, PerchEdge::TopLeft, half, 0.0, viewport);
@@ -4381,7 +5254,7 @@ mod tests {
     fn perch_offset_slides_along_the_edge_only() {
         let rect = WindowRect { x: 300.0, y: 300.0, width: 800.0, height: 500.0 };
         let half = AvatarBounds::symmetric((70.0, 90.0));
-        let viewport = Some((1920.0, 1080.0));
+        let viewport = Some(WindowRect::new(0.0, 0.0, 1920.0, 1080.0));
 
         let (x, y) = perch_target(&rect, PerchEdge::TopLeft, half, 40.0, viewport);
         assert_eq!((x, y), (410.0, 210.0), "offset moves along the top edge");
@@ -4395,7 +5268,7 @@ mod tests {
     #[test]
     fn perch_target_clamps_to_the_viewport() {
         let half = AvatarBounds::symmetric((70.0, 90.0));
-        let viewport = Some((1920.0, 1080.0));
+        let viewport = Some(WindowRect::new(0.0, 0.0, 1920.0, 1080.0));
 
         // A window flush with the screen's top-left: standing on that border
         // would put the avatar's head off screen, so the target is pushed down
@@ -4415,7 +5288,7 @@ mod tests {
         assert_eq!((x, y), (70.0, -90.0));
 
         // A monitor smaller than the avatar centres instead of inverting bounds.
-        let tiny = perch_target(&corner, PerchEdge::TopLeft, half, 0.0, Some((100.0, 100.0)));
+        let tiny = perch_target(&corner, PerchEdge::TopLeft, half, 0.0, Some(WindowRect::new(0.0, 0.0, 100.0, 100.0)));
         assert_eq!(tiny, (50.0, 50.0));
     }
 
@@ -4425,7 +5298,7 @@ mod tests {
         // Half the total height would leave the feet 35 px above the border.
         let bounds = AvatarBounds { left: 70.0, right: 70.0, up: 144.0, down: 74.0 };
         let rect = WindowRect { x: 290.0, y: 300.0, width: 900.0, height: 400.0 };
-        let viewport = Some((1920.0, 1080.0));
+        let viewport = Some(WindowRect::new(0.0, 0.0, 1920.0, 1080.0));
 
         let (x, y) = perch_target(&rect, PerchEdge::TopLeft, bounds, 0.0, viewport);
         assert_eq!(y + bounds.down, rect.y, "the feet touch the top border");
@@ -4439,6 +5312,175 @@ mod tests {
         assert_eq!(x + bounds.right, rect.x, "the right flank touches the left border");
         let (x, _) = perch_target(&rect, PerchEdge::Right, bounds, 0.0, viewport);
         assert_eq!(x - bounds.left, rect.right(), "the left flank touches the right border");
+    }
+
+
+    /* ---------- virtual desktop (multi-monitor) ---------- */
+
+    #[test]
+    fn screen_metrics_map_a_left_hand_monitor_to_positive_css() {
+        // A 1920×1080 primary with a second monitor to its LEFT: the virtual
+        // origin is (-1920, 0) and the desktop is 3840 wide.
+        let screen = ScreenMetrics { x: -1920.0, y: 0.0, width: 3840.0, height: 1080.0, scale: 1.0 };
+        assert_eq!(screen.css_size(), Some((3840.0, 1080.0)));
+
+        // A window on the left monitor (physical -1800..-1000) becomes CSS
+        // 120..920 — positive, so the page can draw it.
+        let rect = screen.physical_rect(-1800, 100, -1000, 700).expect("rect");
+        assert_eq!(rect, WindowRect { x: 120.0, y: 100.0, width: 800.0, height: 600.0 });
+        assert_eq!(rect.right(), 920.0);
+
+        // The primary monitor's own rect starts at CSS 1920.
+        let primary = screen.physical_rect(0, 0, 1920, 1080).expect("primary");
+        assert_eq!(primary.x, 1920.0);
+
+        // Round-tripping a CSS point back to physical pixels is exact.
+        assert_eq!(screen.to_physical(120.0, 100.0), (-1800.0, 100.0));
+        assert_eq!(screen.to_physical(1920.0, 0.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn screen_metrics_scale_the_origin_with_the_dpi() {
+        // A 150 % display: physical pixels are 1.5× CSS, and the origin is
+        // divided too, so a left monitor still maps to a positive x.
+        let screen = ScreenMetrics { x: -1200.0, y: -300.0, width: 3000.0, height: 1800.0, scale: 1.5 };
+        assert_eq!(screen.css_size(), Some((2000.0, 1200.0)));
+        let rect = screen.physical_rect(-1200, -300, 0, 900).expect("rect");
+        assert_eq!(rect, WindowRect { x: 0.0, y: 0.0, width: 800.0, height: 800.0 });
+        // A nonsense scale is treated as 1:1 instead of producing infinities.
+        let guarded = ScreenMetrics { scale: 0.0, ..screen };
+        assert_eq!(guarded.css_size(), Some((3000.0, 1800.0)));
+    }
+
+    #[test]
+    fn perch_clamps_to_the_monitor_the_window_is_on() {
+        // The window lives on the RIGHT monitor; the clamp must not pull it
+        // back to the primary one (x >= 1920).
+        let half = AvatarBounds::symmetric((70.0, 90.0));
+        let second = Some(WindowRect::new(1920.0, 0.0, 1920.0, 1080.0));
+        let rect = WindowRect::new(2000.0, 100.0, 400.0, 300.0);
+
+        let (x, y) = perch_target(&rect, PerchEdge::TopLeft, half, 0.0, second);
+        assert_eq!(x, 2070.0, "stays on the second monitor");
+        assert_eq!(y, 90.0, "clamped to that monitor's top, not off-screen");
+
+        // With no monitor resolved, the raw geometry is returned.
+        let (x, y) = perch_target(&rect, PerchEdge::TopLeft, half, 0.0, None);
+        assert_eq!((x, y), (2070.0, 10.0));
+    }
+
+    /* ---------- live perch tracking ---------- */
+
+    #[test]
+    fn perch_following_walks_with_a_moved_window() {
+        let half = AvatarBounds::symmetric((70.0, 90.0));
+        let viewport = Some(WindowRect::new(0.0, 0.0, 3840.0, 1080.0));
+        let before = WindowRect::new(300.0, 300.0, 800.0, 500.0);
+        let start = perch_target(&before, PerchEdge::TopRight, half, 0.0, viewport);
+
+        // The same window: nothing to do.
+        assert_eq!(
+            perch_update(Some(before), PerchEdge::TopRight, half, 0.0, viewport, start),
+            PerchUpdate::Still
+        );
+
+        // Dragged 80 px right and 40 px down: the target moves with it.
+        let moved = WindowRect::new(380.0, 340.0, 800.0, 500.0);
+        match perch_update(Some(moved), PerchEdge::TopRight, half, 0.0, viewport, start) {
+            PerchUpdate::Moved { rect, target } => {
+                assert_eq!(rect, moved);
+                assert!((target.0 - (start.0 + 80.0)).abs() < 0.001, "{target:?}");
+                assert!((target.1 - (start.1 + 40.0)).abs() < 0.001, "{target:?}");
+            }
+            other => panic!("expected a move, got {other:?}"),
+        }
+
+        // Resized wider: the right-edge perch follows the new border.
+        let wider = WindowRect::new(380.0, 340.0, 1000.0, 500.0);
+        match perch_update(Some(wider), PerchEdge::TopRight, half, 0.0, viewport, start) {
+            PerchUpdate::Moved { target, .. } => {
+                assert!((target.0 - (start.0 + 280.0)).abs() < 0.001, "{target:?}");
+            }
+            other => panic!("expected a move, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn perch_following_ignores_sub_pixel_wobble() {
+        let half = AvatarBounds::symmetric((70.0, 90.0));
+        let viewport = Some(WindowRect::new(0.0, 0.0, 1920.0, 1080.0));
+        let rect = WindowRect::new(300.0, 300.0, 800.0, 500.0);
+        let start = perch_target(&rect, PerchEdge::Left, half, 0.0, viewport);
+        // DWM can report a half-pixel drift; it must not start a walk.
+        let nudge = WindowRect::new(300.4, 300.0, 800.0, 500.0);
+        assert_eq!(
+            perch_update(Some(nudge), PerchEdge::Left, half, 0.0, viewport, start),
+            PerchUpdate::Still
+        );
+    }
+
+    #[test]
+    fn perch_following_drops_a_lost_window() {
+        let half = AvatarBounds::symmetric((70.0, 90.0));
+        let viewport = Some(WindowRect::new(0.0, 0.0, 1920.0, 1080.0));
+        let target = (500.0, 500.0);
+        // Closed, minimized (no rect), or a zero-sized rect all mean "gone".
+        assert_eq!(
+            perch_update(None, PerchEdge::TopLeft, half, 0.0, viewport, target),
+            PerchUpdate::Lost
+        );
+        assert_eq!(
+            perch_update(
+                Some(WindowRect::new(0.0, 0.0, 0.0, 0.0)),
+                PerchEdge::TopLeft,
+                half,
+                0.0,
+                viewport,
+                target
+            ),
+            PerchUpdate::Lost
+        );
+        assert_eq!(
+            perch_update(
+                Some(WindowRect::new(f64::NAN, 0.0, 800.0, 600.0)),
+                PerchEdge::TopLeft,
+                half,
+                0.0,
+                viewport,
+                target
+            ),
+            PerchUpdate::Lost
+        );
+    }
+
+    #[test]
+    fn perch_tracking_state_is_kept_out_of_the_wire() {
+        let mut state = AvatarState::new();
+        state.perched = true;
+        state.perch_rect = Some(WindowRect::new(10.0, 20.0, 30.0, 40.0));
+        state.set_perch_tracking(Some(0x1234), "top_right", 12.0, AvatarBounds::symmetric((70.0, 90.0)));
+        assert_eq!(state.perch_hwnd, Some(0x1234));
+        assert_eq!(state.perch_edge.as_deref(), Some("top_right"));
+        assert_eq!(state.perch_offset, 12.0);
+        assert_eq!(state.perch_bounds, AvatarBounds::symmetric((70.0, 90.0)));
+
+        // The handle/edge/offset are Rust-side tracking only: a raw HWND has no
+        // meaning to the page and must not appear in a state frame.
+        let wire = serde_json::to_value(&state).expect("state json");
+        assert!(wire.get("perch_hwnd").is_none(), "{wire}");
+        assert!(wire.get("perch_edge").is_none(), "{wire}");
+        assert!(wire.get("perch_offset").is_none(), "{wire}");
+        assert_eq!(wire["perched"], true);
+
+        // Clearing the perch forgets the tracking too, so a later window move
+        // cannot resurrect it.
+        state.clear_perch();
+        assert_eq!(state.perch_hwnd, None);
+        assert_eq!(state.perch_edge, None);
+        assert_eq!(state.perch_offset, 0.0);
+        assert_eq!(state.perch_bounds, AvatarBounds::default());
+        assert!(!state.perched);
+        assert!(state.perch_rect.is_none());
     }
 
     #[test]
@@ -4744,5 +5786,132 @@ mod tests {
         assert!(find_on_path("not-a-real-binary", Some(&path_var), &[""]).is_none());
         assert!(find_on_path("hermes", None, &[""]).is_none(), "no PATH means no answer");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /* ---------- conversation history ---------- */
+
+    #[test]
+    fn chat_history_evicts_the_oldest_turns_past_capacity() {
+        let ctx = test_ctx();
+        let total = CHAT_HISTORY_CAPACITY + 7;
+        for index in 0..total {
+            let role = if index % 2 == 0 { "user" } else { "assistant" };
+            ctx.push_chat(role, &format!("turn {index}"), None, None);
+        }
+
+        let history = ctx.chat_history();
+        assert_eq!(
+            history.len(),
+            CHAT_HISTORY_CAPACITY,
+            "a chatty session must not grow the log without limit"
+        );
+        // The seven oldest turns are gone and the newest is last.
+        assert_eq!(history[0].text, "turn 7");
+        assert_eq!(history[CHAT_HISTORY_CAPACITY - 1].text, format!("turn {}", total - 1));
+        // Eviction drops the front of the deque; ids stay strictly increasing.
+        assert_eq!(history[0].id, 8);
+        for pair in history.windows(2) {
+            assert!(pair[1].id > pair[0].id, "ids must stay monotonic after eviction");
+        }
+        // Both roles survive the round trip.
+        assert!(history.iter().any(|message| message.role == "user"));
+        assert!(history.iter().any(|message| message.role == "assistant"));
+    }
+
+    #[test]
+    fn chat_history_records_user_prompts_and_avatar_replies() {
+        let ctx = test_ctx();
+        do_user_reply_with_profile(&ctx, "  hello there  ", None, false).expect("reply");
+        // `None` handle: the recording path must not need a running window.
+        do_speak_opt(None, &ctx, "Hi! I heard you.", "happy", 4000, 26, Some("detail line"))
+            .expect("speak");
+
+        let history = ctx.chat_history();
+        assert_eq!(history.len(), 2);
+
+        assert_eq!(history[0].role, "user");
+        assert_eq!(history[0].text, "hello there", "the prompt is stored trimmed");
+        assert!(history[0].details.is_none());
+        assert!(history[0].expression.is_none());
+        assert!(history[0].ts_ms > 0, "every turn is timestamped");
+
+        assert_eq!(history[1].role, "assistant");
+        assert_eq!(history[1].text, "Hi! I heard you.");
+        assert_eq!(history[1].expression.as_deref(), Some("happy"));
+        assert_eq!(
+            history[1].details.as_deref(),
+            Some("detail line"),
+            "the details drawer survives the bubble"
+        );
+        assert!(history[1].id > history[0].id);
+
+        // `GET /history` and `get_chat_history` share one body.
+        let body = chat_history_json(&ctx);
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["messages"].as_array().map(Vec::len), Some(2));
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][1]["role"], "assistant");
+    }
+
+    #[test]
+    fn rejected_replies_and_speeches_do_not_enter_the_history() {
+        let ctx = test_ctx();
+        assert!(do_user_reply_with_profile(&ctx, "   ", None, false).is_err());
+        assert!(do_speak_opt(None, &ctx, "", "happy", 4000, 26, None).is_err());
+        assert!(
+            do_speak_opt(None, &ctx, "hello", "furious", 4000, 26, None).is_err(),
+            "an unknown expression is rejected before anything is recorded"
+        );
+        assert!(ctx.chat_history().is_empty());
+    }
+
+    #[test]
+    fn session_reset_clears_the_history() {
+        let ctx = test_ctx();
+        do_user_reply_with_profile(&ctx, "first", None, false).expect("reply");
+        do_speak_opt(None, &ctx, "answer", "neutral", 4000, 26, None).expect("speak");
+        assert_eq!(ctx.chat_history().len(), 2);
+
+        let mut rx = ctx.events.subscribe();
+        let reset = do_session_reset(&ctx, "test");
+        assert_eq!(reset["ok"], true);
+        assert_eq!(reset["reason"], "test");
+        assert!(
+            ctx.chat_history().is_empty(),
+            "a new chat must not leave the previous transcript behind"
+        );
+
+        // The frame the watcher needs to rotate `{session}` still goes out.
+        let frame: Value = serde_json::from_str(&rx.try_recv().expect("session_reset frame")).unwrap();
+        assert_eq!(frame["type"], "session_reset");
+        assert_eq!(frame["payload"]["reason"], "test");
+    }
+
+    /* ---------- global eye tracking ---------- */
+
+    #[test]
+    fn cursor_pos_is_deadbanded_and_rate_limited() {
+        // The first sample always passes: the page must learn where the cursor
+        // is without waiting for it to move.
+        assert!(cursor_emit_due(None, 0, 10.0, 10.0));
+        // Under the 3 px deadband, however long it has been.
+        assert!(!cursor_emit_due(Some((10.0, 10.0)), 5_000, 11.5, 10.0));
+        // Over the deadband but inside one 50 ms window.
+        assert!(!cursor_emit_due(
+            Some((10.0, 10.0)),
+            CURSOR_EMIT_INTERVAL_MS - 1,
+            60.0,
+            60.0
+        ));
+        // Both gates satisfied.
+        assert!(cursor_emit_due(
+            Some((10.0, 10.0)),
+            CURSOR_EMIT_INTERVAL_MS,
+            13.5,
+            10.0
+        ));
+        // A garbage sample must never reach the page.
+        assert!(!cursor_emit_due(None, 1_000, f64::NAN, 1.0));
+        assert!(!cursor_emit_due(None, 1_000, 1.0, f64::INFINITY));
     }
 }

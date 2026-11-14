@@ -985,6 +985,60 @@ mod tests {
         json!({ "duration_ms": duration_ms.into(), "loop": false, "keyframes": keyframes })
     }
 
+
+    /// The shipped rig must keep validating, and the Stage 6 reaction library
+    /// must actually be in it — the watcher tells `lfm3-fast`/`vision` what
+    /// clips exist by reading `GET /animations`, so a clip that only exists in
+    /// this test would be a silent no-op at runtime.
+    #[test]
+    fn the_shipped_demo_rig_carries_the_reaction_clip_library() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../models");
+        // The canonical demo rig is the required baseline; nebulon-9 is the
+        // model the app actually boots with on this machine, so it carries the
+        // same library — a clip the running avatar does not have is a no-op.
+        let mut rig = Value::Null;
+        for model in ["demo-blob", "nebulon-9"] {
+            let path = root.join(model).join("model.json");
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("{} is unreadable: {err}", path.display()));
+            let loaded: Value = serde_json::from_str(&text).expect("model.json is valid JSON");
+            validate_rig(&loaded)
+                .unwrap_or_else(|err| panic!("{model} no longer validates: {err}"));
+            let names: Vec<String> = animation_summary(&loaded)
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            for wanted in ["nod", "shake_head", "celebrate", "alert_ping", "idle_fidget"] {
+                assert!(
+                    names.iter().any(|name| name == wanted),
+                    "{model} is missing {wanted:?}; it has {names:?}"
+                );
+            }
+            // The originals are still there.
+            assert!(names.iter().any(|name| name == "wave"), "{model}");
+            assert!(names.iter().any(|name| name == "breathe"), "{model}");
+            if model == "demo-blob" {
+                rig = loaded;
+            }
+        }
+
+        // Every reaction clip is a real animation: a positive duration, at
+        // least two keyframes, and a `t` span from 0 to 1 so it starts and ends
+        // where the rig's rest pose is.
+        for entry in animation_summary(&rig) {
+            assert!(entry.duration_ms > 0.0, "{}: {}", entry.name, entry.duration_ms);
+            assert!(entry.keyframes >= 2, "{}: {} keyframes", entry.name, entry.keyframes);
+        }
+        for name in ["nod", "shake_head", "celebrate", "alert_ping", "idle_fidget"] {
+            let clip = &rig["animations"][name];
+            let frames = clip["keyframes"].as_array().expect("keyframes");
+            let first = frames.first().expect("first")["t"].as_f64().expect("t");
+            let last = frames.last().expect("last")["t"].as_f64().expect("t");
+            assert_eq!(first, 0.0, "{name} starts at t=0");
+            assert_eq!(last, 1.0, "{name} ends at t=1");
+        }
+    }
+
     #[test]
     fn rigs_without_animations_still_validate() {
         let rig = json!({

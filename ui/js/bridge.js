@@ -6,7 +6,7 @@
  */
 
 import {
-  avatar, RT, speech, watcher, ai,
+  avatar, RT, speech, watcher, ai, tts, stt,
   round,
   toast, setExpression, markManual, updateStatusUI,
 } from "./state.js";
@@ -15,7 +15,10 @@ import {
   applyModel, refreshModelList, localRotation, wireRegions, avatarBounds,
 } from "./rig.js";
 
-import { speak, hideSpeech, showThinkingForAck } from "./speech.js";
+import {
+  speak, hideSpeech, showThinkingForAck,
+  setAudioEnvelope, clearAudioEnvelope,
+} from "./speech.js";
 
 import { renderInspector, updateInspectorValues, attachStagedPart, updateTimeline } from "./editor.js";
 
@@ -269,6 +272,15 @@ export async function setupEventListeners() {
   });
   await listen("speech-clear", () => hideSpeech());
   await listen("watcher-status", (event) => applyWatcherStatus(event.payload));
+  await listen("tts-status", (event) => applyTtsStatus(event.payload));
+  // Audio-driven lip sync: Piper's RMS envelope for the line that is starting
+  // to play, and a stop when it ends (or the voice is cut off).
+  await listen("tts-envelope", (event) => {
+    const payload = event.payload || {};
+    setAudioEnvelope(payload.samples, payload.bucket_ms);
+  });
+  await listen("tts-envelope-stop", () => clearAudioEnvelope());
+  await listen("stt-status", (event) => applySttStatus(event.payload));
   await listen("ai-profile-changed", (event) => applyAiProfiles(event.payload));
   await listen("avatar-animate", (event) => {
     const payload = event.payload || {};
@@ -283,6 +295,8 @@ export async function setupEventListeners() {
   });
 
   await refreshWatcher();
+  await refreshTts();
+  await refreshStt();
   await refreshAiProfiles();
 }
 
@@ -476,6 +490,126 @@ export async function refreshWatcher() {
 export function clearWatcherLogs() {
   watcher.logs = [];
   renderWatcher();
+}
+
+/* ---------- local voice (Piper TTS) ---------- */
+
+/** Apply a `get_tts_status` / `GET /tts` / `tts-status` payload. */
+export function applyTtsStatus(payload) {
+  if (!payload || typeof payload !== "object" || payload.__error) return;
+  if (typeof payload.enabled === "boolean") tts.enabled = payload.enabled;
+  if (typeof payload.ready === "boolean") tts.ready = payload.ready;
+  tts.reason = typeof payload.reason === "string" ? payload.reason : "";
+  if (typeof payload.model_path === "string") {
+    const parts = payload.model_path.split(/[\\/]/);
+    tts.model = parts[parts.length - 1] || "";
+  }
+  tts.checked = true;
+  renderTts();
+}
+
+/** The Voice row: switch state, badge text and why the voice is silent. */
+export function renderTts() {
+  const toggle = document.getElementById("tts-toggle");
+  const badge = document.getElementById("tts-badge");
+  const on = tts.enabled && tts.ready;
+  if (toggle) {
+    toggle.setAttribute("aria-checked", on ? "true" : "false");
+    toggle.disabled = !tts.ready;
+    toggle.title = !tts.ready
+      ? `Voice unavailable: ${tts.reason || "piper was not found"}`
+      : on
+        ? `Speaking out loud with ${tts.model || "Piper"} — click to mute`
+        : "Muted — click to speak bubbles out loud";
+  }
+  if (badge) {
+    badge.textContent = !tts.ready ? "missing" : on ? "on" : "muted";
+    badge.className = "watcher-badge " + (!tts.ready ? "missing" : on ? "running" : "off");
+    badge.title = !tts.ready ? tts.reason || "" : tts.model || "Piper voice";
+  }
+}
+
+/** Mute or unmute the voice through Rust (runtime only, not persisted). */
+export async function setTtsEnabled(enabled) {
+  if (!isTauri()) return null;
+  const status = await call("set_tts_enabled", { enabled: !!enabled });
+  applyTtsStatus(status);
+  return status;
+}
+
+/** Ask Rust for the current voice status. */
+export async function refreshTts() {
+  if (!isTauri()) return null;
+  const status = await call("get_tts_status");
+  applyTtsStatus(status);
+  return status;
+}
+
+/* ---------- push-to-talk voice input (Whisper STT) ---------- */
+
+/** Apply a `get_stt_status` / `GET /stt` / `stt-status` payload. */
+export function applySttStatus(payload) {
+  if (!payload || typeof payload !== "object" || payload.__error) return;
+  if (typeof payload.enabled === "boolean") stt.enabled = payload.enabled;
+  if (typeof payload.ready === "boolean") stt.ready = payload.ready;
+  if (typeof payload.state === "string") stt.state = payload.state;
+  if (typeof payload.last_transcript === "string") stt.transcript = payload.last_transcript;
+  if (typeof payload.hotkey === "string") stt.hotkey = payload.hotkey;
+  stt.reason = typeof payload.reason === "string" ? payload.reason : "";
+  stt.checked = true;
+  renderStt();
+}
+
+/** The Push-to-talk row: badge text, button label and the reason it is off. */
+export function renderStt() {
+  const button = document.getElementById("btn-ptt");
+  const badge = document.getElementById("stt-badge");
+  const listening = stt.state === "listening";
+  const transcribing = stt.state === "transcribing";
+  if (button) {
+    button.disabled = !stt.ready || !stt.enabled;
+    button.classList.toggle("recording", listening);
+    button.classList.toggle("transcribing", transcribing);
+    button.textContent = listening ? "Listening…" : transcribing ? "Transcribing…" : "Hold to talk";
+    button.title = !stt.ready
+      ? `Push to talk unavailable: ${stt.reason || "whisper-cli was not found"}`
+      : !stt.enabled
+        ? "Push to talk is switched off"
+        : `Hold to talk (or hold ${stt.hotkey || "Alt+V"} anywhere). Release to send.`;
+  }
+  if (badge) {
+    badge.textContent = !stt.ready ? "missing" : listening ? "listening" : transcribing ? "transcribing" : "idle";
+    badge.className = "watcher-badge " + (!stt.ready ? "missing" : listening ? "running" : transcribing ? "busy" : "off");
+    badge.title = !stt.ready
+      ? stt.reason || ""
+      : stt.transcript
+        ? `last: ${stt.transcript}`
+        : "microphone idle";
+  }
+}
+
+/** Begin a hold (pointer down on the button). */
+export async function startPtt() {
+  if (!isTauri()) return null;
+  const status = await call("ptt_start");
+  applySttStatus(status);
+  return status;
+}
+
+/** End a hold (pointer up / leave): Whisper runs, then `/reply` fires. */
+export async function stopPtt() {
+  if (!isTauri()) return null;
+  const status = await call("ptt_stop");
+  applySttStatus(status);
+  return status;
+}
+
+/** Ask Rust for the current microphone status. */
+export async function refreshStt() {
+  if (!isTauri()) return null;
+  const status = await call("get_stt_status");
+  applySttStatus(status);
+  return status;
 }
 
 export function isWatcherDrawerOpen() {

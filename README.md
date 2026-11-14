@@ -18,7 +18,9 @@ local HTTP API so an AI agent can drive it.
 ## Quick start
 
 Requirements: **Rust** (1.77+ toolchain), **WebView2 runtime** (ships with
-Windows 11), Windows 10/11.
+Windows 11), Windows 10/11. Voice output additionally needs the local **Piper**
+install described in [Speaking out loud](#speaking-out-loud-local-voice) — a
+build without it runs fine, just silently.
 
 ```bash
 cd src-tauri
@@ -31,9 +33,10 @@ cargo build
 [Hermes / MCP](#hermes--mcp)) and `char-rig-watcher.exe` (the trigger watcher —
 see [Waking Hermes](#waking-hermes-the-watcher)).
 
-The console prints `avatar api listening on http://127.0.0.1:8765`. The avatar
-appears at the centre of the primary monitor; empty desktop space is
-click-through.
+The console prints `avatar api listening on http://127.0.0.1:8765`. The overlay
+covers the **whole virtual desktop** — every monitor, including one positioned
+left of or above the primary — so the avatar can walk onto any of them; empty
+desktop space is click-through.
 
 **The watcher comes with it.** Once the API is bound, `avatar-desktop.exe` starts
 `char-rig-watcher.exe` from its own directory, pointed at the URL it just bound
@@ -56,6 +59,8 @@ curl -s -X POST localhost:8765/speak -H 'content-type: application/json' \
      -d '{"text":"Hello!","expression":"happy","duration_ms":4000}'
 curl -s -X POST localhost:8765/perch -H 'content-type: application/json' \
      -d '{"edge":"top_right","window_process":"code"}'
+curl -s localhost:8765/tts               # local Piper voice: ready / muted / why
+curl -s -X POST localhost:8765/tts -H 'content-type: application/json' -d '{"enabled": false}'
 ```
 
 Run the unit tests with `cd src-tauri && cargo test`.
@@ -93,9 +98,13 @@ Run the unit tests with `cd src-tauri && cargo test`.
 | Model dropdown + **Import…** | switch models, import a rig or an image |
 | Expression buttons | neutral / happy / sad / surprised |
 | Wave / Idle / Walk / Center | triggers, with a walk-speed slider |
-| **New chat** | wipe the conversation context (`POST /session/reset`) |
+| **New chat** | wipe the conversation context (`POST /session/reset`) and empty the History drawer |
+| **History** | open the session's conversation log (see [Reading the conversation back](#reading-the-conversation-back)) |
 | **Ask…** | open the command bar (same as `Enter` / `/`) |
 | **Watcher** switch + badge + **Logs ↗** | start/stop `char-rig-watcher.exe` and open the pop-out console (see [Waking Hermes](#waking-hermes-the-watcher)) |
+| **Voice** switch + badge | mute/unmute the local Piper voice; the badge says `on`, `muted` or `missing` (see [Speaking out loud](#speaking-out-loud-local-voice)) |
+| **Hold to talk** button + badge | press and hold to talk to the avatar, release to send; the badge says `idle`, `listening`, `transcribing` or `missing` (see [Talking to it](#talking-to-it-push-to-talk)) |
+| **What's on screen?** button | screenshot the focused window and ask the local vision model about it (see [Seeing your screen](#seeing-your-screen-local-vision)) |
 | API line | live API URL |
 
 **Importing:** pick a `.json`/`.toml` rig, or an image (`.png`, `.jpg`,
@@ -115,7 +124,7 @@ screen at the playhead. Clips are saved by the same **Save rig** and played over
 HTTP (`POST /animate`) or by an agent (`avatar_animate`).
 
 Play-mode shortcuts: `1`–`4` expressions · `W` wander · `I` idle · `C` centre ·
-`Space` wave · `R` rig mode · `Esc` close.
+`Space` wave · `R` rig mode · `H` conversation history · `Esc` close.
 
 Clicking or double-clicking the avatar does not make it react on its own — the
 page reports the interaction to Rust, which pushes an `interaction` frame on
@@ -140,6 +149,198 @@ keeps the press for its gizmos, so the two gestures never fight.
 
 ---
 
+## Speaking out loud (local voice)
+
+Every speech bubble — from `lfm3-fast`, from `hermes_cli`, from `POST /speak`,
+from the MCP `avatar_speak` tool, from anything — is also **read out loud** by a
+local [Piper](https://github.com/rhasspy/piper) voice. No network, no API key,
+no cloud. The hook is the single `do_speak` path, so a model can never "talk" in
+text without talking out loud.
+
+The shipped setup (override any of it in `watcher_rules.json`):
+
+| Piece | Default |
+| --- | --- |
+| `piper_exe_path` | `C:\hermes\tools\piper\piper.exe` |
+| `model_path` | `C:\hermes\tools\piper\voices\en_GB-southern_english_female-low.onnx` |
+| `espeak_data_path` | `C:\hermes\tools\piper\espeak-ng-data` (passed as `--espeak_data`; Windows Piper cannot find its phoneme tables without it) |
+| `speaker_id` | `null` (add `--speaker <id>` for a multi-speaker model) |
+| `length_scale` | `1.0` (bigger = slower, clamped to 0.25–4.0) |
+
+**What gets spoken** is cleaned first: fenced code blocks, links (the label
+survives, the URL does not), bare URLs, `<tags>`/expression markers, markdown
+`*`/`_`/`` ` ``/`#`, emoji and control characters are stripped, and whitespace is
+collapsed. If nothing readable is left, no synthesis happens at all — so an
+emoji-only or code-only bubble never makes a sound.
+
+**How it plays:** `piper.exe` is spawned with `CREATE_NO_WINDOW` (no console
+flash) on the dedicated `avatar-tts` thread, which writes the text to its stdin,
+waits, then plays the temp `.wav` with `PlaySoundW` (`SND_FILENAME | SND_SYNC`)
+and deletes it. One thread means lines **queue** — they never overlap, and the
+HTTP server / render loop never waits on the speakers. The queue holds 8 lines;
+anything past that is dropped rather than narrating stale bubbles.
+
+**If Piper is missing** (no `piper.exe`, no `.onnx`, or a bad path) the app logs
+one warning at startup, the Voice badge says `missing`, and everything else keeps
+working — the avatar is just silent. Mute/unmute from the panel, `GET`/`POST
+`/tts`, or the `get_tts_status` / `set_tts_enabled` commands; the mute is runtime
+only and is never written back to `watcher_rules.json`.
+
+---
+
+## Talking to it (push to talk)
+
+The reverse of the voice: hold **`Alt+V`** anywhere in Windows — or the **Hold to
+talk** button in the control panel — speak, and let go. The clip is filtered by
+[Silero VAD](https://github.com/snakers4/silero-vad) and transcribed locally by
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp); the text is posted to
+`POST /reply` exactly as if you had typed it, so the watcher wakes your agent and
+the answer is spoken back by the Piper voice. No network, no API key.
+
+The shipped setup (override in the `stt` block of `watcher_rules.json`):
+
+| Piece | Default |
+| --- | --- |
+| `hotkey` | `Alt+V` (a **hold**, not a toggle; same grammar as `hotkey`) |
+| `whisper_exe_path` | `C:\hermes\tools\whisper.cpp\build\bin\Release\whisper-cli.exe` |
+| `whisper_model_path` | `C:\hermes\tools\whisper.cpp\ggml-base.en.bin` |
+| `silero_vad_model_path` | `C:\hermes\tools\whisper.cpp\ggml-silero-v6.2.0.bin` (`null` disables VAD) |
+| `vad_threshold` | `0.5` (Silero speech probability; clamped to 0.01–0.99) |
+| `language` | `en` (or `auto`) |
+| `min_speech_ms` | `250` — shorter presses are thrown away as accidental taps |
+
+**What happens on a hold:** the panel's badge goes `listening`, the mic opens
+through winmm at 16 kHz mono 16-bit (falling back to 48/44.1 kHz, downmixed and
+resampled to 16 kHz), and the audio is buffered while you hold. Releasing stops
+the device immediately; the badge turns `transcribing`, the clip is written to
+`%TEMP%` and handed to `whisper-cli.exe -m … -f … -l … -nt -np --vad --vad-model …
+--vad-threshold …` with `CREATE_NO_WINDOW`. Its stdout is cleaned — `[BLANK_AUDIO]`,
+`(music)`, `[inaudible]`, timestamps and control characters are stripped — and an
+empty result sends nothing. The temp `.wav` is deleted as soon as Whisper exits.
+
+**It will not transcribe the avatar.** Starting a hold first calls the voice's
+`interrupt()`, which stops the line playing and drops everything still queued, so
+the microphone only ever hears you. One `avatar-ptt` thread owns the whole state
+machine, so a hold and a transcription can never overlap, and the HTTP server
+never waits on the microphone.
+
+**If anything is missing** (no `whisper-cli.exe`, no model, no microphone) the app
+logs one warning at startup, the badge says `missing`, and the tooltip names the
+missing piece. Everything else keeps working. `GET`/`POST /stt`, the
+`get_stt_status` / `set_stt_enabled` commands and the `ptt_start` / `ptt_stop`
+commands expose the same state; muting is runtime only.
+
+```bash
+curl -s localhost:8765/stt                      # settings + idle/listening/transcribing
+curl -s -X POST localhost:8765/stt -H 'content-type: application/json' -d '{"enabled": false}'
+```
+
+---
+
+## Seeing your screen (local vision)
+
+Ask **"what's on my screen?"** — type it, say it with push-to-talk, or press the
+control panel's **What's on screen?** button (the command bar has the same chip).
+The watcher screenshots the window you are focused on and answers with a local
+vision-language model, so the avatar can tell you which app you are in, read an
+error out loud, or describe a dialog. No network, no API key.
+
+It is driven by the `vision` block of `watcher_rules.json`:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | master switch |
+| `profile_name` | `vision` | which `ai_profiles` entry answers — must be an `openai_compat` profile |
+| `capture_mode` | `active_window` | `active_window` (the focused window's rect) or `full_screen` |
+| `max_image_dim` | `1024` | longest edge after downscaling (clamped 64–4096); smaller = faster, cheaper |
+| `jpeg_quality` | `85` | JPEG quality (1–100) |
+| `trigger_phrases` | *what's on my screen*, *whats on my screen*, *what is on my screen*, *look at my screen*, *see my screen*, *read my screen*, *check my screen* | case-insensitive; matched against every typed or dictated message |
+
+The image never touches the disk: `GetDC`/`BitBlt`/`GetDIBits` grabs the pixels,
+the buffer is downscaled and JPEG-encoded in memory, and the bytes ride one
+OpenAI-shaped `chat/completions` request as a `data:image/jpeg;base64,…` URL.
+When the focused window *is* the avatar's own overlay, the watcher ignores that
+rect and captures the primary monitor instead, so it looks at your work rather
+than at itself. `include_screen: true` on `POST /reply` (what the button and chip
+send) asks for a screenshot even when the text matches no phrase.
+
+**If anything is missing** — vision disabled, the profile absent, the endpoint
+down, or the capture failing (locked desktop, no desktop session) — the watcher
+logs it and speaks a short apology; ordinary text replies keep working. Point
+`ai_profiles.vision` at any multimodal server, for example:
+
+```json
+"vision": {
+  "kind": "openai_compat",
+  "label": "LFM3-VL-2B (llama.cpp)",
+  "endpoint": "http://127.0.0.1:9932",
+  "model": "lfm3-vl-2b",
+  "max_tokens": 512,
+  "timeout_secs": 120
+}
+```
+
+```bash
+# ask with an explicit screenshot, exactly like the panel button
+curl -s -X POST localhost:8765/reply -H 'content-type: application/json' \
+     -d '{"text":"what is this error?","include_screen":true}'
+```
+
+---
+
+## Reading the conversation back
+
+A speech bubble is a glance: it auto-dismisses, and the next reply replaces it.
+The **History** drawer keeps the session instead. Open it from the control
+panel's **History** button, the **☰** button in the command bar, or with `H` —
+`Esc` closes it again. It lists every prompt you sent and every line the avatar
+spoke, in order, with a timestamp per turn; a turn that carried a `details`
+block (a diff, a log tail, a code snippet) offers its own **Details ▾** and
+**Copy**, exactly like the bubble did. The drawer stays clickable over the
+click-through desktop while it is open and gives the desktop back when it
+closes.
+
+The log is **in memory and bounded to 50 turns** (the oldest is evicted), so a
+long session cannot grow it without limit. **New chat** clears it together with
+the conversation context, and a restart starts a fresh, empty log. Agents can
+read the same list over HTTP:
+
+```bash
+curl -s localhost:8765/history
+# {"ok":true,"messages":[{"id":1,"role":"user","text":"…","ts_ms":…}, …]}
+```
+
+## The polish pass
+
+Four details that make the avatar feel less like a widget:
+
+* **The lips follow the voice, not the typing.** When Piper synthesizes a line,
+  the wav's RMS is bucketed every 25 ms, normalized, and handed to the page as
+  `tts-envelope`; the mouth indexes that envelope by playback time, so it opens
+  on the vowels you actually hear. Mute the voice (or run with Piper missing) and
+  the mouth quietly falls back to the per-character mapping, so nothing breaks.
+* **The eyes follow your real cursor — everywhere.** The overlay is click-through
+  almost everywhere, so the page only ever sees the pointer over its own cards.
+  Rust's cursor thread (`GetCursorPos`, already polling every 35 ms for
+  click-through) therefore publishes a throttled `cursor-pos` event (3 CSS px
+  deadband, ~20 Hz), and the pupils track the OS cursor across the whole virtual
+  desktop — over another application, with the overlay unfocused. The head bone
+  turns a few degrees toward it too, damped and clamped to its `limits`. Park the
+  cursor for 4 s and the gaze goes back to idle glances; an explicit
+  `POST /move {"look_at":[x,y]}` always wins.
+* **A perch is a place, not a snapshot.** `POST /perch` remembers the window
+  (`HWND`), the edge and the offset, and re-reads its bounds every 60 ms: drag
+  the window and the avatar walks along with it, resize it and the avatar keeps
+  its footing, minimize or close it and the avatar returns to `idle` by itself.
+  Grabbing the avatar breaks the perch immediately — the tracker never fights
+  your cursor.
+* **Reaction clips out of the box.** The shipped rigs carry `nod`, `shake_head`,
+  `celebrate`, `alert_ping` and `idle_fidget` beside `wave` and `breathe` (see
+  `GET /animations`), so a local model can answer with body language:
+  `{"speech": "Nice fix!", "animate": "celebrate"}`.
+
+---
+
 ## Pushing vs polling
 
 `GET /context` answers *what is the user doing* (foreground window title, the
@@ -147,7 +348,10 @@ executable that owns it, the focused window's `window_rect` and the top five
 `visible_windows` — all in CSS pixels — machine-wide idle seconds, plus the last
 15 SSE frames as a catch-up). `POST /perch` turns that into a place to stand:
 `{"edge":"top_right","window_process":"code"}` walks the avatar onto that
-window's top border and keeps its gaze on the window while it sits there. `GET /clipboard` reads the last-copied text (2000 chars max).
+window's top border and keeps its gaze on the window while it sits there — and
+the perch is **live**, so dragging or resizing that window slides the avatar
+along its border, while minimizing or closing it drops the avatar back to
+`idle`. `GET /clipboard` reads the last-copied text (2000 chars max).
 `GET /events` is a Server-Sent Events stream of *what the avatar did*: `state`,
 `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`,
 `interaction`, `user_reply`, `alert`, `session_reset`, `ai_profile`. An agent can therefore block on the stream
@@ -303,6 +507,24 @@ falls back to the built-in defaults shown here:
   "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
   "active_profile": "hermes",
+  "tts": {
+    "enabled": true,
+    "piper_exe_path": "C:\\hermes\\tools\\piper\\piper.exe",
+    "model_path": "C:\\hermes\\tools\\piper\\voices\\en_GB-southern_english_female-low.onnx",
+    "espeak_data_path": "C:\\hermes\\tools\\piper\\espeak-ng-data",
+    "speaker_id": null,
+    "length_scale": 1.0
+  },
+  "stt": {
+    "enabled": true,
+    "hotkey": "Alt+V",
+    "whisper_exe_path": "C:\\hermes\\tools\\whisper.cpp\\build\\bin\\Release\\whisper-cli.exe",
+    "whisper_model_path": "C:\\hermes\\tools\\whisper.cpp\\ggml-base.en.bin",
+    "silero_vad_model_path": "C:\\hermes\\tools\\whisper.cpp\\ggml-silero-v6.2.0.bin",
+    "vad_threshold": 0.5,
+    "language": "en",
+    "min_speech_ms": 250
+  },
   "ai_profiles": {
     "lfm3-fast": {
       "kind": "openai_compat",
@@ -329,11 +551,22 @@ substrings, blank = wildcard, first match wins. A match supplies the ack
 clip) and a `prompt_hint` that is appended to the Hermes prompt as `Context: …`.
 `alerts` throttles `POST /alert` frames from outside (network monitor, cron).
 
-`quick_tasks` is the command bar's chips (`[{label, prompt, profile?}]`, at most
-6) — edit the file, reopen the bar, and the buttons change, no rebuild.
+`quick_tasks` is the command bar's chips (`[{label, prompt, profile?,
+include_screen?}]`, at most 6) — edit the file, reopen the bar, and the buttons
+change, no rebuild. `include_screen: true` makes a chip ask with a screenshot.
 `max_session_turns` and `session_idle_reset_secs` rotate the conversation
 automatically (after N turns / after a long break), and `session_base` is the id
 prefix.
+
+`tts` is the local voice (see [Speaking out loud](#speaking-out-loud-local-voice)):
+`enabled`, `piper_exe_path`, `model_path`, `espeak_data_path`, `speaker_id` and
+`length_scale`. It is read by the **app** at startup, so changing it needs an app
+restart — the panel's switch is the runtime mute.
+
+`vision` is screen vision (see [Seeing your screen](#seeing-your-screen-local-vision)):
+`enabled`, `profile_name`, `capture_mode`, `max_image_dim`, `jpeg_quality` and
+`trigger_phrases`. It is read by the **watcher**, which reloads the file on an
+`ai_profile` frame, so an edited block takes effect without a rebuild.
 
 ### Choosing the brain (`ai_profiles`)
 
@@ -451,9 +684,12 @@ src-tauri/            Rust application (Tauri 2)
   src/lib.rs          windows, state, commands, event bus (SSE), desktop probes, click-through tracker, startup
   src/api.rs          axum HTTP API (own thread + Tokio runtime)
   src/models.rs       model/rig storage, validation, import pipeline
+  src/tts.rs          local Piper voice: config, text sanitizing, `avatar-tts` playback thread
+  src/stt.rs          push-to-talk: `stt` config, winmm capture, 16 kHz resample, whisper-cli + Silero VAD, `avatar-ptt` worker
   src/bin/
     char-rig-mcp.rs   second binary: stdio MCP server exposing the avatar_* tools over HTTP
     char-rig-watcher.rs  third binary: SSE + /context watcher that wakes Hermes on triggers
+    capture/mod.rs    Windows GDI screen capture, rect clamping, downscale + in-memory JPEG
   tauri.conf.json     transparent always-on-top window, frontendDist = ../ui
 ui/                   modular frontend (native ES modules, no build step)
   index.html          lean HTML shell (titlebar, canvas, panels, bubble, toasts)
@@ -482,6 +718,7 @@ the tree above is the whole app.
 ## Status
 
 Prototype / hobby project. Windows-only click-through and desktop context,
-single monitor, unauthenticated localhost API. Live events over SSE; polling
-`/state` still works and is still the simplest read path. See *Known
-limitations* in [ARCHITECTURE.md](ARCHITECTURE.md) before depending on it.
+unauthenticated localhost API. The overlay spans the **whole virtual desktop**
+(mixed per-monitor DPI scaling is the remaining rough edge). Live events over
+SSE; polling `/state` still works and is still the simplest read path. See
+*Known limitations* in [ARCHITECTURE.md](ARCHITECTURE.md) before depending on it.

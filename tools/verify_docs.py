@@ -129,9 +129,47 @@ if ui_kinds != kinds:
     problems.append(f"UI never sends: {sorted(kinds - ui_kinds)}")
 
 # ---------- 8. README endpoints ----------
-for route in ("/context", "/events", "/health"):
+for route in ("/context", "/events", "/health", "/history"):
     if route not in readme:
         problems.append(f"README.md: {route} not mentioned")
+
+# ---------- 8b. chat history + global cursor constants ----------
+#
+# The History drawer and the `cursor-pos` throttle are described with hard
+# numbers in the docs (50 turns, 3 CSS px, 50 ms). Those numbers live in lib.rs
+# and are mirrored in ui/js — pin all three so a bump cannot leave a doc lie.
+history_cap = re.search(r'CHAT_HISTORY_CAPACITY: usize = (\d+);', lib_rs)
+cursor_deadband = re.search(r'CURSOR_EMIT_DEADBAND: f64 = ([\d.]+);', lib_rs)
+cursor_interval = re.search(r'CURSOR_EMIT_INTERVAL_MS: u64 = (\d+);', lib_rs)
+print("\nchat/gaze constants:",
+      "capacity", history_cap.group(1) if history_cap else "?",
+      "deadband", cursor_deadband.group(1) if cursor_deadband else "?",
+      "interval_ms", cursor_interval.group(1) if cursor_interval else "?")
+
+for label, match in (
+    ("CHAT_HISTORY_CAPACITY", history_cap),
+    ("CURSOR_EMIT_DEADBAND", cursor_deadband),
+    ("CURSOR_EMIT_INTERVAL_MS", cursor_interval),
+):
+    if match is None:
+        problems.append(f"src-tauri/src/lib.rs: {label} not found")
+        continue
+    pinned = f"{label} = {match.group(1)}"
+    for name, text in (("ARCHITECTURE.md", arch_md),):
+        if pinned not in text:
+            problems.append(f"{name}: {pinned} is not documented as written in lib.rs")
+
+if history_cap:
+    # ui/js/history.js keeps its own copy of the capacity.
+    history_js = (ROOT / "ui/js/history.js").read_text(encoding="utf-8")
+    ui_limit = re.search(r"const CHAT_LIMIT = (\d+);", history_js)
+    if ui_limit is None:
+        problems.append("ui/js/history.js: CHAT_LIMIT not found")
+    elif ui_limit.group(1) != history_cap.group(1):
+        problems.append(
+            f"ui/js/history.js: CHAT_LIMIT = {ui_limit.group(1)} but "
+            f"lib.rs CHAT_HISTORY_CAPACITY = {history_cap.group(1)}"
+        )
 
 # ---------- 9. MCP bridge ----------
 mcp_path = ROOT / "src-tauri/src/bin/char-rig-mcp.rs"
@@ -292,6 +330,9 @@ else:
                 "hermes_timeout_secs",
                 "webhook_url",
                 "hotkey",
+                "tts",
+                "stt",
+                "vision",
                 "active_profile",
                 "ai_profiles",
             }
@@ -360,7 +401,7 @@ else:
 
             # quick_tasks: the command bar reads these straight out of the file,
             # so a typo there means a silently missing chip.
-            quick_task_keys = {"label", "prompt", "profile"}
+            quick_task_keys = {"label", "prompt", "profile", "include_screen"}
             chips = shipped.get("quick_tasks")
             if chips is not None:
                 if not isinstance(chips, list):
@@ -385,6 +426,10 @@ else:
                             problems.append(
                                 f"watcher_rules.json: quick_tasks[{index}].{field} must be a non-empty string"
                             )
+                    if "include_screen" in chip and not isinstance(chip["include_screen"], bool):
+                        problems.append(
+                            f"watcher_rules.json: quick_tasks[{index}].include_screen must be a boolean"
+                        )
 
             # The watcher substitutes {session}; without the placeholder a
             # rotation (New chat) cannot reach the CLI at all.
@@ -428,6 +473,250 @@ else:
                     f"watcher_rules.json: alerts.cooldown_secs = {alerts.get('cooldown_secs')}, "
                     f"but the code default is {defaults['DEFAULT_ALERT_COOLDOWN_SECS']}"
                 )
+
+            # tts: the desktop app spawns Piper from these paths, and a wrong
+            # one makes the avatar silently mute — check the schema and the
+            # shipped defaults against the constants in src/tts.rs.
+            tts_block = shipped.get("tts")
+            if tts_block is not None:
+                tts_keys = {
+                    "enabled",
+                    "piper_exe_path",
+                    "model_path",
+                    "espeak_data_path",
+                    "speaker_id",
+                    "length_scale",
+                }
+                if not isinstance(tts_block, dict):
+                    problems.append("watcher_rules.json: tts is not an object")
+                else:
+                    stray = set(tts_block) - tts_keys
+                    if stray:
+                        problems.append(f"watcher_rules.json: tts has unknown keys {sorted(stray)}")
+                    if not isinstance(tts_block.get("enabled"), bool):
+                        problems.append("watcher_rules.json: tts.enabled must be a boolean")
+                    for field in ("piper_exe_path", "model_path"):
+                        value = tts_block.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            problems.append(
+                                f"watcher_rules.json: tts.{field} must be a non-empty string"
+                            )
+                    espeak = tts_block.get("espeak_data_path")
+                    if espeak is not None and (not isinstance(espeak, str) or not espeak.strip()):
+                        problems.append(
+                            "watcher_rules.json: tts.espeak_data_path must be a path string or null"
+                        )
+                    speaker = tts_block.get("speaker_id")
+                    if speaker is not None and (
+                        not isinstance(speaker, int) or isinstance(speaker, bool) or speaker < 0
+                    ):
+                        problems.append(
+                            "watcher_rules.json: tts.speaker_id must be a non-negative integer or null"
+                        )
+                    scale = tts_block.get("length_scale")
+                    if scale is not None and (
+                        not isinstance(scale, (int, float)) or isinstance(scale, bool)
+                    ):
+                        problems.append("watcher_rules.json: tts.length_scale must be a number or null")
+
+                    tts_rs_path = ROOT / "src-tauri/src/tts.rs"
+                    if not tts_rs_path.exists():
+                        problems.append("src-tauri/src/tts.rs is missing")
+                    else:
+                        tts_rs = tts_rs_path.read_text(encoding="utf-8")
+
+                        def tts_const(name):
+                            found = re.search(rf'pub const {name}: &str =\s*r?"([^"]+)";', tts_rs)
+                            return found.group(1) if found else None
+
+                        for field, constant in (
+                            ("piper_exe_path", "DEFAULT_PIPER_EXE_PATH"),
+                            ("model_path", "DEFAULT_PIPER_MODEL_PATH"),
+                            ("espeak_data_path", "DEFAULT_ESPEAK_DATA_PATH"),
+                        ):
+                            default = tts_const(constant)
+                            if default is None:
+                                problems.append(f"src-tauri/src/tts.rs: {constant} not found")
+                            elif tts_block.get(field) != default:
+                                problems.append(
+                                    f"watcher_rules.json: tts.{field} drifted from {constant}: "
+                                    f"{tts_block.get(field)!r} vs {default!r}"
+                                )
+                    for key in sorted(tts_keys):
+                        if f"`{key}`" not in arch_md:
+                            problems.append(f"ARCHITECTURE.md: tts.{key} is not documented")
+
+            # stt: push-to-talk. Same deal as tts — the app spawns whisper-cli
+            # from these paths, so a typo means a silently dead microphone.
+            stt_block = shipped.get("stt")
+            if stt_block is not None:
+                stt_keys = {
+                    "enabled",
+                    "hotkey",
+                    "whisper_exe_path",
+                    "whisper_model_path",
+                    "silero_vad_model_path",
+                    "vad_threshold",
+                    "language",
+                    "min_speech_ms",
+                }
+                if not isinstance(stt_block, dict):
+                    problems.append("watcher_rules.json: stt is not an object")
+                else:
+                    stray = set(stt_block) - stt_keys
+                    if stray:
+                        problems.append(f"watcher_rules.json: stt has unknown keys {sorted(stray)}")
+                    if not isinstance(stt_block.get("enabled"), bool):
+                        problems.append("watcher_rules.json: stt.enabled must be a boolean")
+                    for field in ("whisper_exe_path", "whisper_model_path"):
+                        value = stt_block.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            problems.append(
+                                f"watcher_rules.json: stt.{field} must be a non-empty string"
+                            )
+                    vad = stt_block.get("silero_vad_model_path")
+                    if vad is not None and (not isinstance(vad, str) or not vad.strip()):
+                        problems.append(
+                            "watcher_rules.json: stt.silero_vad_model_path must be a path string or null"
+                        )
+                    threshold = stt_block.get("vad_threshold")
+                    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+                        problems.append("watcher_rules.json: stt.vad_threshold must be a number")
+                    elif not 0.0 < threshold < 1.0:
+                        problems.append(
+                            f"watcher_rules.json: stt.vad_threshold {threshold} is outside 0..1"
+                        )
+                    language = stt_block.get("language")
+                    if not isinstance(language, str) or not language.strip():
+                        problems.append("watcher_rules.json: stt.language must be a non-empty string")
+                    min_speech = stt_block.get("min_speech_ms")
+                    if not isinstance(min_speech, int) or isinstance(min_speech, bool) or min_speech < 0:
+                        problems.append(
+                            "watcher_rules.json: stt.min_speech_ms must be a non-negative integer"
+                        )
+                    # The push-to-talk shortcut is parsed by parse_hotkey; it must
+                    # at least look like the documented grammar.
+                    hotkey = stt_block.get("hotkey")
+                    if not isinstance(hotkey, str) or not hotkey.strip():
+                        problems.append("watcher_rules.json: stt.hotkey must be a non-empty string")
+                    elif not re.fullmatch(r"[A-Za-z+ ]+", hotkey):
+                        problems.append(
+                            f"watcher_rules.json: stt.hotkey {hotkey!r} is not a hotkey spec"
+                        )
+
+                    stt_rs_path = ROOT / "src-tauri/src/stt.rs"
+                    if not stt_rs_path.exists():
+                        problems.append("src-tauri/src/stt.rs is missing")
+                    else:
+                        stt_rs = stt_rs_path.read_text(encoding="utf-8")
+
+                        def stt_const(name):
+                            found = re.search(rf'pub const {name}: &str =\s*r?"([^"]+)";', stt_rs)
+                            return found.group(1) if found else None
+
+                        for field, constant in (
+                            ("hotkey", "DEFAULT_STT_HOTKEY"),
+                            ("whisper_exe_path", "DEFAULT_WHISPER_EXE_PATH"),
+                            ("whisper_model_path", "DEFAULT_WHISPER_MODEL_PATH"),
+                            ("silero_vad_model_path", "DEFAULT_SILERO_VAD_MODEL_PATH"),
+                        ):
+                            default = stt_const(constant)
+                            if default is None:
+                                problems.append(f"src-tauri/src/stt.rs: {constant} not found")
+                            elif stt_block.get(field) != default:
+                                problems.append(
+                                    f"watcher_rules.json: stt.{field} drifted from {constant}: "
+                                    f"{stt_block.get(field)!r} vs {default!r}"
+                                )
+                    for key in sorted(stt_keys):
+                        if f"`{key}`" not in arch_md:
+                            problems.append(f"ARCHITECTURE.md: stt.{key} is not documented")
+
+
+            # vision: screen capture + a named local VL profile. The profile name
+            # must resolve, or a screenshot would silently fall back to the text
+            # model and the avatar would "look" without seeing anything.
+            vision = shipped.get("vision")
+            if vision is not None:
+                vision_keys = {
+                    "enabled",
+                    "profile_name",
+                    "capture_mode",
+                    "max_image_dim",
+                    "jpeg_quality",
+                    "trigger_phrases",
+                }
+                if not isinstance(vision, dict):
+                    problems.append("watcher_rules.json: vision is not an object")
+                else:
+                    stray = set(vision) - vision_keys
+                    if stray:
+                        problems.append(f"watcher_rules.json: vision has unknown keys {sorted(stray)}")
+                    if not isinstance(vision.get("enabled"), bool):
+                        problems.append("watcher_rules.json: vision.enabled must be a boolean")
+                    profile_name = vision.get("profile_name")
+                    if not isinstance(profile_name, str) or not profile_name.strip():
+                        problems.append(
+                            "watcher_rules.json: vision.profile_name must be a non-empty string"
+                        )
+                    elif isinstance(ai_profiles, dict):
+                        chosen = ai_profiles.get(profile_name)
+                        if not isinstance(chosen, dict):
+                            problems.append(
+                                f"watcher_rules.json: vision.profile_name {profile_name!r} "
+                                f"is not one of {sorted(ai_profiles)}"
+                            )
+                        elif chosen.get("kind") != "openai_compat":
+                            problems.append(
+                                "watcher_rules.json: vision.profile_name must point at an "
+                                "openai_compat profile (the multimodal request is OpenAI-shaped)"
+                            )
+                    mode = vision.get("capture_mode")
+                    if mode not in ("active_window", "full_screen"):
+                        problems.append(
+                            f"watcher_rules.json: vision.capture_mode {mode!r} "
+                            "is not one of ['active_window', 'full_screen']"
+                        )
+                    max_dim = vision.get("max_image_dim")
+                    if not isinstance(max_dim, int) or isinstance(max_dim, bool) or max_dim < 64:
+                        problems.append(
+                            "watcher_rules.json: vision.max_image_dim must be an integer >= 64"
+                        )
+                    quality = vision.get("jpeg_quality")
+                    if not isinstance(quality, int) or isinstance(quality, bool) or not 1 <= quality <= 100:
+                        problems.append(
+                            "watcher_rules.json: vision.jpeg_quality must be an integer 1..100"
+                        )
+                    phrases = vision.get("trigger_phrases")
+                    if not isinstance(phrases, list) or not phrases:
+                        problems.append(
+                            "watcher_rules.json: vision.trigger_phrases must be a non-empty array"
+                        )
+                    elif not all(isinstance(p, str) and p.strip() for p in phrases):
+                        problems.append(
+                            "watcher_rules.json: vision.trigger_phrases entries must be non-empty strings"
+                        )
+
+                    watcher_rs_path = ROOT / "src-tauri/src/bin/char-rig-watcher.rs"
+                    if not watcher_rs_path.exists():
+                        problems.append("src-tauri/src/bin/char-rig-watcher.rs is missing")
+                    else:
+                        watcher_rs = watcher_rs_path.read_text(encoding="utf-8")
+                        profile_const = re.search(
+                            r'const DEFAULT_VISION_PROFILE: &str =\s*r?"([^"]+)";', watcher_rs
+                        )
+                        if profile_const is None:
+                            problems.append(
+                                "src-tauri/src/bin/char-rig-watcher.rs: DEFAULT_VISION_PROFILE not found"
+                            )
+                        elif profile_name != profile_const.group(1):
+                            problems.append(
+                                "watcher_rules.json: vision.profile_name drifted from "
+                                f"DEFAULT_VISION_PROFILE: {profile_name!r} vs {profile_const.group(1)!r}"
+                            )
+                    for key in sorted(vision_keys):
+                        if f"`{key}`" not in arch_md:
+                            problems.append(f"ARCHITECTURE.md: vision.{key} is not documented")
 
             shipped_timeout = shipped.get("hermes_timeout_secs")
             if shipped_timeout is not None:

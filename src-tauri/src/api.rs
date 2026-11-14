@@ -26,7 +26,7 @@ use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 
 use crate::{
     clipboard_text, desktop_context, lock_or_recover, model_event_payload, models, perch_target,
-    primary_viewport, publish as publish_state, snapshot, validate_expression, validate_state,
+    monitor_bounds_for, publish as publish_state, snapshot, validate_expression, validate_state,
     AppCtx, AvatarState, DesktopContext, HitRegion, ModelCtx, PerchEdge, WindowRect,
 };
 
@@ -160,6 +160,10 @@ struct ReplyBody {
     /// Optional AI profile this prompt should run on (quick-task chips pin one).
     #[serde(default)]
     profile: Option<String>,
+    /// Capture the screen and answer from it (screen vision) rather than
+    /// routing the text to a text model. Absent = off.
+    #[serde(default)]
+    include_screen: Option<bool>,
 }
 
 /// `POST /alert`: an external monitor (network, cron, script) waking the user.
@@ -184,6 +188,18 @@ struct AnimateBody {
     name: Option<String>,
     #[serde(default, rename = "loop")]
     loop_override: Option<bool>,
+}
+
+/// `POST /tts`: mute or unmute the local Piper voice.
+#[derive(Debug, Deserialize)]
+struct TtsBody {
+    enabled: bool,
+}
+
+/// `POST /stt`: mute or unmute push-to-talk.
+#[derive(Debug, Deserialize)]
+struct SttBody {
+    enabled: bool,
 }
 
 /// Error payload returned for every non-2xx response.
@@ -325,6 +341,7 @@ fn router(api: ApiCtx) -> Router {
         .route("/speak", post(speak))
         .route("/clear_speech", post(clear_speech))
         .route("/speech", get(get_speech))
+        .route("/history", get(history))
         .route("/rig", get(get_rig).post(save_rig))
         .route("/rig/reset", post(reset_rig))
         .route("/joints", get(get_joints))
@@ -333,6 +350,8 @@ fn router(api: ApiCtx) -> Router {
         .route("/animate", post(animate))
         .route("/animate/stop", post(stop_animation))
         .route("/watcher", get(watcher_status).post(set_watcher))
+        .route("/tts", get(get_tts).post(set_tts))
+        .route("/stt", get(get_stt).post(set_stt))
         .route("/ai-profiles", get(ai_profiles))
         .route("/ai-profile", post(switch_ai_profile))
         .route("/shutdown", post(shutdown_app))
@@ -390,7 +409,14 @@ async fn context(State(api): State<ApiCtx>) -> Json<Value> {
         "process_name": desktop.process_name,
         "idle_secs": desktop.idle_secs,
         "window_rect": desktop.window_rect,
+        // The window's handle, so a client can tell two windows of the same
+        // process apart (the perch tracker uses it internally).
+        "foreground_hwnd": desktop.foreground_hwnd,
         "visible_windows": desktop.visible_windows,
+        // The virtual desktop every rect above is measured in: physical origin
+        // (negative with a monitor left of/above the primary), size and the
+        // CSS scale factor. The watcher converts back for GDI capture.
+        "screen": desktop.screen,
         "avatar_state": snapshot(&api.shared.avatar),
         "recent_events": api.shared.recent_events(),
         "source": desktop.source,
@@ -436,8 +462,13 @@ async fn reply(
     State(api): State<ApiCtx>,
     Json(body): Json<ReplyBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let result = crate::do_user_reply_with_profile(&api.shared, &body.text, body.profile.as_deref())
-        .map_err(ApiError::bad_request)?;
+    let result = crate::do_user_reply_with_profile(
+        &api.shared,
+        &body.text,
+        body.profile.as_deref(),
+        body.include_screen.unwrap_or(false),
+    )
+    .map_err(ApiError::bad_request)?;
     if let Err(err) = api.app.emit("speech-clear", json!({})) {
         log::warn!("failed to emit speech-clear: {err}");
     }
@@ -647,6 +678,31 @@ fn resolve_perch_rect(
     }
 }
 
+/// The `HWND` of the window `resolve_perch_rect` picked.
+///
+/// Same predicate as the rect resolution (case-insensitive process substring,
+/// else the reported foreground window), so the handle always belongs to the
+/// rectangle the avatar walked to. `None` means the tracker simply cannot
+/// follow this perch — it still lands, it just does not move with the window.
+fn resolve_perch_hwnd(body: &PerchBody, desktop: &DesktopContext) -> Option<isize> {
+    match body
+        .window_process
+        .as_deref()
+        .map(str::trim)
+        .filter(|wanted| !wanted.is_empty())
+    {
+        Some(wanted) => {
+            let wanted = wanted.to_ascii_lowercase();
+            desktop
+                .visible_windows
+                .iter()
+                .find(|window| window.process_name.to_ascii_lowercase().contains(&wanted))
+                .and_then(|window| window.hwnd)
+        }
+        None => desktop.foreground_hwnd,
+    }
+}
+
 /// `POST /perch {"edge": "top_right", "window_process": "code", "offset": 12}`
 /// — walk the avatar onto (or beside) a window's border and keep it there.
 ///
@@ -671,7 +727,13 @@ async fn perch(
     let desktop = desktop_context();
     let rect = resolve_perch_rect(&body, &desktop)?;
     let bounds = *lock_or_recover(&api.shared.bounds);
-    let target = perch_target(&rect, edge, bounds, body.offset.unwrap_or(0.0), primary_viewport());
+    // Clamp to the monitor the window actually lives on, so perching on a
+    // secondary screen does not yank the avatar back to the primary one.
+    let viewport = monitor_bounds_for(rect.center().0, rect.center().1);
+    let offset = body.offset.unwrap_or(0.0);
+    let target = perch_target(&rect, edge, bounds, offset, viewport);
+    // Remember which window this is, so the 60 ms tracker can follow it.
+    let hwnd = resolve_perch_hwnd(&body, &desktop);
 
     let mut guard = lock_or_recover(&api.shared.avatar);
     guard.target_position = target;
@@ -679,6 +741,7 @@ async fn perch(
     guard.clear_perch();
     guard.perched = true;
     guard.perch_rect = Some(rect);
+    guard.set_perch_tracking(hwnd, edge.as_str(), offset, bounds);
     drop(guard);
 
     let state = publish_state(&api.app, &api.shared);
@@ -1137,10 +1200,52 @@ async fn get_speech(State(api): State<ApiCtx>) -> Json<Value> {
     Json(json!({ "ok": true, "speech": speech, "talking": talking }))
 }
 
+/// `GET /history` — the session's conversation turns, oldest first.
+///
+/// This is the same in-memory log the page's History drawer renders
+/// (`get_chat_history`), exposed so an agent or a script can read what was
+/// actually said instead of guessing from bubbles that already auto-dismissed.
+/// Every turn is `{id, role, text, details?, expression?, ts_ms}`; `role` is
+/// `"user"` or `"assistant"`. The log is bounded to
+/// [`crate::CHAT_HISTORY_CAPACITY`] turns, oldest evicted, and cleared by
+/// `POST /session/reset`. Read-only: a restart starts a new (empty) chat.
+async fn history(State(api): State<ApiCtx>) -> Json<Value> {
+    Json(crate::chat_history_json(&api.shared))
+}
+
+/// `GET /tts` — is the local Piper voice ready, muted, or unavailable (and why).
+async fn get_tts() -> Json<Value> {
+    Json(crate::tts::status_json())
+}
+
+/// `POST /tts {"enabled": false}` — mute/unmute the local voice at runtime.
+///
+/// The mute is not written back to `watcher_rules.json` (that file is
+/// hand-edited and never re-serialised), so a restart restores `tts.enabled`.
+async fn set_tts(Json(body): Json<TtsBody>) -> Json<Value> {
+    Json(crate::tts::set_enabled(body.enabled))
+}
+
+/// `GET /stt` — push-to-talk settings plus the live `idle`/`listening`/
+/// `transcribing` state, the last transcript and the last failure.
+///
+/// Read-only: the microphone itself is driven by the panel's button or the
+/// global hotkey, never by an HTTP client.
+async fn get_stt() -> Json<Value> {
+    Json(crate::stt::status_json())
+}
+
+/// `POST /stt {"enabled": false}` — mute push-to-talk until the next start.
+///
+/// Like `/tts`, runtime only: a restart restores `stt.enabled`.
+async fn set_stt(Json(body): Json<SttBody>) -> Json<Value> {
+    Json(crate::stt::set_enabled(body.enabled))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::VisibleWindow;
+    use crate::{ScreenMetrics, VisibleWindow};
 
     fn rect(x: f64, y: f64, width: f64, height: f64) -> WindowRect {
         WindowRect { x, y, width, height }
@@ -1156,14 +1261,17 @@ mod tests {
             idle_secs: 3,
             source: "win32",
             window_rect: foreground,
+            foreground_hwnd: None,
             visible_windows: windows
                 .iter()
                 .map(|(process, rect)| VisibleWindow {
                     title: format!("{process} window"),
                     process_name: (*process).to_string(),
                     rect: *rect,
+                    hwnd: None,
                 })
                 .collect(),
+            screen: ScreenMetrics::default(),
         }
     }
 
@@ -1279,7 +1387,7 @@ mod tests {
             PerchEdge::TopLeft,
             half,
             0.0,
-            Some((1920.0, 1080.0)),
+            Some(WindowRect::new(0.0, 0.0, 1920.0, 1080.0)),
         );
         assert_eq!((x, y), (510.0, 150.0));
         assert_eq!(y + half.down, target_rect.y);

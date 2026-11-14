@@ -548,6 +548,16 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .watcher-badge.running { background: rgba(61, 220, 132, 0.16); color: #3ddc84; border-color: rgba(61, 220, 132, 0.40); }
 .watcher-badge.missing { background: rgba(232, 17, 35, 0.18); color: #ff6b75; border-color: rgba(232, 17, 35, 0.45); }
+.watcher-badge.busy { background: rgba(240, 176, 64, 0.18); color: #f0b040; border-color: rgba(240, 176, 64, 0.45); }
+/* ---------- push-to-talk button ---------- */
+.ptt-btn { flex: 1 1 auto; min-width: 0; }
+.ptt-btn.recording {
+  background: rgba(232, 17, 35, 0.30); border-color: #e81123; color: #ffd7db;
+  animation: ptt-pulse 1.1s ease-in-out infinite;
+}
+.ptt-btn.transcribing { background: rgba(240, 176, 64, 0.20); border-color: #f0b040; color: #ffe6b8; }
+.ptt-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+@keyframes ptt-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.62; } }
 
 .ai-row { display: flex; align-items: center; gap: 8px; }
 #ai-profile-select {
@@ -622,4 +632,102 @@ input[type="range"]::-webkit-slider-thumb {
   font-family: "Cascadia Mono", "Consolas", monospace;
   font-size: 10.5px; line-height: 1.45; color: #a9b4a9;
   user-select: text; cursor: text;
+}
+
+/* ------------------------------------------------------------------ *
+ * Conversation history drawer ("History")
+ *
+ * A floating card bottom-left of the desktop, deliberately styled like the
+ * speech bubble (.hist-text / .hist-details reuse the bubble's type and code
+ * block) so a transcript row reads as the same object the avatar spoke.
+ * ------------------------------------------------------------------ */
+#history-drawer {
+    position: fixed; left: 18px; bottom: 18px; width: 420px; max-height: 60vh;
+    display: flex; flex-direction: column;
+    background: rgba(12, 12, 18, 0.94);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 14px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.50);
+    z-index: 940;
+    overflow: hidden;
+}
+#history-drawer header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+#history-drawer h3 {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: #b9b9cc;
+}
+.hd-spacer { flex: 1 1 auto; }
+#history-drawer .mini-btn { font-size: 10.5px; padding: 4px 8px; }
+.hist-count {
+    min-width: 18px; padding: 1px 6px;
+    font-size: 9.5px; font-weight: 600; text-align: center;
+    color: #8f9bb3; background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 999px;
+}
+.hist-list {
+    flex: 1 1 auto; overflow-y: auto; overflow-x: hidden;
+    padding: 8px 10px 10px;
+    display: flex; flex-direction: column; gap: 7px;
+    /* the transcript is the one always-readable surface: selectable text */
+    user-select: text; cursor: text;
+}
+.hist-empty {
+    padding: 14px 6px; font-size: 11.5px; color: #6e6e85; text-align: center;
+}
+.hist-row {
+    padding: 7px 10px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 11px;
+    background: rgba(255, 255, 255, 0.035);
+    border-left-width: 3px;
+}
+.hist-row.user { border-left-color: #4a90d9; }
+.hist-row.assistant { border-left-color: #7ab6f0; background: rgba(122, 182, 240, 0.06); }
+.hist-meta {
+    display: flex; align-items: baseline; gap: 7px; margin-bottom: 3px;
+}
+.hist-who {
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #9ec2e8;
+}
+.hist-row.user .hist-who { color: #8fa9c6; }
+.hist-mood {
+    font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase;
+    color: #6e6e85;
+}
+.hist-when { margin-left: auto; font-size: 9.5px; color: #5c5c72; }
+.hist-text {
+    font-size: 12px; line-height: 1.45; color: #e6e6f0;
+    white-space: pre-wrap; word-wrap: break-word;
+}
+.hist-actions { display: flex; gap: 6px; margin-top: 6px; }
+.hist-btn {
+    padding: 2px 7px;
+    font-family: inherit; font-size: 10px; font-weight: 600;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.07);
+    color: #bcd0e6; cursor: pointer;
+}
+.hist-btn:hover { background: rgba(255, 255, 255, 0.15); color: #fff; }
+.hist-btn:active { transform: scale(0.96); }
+.hist-details {
+    margin: 6px 0 0; padding: 7px 9px;
+    max-height: 180px; overflow: auto;
+    font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+    font-size: 10.5px; line-height: 1.35;
+    white-space: pre; tab-size: 2;
+    background: rgba(0, 0, 0, 0.42);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 9px;
+}
+/* The two toggle buttons that own the drawer light up while it is open. */
+.control-btn.active, .cmd-btn.active {
+    background: rgba(74, 144, 217, 0.28); color: #8ec4f5;
+    border-color: rgba(122, 182, 240, 0.45);
 }

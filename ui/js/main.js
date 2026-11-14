@@ -9,8 +9,8 @@
  */
 
 import {
-  avatar, RT, speech, watcher, gaze, PRESET_STATES, TAU,
-  round, num, viewport, updateViewport,
+  avatar, RT, speech, watcher, gaze, tts, stt, PRESET_STATES, TAU,
+  round, num, clamp, viewport, updateViewport,
   setExpression, markManual, toast, updateStatusUI, activeState, blinkActive,
 } from "./state.js";
 
@@ -46,7 +46,13 @@ import {
   setWatcherEnabled, refreshWatcher, clearWatcherLogs,
   toggleWatcherDrawer, isWatcherDrawerOpen,
   refreshAiProfiles, setAiProfile, aiActiveLabel,
+  setTtsEnabled, refreshTts,
+  startPtt, stopPtt, refreshStt,
 } from "./bridge.js";
+
+import {
+  setupHistory, toggleHistoryDrawer, historyOpen,
+} from "./history.js";
 
 import { call, listen } from "./ipc.js";
 
@@ -94,6 +100,18 @@ const GAZE_POINTER_HOLD = 2.5;
 /** Idle saccade interval, seconds. */
 const GLANCE_MIN = 2;
 const GLANCE_MAX = 4;
+/**
+ * How long the **global OS cursor** keeps the gaze after its last movement.
+ *
+ * Longer than [`GAZE_POINTER_HOLD`] on purpose: the eyes should keep resting on
+ * the cursor while the user reads something on the far side of the screen, and
+ * only fall back to idle glances once it has genuinely been parked.
+ */
+const GAZE_CURSOR_HOLD = 4;
+/** Maximum head-bone yaw bias toward the gaze target (radians, ~13°). */
+const GAZE_HEAD_YAW = 0.22;
+/** Cursor distance (CSS px) at which that bias reaches its clamp. */
+const GAZE_HEAD_REFERENCE = 900;
 
 /** The head bone's world point — the same origin `renderer.js` aims from. */
 function headPoint() {
@@ -119,9 +137,14 @@ function commandBarCenter() {
 }
 
 /**
- * Track the pointer, but only where the page actually receives events — the
- * overlay is click-through everywhere else, so the eyes rest or glance when the
- * cursor is over some other application.
+ * Track the pointer where the page actually receives events, and the **global
+ * OS cursor** everywhere.
+ *
+ * The overlay is click-through outside its hit regions, so `mousemove` only
+ * exists over the avatar, the panels and the cards. Rust fills that gap: it
+ * polls `GetCursorPos` every 35 ms anyway (for the click-through state machine)
+ * and now publishes a deadbanded `cursor-pos` event, so the eyes follow the
+ * cursor over any application — focused or not, click-through or not.
  */
 function attachGazeTracking() {
   window.addEventListener("mousemove", (event) => {
@@ -133,33 +156,62 @@ function attachGazeTracking() {
   window.addEventListener("mouseleave", () => {
     gaze.lastMove = -100;
   });
+
+  // Global eye tracking. Payload is `{x, y}` in CSS px of the virtual desktop,
+  // already throttled by Rust (3 px deadband, ~20 Hz), so this is cheap and
+  // needs no filtering of its own beyond a sanity check.
+  listen("cursor-pos", (event) => {
+    const payload = event && event.payload ? event.payload : {};
+    const x = Number(payload.x);
+    const y = Number(payload.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    gaze.cursorX = x;
+    gaze.cursorY = y;
+    gaze.cursorAt = avatar.time;
+  }).catch((err) => console.error("[avatar] cursor-pos listener failed:", err));
 }
 
 /**
  * Decide where the eyes should look and smooth toward it.
  *
- * Priority: a focused command bar (the user is typing *at* the avatar) > the
- * pointer for a moment after it moves > a random idle glance every 2–4 s.
+ * Priority:
+ *   1. an explicit `state.look_at` (`POST /move`) — the agent asked for it;
+ *   2. the focused command bar (the user is typing *at* the avatar);
+ *   3. the perch rectangle, while perched on a window;
+ *   4. the global OS cursor, for [`GAZE_CURSOR_HOLD`] after it last moved;
+ *   5. the page-local pointer (same idea, when `cursor-pos` is unavailable);
+ *   6. an idle glance every 2–4 s.
+ *
  * The smoothing happens here (with `dt`) rather than in the renderer, so the
- * pupils ease instead of snapping between saccades.
+ * pupils ease instead of snapping between saccades. The same eased target also
+ * feeds a small, clamped head-bone yaw bias — the head turns *a little* toward
+ * whatever the eyes are following.
  */
 function updateGaze(dt) {
   const active = document.activeElement;
   const typing = !!active && active.id === "command-input";
   const bar = typing ? commandBarCenter() : null;
   const pointerFresh = avatar.time - gaze.lastMove < GAZE_POINTER_HOLD;
+  const cursorFresh = avatar.time - gaze.cursorAt < GAZE_CURSOR_HOLD;
+  // A `look_at` is only usable as `{x, y}`: a malformed frame must not poison
+  // the smoothing with NaN (the eyes would stop moving for the rest of the
+  // session, because `gaze.ready` stays true).
+  const lookAt = avatar.lookAt
+    && Number.isFinite(Number(avatar.lookAt.x))
+    && Number.isFinite(Number(avatar.lookAt.y))
+    ? { x: Number(avatar.lookAt.x), y: Number(avatar.lookAt.y) }
+    : null;
 
   let aim = null;
   let tracking = false;
-  if (bar) {
-    aim = bar;
-    tracking = true;
-  } else if (avatar.lookAt) {
+  let cursorDriven = false;
+  if (lookAt) {
     // An agent asked for this point explicitly (`avatar_move`'s `look_at`).
-    aim = avatar.lookAt;
+    aim = lookAt;
     tracking = true;
-  } else if (pointerFresh) {
-    aim = { x: gaze.pointerX, y: gaze.pointerY };
+  } else if (bar) {
+    // The user is typing at the avatar: watch the box they are typing in.
+    aim = bar;
     tracking = true;
   } else if (avatar.perched && avatar.perchRect) {
     // Perched: watch the window we are standing on instead of glancing around.
@@ -168,6 +220,15 @@ function updateGaze(dt) {
       x: num(rect.x, 0) + num(rect.width, 0) / 2,
       y: num(rect.y, 0) + num(rect.height, 0) / 2,
     };
+    tracking = true;
+  } else if (cursorFresh) {
+    // The OS cursor, wherever it is — including over another application.
+    aim = { x: gaze.cursorX, y: gaze.cursorY };
+    tracking = true;
+    cursorDriven = true;
+  } else if (pointerFresh) {
+    // Fallback for a build without the global tracker (no Rust, no event yet).
+    aim = { x: gaze.pointerX, y: gaze.pointerY };
     tracking = true;
   }
 
@@ -187,6 +248,7 @@ function updateGaze(dt) {
   }
 
   gaze.tracking = tracking;
+  gaze.cursorTracking = cursorDriven;
   gaze.targetX = aim.x;
   gaze.targetY = aim.y;
 
@@ -200,6 +262,19 @@ function updateGaze(dt) {
     gaze.x += (gaze.targetX - gaze.x) * k;
     gaze.y += (gaze.targetY - gaze.y) * k;
   }
+
+  // Head-bone yaw bias: a small, clamped turn toward the aim point, damped so
+  // the neck follows the eyes instead of snapping. The bias is only a *bias* —
+  // `rig.js` adds it to the head bone and `localRotation` clamps the sum
+  // against the bone's `limits`, so a rig with a declared neck range can never
+  // be turned past it.
+  const head = headPoint();
+  const yaw = clamp((gaze.targetX - head.x) / GAZE_HEAD_REFERENCE, -1, 1) * GAZE_HEAD_YAW;
+  // Idle glances need no bias: the eyes carry that motion, and a head that
+  // twitches at every saccade reads as broken.
+  gaze.tiltTarget = tracking ? yaw : 0;
+  gaze.tilt += (gaze.tiltTarget - gaze.tilt) * Math.min(1, dt * 4);
+  if (Math.abs(gaze.tilt) < 0.0005) gaze.tilt = 0;
 
   // Hover life-sign: ease a 0..1 weight that `rig.js` turns into a head tilt.
   // The pointer has to be on the art *and* recently alive (not a stale reading
@@ -397,6 +472,9 @@ function attachInteractionDetection(canvas) {
       // Past the threshold: this press is a drag, not a click.
       grab.active = true;
       avatar.dragging = true;
+      // A drag is a manual move: tell Rust to drop the perch before the 60 ms
+      // tracker re-targets the avatar back to the window border.
+      call("break_perch").catch(() => {});
       avatar.perched = false;
       avatar.perchRect = null;
       avatar.lookAt = null;
@@ -478,6 +556,12 @@ const DEFAULT_QUICK_TASKS = [
       "probably doing. Offer one concrete next step. Keep it under 180 characters.",
   },
   {
+    label: "What's on my screen?",
+    prompt: "Look at my screen and tell me what I am working on, naming the app and the one thing " +
+      "that most needs my attention. If there is an error or a question on screen, quote it.",
+    include_screen: true,
+  },
+  {
     label: "Quick diagnostic",
     prompt: "Run a quick diagnostic from the desktop context: call avatar_get_context and " +
       "avatar_get_clipboard, check idle time, the focused process and anything copied that looks " +
@@ -494,18 +578,24 @@ const DEFAULT_QUICK_TASKS = [
  * bubble so the `speech-clear` Rust emits (dismissing the old prompt) becomes a
  * "Thinking…" card instead of a blank screen.
  */
-async function sendUserMessage(text, profile) {
+async function sendUserMessage(text, profile, includeScreen) {
   const body = String(text == null ? "" : text).trim();
   if (!body) return false;
   // Empty/absent profile = whatever the panel has active.
   const pinned = typeof profile === "string" && profile.trim() ? profile.trim() : null;
+  // Screen vision: the watcher captures a frame and answers from it.
+  const screen = includeScreen === true;
 
   setExpression("thinking");
-  markManual(30);
+  markManual(screen ? 60 : 30);
   call("set_avatar_expression", { expression: "thinking" });
-  beginThinking("Thinking…");
+  beginThinking(screen ? "Looking at screen…" : "Thinking…");
 
-  const result = await call("notify_reply", { text: body, profile: pinned });
+  const result = await call("notify_reply", {
+    text: body,
+    profile: pinned,
+    include_screen: screen,
+  });
   if (result && result.__error) {
     endThinking();
     toast("Send failed: " + result.__error, true);
@@ -514,7 +604,7 @@ async function sendUserMessage(text, profile) {
   // No speech-clear arrived (not Tauri, or it was coalesced): show it here.
   if (!speech.thinking) {
     endThinking();
-    showThinking("Thinking…");
+    showThinking(screen ? "Looking at screen…" : "Thinking…");
   }
   toast("Sent");
   return true;
@@ -582,15 +672,17 @@ function renderQuickTasks() {
     chip.textContent = task.label;
     chip.title = task.prompt;
     if (task.profile) chip.dataset.profile = task.profile;
-    chip.addEventListener("click", () => runQuickTask(task.prompt, task.profile));
+    if (task.include_screen) chip.dataset.screen = "true";
+    chip.addEventListener("click", () =>
+      runQuickTask(task.prompt, task.profile, task.include_screen));
     host.appendChild(chip);
   }
 }
 
 /** A chip is one click → one task: close the bar and send it. */
-function runQuickTask(prompt, profile) {
+function runQuickTask(prompt, profile, includeScreen) {
   closeCommandBar();
-  sendUserMessage(prompt, profile);
+  sendUserMessage(prompt, profile, includeScreen);
 }
 
 /** Wipe the conversation context (the watcher rotates its session id). */
@@ -729,6 +821,16 @@ function setupUI() {
   // Ask / task: titlebar icon, control-panel button and the floating bar itself.
   document.getElementById("btn-chat").addEventListener("click", () => openCommandBar());
   document.getElementById("btn-ask").addEventListener("click", () => openCommandBar());
+  // Screen vision: one click captures the focused window and asks the local
+  // vision model. Same path as the "What's on my screen?" chip.
+  document.getElementById("btn-screen").addEventListener("click", () => {
+    sendUserMessage(
+      "Look at my screen and tell me what I am working on, naming the app and the one thing that " +
+        "most needs my attention. If there is an error or a question on screen, quote it.",
+      null,
+      true,
+    );
+  });
   document.getElementById("btn-new-chat").addEventListener("click", resetSession);
   document.getElementById("btn-rig").addEventListener("click", () => setRigMode(!RT.rigMode));
   document.getElementById("btn-rig-panel").addEventListener("click", () => setRigMode(true));
@@ -785,6 +887,39 @@ function setupUI() {
     toggleWatcherDrawer(false);
   });
   document.getElementById("btn-watcher-clear").addEventListener("click", clearWatcherLogs);
+  // ---- Voice (local Piper TTS): mute / unmute every spoken bubble ----
+  document.getElementById("tts-toggle").addEventListener("click", async () => {
+    const status = await setTtsEnabled(!tts.enabled);
+    if (status && !status.__error) {
+      toast(tts.enabled ? "Voice on" : "Voice muted");
+    }
+  });
+
+  // ---- Push to talk: hold the mic button (or hold Alt+V anywhere) ----
+  // `pttHeld` guards against a pointerup arriving without a pointerdown (and
+  // against the window listener double-stopping a release on the button).
+  let pttHeld = false;
+  const pttButton = document.getElementById("btn-ptt");
+  const releasePtt = async () => {
+    if (!pttHeld) return;
+    pttHeld = false;
+    await stopPtt();
+  };
+  pttButton.addEventListener("pointerdown", async (event) => {
+    if (event.button !== 0 || pttHeld || !stt.ready || !stt.enabled) return;
+    event.preventDefault();
+    pttHeld = true;
+    const status = await startPtt();
+    // The mic refused to open: do not wait for a release that cannot help.
+    if (status && status.state === "idle" && status.last_error) {
+      pttHeld = false;
+      toast("Microphone: " + status.last_error, true);
+    }
+  });
+  pttButton.addEventListener("pointerup", releasePtt);
+  pttButton.addEventListener("pointercancel", releasePtt);
+  // A release outside the button must still end the hold.
+  window.addEventListener("pointerup", releasePtt);
   document.getElementById("btn-watcher-ping").addEventListener("click", async () => {
     // One click drives the whole pipeline: the page reports an interaction,
     // Rust fans it out on GET /events, the watcher wakes and Hermes answers over
@@ -875,8 +1010,11 @@ function setupUI() {
         event.preventDefault();
         break;
       case "r": setRigMode(!RT.rigMode); break;
+      // The conversation log: same toggle as the panel/command-bar buttons.
+      case "h": toggleHistoryDrawer(); break;
       case "escape":
         if (commandBarVisible()) closeCommandBar();
+        else if (historyOpen()) toggleHistoryDrawer(false);
         else if (RT.rigMode) setRigMode(false);
         else if (isWatcherDrawerOpen()) toggleWatcherDrawer(false);
         else toggleCollapsed(!avatar.collapsed); break;
@@ -921,6 +1059,17 @@ function installDebugSurface() {
       visible: speech.visible,
       text: speech.visible ? speech.full : "",
     }),
+    /** Local voice (Piper): enabled / ready / why it is silent. */
+    tts: () => ({ enabled: tts.enabled, ready: tts.ready, reason: tts.reason, model: tts.model }),
+    /** Push to talk: live state, readiness, hotkey and the last transcript. */
+    stt: () => ({
+      enabled: stt.enabled,
+      ready: stt.ready,
+      state: stt.state,
+      hotkey: stt.hotkey,
+      transcript: stt.transcript,
+      reason: stt.reason,
+    }),
     /** Details drawer: read it, expand it, copy it (CDP can drive all three). */
     details: () => ({
       open: detailsOpen(),
@@ -936,6 +1085,13 @@ function installDebugSurface() {
       tracking: gaze.tracking,
       hover: round(gaze.hover, 3),
       glanceAt: round(gaze.nextGlance, 2),
+      // Global eye tracking (Rust `cursor-pos`): where the OS cursor is, how
+      // long ago it last moved, and the eased head yaw it is producing.
+      cursorX: round(gaze.cursorX, 1), cursorY: round(gaze.cursorY, 1),
+      cursorAt: round(gaze.cursorAt, 2),
+      cursorFresh: avatar.time - gaze.cursorAt < GAZE_CURSOR_HOLD,
+      cursorTracking: gaze.cursorTracking,
+      tilt: round(gaze.tilt, 4), tiltTarget: round(gaze.tiltTarget, 4),
     }),
     /** Perch/gaze directives the page is currently obeying (see `POST /perch`). */
     perched: () => ({
@@ -943,12 +1099,15 @@ function installDebugSurface() {
       rect: avatar.perchRect || null,
       lookAt: avatar.lookAt || null,
     }),
-    /** Text-driven lip sync: current character + the openness it produced. */
+    /** Lip sync: current character, the openness it produced, and whether a
+     *  Piper RMS envelope is driving it (audio-driven) or not (text-driven). */
     mouth: () => ({
       char: speech.char,
       open: round(speech.mouthOpen, 3),
       smooth: round(speech.mouthSmooth, 3),
       variant: speech.mouthVariant,
+      envelope: speech.envelope ? speech.envelope.length : 0,
+      bucketMs: speech.envelope ? speech.envelopeBucketMs : 0,
     }),
     /** Bubble geometry vs. the head anchor — the per-frame tracking check. */
     bubble: () => {
@@ -1087,6 +1246,10 @@ async function init() {
 
   setExpression("neutral");
   setupUI();
+  // The conversation log: hydrate from Rust, then follow `chat-message` /
+  // `chat-history-cleared`. Its **New chat** button reuses the page's own
+  // `resetSession`, so both entry points rotate the session identically.
+  setupHistory({ onNewChat: resetSession });
   buildInspector();
   buildTimeline();
   updateStatusUI();
@@ -1117,6 +1280,10 @@ async function init() {
 
   // The supervised watcher's switch, badge, log drawer and command-bar chips.
   refreshWatcher().then(renderQuickTasks);
+  // Local Piper voice: is it ready, and is the speaker switch on?
+  refreshTts();
+  // Microphone / Whisper: ready, and what is it doing right now?
+  refreshStt();
   // AI profiles + the live health dot. The probe is capped at 800 ms in Rust,
   // so a dead endpoint cannot make this interval pile up.
   refreshAiProfiles();

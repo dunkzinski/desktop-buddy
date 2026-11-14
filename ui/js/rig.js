@@ -19,6 +19,15 @@ import { call } from "./ipc.js";
 /** Head tilt (radians, ~3°) at full hover — the "the cursor is on me" sign. */
 const HOVER_HEAD_TILT = 0.05;
 
+/**
+ * Is this the head bone? A `head`-tagged part is authoritative; a rig that
+ * never tagged its parts still gets the life signs through the bone id.
+ */
+function isHeadBone(bone) {
+  return !!bone
+    && (bone.parts.some((part) => part.tag === "head") || /head/i.test(bone.id));
+}
+
 /* ---------- model loading ---------- */
 
 export function boneDefaults(bone) {
@@ -155,8 +164,13 @@ export function animOffset(bone) {
   }
   // Hover life-sign: a soft head tilt while the cursor rests on the avatar.
   // `gaze.hover` is eased by main.js, so the tilt eases in and back out.
-  if (gaze.hover > 0 && bone.parts.some((part) => part.tag === "head")) {
-    rot += gaze.hover * HOVER_HEAD_TILT;
+  // The yaw bias is the global eye-tracking half of the same idea: the head
+  // turns a few degrees toward whatever the eyes are following (the OS cursor,
+  // a perch, or an explicit `look_at`). Both are added here and clamped by
+  // `localRotation` against the bone's `limits`, so a rig that declares a neck
+  // range can never be spun past it.
+  if (isHeadBone(bone)) {
+    rot += gaze.hover * HOVER_HEAD_TILT + num(gaze.tilt, 0);
   }
   const bob = anim.bob ? Math.sin(avatar.time * 1.8 + phase) * anim.bob : 0;
   return { rot, bob };
@@ -393,6 +407,12 @@ export function wireRegions() {
   // user could see the input but never focus it.
   const commandBar = document.getElementById("command-bar");
   if (commandBar && !commandBar.classList.contains("hidden")) push(commandBar);
+  // The history drawer is a floating card as well — while it is open its rows,
+  // Details toggles and Copy buttons must accept clicks over a click-through
+  // desktop. Withdrawing the region when it closes is what re-arms
+  // click-through, so it is published only while visible.
+  const historyDrawer = document.getElementById("history-drawer");
+  if (historyDrawer && !historyDrawer.classList.contains("hidden")) push(historyDrawer);
   // The speech bubble hosts the quick-reply box: while it is on screen its box
   // must accept clicks, or the user could see the input but not type in it.
   const bubble = document.getElementById("speech");

@@ -90,7 +90,9 @@ You never need a terminal to talk to the avatar:
 * **Quick-task chips** under the input fire one canned task each. They come from
   `quick_tasks` in `watcher_rules.json` (via `GET /watcher`), so you can edit
   them without rebuilding: summarise the clipboard, ask what window you are in,
-  run a diagnostic, or anything you script.
+  run a diagnostic, or anything you script. A chip may pin a `profile` and/or set
+  `include_screen: true` (the **What's on my screen?** chip does), which asks the
+  watcher for a screenshot alongside the text.
 * **↺** (in the bar) and **New chat** (control panel) call `reset_session`, i.e.
   `POST /session/reset`: the conversation context is dropped and the next task
   starts a fresh session.
@@ -188,8 +190,17 @@ The target is computed from the window rect and how far the avatar's artwork
 reaches from its root in each direction (`left`/`right`/`up`/`down`, which the
 page reports with `report_state` — the root sits near the hips, so half the
 height would leave the feet floating), so the pixels touch the border rather
-than the bone root. It is then clamped to the primary monitor, so a window flush
-with the screen edge cannot push the avatar off screen.
+than the bone root. It is then clamped to the **monitor that window is on**, so
+a window flush with that screen's edge cannot push the avatar off it, and a
+window on a secondary monitor is not dragged back to the primary one.
+
+The perch is **live**: the resolved window's `HWND`, edge and offset are stored,
+and a 60 ms poll re-reads its `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`
+rect. Drag or resize the window and the avatar walks along its border with it; a
+change under 1 px is ignored so a still window produces no traffic. Minimize or
+close the window and the perch is dropped (`perched: false`, `perch_rect: null`,
+state `idle`). A user drag of the avatar, the `break_perch` command, or any
+`POST /move` ends the perch immediately so the tracker never fights the pointer.
 
 ```json
 {
@@ -382,12 +393,16 @@ Every clip on the loaded rig, sorted by name:
 { "ok": true, "model": "demo-blob", "rig_path": ".../model.json",
   "animations": [
     { "name": "breathe", "duration_ms": 2400.0, "loop": true, "keyframes": 3 },
+    { "name": "celebrate", "duration_ms": 1400.0, "loop": false, "keyframes": 5 },
     { "name": "wave", "duration_ms": 1400.0, "loop": false, "keyframes": 6 }
   ] }
 ```
 
 `duration_ms` is always `> 0`, `keyframes` is the authored keyframe count, and a
-model with no `animations` block returns `"animations": []`.
+model with no `animations` block returns `"animations": []`. The shipped rigs
+carry a **reaction library** — `nod`, `shake_head`, `celebrate`, `alert_ping`,
+`idle_fidget` — alongside `wave`/`breathe`, so an `openai_compat` model can ask
+for `{"animate": "nod"}` with no extra setup.
 
 #### `POST /animate`
 
@@ -480,6 +495,32 @@ Immediately hides the bubble and stops the mouth animation.
 `GET /state` also carries `talking`, so a client can watch the mouth state
 without polling `/speech`.
 
+#### `GET /history`
+
+```json
+{
+  "ok": true,
+  "messages": [
+    { "id": 1, "role": "user", "text": "what does the history drawer do?", "ts_ms": 1794621725236 },
+    { "id": 2, "role": "assistant", "text": "It keeps the last 50 turns in memory.",
+      "details": "fn push_chat() { /* bounded VecDeque */ }",
+      "expression": "happy", "ts_ms": 1794621725766 }
+  ]
+}
+```
+
+The session's conversation turns, **oldest first** — the same in-memory log the
+page's **History** drawer renders (and the same body the `get_chat_history`
+command returns). A `"user"` turn is recorded by every `POST /reply` (and the
+command bar / push-to-talk, which share that path); an `"assistant"` turn by
+every `POST /speak` (and by every agent reply, which funnels through
+`do_speak`), carrying the same `details` and `expression` the bubble had.
+`POST /session/reset` empties the list.
+
+The log is bounded to **50 turns** (the oldest is evicted), holds no ids beyond
+the per-process counter, is never written to disk, and starts empty on every
+launch. `details` and `expression` are omitted when absent.
+
 ### `POST /click-through`
 
 ```json
@@ -525,7 +566,7 @@ curl -s localhost:8765/watcher
 `quick_tasks` is the command bar's chip list, read straight out of
 `watcher_rules.json` (`[{"label": "...", "prompt": "..."}]`, capped at 6). Edit
 the file, reopen the bar and the chips change — no rebuild. With no `quick_tasks`
-array (or an unreadable file) the app falls back to three built-in chips
+array (or an unreadable file) the app falls back to four built-in chips
 (clipboard summary, active window, quick diagnostic).
 
 ```bash
@@ -544,6 +585,86 @@ matters — the watcher logs `[watcher] queued pending trigger (1 slot)`) and ru
 as soon as that turn's child exits or is killed by the timeout. Routine triggers
 (`interaction`, `window_title`, `idle_return`) are dropped while busy, so
 background noise never stacks up behind a task.
+
+### `GET /tts` / `POST /tts`
+
+The local **Piper** voice — the same switch the control panel's **Voice** toggle drives.
+
+```bash
+curl -s localhost:8765/tts
+```
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "ready": true,
+  "reason": null,
+  "piper_exe_path": "C:\\hermes\\tools\\piper\\piper.exe",
+  "model_path": "C:\\hermes\\tools\\piper\\voices\\en_GB-southern_english_female-low.onnx",
+  "espeak_data_path": "C:\\hermes\\tools\\piper\\espeak-ng-data",
+  "speaker_id": null,
+  "length_scale": 1.0
+}`
+```
+
+Every speech bubble is read out loud (`lfm3-fast`, `hermes_cli` and any other
+caller — it hooks the one `do_speak` path). `ready: false` means `piper.exe`, the
+`.onnx` voice model or the espeak-ng data directory was missing at startup;
+`reason` names the missing piece and the avatar keeps working silently.
+
+```bash
+curl -s -X POST localhost:8765/tts -H 'content-type: application/json' -d '{"enabled": false}'  # mute
+curl -s -X POST localhost:8765/tts -H 'content-type: application/json' -d '{"enabled": true}'   # unmute
+```
+
+Both return the same object. Muting also stops the line that is playing. The
+mute lives in memory only — `watcher_rules.json` is never rewritten, so a
+restart returns to the file's `tts.enabled`. The panel drives the same code
+through the `get_tts_status` / `set_tts_enabled` commands and gets `tts-status`
+events.
+
+### `GET /stt` / `POST /stt`
+
+Push-to-talk voice input. `GET` returns the `stt` settings plus the worker's live
+state:
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "ready": true,
+  "state": "idle",
+  "reason": null,
+  "hotkey": "Alt+V",
+  "whisper_exe_path": "C:\\hermes\\tools\\whisper.cpp\\build\\bin\\Release\\whisper-cli.exe",
+  "whisper_model_path": "C:\\hermes\\tools\\whisper.cpp\\ggml-base.en.bin",
+  "silero_vad_model_path": "C:\\hermes\\tools\\whisper.cpp\\ggml-silero-v6.2.0.bin",
+  "vad_threshold": 0.5,
+  "language": "en",
+  "min_speech_ms": 250,
+  "last_transcript": "",
+  "last_error": null,
+  "sample_rate": 16000
+}
+```
+
+`state` is `idle`, `listening` (the microphone is open) or `transcribing`
+(Whisper is running). `ready: false` means `whisper-cli.exe`, a model or the
+microphone was missing at startup; `reason` names the missing piece and the app
+keeps working without voice input. `sample_rate` is the rate the device actually
+opened at (the clip is resampled to 16 kHz before Whisper sees it).
+
+```bash
+curl -s localhost:8765/stt                                                        # status
+curl -s -X POST localhost:8765/stt -H 'content-type: application/json' -d '{"enabled": false}'  # mute
+```
+
+`POST` takes `{"enabled": bool}` — muting a hold stops it — and returns the same
+object. Runtime only: a restart restores `stt.enabled`. Recording itself is
+driven by the **Hold to talk** button or the `stt.hotkey` hold; the API can read
+and mute but cannot press the button. The transcript is posted to `POST /reply`
+as if it had been typed.
 
 ### `GET /ai-profiles` / `POST /ai-profile`
 
@@ -619,9 +740,13 @@ the executable that owns it, `GetLastInputInfo` + `GetTickCount64` for
 machine-wide idle time, `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`
 (falling back to `GetWindowRect`) for the focused window's rectangle, and
 `EnumWindows` for the front-most visible windows. Every rectangle is converted
-from physical pixels to **CSS pixels** with the primary monitor's DPI scale, so
-it lines up with the overlay's coordinate space and with the avatar's own
-position. On other platforms the values are empty/zero (`"window_rect": null`,
+from physical pixels to **CSS pixels** measured from the **virtual desktop's**
+origin (`SM_XVIRTUALSCREEN`, negative when a monitor sits left of or above the
+primary) and divided by the CSS `scale`, so it lines up with the overlay's
+coordinate space — the overlay covers every monitor — and with the avatar's own
+position. `screen` describes that space in physical pixels;
+`physical = css * scale + origin` is the conversion back, which is what the
+watcher's GDI capture uses. On other platforms the values are empty/zero (`"window_rect": null`,
 `"visible_windows": []`) and `source` says so.
 
 ```bash
@@ -635,12 +760,16 @@ curl -s localhost:8765/context
   "process_name": "Code.exe",
   "idle_secs": 12,
   "window_rect": { "x": 400.0, "y": 300.0, "width": 800.0, "height": 500.0 },
+  "foreground_hwnd": 67672,
   "visible_windows": [
     { "title": "main.rs - visual-studio-code", "process_name": "Code.exe",
-      "rect": { "x": 400.0, "y": 300.0, "width": 800.0, "height": 500.0 } },
+      "rect": { "x": 400.0, "y": 300.0, "width": 800.0, "height": 500.0 },
+      "hwnd": 67672 },
     { "title": "Inbox - Firefox", "process_name": "firefox.exe",
-      "rect": { "x": 1200.0, "y": 60.0, "width": 700.0, "height": 900.0 } }
+      "rect": { "x": 1200.0, "y": 60.0, "width": 700.0, "height": 900.0 },
+      "hwnd": 88214 }
   ],
+  "screen": { "x": 0.0, "y": 0.0, "width": 1920.0, "height": 1080.0, "scale": 1.0 },
   "avatar_state": {
     "position": [700.0, 500.0],
     "target_position": [700.0, 500.0],
@@ -740,6 +869,24 @@ It broadcasts a `user_reply` frame on `GET /events` and dismisses the bubble.
 `text` must not be blank and is capped at 500 characters (**400** otherwise).
 The page-side twin is the `notify_reply` command, so a reply behaves identically
 whichever end sent it.
+
+Optional `include_screen: true` rides the same frame and tells
+`char-rig-watcher.exe` to attach a screenshot to this turn even when the text
+matches none of the `vision.trigger_phrases` phrases — it is what the panel's
+**What's on screen?** button and the command bar's matching chip send:
+
+```bash
+curl -s -X POST localhost:8765/reply -H 'content-type: application/json' \
+     -d '{"text":"what is this error?","include_screen":true}'
+```
+
+The watcher resolves the `vision` AI profile by name, captures the focused
+window (or the full screen when `capture_mode` says so or the rect is unusable),
+downscales to `max_image_dim`, JPEG-encodes it in memory and sends one
+OpenAI-shaped multimodal `chat/completions` request. The image is never written
+to disk. A disabled block, an unreachable endpoint or a failed capture produces
+a spoken apology instead of a stuck **Thinking…** — the text routes are
+unaffected.
 
 ### `POST /alert`
 
@@ -887,11 +1034,11 @@ curl -s -X POST localhost:8765/shutdown
 ## Internal (Tauri command) surface
 
 The page talks to Rust through `invoke`; the same mutations are available as
-commands. Arguments are snake_case (`rename_all = "snake_case"`). All 34, in the
+commands. Arguments are snake_case (`rename_all = "snake_case"`). All 44, in the
 order they are registered (ARCHITECTURE.md §6 has the full purpose table):
 
 **State, window & interaction** — `get_avatar_state`, `get_runtime_info`,
-`set_avatar_position(x, y)`, `set_avatar_expression(expression)`,
+`set_avatar_position(x, y)`, `break_perch()`, `set_avatar_expression(expression)`,
 `set_avatar_state(new_state)`, `trigger_wave`, `report_state(position,
 target_position, state, expression, joints?, talking?, speech?)`,
 `update_hit_regions(regions)`, `set_click_through(enabled)`,
@@ -908,9 +1055,24 @@ target_position, state, expression, joints?, talking?, speech?)`,
 (the bubble's **Copy** button; same Win32 writer as `POST /clipboard`),
 `clear_speech`, `get_speech`.
 
+**Conversation history** — `get_chat_history` returns the `GET /history` body
+(`{ok, messages}`: the current session's turns, oldest first, at most 50). The
+drawer hydrates from it on load and then follows the page-local `chat-message` /
+`chat-history-cleared` events, so it never polls.
+
 **Watcher** — `get_watcher_status`, `set_watcher_enabled(enabled)`. The switch
 and log tail behind the control panel's **Watcher** row and the pop-out console;
 `set_watcher_enabled` returns the same status object as `GET /watcher`.
+
+**Voice** — `get_tts_status` (the `GET /tts` object) and `set_tts_enabled(enabled)`
+(the **Voice** switch: mute/unmute the local Piper voice, emits `tts-status`,
+returns the new status; runtime only, `watcher_rules.json` is never rewritten).
+
+**Push to talk** — `get_stt_status` (the `GET /stt` object), `ptt_start` /
+`ptt_stop` (the **Hold to talk** button's press and release; `ptt_start` also cuts
+the Piper voice off so the mic does not hear the avatar), and
+`set_stt_enabled(enabled)` (mute/unmute, emits `stt-status`). Each returns the live
+status object.
 
 **AI brain** — `get_ai_profiles` (the same object as `GET /ai-profiles`, health
 probe included) and `set_ai_profile(name)` (the **AI Brain** dropdown; persists,
@@ -939,7 +1101,8 @@ session id.
 Events emitted to the page: `avatar-state-changed` (full state after every
 command/API mutation), `api-status` (bound address or `offline`),
 `model-changed`, `rig-pose`, `rig-saved`, `part-patch`, `emote`, `speak`
-(including `details`), `speech-clear`, `avatar-animate` (play/stop a custom clip:
+(including `details`), `speech-clear`, `tts-status` (`{enabled, ready, reason,…}`
+after every voice toggle), `avatar-animate` (play/stop a custom clip:
 `{action, name, duration_ms, loop}`), `summon-command-bar` (`{source, hotkey}` —
 the global hotkey fired; the page opens the bar and focuses its input).
 

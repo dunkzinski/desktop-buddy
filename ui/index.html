@@ -73,7 +73,12 @@
       <button class="control-btn" id="btn-walk-random" title="Walk somewhere random">Walk</button>
       <button class="control-btn danger" id="btn-center" title="Walk back to center">Center</button>
       <button class="control-btn" id="btn-new-chat" title="Start a new chat: reset the conversation context">New chat ↺</button>
+      <button class="control-btn" id="btn-history" title="Conversation history (H)" aria-pressed="false">History</button>
       <button class="control-btn" id="btn-ask" title="Ask or task the avatar (Enter)">Ask…</button>
+      <button class="control-btn" id="btn-screen"
+              title="What's on my screen? Captures the focused window and answers with the local vision model">
+        What's on screen?
+      </button>
     </div>
   </div>
 
@@ -104,6 +109,28 @@
     <div class="slider-row">
       <input type="range" id="walk-speed" min="50" max="400" step="10" value="150" />
       <span class="slider-value" id="walk-speed-value">150 px/s</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <label>Voice</label>
+    <div class="watcher-row">
+      <button class="switch" id="tts-toggle" role="switch" aria-checked="true"
+              title="Speak every bubble out loud (local Piper, no network)">
+        <span class="switch-knob"></span>
+      </button>
+      <span class="watcher-badge off" id="tts-badge" title="Piper voice status">off</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <label>Push to talk</label>
+    <div class="watcher-row">
+      <button class="control-btn ptt-btn" id="btn-ptt"
+              title="Hold to talk (or hold Alt+V anywhere). Release to send.">
+        Hold to talk
+      </button>
+      <span class="watcher-badge off" id="stt-badge" title="Microphone status">idle</span>
     </div>
   </div>
 
@@ -219,6 +246,7 @@
       <input type="text" id="command-input" maxlength="500" spellcheck="false"
              placeholder="Ask or task the avatar…" aria-label="Ask or task the avatar" />
       <button type="submit" id="command-send" class="cmd-btn primary" title="Send (Enter)">Send</button>
+      <button type="button" id="command-history" class="cmd-btn" title="Conversation history (H)" aria-label="Conversation history" aria-pressed="false">☰</button>
       <button type="button" id="command-newchat" class="cmd-btn" title="New chat: reset the conversation context" aria-label="New chat">↺</button>
       <button type="button" id="command-close" class="cmd-btn" title="Close (Esc)" aria-label="Close">✕</button>
     </div>
@@ -243,6 +271,25 @@
   </div>
   <div id="speech-tail" class="below"></div>
 </div>
+
+<!--
+  Conversation history: the in-memory transcript of this session. It lives
+  outside #speech on purpose — a bubble auto-dismisses, the log does not.
+  rig.js::wireRegions publishes this box only while it is open, so it stays
+  clickable over a click-through desktop and gives the desktop back when closed.
+-->
+<aside id="history-drawer" class="hidden" role="dialog" aria-label="Conversation history" aria-hidden="true">
+  <header>
+    <h3>History</h3>
+    <span class="hist-count" id="history-count" title="Turns kept in this session">0</span>
+    <span class="hd-spacer"></span>
+    <button class="mini-btn" id="btn-history-clear" title="New chat: reset the conversation context and empty this log">New chat ↺</button>
+    <button class="mini-btn" id="btn-history-close" title="Close (Esc)" aria-label="Close">✕</button>
+  </header>
+  <div id="history-list" class="hist-list">
+    <div class="hist-empty" id="history-empty">Loading…</div>
+  </div>
+</aside>
 
 <div class="toast" id="toast"></div>
 

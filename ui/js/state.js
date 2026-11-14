@@ -106,6 +106,39 @@ export const ai = {
   checked: false,
 };
 
+/* ---------- local voice (Piper TTS) ---------- */
+/**
+ * Mirror of `get_tts_status` / `GET /tts`: the control panel's **Voice** row.
+ * `ready` is false when Piper or the `.onnx` model is missing on disk; `reason`
+ * then explains why the avatar is silent.
+ */
+export const tts = {
+  enabled: true,
+  ready: false,
+  reason: "",
+  /** Voice model file name, for the badge tooltip. */
+  model: "",
+  checked: false,
+};
+
+/* ---------- push-to-talk voice input (Whisper STT) ---------- */
+/**
+ * Mirror of `get_stt_status` / `GET /stt`: the panel's **Push to talk** row.
+ * `state` is the live worker state (`idle` / `listening` / `transcribing`);
+ * `ready` is false when whisper-cli, a model or the microphone is missing, and
+ * `reason` then says which.
+ */
+export const stt = {
+  enabled: true,
+  ready: false,
+  reason: "",
+  state: "idle",
+  /** Last cleaned transcript (shown in the badge tooltip). */
+  transcript: "",
+  hotkey: "",
+  checked: false,
+};
+
 /* ---------- rig runtime (model, bones, images, pose, world) ---------- */
 export const RT = {
   model: null,
@@ -198,6 +231,42 @@ export const gaze = {
   /** Eased hover weight 0..1 (cursor inside the avatar's bounds). */
   hover: 0,
   hoverTarget: 0,
+  /**
+   * The **global** OS cursor, from Rust's `cursor-pos` event (CSS px in the
+   * virtual-desktop space) — the only cursor signal that exists while the
+   * overlay is click-through and unfocused. `cursorAt` is the `avatar.time` of
+   * the last event, so the gaze can fall back to idle glances once the cursor
+   * has sat still for a few seconds.
+   */
+  cursorX: 0, cursorY: 0, cursorAt: -100,
+  /** True while the gaze is being driven by the global cursor. */
+  cursorTracking: false,
+  /**
+   * Eased head-bone yaw bias in radians, folded into the head's rotation by
+   * `rig.js::animOffset`. `tiltTarget` is what `updateGaze` wants; the eased
+   * value is what is drawn, so the head turns instead of snapping.
+   */
+  tilt: 0, tiltTarget: 0,
+};
+
+/* ---------- conversation history (the History drawer) ---------- */
+/**
+ * Mirror of the Rust-side in-memory chat log (`get_chat_history` /
+ * `GET /history`), plus the drawer's own view state.
+ *
+ * The Rust side owns the truth: the drawer hydrates once on load, then appends
+ * from the `chat-message` event and empties on `chat-history-cleared`. Nothing
+ * here is persisted — a restart starts a new, empty chat.
+ */
+export const chat = {
+  /** `[{ id, role: "user"|"assistant", text, details?, expression?, ts_ms }]`, oldest first. */
+  messages: [],
+  /** Is the drawer on screen? Also decides whether its box is a hit region. */
+  open: false,
+  /** True once the hydrate call has answered (so an empty list can say so). */
+  hydrated: false,
+  /** Ids whose `details` block is expanded. */
+  expanded: {},
 };
 
 /* ---------- speech bubble state ---------- */
@@ -227,6 +296,15 @@ export const speech = {
   mouthSmooth: 0,
   /** Sprite variant that matches `mouthOpen`: `open` | `flat` | `closed`. */
   mouthVariant: "closed",
+  /**
+   * Live Piper RMS envelope (`tts-envelope`): normalized 0..1 samples plus the
+   * `performance.now()` timestamp they started at. While this is set it owns
+   * `mouthOpen` — the typewriter mapping only takes over when the voice is
+   * muted, missing, or the line has finished.
+   */
+  envelope: null,
+  envelopeBucketMs: 25,
+  envelopeAt: 0,
 };
 
 /* ---------- helpers ---------- */

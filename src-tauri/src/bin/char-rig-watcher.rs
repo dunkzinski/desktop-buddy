@@ -44,6 +44,11 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, Notify};
 use tokio_stream::StreamExt;
 
+/// Screen capture + JPEG encoding for the vision path (`capture/mod.rs`).
+mod capture;
+
+use capture::Rect;
+
 /* ------------------------------------------------------------------ *
  * constants
  * ------------------------------------------------------------------ */
@@ -104,6 +109,29 @@ const MAX_DETAILS_CHARS: usize = 8000;
 
 /// Default per-request timeout for an `openai_compat` profile.
 const DEFAULT_OPENAI_TIMEOUT_SECS: u64 = 60;
+
+/// `ai_profiles` entry a screenshot is sent to when `vision.profile_name` is absent.
+const DEFAULT_VISION_PROFILE: &str = "vision";
+/// Longest image edge handed to the vision model by default (one source of
+/// truth lives next to the encoder).
+const DEFAULT_VISION_MAX_IMAGE_DIM: u32 = capture::DEFAULT_MAX_IMAGE_DIM;
+/// Default JPEG quality for the screenshot.
+const DEFAULT_VISION_JPEG_QUALITY: u8 = capture::DEFAULT_JPEG_QUALITY;
+/// Title of the avatar's own overlay window (never screenshotted).
+const SELF_WINDOW_TITLE: &str = "AI Avatar Desktop";
+/// Bubble posted when vision cannot run (missing profile, capture or endpoint).
+const VISION_UNAVAILABLE_TEXT: &str =
+    "I couldn't look at your screen just now. Ask me again in a moment.";
+/// Phrases that ask for a screenshot on their own.
+const DEFAULT_VISION_TRIGGER_PHRASES: [&str; 7] = [
+    "what's on my screen",
+    "whats on my screen",
+    "what is on my screen",
+    "look at my screen",
+    "see my screen",
+    "read my screen",
+    "check my screen",
+];
 
 /// The JSON contract both AI paths are asked for.
 ///
@@ -357,6 +385,17 @@ impl AiShared {
 
     fn snapshot(&self, requested: Option<&str>) -> Option<(String, AiProfile)> {
         lock_ai(self).resolved(requested).map(|(name, profile)| (name, profile.clone()))
+    }
+
+    /// Exact-name lookup with **no** fallback: the vision path must not silently
+    /// send screenshots to whatever the active text profile happens to be.
+    fn named(&self, name: &str) -> Option<(String, AiProfile)> {
+        let runtime = lock_ai(self);
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        runtime.profile(name).cloned().map(|profile| (name.to_string(), profile))
     }
 
     fn cli_fallback(&self) -> Option<(String, AiProfile)> {
@@ -1344,6 +1383,118 @@ struct QuickTask {
     profile: Option<String>,
 }
 
+/// What a vision-triggered capture grabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CaptureMode {
+    /// The focused window (falls back to the screen when there is no usable rect).
+    ActiveWindow,
+    /// The whole virtual desktop.
+    FullScreen,
+}
+
+impl Default for CaptureMode {
+    fn default() -> Self {
+        Self::ActiveWindow
+    }
+}
+
+impl CaptureMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            CaptureMode::ActiveWindow => "active window",
+            CaptureMode::FullScreen => "screen",
+        }
+    }
+}
+
+/// The `vision` block of `watcher_rules.json`: local screen vision.
+///
+/// `#[serde(default)]` on the container is what keeps a rules file written
+/// before vision existed loading unchanged — it just gets these defaults.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+struct VisionRules {
+    /// Master switch. `false` turns `include_screen` and phrase matches into a
+    /// normal text answer (nothing is captured).
+    enabled: bool,
+    /// `ai_profiles` entry the screenshot is sent to.
+    profile_name: String,
+    /// `active_window` (default) or `full_screen`.
+    capture_mode: CaptureMode,
+    /// Longest image edge handed to the model, aspect ratio preserved.
+    max_image_dim: u32,
+    /// JPEG quality, 1..=100.
+    jpeg_quality: u8,
+    /// Case-insensitive phrases that trigger a capture by themselves.
+    trigger_phrases: Vec<String>,
+}
+
+impl Default for VisionRules {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            profile_name: DEFAULT_VISION_PROFILE.to_string(),
+            capture_mode: CaptureMode::default(),
+            max_image_dim: DEFAULT_VISION_MAX_IMAGE_DIM,
+            jpeg_quality: DEFAULT_VISION_JPEG_QUALITY,
+            trigger_phrases: DEFAULT_VISION_TRIGGER_PHRASES
+                .iter()
+                .map(|phrase| (*phrase).to_string())
+                .collect(),
+        }
+    }
+}
+
+fn normalize_phrase(text: &str) -> String {
+    // Apostrophes are typed inconsistently ("what's" vs "whats"), so both the
+    // phrase and the user's words lose them before comparing.
+    let mut out = String::with_capacity(text.len());
+    let mut last_space = true;
+    for ch in text.chars() {
+        let ch = match ch {
+            '\'' | '\u{2019}' | '`' => continue,
+            other => other,
+        };
+        if ch.is_whitespace() {
+            if !last_space {
+                out.push(' ');
+                last_space = true;
+            }
+            continue;
+        }
+        last_space = false;
+        for lower in ch.to_lowercase() {
+            out.push(lower);
+        }
+    }
+    out.trim().to_string()
+}
+
+impl VisionRules {
+    /// Does this text ask for a screenshot? (case/punctuation-insensitive)
+    fn matches_trigger(&self, text: &str) -> bool {
+        let haystack = normalize_phrase(text);
+        if haystack.is_empty() {
+            return false;
+        }
+        self.trigger_phrases.iter().any(|phrase| {
+            let needle = normalize_phrase(phrase);
+            !needle.is_empty() && haystack.contains(&needle)
+        })
+    }
+
+    /// The JPEG quality actually used (clamped to something encoders accept).
+    fn quality(&self) -> u8 {
+        self.jpeg_quality.clamp(1, 100)
+    }
+
+    /// The image cap actually used (`0` is nonsense, so fall back to 1).
+    fn max_dim(&self) -> u32 {
+        self.max_image_dim.max(1)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 #[serde(default)]
 struct Rules {
@@ -1378,6 +1529,9 @@ struct Rules {
     /// Longest `/hermes_cmd` timeout, in seconds.
     hermes_timeout_secs: Option<u64>,
     webhook_url: Option<String>,
+    /// Local screen vision (`vision` block): capture settings + trigger phrases.
+    #[serde(default)]
+    vision: VisionRules,
 }
 
 impl Rules {
@@ -1704,6 +1858,10 @@ struct Trigger {
     text: Option<String>,
     /// `info` | `warn` | `error`, from an `alert` frame.
     severity: Option<String>,
+    /// The user explicitly asked for a screenshot (`include_screen`).
+    include_screen: bool,
+    /// The foreground window rect at trigger time (the vision crop).
+    window_rect: Option<Rect>,
 }
 
 impl Trigger {
@@ -1740,6 +1898,37 @@ impl Trigger {
             map.insert("y".to_string(), json!(y));
         }
         Value::Object(map)
+    }
+
+    /// Should this trigger look at the screen instead of routing the text?
+    ///
+    /// True when the user asked explicitly (`include_screen`, the panel chip /
+    /// `POST /reply`) or when their words match a configured trigger phrase.
+    fn wants_vision(&self, vision: &VisionRules) -> bool {
+        if !vision.enabled {
+            return false;
+        }
+        if self.include_screen {
+            return true;
+        }
+        self.text.as_deref().map(|text| vision.matches_trigger(text)).unwrap_or(false)
+    }
+
+    /// The user message handed to the vision model alongside the screenshot.
+    fn vision_prompt(&self, mode: &str) -> String {
+        let mut prompt = match self.text.as_deref() {
+            Some(text) => format!("The user asked: {text:?}\n"),
+            None => "The user asked what is on their screen.\n".to_string(),
+        };
+        if !self.window_title.is_empty() {
+            prompt.push_str(&format!("The focused window is titled {:?}.\n", self.window_title));
+        }
+        prompt.push_str(&format!(
+            "You are looking at a screenshot of their {mode}. Answer the question from what is actually \
+visible, quote real text when asked to read it, and never invent UI that is not in the image. \
+Keep the speech under 180 characters."
+        ));
+        prompt
     }
 
     /// Concise description of what happened, without any backend-specific
@@ -1864,6 +2053,13 @@ fn user_reply_trigger(shared: &Shared, payload: &Value, now: Instant) -> Option<
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .map(str::to_string),
+        // The panel chip sets this; the endpoint forwards it verbatim.
+        include_screen: payload
+            .get("include_screen")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        // Snapshot the crop now: `/context` may be re-polled while a turn runs.
+        window_rect: shared.context.window_rect,
         ..Trigger::default()
     })
 }
@@ -2020,6 +2216,9 @@ struct ContextSnapshot {
     /// older avatar builds and off Windows.
     process_name: String,
     idle_secs: u64,
+    /// Physical-pixel rect of the focused window, when `/context` reported one.
+    /// This is the crop the vision path uses for `capture_mode: active_window`.
+    window_rect: Option<Rect>,
 }
 
 #[derive(Debug, Default)]
@@ -2464,6 +2663,255 @@ fn ack_plan(trigger: &Trigger, config: &Config) -> Option<Ack> {
     }
 }
 
+/// Build the multimodal `chat/completions` body (pure, so the contract is
+/// unit-tested: one text part plus one `data:` image part).
+fn vision_request_body(
+    model: &str,
+    system_prompt: Option<&str>,
+    prompt: &str,
+    data_url: &str,
+    max_tokens: Option<u32>,
+) -> Value {
+    let system = match system_prompt.map(str::trim).filter(|extra| !extra.is_empty()) {
+        Some(extra) => format!("{extra}\n\n{AI_REPLY_CONTRACT}"),
+        None => format!(
+            "You are the eyes of a small desktop avatar. You are shown one screenshot of the user's \
+screen and must answer a question about it. {AI_REPLY_CONTRACT}"
+        ),
+    };
+    let mut body = json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system },
+            {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": prompt },
+                    { "type": "image_url", "image_url": { "url": data_url } }
+                ]
+            }
+        ],
+        "response_format": { "type": "json_object" },
+        "stream": false,
+        "temperature": 0.2,
+        // llama.cpp: a thinking VL model otherwise burns the whole budget in
+        // `reasoning_content` before it writes the JSON. Servers that do not
+        // know the key ignore it (and the dispatch falls back to reasoning).
+        "chat_template_kwargs": { "enable_thinking": false }
+    });
+    if let Some(max_tokens) = max_tokens {
+        body["max_tokens"] = json!(max_tokens);
+    }
+    body
+}
+
+/// Post a plain bubble (used when vision cannot run: graceful, never a crash).
+async fn post_speech(client: &reqwest::Client, api_url: &str, text: &str) {
+    let body = json!({
+        "text": text,
+        "expression": "sad",
+        "duration_ms": 5000,
+    });
+    let url = format!("{api_url}/speak");
+    match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
+        Ok(response) if !response.status().is_success() => {
+            eprintln!("[watcher] speech rejected with {}", response.status())
+        }
+        Ok(_) => {}
+        Err(err) => eprintln!("[watcher] speech failed: {err}"),
+    }
+}
+
+/// Report a vision failure: one log line, one apologetic bubble, no panic.
+async fn vision_failure(
+    client: &reqwest::Client,
+    api_url: &str,
+    backend: &str,
+    reason: String,
+) -> DispatchReport {
+    eprintln!("[watcher] vision: {reason}");
+    post_speech(client, api_url, VISION_UNAVAILABLE_TEXT).await;
+    DispatchReport {
+        backend: backend.to_string(),
+        kind: "vision",
+        failure: Some(reason),
+        ..DispatchReport::default()
+    }
+}
+
+/// Capture the screen, ask the vision profile and apply its answer.
+///
+/// The whole thing runs inside the caller's [`FlightGuard`], so a second trigger
+/// cannot stack another screenshot + model call on a busy server.
+async fn dispatch_vision(
+    config: &Config,
+    client: &reqwest::Client,
+    trigger: &Trigger,
+    flight: FlightGuard,
+    ai: &AiShared,
+) -> DispatchReport {
+    let _flight = flight;
+    let vision = &config.rules.vision;
+    let Some((name, profile)) = ai.named(&vision.profile_name) else {
+        return vision_failure(
+            client,
+            &config.api_url,
+            &vision.profile_name,
+            format!(
+                "no ai_profiles entry named {:?} (add a vision endpoint to watcher_rules.json)",
+                vision.profile_name
+            ),
+        )
+        .await;
+    };
+    let AiProfile::OpenaiCompat {
+        endpoint,
+        model,
+        api_key,
+        max_tokens,
+        timeout_secs,
+        system_prompt,
+        ..
+    } = &profile
+    else {
+        return vision_failure(
+            client,
+            &config.api_url,
+            &name,
+            format!("profile {name:?} is not an openai_compat endpoint"),
+        )
+        .await;
+    };
+
+    // `active_window` uses the rect snapshotted with the trigger; a missing or
+    // unusable rect (and every `full_screen` request) falls back to the desktop.
+    let rect = match vision.capture_mode {
+        CaptureMode::ActiveWindow => trigger.window_rect,
+        CaptureMode::FullScreen => None,
+    };
+    // The overlay is full-screen and always on top; if it is somehow the
+    // reported window, photographing it would show the user their own avatar.
+    let rect = if trigger.window_title.trim() == SELF_WINDOW_TITLE { None } else { rect };
+
+    let shot = match capture::capture(rect, vision.max_dim(), vision.quality()) {
+        Ok(shot) => shot,
+        Err(reason) => {
+            return vision_failure(client, &config.api_url, &name, reason).await;
+        }
+    };
+    eprintln!(
+        "[watcher] vision: captured {}x{} ({} KB jpeg, {}) via {:?}",
+        shot.width,
+        shot.height,
+        (shot.jpeg.len() + 1023) / 1024,
+        shot.source,
+        vision.capture_mode.as_str()
+    );
+
+    let body = vision_request_body(
+        model,
+        system_prompt.as_deref(),
+        &trigger.vision_prompt(shot.source),
+        &shot.data_url,
+        *max_tokens,
+    );
+    let url = OpenaiCompatBackend::chat_url(endpoint);
+    let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_OPENAI_TIMEOUT_SECS).max(1));
+    let mut request = client.post(&url).json(&body).timeout(timeout);
+    if let Some(key) = api_key.as_deref().map(str::trim).filter(|key| !key.is_empty()) {
+        request = request.bearer_auth(key);
+    }
+
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(err) => {
+            return vision_failure(
+                client,
+                &config.api_url,
+                &name,
+                format!("{url} is unreachable: {err}"),
+            )
+            .await;
+        }
+    };
+    let status = response.status();
+    let payload: Value = match response.json().await {
+        Ok(payload) => payload,
+        Err(err) => {
+            return vision_failure(
+                client,
+                &config.api_url,
+                &name,
+                format!("{url} answered {status} with unreadable JSON: {err}"),
+            )
+            .await;
+        }
+    };
+    if !status.is_success() {
+        let message = payload
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("no message");
+        return vision_failure(
+            client,
+            &config.api_url,
+            &name,
+            format!("{url} answered {status}: {message}"),
+        )
+        .await;
+    }
+    // A thinking VL model can spend the whole `max_tokens` budget in
+    // `reasoning_content` and leave `content` empty. The request already asks
+    // for `enable_thinking: false`, but a server that ignores that key should
+    // still answer: fall back to the reasoning text, which carries the same
+    // JSON object at its tail.
+    let message = payload
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"));
+    let content = message
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .or_else(|| {
+            message
+                .and_then(|message| message.get("reasoning_content"))
+                .and_then(Value::as_str)
+        });
+    let Some(content) = content else {
+        return vision_failure(
+            client,
+            &config.api_url,
+            &name,
+            "the reply has no choices[0].message.content".to_string(),
+        )
+        .await;
+    };
+    let reply = match AiReply::parse(content) {
+        Ok(reply) => reply,
+        Err(err) => {
+            return vision_failure(client, &config.api_url, &name, err).await;
+        }
+    };
+
+    let actions = reply.actions();
+    apply_actions(client, &config.api_url, &actions).await;
+    eprintln!(
+        "[watcher] vision profile {:?} answered ({} action(s))",
+        name,
+        actions.len()
+    );
+    DispatchReport {
+        backend: name,
+        kind: "vision",
+        actions,
+        escalated: false,
+        failure: None,
+    }
+}
+
 /// Deliver one trigger: dry-run print → ack emote → webhook → Hermes command.
 ///
 /// The whole side-effect chain is one flight: a trigger arriving while a
@@ -2543,7 +2991,17 @@ async fn handle_trigger(
         }
     }
 
-    // 3. The AI backend (or a plain log line when nothing is wired up). The
+    // 3. Screen vision: an explicit `include_screen` (the panel chip or
+    //    `POST /reply`) or a phrase match sends the screenshot to the vision
+    //    profile instead of routing the text. The guard moves in, so the
+    //    single-flight latch covers the capture and the round-trip.
+    if trigger.wants_vision(&config.rules.vision) {
+        let report = dispatch_vision(config, client, trigger, guard, ai).await;
+        log_report(&report);
+        return;
+    }
+
+    // 4. The AI backend (or a plain log line when nothing is wired up). The
     //    guard moves into the backend, so the permit covers the HTTP round-trip
     //    or the CLI child's lifetime.
     let Some((profile_name, profile)) = ai.snapshot(trigger.profile.as_deref()) else {
@@ -2692,6 +3150,10 @@ async fn fetch_context(client: &reqwest::Client, api_url: &str) -> Result<Contex
             .unwrap_or("")
             .to_string(),
         idle_secs: body.get("idle_secs").and_then(Value::as_u64).unwrap_or(0),
+        // An older avatar build has no `window_rect`; vision then falls back to
+        // the full screen instead of failing. `rect_from_context` converts the
+        // CSS virtual-desktop rect back to physical pixels for GDI.
+        window_rect: capture::rect_from_context(&body),
     })
 }
 
@@ -3094,6 +3556,7 @@ mod tests {
             window_title: title.to_string(),
             process_name: String::new(),
             idle_secs,
+            window_rect: None,
         }
     }
 
@@ -3103,6 +3566,7 @@ mod tests {
             window_title: title.to_string(),
             process_name: process.to_string(),
             idle_secs,
+            window_rect: None,
         }
     }
 
@@ -3261,6 +3725,7 @@ mod tests {
             window_title: "Visual Studio Code".to_string(),
             process_name: "Code.exe".to_string(),
             idle_secs: 12,
+            window_rect: None,
         };
         let payload = json!({ "kind": "double_click", "x": 541.0, "y": 489.0, "state": "idle" });
 
@@ -3815,6 +4280,156 @@ mod tests {
         assert_eq!(legacy.alerts.cooldown_secs, 60);
     }
 
+
+    #[test]
+    fn vision_rules_default_to_the_documented_values() {
+        let default = VisionRules::default();
+        assert!(default.enabled);
+        assert_eq!(default.profile_name, DEFAULT_VISION_PROFILE);
+        assert_eq!(default.capture_mode, CaptureMode::ActiveWindow);
+        assert_eq!(default.max_image_dim, DEFAULT_VISION_MAX_IMAGE_DIM);
+        assert_eq!(default.jpeg_quality, DEFAULT_VISION_JPEG_QUALITY);
+        assert_eq!(default.trigger_phrases.len(), DEFAULT_VISION_TRIGGER_PHRASES.len());
+        assert!(default.matches_trigger("what's on my screen?"));
+    }
+
+    #[test]
+    fn a_rules_file_without_vision_still_loads() {
+        // Backward compatibility: the pre-vision schema has no `vision` key.
+        let legacy = rules(r#"{"ack_emote":"thinking","hermes_cmd":"hermes chat -q"}"#);
+        assert_eq!(legacy.vision, VisionRules::default());
+
+        // A partial block keeps the missing fields' defaults.
+        let partial = rules(r#"{"vision":{"enabled":false,"max_image_dim":640}}"#);
+        assert!(!partial.vision.enabled);
+        assert_eq!(partial.vision.max_image_dim, 640);
+        assert_eq!(partial.vision.profile_name, DEFAULT_VISION_PROFILE);
+        assert_eq!(partial.vision.capture_mode, CaptureMode::ActiveWindow);
+
+        // `full_screen` and a custom phrase list parse too.
+        let full = rules(
+            r#"{"vision":{"capture_mode":"full_screen","jpeg_quality":70,"trigger_phrases":["show me the screen"]}}"#,
+        );
+        assert_eq!(full.vision.capture_mode, CaptureMode::FullScreen);
+        assert_eq!(full.vision.quality(), 70);
+        assert!(full.vision.matches_trigger("Show me the screen, please"));
+        assert!(!full.vision.matches_trigger("what's on my screen"), "custom list replaces the defaults");
+    }
+
+    #[test]
+    fn vision_trigger_phrases_ignore_case_spacing_and_apostrophes() {
+        let vision = VisionRules::default();
+        for text in [
+            "What's on my screen?",
+            "whats on my screen",
+            "what is on my screen",
+            "WHAT'S ON MY SCREEN",
+            "hey, look at my screen for a second",
+            "can you read my screen?",
+            "please check my screen",
+        ] {
+            assert!(vision.matches_trigger(text), "{text:?} should trigger");
+        }
+        for text in ["how are you", "summarise my clipboard", ""] {
+            assert!(!vision.matches_trigger(text), "{text:?} should not trigger");
+        }
+        // Whitespace runs and curly apostrophes normalise the same way.
+        assert!(vision.matches_trigger("whats   on\u{2019} my   screen"));
+    }
+
+    #[test]
+    fn vision_is_off_when_disabled_or_not_asked_for() {
+        let mut vision = VisionRules::default();
+        let plain = Trigger {
+            event_type: "user_reply".to_string(),
+            text: Some("what's on my screen".to_string()),
+            ..Trigger::default()
+        };
+        assert!(plain.wants_vision(&vision));
+        vision.enabled = false;
+        assert!(!plain.wants_vision(&vision), "the master switch wins");
+
+        let mut vision = VisionRules::default();
+        let explicit = Trigger {
+            event_type: "user_reply".to_string(),
+            text: Some("hi".to_string()),
+            include_screen: true,
+            ..Trigger::default()
+        };
+        assert!(explicit.wants_vision(&vision), "include_screen is explicit");
+        let routine = Trigger {
+            event_type: "interaction".to_string(),
+            kind: Some("double_click".to_string()),
+            ..Trigger::default()
+        };
+        assert!(!routine.wants_vision(&vision), "routine triggers never capture");
+    }
+
+    #[test]
+    fn vision_request_body_is_multimodal() {
+        let body = vision_request_body(
+            "lfm3-vl-2b",
+            Some("be terse"),
+            "What is on my screen?",
+            "data:image/jpeg;base64,AAAA",
+            Some(512),
+        );
+        assert_eq!(body["model"], "lfm3-vl-2b");
+        assert_eq!(body["max_tokens"], 512);
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["response_format"]["type"], "json_object");
+        assert_eq!(
+            body["chat_template_kwargs"]["enable_thinking"], false,
+            "a thinking VL model must not spend the budget before the JSON"
+        );
+        let messages = body["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 2);
+        let system = messages[0]["content"].as_str().expect("system text");
+        assert!(system.contains("be terse"), "the profile's prompt is kept");
+        assert!(system.contains("ONE JSON object"), "the reply contract is appended");
+        let parts = messages[1]["content"].as_array().expect("content parts");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert!(parts[0]["text"].as_str().unwrap().contains("What is on my screen?"));
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/jpeg;base64,AAAA");
+
+        // Without a system prompt the default eyes prompt is used, and no
+        // max_tokens key appears when the profile does not set one.
+        let bare = vision_request_body("m", None, "p", "data:image/jpeg;base64,AA", None);
+        assert!(bare["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("eyes of a small desktop avatar"));
+        assert!(bare.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn a_reply_frame_can_carry_include_screen() {
+        let state = shared();
+        let plain = user_reply_trigger(
+            &state,
+            &json!({ "text": "what's on my screen?" }),
+            Instant::now(),
+        )
+        .expect("reply");
+        assert!(!plain.include_screen, "absent means off");
+        assert!(plain.wants_vision(&VisionRules::default()), "phrase still matches");
+
+        let explicit = user_reply_trigger(
+            &state,
+            &json!({ "text": "hi", "include_screen": true }),
+            Instant::now(),
+        )
+        .expect("reply");
+        assert!(explicit.include_screen);
+        assert_eq!(
+            explicit.payload(0)["include_screen"],
+            Value::Null,
+            "the payload map only carries documented keys"
+        );
+    }
+
     #[test]
     fn app_rule_matching_is_case_insensitive_with_blank_wildcards() {
         let any_code = AppRule {
@@ -3911,6 +4526,7 @@ mod tests {
             window_title: "Editor".to_string(),
             process_name: "Code.exe".to_string(),
             idle_secs: 7,
+            window_rect: None,
         };
         let payload = json!({ "text": "  what is on my clipboard?  " });
 

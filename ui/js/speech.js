@@ -59,6 +59,41 @@ function setMouthFrom(chars) {
   speech.mouthVariant = pose.variant;
 }
 
+/* ---------- audio-driven lip sync (Piper RMS envelope) ---------- */
+
+/**
+ * Adopt a `tts-envelope` payload: the normalized RMS of the line Piper is
+ * starting to play, one value per `bucket_ms`. From now until the clip ends
+ * (or `tts-envelope-stop` arrives) the envelope owns the mouth, so the lips
+ * follow the actual voice instead of the typing speed.
+ *
+ * The payload is deliberately tiny (a 10 s line is ~400 numbers) and the start
+ * timestamp is taken on receipt, which is within a few milliseconds of
+ * `PlaySoundW` because Rust emits the event immediately before it blocks.
+ */
+export function setAudioEnvelope(samples, bucketMs) {
+  const list = Array.isArray(samples) ? samples.filter((v) => Number.isFinite(Number(v))) : [];
+  if (!list.length) {
+    clearAudioEnvelope();
+    return false;
+  }
+  speech.envelope = list.map((v) => clamp(Number(v), 0, 1));
+  speech.envelopeBucketMs = Math.max(5, Number(bucketMs) || 25);
+  speech.envelopeAt = performance.now();
+  return true;
+}
+
+/** Drop the envelope: the voice stopped, was muted, or the page moved on. */
+export function clearAudioEnvelope() {
+  speech.envelope = null;
+  speech.envelopeAt = 0;
+}
+
+/** Is an audio envelope currently driving the mouth? */
+export function hasAudioEnvelope() {
+  return !!speech.envelope;
+}
+
 /**
  * Ease the drawn openness toward the character's target. Fast enough to keep
  * up with 26 ms/char typing, slow enough that vowels read as a shape rather
@@ -123,6 +158,8 @@ export function speak(text, opts) {
   // An answer landed: the waiting card (and its safety timer) is over.
   clearThinkingTimeout();
   speech.thinking = false;
+  // A new bubble: a leftover envelope belongs to the previous line.
+  clearAudioEnvelope();
   speech.full = body;
   speech.shown = -1;
   speech.elapsed = 0;
@@ -157,16 +194,35 @@ export function updateSpeech(dt) {
       caret.className = "caret";
       textEl.appendChild(caret);
     }
-    // The mouth follows the letter that just appeared, not the clock.
-    setMouthFrom(chars);
+    // The mouth follows the letter that just appeared — unless Piper is
+    // actually speaking, in which case the RMS envelope owns it (below).
+    if (!speech.envelope) setMouthFrom(chars);
     // `positionBubble` runs every frame from the main loop (after `step()`
     // and `render()`), so the card can never lag the head.
   }
 
+  // Audio-driven lip sync: index the RMS envelope by playback time. When the
+  // samples run out the voice has finished, so fall back to the typewriter for
+  // whatever is left (and for every line on a muted / missing Piper).
+  if (speech.envelope) {
+    const elapsedMs = performance.now() - speech.envelopeAt;
+    const index = Math.floor(elapsedMs / speech.envelopeBucketMs);
+    if (index >= speech.envelope.length) {
+      clearAudioEnvelope();
+    } else {
+      const open = clamp(speech.envelope[index], 0, 1);
+      speech.mouthOpen = open;
+      speech.mouthVariant = open > 0.55 ? "open" : open > 0.12 ? "flat" : "closed";
+    }
+  }
+
   if (chars >= speech.full.length) {
-    speech.doneFor += dt;
+    // While the voice is still speaking, hold the bubble: the text finished
+    // typing, but cutting the card mid-sentence reads as a glitch. The hold
+    // timer only starts once the envelope has run out.
+    if (!speech.envelope) speech.doneFor += dt;
     // Finished talking: shut the mouth, so the hold is a closed-mouth beat.
-    if (speech.mouthOpen !== 0) {
+    if (!speech.envelope && speech.mouthOpen !== 0) {
       speech.mouthOpen = 0;
       speech.mouthVariant = "closed";
       speech.char = "";
@@ -210,6 +266,7 @@ function hideSpeechNow() {
   speech.mouthOpen = 0;
   speech.mouthSmooth = 0;
   speech.mouthVariant = "closed";
+  clearAudioEnvelope();
   avatar.talk = false;
   closeReply();
   renderDetails();
