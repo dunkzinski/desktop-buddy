@@ -149,6 +149,40 @@ keeps the press for its gizmos, so the two gestures never fight.
 
 ---
 
+## Settings (no JSON required)
+
+The **Settings ⚙** button in the control panel opens a modal that edits
+`watcher_rules.json` for you — it is the alternative to hunting for a path in a
+6000-line config file:
+
+* **Voice & paths** — the Piper executable, voice model, `espeak-ng-data` folder,
+  the Whisper executable/model and the Silero VAD model. Every path field has a
+  **Browse…** button (a real file dialog) and a **✓ / ✗** telling you whether the
+  path exists *right now*. Speaking speed, the hold-to-talk hotkey, VAD threshold
+  and language live here too, as does screen-vision's capture mode.
+* **AI brain** — which profile answers desktop triggers, plus each HTTP profile's
+  endpoint, model id, `max_tokens` and timeout.
+* **Survival** — the hunger system switch, tier notifications, both metabolic
+  drain rates, the telemetry interval and the starting values.
+
+Saving sends **only what you changed** (`POST /config`), validates each block with
+the same struct the runtime loads it from, and answers what applied live versus
+what needs a restart. Survival rates and AI/vision settings apply immediately; a
+new Piper or Whisper **path** is read once at startup, so it is reported as
+`restart_required` instead of being silently ignored. The previous file is kept
+as `watcher_rules.json.bak`.
+
+`GET /config` also reports **stray keys** — a block written with friendly names
+such as `metabolic_drain_rate` is ignored by the loader (the real key is
+`metabolism.hunger_per_min`), so the modal shows an amber warning instead of
+pretending those settings work.
+
+Everything the modal writes is still plain JSON, so hand-editing remains fine:
+the editor rewrites only the blocks it touches and leaves the rest of the file
+byte-for-byte alone.
+
+---
+
 ## Speaking out loud (local voice)
 
 Every speech bubble — from `lfm3-fast`, from `hermes_cli`, from `POST /speak`,
@@ -157,7 +191,8 @@ local [Piper](https://github.com/rhasspy/piper) voice. No network, no API key,
 no cloud. The hook is the single `do_speak` path, so a model can never "talk" in
 text without talking out loud.
 
-The shipped setup (override any of it in `watcher_rules.json`):
+The shipped setup (change it in the **Settings** modal, or override it in
+`watcher_rules.json`):
 
 | Piece | Default |
 | --- | --- |

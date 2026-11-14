@@ -140,10 +140,13 @@
   "webhook_url": null,
   "survival": {
     "enabled": true,
-    "metabolic_drain_rate": 1.5,
-    "telemetry_interval_secs": 60,
-    "starting_hunger": 100,
-    "starting_saturation": 100,
-    "notifications": true
+    "start_hunger": 100.0,
+    "start_saturation": 100.0,
+    "metabolism": {
+      "hunger_per_min": 1.5,
+      "saturation_per_min": 2.0
+    },
+    "notify": true,
+    "telemetry_secs": 60
   }
 }

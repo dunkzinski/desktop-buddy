@@ -413,6 +413,16 @@ export function wireRegions() {
   // click-through, so it is published only while visible.
   const historyDrawer = document.getElementById("history-drawer");
   if (historyDrawer && !historyDrawer.classList.contains("hidden")) push(historyDrawer);
+  // The survival card is another floating card: its select, Feed button and ✕
+  // must accept clicks over the click-through desktop, so its box goes in only
+  // while it is open.
+  // The settings modal is a full-screen sheet: while it is up it must take
+  // every click (it is the only thing on screen), so its box is published in
+  // place of nothing.
+  const settingsModal = document.getElementById("settings-modal");
+  if (settingsModal && !settingsModal.classList.contains("hidden")) push(settingsModal);
+  const survivalCard = document.getElementById("survival-card");
+  if (survivalCard && !survivalCard.classList.contains("hidden")) push(survivalCard);
   // The speech bubble hosts the quick-reply box: while it is on screen its box
   // must accept clicks, or the user could see the input but not type in it.
   const bubble = document.getElementById("speech");

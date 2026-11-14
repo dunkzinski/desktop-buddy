@@ -378,6 +378,8 @@ static HOST: OnceLock<Arc<dyn PluginHost>> = OnceLock::new();
 /// The config `install` was given, so the routes can report it without a second
 /// copy living in `AppCtx`.
 static CONFIG: OnceLock<survival::SurvivalConfig> = OnceLock::new();
+/// A `POST /config` override; `None` means "use the startup config".
+static LIVE_CONFIG: OnceLock<std::sync::RwLock<Option<survival::SurvivalConfig>>> = OnceLock::new();
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn registry() -> MutexGuard<'static, PluginRegistry> {
@@ -473,11 +475,53 @@ pub fn survival() -> Option<SurvivalHandle> {
 }
 
 /// The config passed to [`install`], or the defaults before it runs.
+///
+/// A live edit (`POST /config`) wins over the startup value, so `GET /survival`
+/// echoes what the metabolism plugin is actually using right now.
 pub fn config() -> survival::SurvivalConfig {
+    if let Some(live) = live_config() {
+        return live;
+    }
     CONFIG
         .get()
         .cloned()
         .unwrap_or_else(survival::SurvivalConfig::default)
+}
+
+/// The runtime override installed by [`apply_survival_config`].
+pub fn live_config() -> Option<survival::SurvivalConfig> {
+    let slot = LIVE_CONFIG.get()?;
+    let guard = match slot.read() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.clone()
+}
+
+/// Adopt a new survival config **without restarting**: the metabolism plugin
+/// reads [`live_config`] on every tick and the stats' own drain rates are
+/// updated in place, so the next second already uses the new numbers.
+///
+/// Returns the effective config as JSON (the same shape `GET /survival` uses).
+pub fn apply_survival_config(config: &survival::SurvivalConfig) -> Value {
+    let config = config.clone().sanitized();
+    let slot = LIVE_CONFIG.get_or_init(|| std::sync::RwLock::new(None));
+    match slot.write() {
+        Ok(mut guard) => *guard = Some(config.clone()),
+        Err(poisoned) => *poisoned.into_inner() = Some(config.clone()),
+    }
+
+    if let Some(handle) = survival() {
+        let mut stats = crate::survival::lock_stats(&handle);
+        stats.metabolism = config.metabolism.clone();
+    }
+    log::info!(
+        "survival: live config applied (hunger {}/min, saturation {}/min, enabled {})",
+        config.metabolism.hunger_per_min,
+        config.metabolism.saturation_per_min,
+        config.enabled
+    );
+    config.to_json()
 }
 
 /// The `GET /survival` body: the stats plus the config and the plugin registry.

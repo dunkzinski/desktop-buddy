@@ -78,6 +78,8 @@ ui/
     ├── editor.js       # Rig Edit Mode overlay gizmos (`drawEditorOverlay`, `hitTest`, mouse/wheel handlers), inspector rendering/bindings (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `bindExpressionSprite`, `saveRig`, `resetRig`), and the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`)
     ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), text-driven lip sync (`mouthPoseFor`, `setMouthFrom`, `stepMouth`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
     ├── bridge.js       # Tauri IPC commands, event listeners (`avatar-state-changed`, `emote`, `speak`, `avatar-animate`, etc.), hit-region publishing (`wireRegions`, `setClickThrough`), state sync (`reportState`, `applyRemoteState`, `applyPartPatch`)
+    ├── survival.js     # The **Survival** pop-out card: `setupSurvival` (hydrate from `GET /survival` + `GET /foods`, follow the `survival` / `survival-meal` / `survival-threshold` events, 15 s poll floor), `renderSurvival` (tier badge + the two bars, from any of the three payload shapes), `feed` (the real `POST /survival/feed`), `toggleSurvivalCard` / `survivalCardOpen`
+    ├── settings.js     # The **Settings** modal over `GET /config` / `POST /config`: `setupSettings` (build the form from one `FIELDS` spec, hydrate from the server, prime at startup), `renderSettings` (values, per-path ✓/✗, stray-key warnings), `collectPatch` (sends **only** what changed), `save` (partial `POST /config`, then reports applied vs `restart_required`), `toggleSettings` / `settingsOpen`
     └── main.js         # Entry point: DOM bindings, keyboard shortcuts, gaze targeting (`updateGaze`, `attachGazeTracking`), `window.__avatarDebug`, `requestAnimationFrame` main loop (`step`, `frame` — bubble re-anchor), the ask/task command bar (`openCommandBar`, `sendUserMessage`, quick-task chips, `resetSession`)
 ```
 
@@ -249,6 +251,13 @@ live in `ModelCtx`; joint angles reported by the page live there too.
 * Errors: our handlers return `{"ok":false,"error":"…"}` with **400**;
   malformed JSON is rejected by axum with a plain-text **422**; unknown routes
   are **404**.
+* **CORS.** The page runs on the `tauri://localhost` custom scheme, so every
+  in-page call to `127.0.0.1` is cross-origin. `allow_webview_cors` (an
+  `axum::middleware::from_fn` layer on the router) answers the `OPTIONS`
+  preflight itself and stamps `Access-Control-Allow-Origin: *` plus the
+  allow-methods/headers pair on every response — without it a
+  `POST /survival/feed` from the survival card dies in the browser before it
+  reaches a handler.
 
 ### Event bus (SSE)
 
@@ -396,9 +405,10 @@ The local voice. One module, one worker thread, one config block.
 | `get_speech`, `history` | `GET /speech` (the stored bubble + `talking`) and `GET /history` (`crate::chat_history_json` — the same bounded conversation log the History drawer renders) |
 | `get_stt`, `set_stt` | `GET /stt` / `POST /stt` → `stt::status_json` / `stt::set_enabled` (status + live `idle`/`listening`/`transcribing` state) |
 | `ai_profiles`, `switch_ai_profile` | `GET /ai-profiles` / `POST /ai-profile` → `ai_status_json` / `do_set_ai_profile`, both on a `spawn_blocking` thread because the health probe is a blocking 800 ms HTTP GET; `event_name` maps the frame to `ai_profile` |
+| `get_config`, `set_config` | `GET /config` / `POST /config` → `settings::config_json` / `settings::apply_config` (the write runs on `spawn_blocking`), then the live side effects: `tts::set_enabled`, `stt::set_enabled`, `plugins::apply_survival_config`, and one `ai_profile` frame so the watcher re-reads the file |
 | `start` | bind, spawn thread, Tokio runtime, axum serve, graceful shutdown |
 | `bind_first_available` | port fallback `preferred..preferred+9` |
-| `router` | 38 routes |
+| `router` | 43 routes |
 | request bodies | `SetStateBody`, `MoveBody`, `ExpressionBody`, `ClickThroughBody`, `HitRegionsBody`, `ModelBody`, `RigBody`, `PoseBody`, `ImportBody`, `PartPatchBody`, `MouthBody`, `EmoteBody`, `SpeakBody` (incl. optional `details`), `ReplyBody`, `AlertBody`, `ClipboardBody`, `AnimateBody`, `TtsBody`, `SttBody` |
 | `ApiError` | `IntoResponse` → `{"ok":false,"error":…}` + status |
 | `context` | `GET /context` — OS probes (title, process, idle, `window_rect`, `visible_windows`, `foreground_hwnd`, `screen`), `avatar_state` snapshot and the `recent_events` history |
@@ -553,8 +563,10 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
 | `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), **audio-driven lip sync** (`setAudioEnvelope` / `clearAudioEnvelope` / `hasAudioEnvelope` — `updateSpeech` indexes the Piper RMS envelope by `performance.now() - envelopeAt` and falls back to the character table when the voice is muted, missing or done) on top of the **text-driven** mapping (`mouthPoseFor` vowel/consonant/punctuation table, `setMouthFrom`, `stepMouth` smoothing), the quick-reply box (`isReplyOpen`, `openReply`, `closeReply`, `toggleReply`), the **details drawer** (`detailsText`, `toggleDetails`, `detailsOpen`, `copyDetails` — which republishes the hit region so the expanded card stays clickable), the "Thinking…" card (`beginThinking`, `showThinking`, `endThinking`, plus the `THINKING_TIMEOUT_MS` 125 s safety net that clears a stuck card and puts the face back to `neutral`) and the command bar's anchor (`commandBarVisible`, `positionCommandBar`); the hold timer is suspended while the drawer is open, the box is open, the bubble is hovered or an input has focus |
 | `ui/js/bridge.js` | Tauri event listeners (`avatar-state-changed`, `emote`, `speak`, `part-patch`, …), `reportState`, `applyRemoteState` (ignores frames that would yank a dragged avatar and never adopts a bare `walking` without its segment), `applyPartPatch`, `applyWatcherStatus` (which also mirrors `quick_tasks` for the command bar), the **AI Brain** layer (`applyAiProfiles` — rebuilds the dropdown only when the profile set changes, so the 12 s health refresh cannot collapse an open select, `renderAiProfiles` for the badge/dot, `refreshAiProfiles`, `setAiProfile`, `aiHealthStatus`, `aiActiveLabel`), click-through (`setClickThrough`), import flow (`importFromDialog`, `importImageAs`, chooser) |
+| `ui/js/settings.js` | The **Settings** modal (`#settings-modal`, three tabs): a declarative `FIELDS` spec drives the whole form (label, dotted `section.key`, input type, Browse… `kind`), `renderSettings` paints the `GET /config` body including the per-path ✓/✗ marks and the *stray key* warnings, `collectPatch` diffs the form against the loaded body so a save sends only what changed, and `save` reports `applied` vs `restart_required` from `POST /config` |
 | `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar, `H` toggles the History drawer), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), **gaze targeting** (`attachGazeTracking` — page `mousemove` plus the global `cursor-pos` stream; `updateGaze` — `look_at` > focused command bar > perch > global cursor (4 s) > idle glances, plus the eased hover weight and the clamped head-bone yaw bias), `window.__avatarDebug`, the **AI Brain** select (`setAiProfile` + a toast, with `refreshAiProfiles` every 12 s beside the watcher poll), behaviour loop (`step`, `startWalk`, `wander` — held back while a bubble is up), `requestAnimationFrame` driver (`frame`: `step` → `render` → `positionBubble`), play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
-| `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions |
+| `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions || `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions |
+| `ui/js/survival.js` | The **Survival** card (top-left pop-out, not a panel section): `setupSurvival` hydrates from `GET /survival` + `GET /foods`, follows the `survival` / `survival-meal` / `survival-threshold` events with a 15 s poll as the floor, `renderSurvival` flattens all three payload shapes into the tier badge and the two bars, `feed` is a real `POST /survival/feed` (a 409 refusal prints the API's own prose), and `toggleSurvivalCard` / `survivalCardOpen` drive the card and Esc chain |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
 `ipc, state → rig → animator → {renderer, speech, editor, bridge}; editor → bridge; all → main`.
@@ -995,6 +1007,64 @@ A bubble is transient by design, so the session's turns are also kept in a log:
   `{"ok": true, "messages": [...]}`, so a script can read what was actually said
   instead of guessing from bubbles that already dismissed themselves. `role` is
   `"user"` or `"assistant"`.
+
+### Survival card (hunger, saturation, feeding)
+
+The avatar has two bars and a mood about them. The numbers live in
+`src-tauri/src/survival.rs` and are drained by the `metabolism` plugin, so they
+keep moving whether or not the card is on screen.
+
+* **Open it** with the **Survival** button in the control panel; `Esc` or the
+  **✕** closes it. It is a **pop-out card pinned top-left**, deliberately not a
+  panel section — the control panel is already tall, and the bars are something
+  you glance at rather than leave open. Its box is published as a hit region
+  only while it is open, so the select and **Feed** button work over a
+  click-through desktop.
+* **What it shows.** A tier badge (`satiated` / `peckish` / `hungry` /
+  `starving`, coloured), the **Hunger** bar and the **Saturation** bar — which
+  drains first and shields hunger, so it buys more time than its number suggests.
+* **Feed** really is a `POST /survival/feed` from the page: it sends
+  `{"food": "<id>"}` and renders whatever comes back. A refusal (409: full, or
+  still digesting) prints the API's own prose in the note line instead of
+  pretending the click worked.
+* **Where the numbers come from.** `GET /survival` on open/start, the
+  `survival` telemetry event, a `GET /survival` re-read on `survival-meal` and
+  `survival-threshold`, plus a 15 s poll as the floor when telemetry is disabled.
+  The food picker is filled from `GET /foods`, so it can never send an id the
+  catalog does not know.
+* **For agents.** `POST /survival {"hunger": 12}` moves the bars by hand, the
+  same as clicking Feed does in the UI.
+
+### Settings (the ⚙ modal)
+
+Everything that used to be "open `watcher_rules.json` and find the path" is a
+form now. **Settings ⚙** in the control panel opens a modal with three tabs —
+*Voice & paths*, *AI brain*, *Survival* — over `GET /config` / `POST /config`.
+
+* **Voice & paths**: the Piper executable, voice `.onnx`, `espeak-ng-data`
+  folder, Whisper executable/model and the Silero VAD model, each with a
+  **Browse…** button (a native dialog through `pick_config_path`, which drops the
+  overlay's always-on-top flag while it is up) and a ✓/✗ next to the field
+  telling you whether that path exists right now. Speaking speed, the
+  push-to-talk hotkey, VAD threshold, language and the screen-vision capture mode
+  live here too.
+* **AI brain**: which `ai_profiles` entry answers desktop triggers, plus each
+  HTTP profile's endpoint, model id, `max_tokens` and timeout. Prompts are
+  deliberately *not* editable here — they are prose, and the modal would mangle
+  them; the file stays the place for those.
+* **Survival**: the hunger system switch, tier notifications, both drain rates,
+  the telemetry interval and the starting values. These apply **live** (the
+  metabolism plugin re-reads the config on its next tick).
+* **Saving** sends only the fields you changed. The server validates each block
+  with the same struct the runtime loads it from, writes just the affected
+  blocks (leaving every other byte alone, with a `.bak` beside the file) and
+  answers `applied` + `restart_required`. New Piper/Whisper paths and the
+  hold-to-talk hotkey are read once at startup, so they are honestly reported as
+  needing a restart rather than silently ignored.
+* **Warnings**: if the file carries keys the loader ignores (the classic
+  `metabolic_drain_rate` instead of `metabolism.hunger_per_min`), the modal shows
+  them in an amber box — that mismatch is exactly how a block ends up looking
+  configured while the app runs on defaults.
 
 ### Watcher console
 
@@ -1665,6 +1735,34 @@ the API can read and mute, not press the button. The panel uses
 `get_stt_status` / `ptt_start` / `ptt_stop` / `set_stt_enabled` and receives
 `stt-status` events.
 
+### `/config`
+
+The Settings modal's backend: one read, one partial write, and the only place
+that edits `watcher_rules.json` on the user's behalf.
+
+```bash
+curl -s localhost:8765/config | jq '.settings, .paths, .warnings'
+curl -s -X POST localhost:8765/config -H 'content-type: application/json' \
+     -d '{"survival": {"metabolism": {"hunger_per_min": 0.5}}}'
+```
+
+`GET` answers the **effective** settings (defaults applied, exactly what the
+runtime loads), `paths` (every executable/model the app spawns, with `exists`) and
+`warnings` (keys in the file that the loader ignores — the failure mode where a
+block looks configured and the app runs on defaults).
+
+`POST` takes a partial patch and writes only the blocks it mentions, replacing
+just that member's byte span (`src-tauri/src/settings.rs`), so `app_rules`,
+`quick_tasks`, the `system_prompt`s and every key the editor does not own survive
+untouched. The body answers with the fresh `GET` payload plus `applied` (dotted
+paths) and `restart_required`.
+
+Live: `tts.enabled`, `stt.enabled`, everything under `survival` (the metabolism
+plugin picks the new config up on its next tick) and everything under `ai` /
+`vision` (the `ai_profile` frame is what makes `char-rig-watcher.exe` re-read the
+file). A Piper/Whisper **path** or `stt.hotkey` is read once at startup, so it is
+reported under `restart_required` instead of being pretended live.
+
 ### `/survival`, `/survival/feed`, `/foods`, `/plugins`
 
 The survival plugin's HTTP surface. `GET /survival` returns the appetite
@@ -1682,6 +1780,29 @@ curl -s -X POST localhost:8765/survival/feed -H 'content-type: application/json'
 curl -s localhost:8765/foods
 curl -s localhost:8765/plugins
 ```
+
+The config is not frozen at startup: `POST /config` calls
+`plugins::apply_survival_config`, which stores the override, updates the live
+stats' drain rates in place and is what the plugins read on their next tick, so
+`GET /survival`'s `config` echo never disagrees with the numbers being applied.
+
+### The `survival` block
+
+| key | type | meaning |
+|---|---|---|
+| `enabled` | bool | installs the metabolism + telemetry plugins at all |
+| `start_hunger` | 0–100 | where a fresh avatar starts on the hunger bar |
+| `start_saturation` | 0–hunger | starting saturation (drains first, shields hunger) |
+| `metabolism` | object | `hunger_per_min` and `saturation_per_min`, each 0.01–100 |
+| `notify` | bool | speak tier changes out loud (events fire regardless) |
+| `telemetry_secs` | int | seconds between `survival` frames, `0` disables them, minimum 60 |
+
+These are the **serde field names**, not prose: `metabolic_drain_rate`,
+`starting_hunger`, `starting_saturation`, `notifications` and
+`telemetry_interval_secs` are all silently ignored (the struct is
+`#[serde(default)]` with no `deny_unknown_fields`), which is how a block ends up
+looking configured while the app runs on defaults. `GET /config` reports such
+stray keys under `warnings`, and `tools/verify_docs.py` now pins this schema.
 
 Tiers are `satiated`, `peckish`, `hungry`, `starving`. An accepted meal emits
 `survival-meal`; a tier crossing (natural or manual) emits `survival-threshold`;

@@ -15,6 +15,7 @@ pub mod api;
 pub mod models;
 pub mod platform;
 pub mod plugins;
+pub mod settings;
 pub mod stt;
 pub mod survival;
 pub mod tts;
@@ -1630,6 +1631,73 @@ async fn pick_import_file(
         .to_string();
     log::info!("picked {:?} import: {}", kind, path.display());
     Ok(Some(PickedFile { path: path.display().to_string(), kind, name }))
+}
+
+/// Pick a file or directory for the Settings modal (`tts.piper_exe_path`,
+/// `stt.whisper_model_path`, `tts.espeak_data_path`, …).
+///
+/// `kind` only chooses the dialog's filters and whether it picks a folder:
+/// `"executable"` (`.exe`), `"model"` (`.onnx`/`.bin`/`.gguf`), `"folder"`
+/// (a directory such as `espeak-ng-data`) or `"any"`. The path is **not**
+/// validated here — the modal shows a tick/cross from `GET /config` and the
+/// write path validates the block with the runtime's own struct.
+///
+/// Same window dance as [`pick_import_file`]: the overlay is always-on-top and
+/// covers the screen, so it drops that flag (and re-arms it afterwards) or the
+/// dialog opens underneath and the button looks dead.
+#[tauri::command]
+async fn pick_config_path(
+    app: AppHandle,
+    kind: Option<String>,
+    ctx: tauri::State<'_, Arc<ModelCtx>>,
+) -> Result<Option<String>, String> {
+    if ctx.dialog_open.swap(true, Ordering::SeqCst) {
+        return Err("a file dialog is already open".to_string());
+    }
+
+    let window = app.get_webview_window("main");
+    if let Some(window) = &window {
+        let _ = window.set_always_on_top(false);
+        let _ = window.set_ignore_cursor_events(false);
+    }
+
+    let kind = kind.unwrap_or_else(|| "any".to_string());
+    let parent = window.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || match kind.as_str() {
+        "folder" => {
+            let dialog = rfd::FileDialog::new().set_title("Choose a directory");
+            match parent {
+                Some(window) => dialog.set_parent(&window).pick_folder(),
+                None => dialog.pick_folder(),
+            }
+        }
+        other => {
+            let dialog = match other {
+                "executable" => rfd::FileDialog::new()
+                    .set_title("Choose an executable")
+                    .add_filter("Programs", &["exe", "cmd", "bat"]),
+                "model" => rfd::FileDialog::new()
+                    .set_title("Choose a model")
+                    .add_filter("Models", &["onnx", "bin", "gguf", "ggml", "json"]),
+                _ => rfd::FileDialog::new().set_title("Choose a file"),
+            };
+            match parent {
+                Some(window) => dialog.set_parent(&window).pick_file(),
+                None => dialog.pick_file(),
+            }
+        }
+    })
+    .await
+    .map_err(|err| err.to_string());
+
+    if let Some(window) = &window {
+        let _ = window.set_always_on_top(true);
+    }
+    ctx.dialog_open.store(false, Ordering::SeqCst);
+
+    let Some(path) = picked? else { return Ok(None) };
+    log::info!("settings: picked path {}", path.display());
+    Ok(Some(path.display().to_string()))
 }
 
 /// Import a file by path. `mode` selects what an image becomes:
@@ -3493,6 +3561,7 @@ pub fn run() {
             get_model,
             load_model,
             pick_import_file,
+            pick_config_path,
             import_asset,
             patch_part,
             set_mouth,

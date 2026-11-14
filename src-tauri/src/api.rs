@@ -9,8 +9,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
+    body::Body,
     extract::State,
-    http::StatusCode,
+    http::{header, HeaderName, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -329,6 +331,46 @@ fn bind_first_available(preferred_port: u16) -> std::io::Result<std::net::TcpLis
     }))
 }
 
+/// CORS for the app's own webview.
+///
+/// The page is served from a custom scheme (`http://tauri.localhost`), so every
+/// call it makes to `http://127.0.0.1:8765` is cross-origin and a `POST` with
+/// `content-type: application/json` is preceded by an `OPTIONS` preflight. The
+/// router answers no route for `OPTIONS`, so without this layer the survival
+/// widget's Feed button (and any other in-page fetch) fails in the browser
+/// before it ever reaches a handler.
+///
+/// Preflights are answered here instead of being forwarded: the method routers
+/// only register `GET`/`POST`, so letting the request through would produce a
+/// 405 with no CORS headers on it.
+async fn allow_webview_cors(req: axum::extract::Request, next: Next) -> Response {
+    let preflight = req.method() == Method::OPTIONS;
+    let mut res = if preflight {
+        Response::new(Body::empty())
+    } else {
+        next.run(req).await
+    };
+
+    let headers = res.headers_mut();
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, DELETE, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("content-type"),
+    );
+    headers.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+    // Chromium's private-network gate: harmless when unenforced, required when
+    // it is, and this API only ever binds 127.0.0.1.
+    headers.insert(
+        HeaderName::from_static("access-control-allow-private-network"),
+        HeaderValue::from_static("true"),
+    );
+    res
+}
+
 fn router(api: ApiCtx) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -368,11 +410,13 @@ fn router(api: ApiCtx) -> Router {
         .route("/stt", get(get_stt).post(set_stt))
         .route("/ai-profiles", get(ai_profiles))
         .route("/ai-profile", post(switch_ai_profile))
+        .route("/config", get(get_config).post(set_config))
         .route("/survival", get(survival_state).post(set_survival))
         .route("/survival/feed", post(survival_feed))
         .route("/foods", get(foods))
         .route("/plugins", get(plugins_status))
         .route("/shutdown", post(shutdown_app))
+        .layer(middleware::from_fn(allow_webview_cors))
         .with_state(api)
 }
 
@@ -881,6 +925,93 @@ async fn switch_ai_profile(
         Ok(Err(err)) => Err(ApiError::bad_request(err)),
         Err(err) => Err(ApiError::bad_request(format!("the switch task failed: {err}"))),
     }
+}
+
+/* ------------------------------------------------------------------ *
+ * Settings: read and write `watcher_rules.json` from the UI.
+ * ------------------------------------------------------------------ */
+
+/// `GET /config` — the **effective** settings plus the health of every path the
+/// runtime spawns from.
+///
+/// "Effective" matters: a key the loader does not know is silently dropped, so a
+/// block can look configured while the app runs on defaults. The body reports
+/// those stray keys under `warnings` instead of pretending they work.
+async fn get_config(State(api): State<ApiCtx>) -> Json<Value> {
+    let path = api.shared.ai_rules_path();
+    Json(crate::settings::config_json(path.as_deref()))
+}
+
+/// `POST /config` — persist a partial settings patch, then apply what can be
+/// applied without a restart.
+///
+/// The write is span surgery (`crate::settings::apply_config`), so unrelated
+/// blocks, their key order and any key this editor does not own survive
+/// untouched. Live effects, in order:
+///
+/// * `tts.enabled` / `stt.enabled` → the runtime mute switches;
+/// * `survival.*` → `plugins::apply_survival_config` (the metabolism plugin
+///   reads it on its next tick, so new drain rates bite within a second);
+/// * `ai.*` / `vision.*` → one `ai_profile` SSE frame, which is what makes
+///   `char-rig-watcher.exe` re-read the file (new endpoints, models, capture
+///   mode) without being restarted.
+///
+/// Piper/Whisper **paths** are read once at startup, so those are reported under
+/// `restart_required` rather than pretended to be live.
+async fn set_config(
+    State(api): State<ApiCtx>,
+    Json(patch): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let Some(path) = api.shared.ai_rules_path() else {
+        return Err(ApiError::bad_request(
+            "no watcher_rules.json was found, so there is nothing to write".to_string(),
+        ));
+    };
+
+    let write_path = path.clone();
+    let task_patch = patch.clone();
+    let applied =
+        tokio::task::spawn_blocking(move || crate::settings::apply_config(&write_path, &task_patch))
+            .await
+            .map_err(|err| ApiError::bad_request(format!("the config task failed: {err}")))?
+            .map_err(ApiError::bad_request)?;
+
+    if let Some(enabled) = patch
+        .get("tts")
+        .and_then(|block| block.get("enabled"))
+        .and_then(Value::as_bool)
+    {
+        crate::tts::set_enabled(enabled);
+    }
+    if let Some(enabled) = patch
+        .get("stt")
+        .and_then(|block| block.get("enabled"))
+        .and_then(Value::as_bool)
+    {
+        crate::stt::set_enabled(enabled);
+    }
+    if patch.get("survival").is_some() {
+        // Re-read what was actually written: one source of truth, and it also
+        // means a value the sanitizer clamped on load is the one applied.
+        let (config, _) = crate::survival::SurvivalConfig::load(Some(&path));
+        crate::plugins::apply_survival_config(&config);
+    }
+    if applied.ai_changed {
+        // The watcher adopts an `ai_profile` frame by re-reading the rules file.
+        api.shared.emit_event(
+            "ai_profile",
+            json!({
+                "name": applied.active_profile,
+                "active_profile": applied.active_profile,
+                "source": "settings",
+            }),
+        );
+    }
+
+    let mut body = crate::settings::config_json(Some(&path));
+    body["applied"] = json!(applied.applied);
+    body["restart_required"] = json!(applied.restart_required);
+    Ok(Json(body))
 }
 
 /* ------------------------------------------------------------------ *

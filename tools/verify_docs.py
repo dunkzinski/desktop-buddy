@@ -634,6 +634,75 @@ else:
                             problems.append(f"ARCHITECTURE.md: stt.{key} is not documented")
 
 
+            # survival: the plugin config the Settings modal writes. Friendly
+            # names (`metabolic_drain_rate`, `starting_hunger`, `notifications`)
+            # are NOT serde field names — they were silently dropped once and the
+            # app ran on defaults while the file looked configured. Pin the real
+            # schema so that cannot come back.
+            survival_block = shipped.get("survival")
+            if survival_block is not None:
+                survival_keys = {
+                    "enabled",
+                    "start_hunger",
+                    "start_saturation",
+                    "metabolism",
+                    "notify",
+                    "telemetry_secs",
+                }
+                if not isinstance(survival_block, dict):
+                    problems.append("watcher_rules.json: survival is not an object")
+                else:
+                    stray = set(survival_block) - survival_keys
+                    if stray:
+                        problems.append(
+                            f"watcher_rules.json: survival has unknown keys {sorted(stray)} "
+                            "(these are silently ignored by the loader)"
+                        )
+                    if not isinstance(survival_block.get("enabled"), bool):
+                        problems.append("watcher_rules.json: survival.enabled must be a boolean")
+                    if not isinstance(survival_block.get("notify"), bool):
+                        problems.append("watcher_rules.json: survival.notify must be a boolean")
+                    for field in ("start_hunger", "start_saturation"):
+                        value = survival_block.get(field)
+                        if isinstance(value, bool) or not isinstance(value, (int, float)):
+                            problems.append(f"watcher_rules.json: survival.{field} must be a number")
+                        elif not 0.0 <= value <= 100.0:
+                            problems.append(
+                                f"watcher_rules.json: survival.{field} {value} is outside 0..100"
+                            )
+                    telemetry = survival_block.get("telemetry_secs")
+                    if isinstance(telemetry, bool) or not isinstance(telemetry, int) or telemetry < 0:
+                        problems.append(
+                            "watcher_rules.json: survival.telemetry_secs must be a non-negative integer"
+                        )
+                    metabolism = survival_block.get("metabolism")
+                    if not isinstance(metabolism, dict):
+                        problems.append("watcher_rules.json: survival.metabolism must be an object")
+                    else:
+                        stray = set(metabolism) - {"hunger_per_min", "saturation_per_min"}
+                        if stray:
+                            problems.append(
+                                f"watcher_rules.json: survival.metabolism has unknown keys {sorted(stray)}"
+                            )
+                        for field in ("hunger_per_min", "saturation_per_min"):
+                            value = metabolism.get(field)
+                            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                                problems.append(
+                                    f"watcher_rules.json: survival.metabolism.{field} must be a number"
+                                )
+                            elif not 0.0 < value <= 100.0:
+                                problems.append(
+                                    f"watcher_rules.json: survival.metabolism.{field} {value} is outside 0..100"
+                                )
+                    for key in sorted(survival_keys):
+                        if f"`{key}`" not in arch_md:
+                            problems.append(f"ARCHITECTURE.md: survival.{key} is not documented")
+                    for key in ("hunger_per_min", "saturation_per_min"):
+                        if f"`{key}`" not in arch_md:
+                            problems.append(
+                                f"ARCHITECTURE.md: survival.metabolism.{key} is not documented"
+                            )
+
             # vision: screen capture + a named local VL profile. The profile name
             # must resolve, or a screenshot would silently fall back to the text
             # model and the avatar would "look" without seeing anything.

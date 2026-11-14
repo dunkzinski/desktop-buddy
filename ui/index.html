@@ -74,6 +74,10 @@
       <button class="control-btn danger" id="btn-center" title="Walk back to center">Center</button>
       <button class="control-btn" id="btn-new-chat" title="Start a new chat: reset the conversation context">New chat ↺</button>
       <button class="control-btn" id="btn-history" title="Conversation history (H)" aria-pressed="false">History</button>
+      <button class="control-btn" id="btn-survival" title="Hunger, saturation and food — pops out as a card (Esc closes)"
+              aria-pressed="false">Survival</button>
+      <button class="control-btn" id="btn-settings" title="Settings: paths, AI profiles and survival (Esc closes)"
+              aria-pressed="false">Settings ⚙</button>
       <button class="control-btn" id="btn-ask" title="Ask or task the avatar (Enter)">Ask…</button>
       <button class="control-btn" id="btn-screen"
               title="What's on my screen? Captures the focused window and answers with the local vision model">
@@ -290,6 +294,66 @@
     <div class="hist-empty" id="history-empty">Loading…</div>
   </div>
 </aside>
+
+<aside id="survival-card" class="hidden" role="dialog" aria-label="Survival" aria-hidden="true">
+  <header>
+    <h3>Survival</h3>
+    <span class="survival-tier off" id="survival-tier" title="hunger tier">—</span>
+    <span class="hd-spacer"></span>
+    <button class="mini-btn" id="btn-survival-close" title="Close (Esc)" aria-label="Close">✕</button>
+  </header>
+  <div class="survival-body">
+    <div class="survival-bar-row" title="Hunger only falls once saturation is empty">
+      <span class="survival-bar-name">Hunger</span>
+      <div class="survival-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+        <div class="survival-bar-fill hunger" id="survival-hunger-bar"></div>
+      </div>
+      <span class="survival-bar-value" id="survival-hunger">—</span>
+    </div>
+    <div class="survival-bar-row" title="Saturation drains first and shields hunger">
+      <span class="survival-bar-name">Satur.</span>
+      <div class="survival-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+        <div class="survival-bar-fill saturation" id="survival-saturation-bar"></div>
+      </div>
+      <span class="survival-bar-value" id="survival-saturation">—</span>
+    </div>
+    <div class="survival-actions">
+      <select id="survival-food" title="What to eat (from GET /foods)">
+        <option value="">no foods</option>
+      </select>
+      <button class="control-btn primary feed-btn" id="btn-feed"
+              title="Eat one item (POST /survival/feed)">Feed</button>
+    </div>
+    <div class="survival-note" id="survival-note" aria-live="polite"></div>
+  </div>
+</aside>
+
+<div id="settings-modal" class="hidden" role="dialog" aria-label="Settings" aria-hidden="true">
+  <div class="settings-card">
+    <header>
+      <h3>Settings</h3>
+      <code id="settings-path" title="">watcher_rules.json</code>
+      <span class="hd-spacer"></span>
+      <button class="mini-btn" id="btn-settings-reload" title="Re-read watcher_rules.json from disk">Reload</button>
+      <button class="mini-btn" id="btn-settings-close" title="Close (Esc)" aria-label="Close">✕</button>
+    </header>
+    <nav class="settings-tabs">
+      <button class="settings-tab active" data-tab="voice" type="button">Voice &amp; paths</button>
+      <button class="settings-tab" data-tab="ai" type="button">AI brain</button>
+      <button class="settings-tab" data-tab="survival" type="button">Survival</button>
+    </nav>
+    <div class="settings-body">
+      <section class="settings-pane active" data-pane="voice" id="settings-pane-voice"></section>
+      <section class="settings-pane" data-pane="ai" id="settings-pane-ai"></section>
+      <section class="settings-pane" data-pane="survival" id="settings-pane-survival"></section>
+      <div class="settings-warnings hidden" id="settings-warnings"></div>
+    </div>
+    <footer>
+      <span class="settings-status" id="settings-status" aria-live="polite"></span>
+      <button class="control-btn primary" id="btn-settings-save" type="button">Save</button>
+    </footer>
+  </div>
+</div>
 
 <div class="toast" id="toast"></div>
 

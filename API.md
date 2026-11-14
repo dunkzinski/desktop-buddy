@@ -719,6 +719,52 @@ Per-trigger overrides: `app_rules[].profile` (a window rule) and
 `quick_tasks[].profile` (a command-bar chip, forwarded in the `user_reply`
 frame's `profile`). Both fall back to `active_profile` when absent.
 
+### `GET /config` / `POST /config`
+
+The Settings modal's backend, and the reason nobody has to hand-edit
+`watcher_rules.json` to move a Piper install.
+
+`GET` returns the **effective** settings — the values the runtime would actually
+load, defaults included — plus `paths` (one entry per executable/model the app
+spawns, each with `exists`) and `warnings` (keys present in the file that the
+loader ignores: a block full of those *looks* configured while the app runs on
+defaults, so it is reported instead of hidden).
+
+```bash
+curl -s localhost:8765/config | jq '.settings.tts, .paths, .warnings'
+```
+
+`POST` takes a **partial** patch and writes it back:
+
+```bash
+curl -s -X POST localhost:8765/config -H 'content-type: application/json' -d '{
+  "tts":      {"piper_exe_path": "C:\\\\tools\\\\piper\\\\piper.exe"},
+  "ai":       {"active_profile": "hermes",
+               "profiles": [{"name": "hermes", "timeout_secs": 180}]},
+  "survival": {"metabolism": {"hunger_per_min": 0.5}, "notify": false}
+}'
+```
+
+Only the blocks you send are rewritten, and inside each one only the top-level
+value span is replaced (`src-tauri/src/settings.rs`), so `app_rules`,
+`quick_tasks`, every `system_prompt` and any key this editor does not own survive
+byte-for-byte. Nested objects merge, so a metabolic-rate patch keeps the sibling
+rate. The answer is the same body as `GET` plus `applied` (dotted paths) and
+`restart_required`.
+
+* **Applied live**: `tts.enabled` / `stt.enabled` (the mute switches), every
+  `survival.*` value (the metabolism plugin reads the new config on its next
+  tick, so a new drain rate bites within a second), and every `ai.*` or
+  `vision.*` change (one `ai_profile` frame is what makes
+  `char-rig-watcher.exe` re-read the file — new endpoints, models, capture mode,
+  no restart).
+* **Needs a restart**: Piper/Whisper **paths** and `stt.hotkey`. Those are read
+  once at startup, so they are listed under `restart_required` rather than
+  pretended to be live.
+* **400s**: unknown key, wrong type, out-of-range number, unknown profile name,
+  empty required path — the message names the field. Nothing is written on
+  failure, and the previous content is kept at `watcher_rules.json.bak`.
+
 ### `GET /survival` / `POST /survival`
 
 The avatar's appetite — hunger and saturation on a 0–100 scale, the metabolic
@@ -1195,7 +1241,7 @@ curl -s -X POST localhost:8765/shutdown
 ## Internal (Tauri command) surface
 
 The page talks to Rust through `invoke`; the same mutations are available as
-commands. Arguments are snake_case (`rename_all = "snake_case"`). All 44, in the
+commands. Arguments are snake_case (`rename_all = "snake_case"`). All 45, in the
 order they are registered (ARCHITECTURE.md §6 has the full purpose table):
 
 **State, window & interaction** — `get_avatar_state`, `get_runtime_info`,
@@ -1207,7 +1253,11 @@ target_position, state, expression, joints?, talking?, speech?)`,
 `close_window`, `minimize_window`.
 
 **Models, rigs & parts** — `list_models`, `get_model`, `load_model(name)`,
-`pick_import_file`, `import_asset(path, mode?, name?, tag?)`,
+`pick_import_file`, `pick_config_path(kind?)` (the Settings modal's
+**Browse…** button: `kind` ∈ `executable` \| `model` \| `folder` \| `any`
+chooses the dialog's filters and whether it picks a directory; returns the
+chosen path or `null`, and it drops the overlay's always-on-top flag while
+the dialog is up), `import_asset(path, mode?, name?, tag?)`,
 `patch_part(target, patch)`, `set_mouth(state)`, `get_parts`, `save_rig(rig)`,
 `reset_rig`, `set_pose(joints)`, `clear_pose`, `get_joints`.
 

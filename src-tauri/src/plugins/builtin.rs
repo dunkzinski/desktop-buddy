@@ -42,6 +42,13 @@ impl MetabolismPlugin {
     /// How often a starving avatar repeats itself.
     const STARVATION_REPEAT_SECS: f64 = 300.0;
 
+    /// The config to use this tick: a live `POST /config` override wins over the
+    /// value this plugin was installed with, so a settings change is picked up
+    /// on the next tick instead of on the next launch.
+    fn effective(&self) -> SurvivalConfig {
+        crate::plugins::live_config().unwrap_or_else(|| self.config.clone())
+    }
+
     pub fn new(config: SurvivalConfig) -> Self {
         let last_tier = HungerTier::of(config.start_hunger);
         Self {
@@ -78,7 +85,8 @@ impl Plugin for MetabolismPlugin {
     }
 
     fn tick(&mut self, host: &dyn PluginHost, dt: Duration) -> Result<(), String> {
-        if !self.config.enabled {
+        let config = self.effective();
+        if !config.enabled {
             return Ok(());
         }
         let handle = host.survival();
@@ -109,7 +117,7 @@ impl Plugin for MetabolismPlugin {
                     "source": "metabolism",
                 }),
             );
-            if self.config.notify {
+            if config.notify {
                 host.notify(outcome.tier_after.notice(), outcome.tier_after.expression());
             }
             return Ok(());
@@ -131,7 +139,7 @@ impl Plugin for MetabolismPlugin {
                         "source": "starvation-reminder",
                     }),
                 );
-                if self.config.notify {
+                if config.notify {
                     host.notify(
                         HungerTier::Starving.notice(),
                         HungerTier::Starving.expression(),

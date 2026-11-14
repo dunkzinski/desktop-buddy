@@ -54,6 +54,12 @@ import {
   setupHistory, toggleHistoryDrawer, historyOpen,
 } from "./history.js";
 
+import { setupSurvival, toggleSurvivalCard, survivalCardOpen } from "./survival.js";
+
+import {
+  setupSettings, toggleSettings, settingsOpen, onSettingsSaved,
+} from "./settings.js";
+
 import { call, listen } from "./ipc.js";
 
 /* ---------- behaviour (play mode) ---------- */
@@ -1013,8 +1019,10 @@ function setupUI() {
       // The conversation log: same toggle as the panel/command-bar buttons.
       case "h": toggleHistoryDrawer(); break;
       case "escape":
-        if (commandBarVisible()) closeCommandBar();
+        if (settingsOpen()) toggleSettings(false);
+        else if (commandBarVisible()) closeCommandBar();
         else if (historyOpen()) toggleHistoryDrawer(false);
+        else if (survivalCardOpen()) toggleSurvivalCard(false);
         else if (RT.rigMode) setRigMode(false);
         else if (isWatcherDrawerOpen()) toggleWatcherDrawer(false);
         else toggleCollapsed(!avatar.collapsed); break;
@@ -1284,6 +1292,19 @@ async function init() {
   refreshTts();
   // Microphone / Whisper: ready, and what is it doing right now?
   refreshStt();
+  // Hunger / saturation / tier, hydrated over HTTP from `GET /survival` and the
+  // `GET /foods` catalog. Must not hold up the first paint if the API is slow.
+  setupSurvival().catch((err) => console.error("[avatar] survival widget:", err));
+  // Settings: the modal over `GET/POST /config`. A save can change a path, an
+  // AI endpoint or the survival rates, so the panel's own badges are refreshed
+  // from the server rather than trusted to update themselves.
+  onSettingsSaved(() => {
+    refreshTts();
+    refreshStt();
+    refreshAiProfiles();
+    refreshWatcher();
+  });
+  setupSettings().catch((err) => console.error("[avatar] settings:", err));
   // AI profiles + the live health dot. The probe is capped at 800 ms in Rust,
   // so a dead endpoint cannot make this interval pile up.
   refreshAiProfiles();
