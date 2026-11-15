@@ -2,17 +2,17 @@
 src-tauri/target/
 src-tauri/target-scratch/
 target/
-
 # Legacy multi-GB prototypes
 ai-avatar-bridge/
 avatar-desktop/
 avatar-editor/
 spikes/
-
 # OS / editor noise
 .DS_Store
 Thumbs.db
 desktop.ini
-
 # Local experiment logs
 *.log
+# Plugin build outputs (run scripts/build-plugin.sh)
+plugins/*/target/
+plugins/*.wasm

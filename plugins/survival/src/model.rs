@@ -30,7 +30,6 @@
 //! numbers.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -55,15 +54,8 @@ pub const MAX_DRAIN_PER_MIN: f32 = 100.0;
 /// a week must not arrive as one seven-day lunge: a resumed tick is clamped so
 /// the avatar starves *gradually*.
 pub const MAX_TICK_SECS: f64 = 900.0;
-
-/// Current epoch milliseconds. The survival model never reads the clock itself;
-/// this is the helper the wiring uses to stamp meals.
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0)
-}
+// The model never reads the clock: callers pass `now_ms` (the guest gets it from
+// the host import `host_now_ms`), which is what keeps every test deterministic.
 
 /* ------------------------------------------------------------------ *
  * Tiers

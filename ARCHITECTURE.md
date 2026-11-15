@@ -420,58 +420,85 @@ The local voice. One module, one worker thread, one config block.
 | `list_animations`, `animate`, `stop_animation` | `GET /animations` (clip catalogue from the loaded rig) and the two stop/play spellings for `POST /animate` |
 | handlers | one per route (see §7) |
 
-### `src-tauri/src/plugins/` (the plugin host + the survival plugin)
+### `src-tauri/src/plugins/` (the host + the WebAssembly runtime)
 
-Everything feature-shaped that is not part of the avatar engine itself lives
-here. The host is **feature-blind**: it knows what a plugin *is*, never what one
-*does*. `lib.rs` and `api.rs` contain no survival type, constant, route or event
-— removing the survival directory would leave them untouched.
+Plugins are **not compiled into this binary**. They are `.wasm` files in a
+`plugins/` directory, built by their own crates, loaded at startup. No plugin is
+named in `lib.rs`, `api.rs` or this directory's registry: delete every `.wasm`
+and the app still starts (with no plugins) and still serves `/plugins`.
 
 | file | responsibility |
 | --- | --- |
-| `mod.rs` | `Plugin` (`init` / `tick` / `shutdown` + optional `status` / `routes` / `config`), `PluginHost` (`emit`, `notify`, `now_ms`, `rules_path`), `PluginRoute` (a path + an axum `MethodRouter`), `PluginConfig` (`key`, `describe`, `validate`, `apply`, `warnings`), `PluginRegistry` (lifecycle, panic containment, parking), and the process-wide `install` / `routes` / `config_specs` / `stop` |
-| `manifest.rs` | **the only file that names a plugin.** One `register` line per plugin; delete it (plus the directory and the `pub mod` line) to remove the feature |
-| `survival/mod.rs` | the plugin's own module tree |
-| `survival/model.rs` | hunger, saturation, `HungerTier`, `Metabolism`, the 7-food catalog, meal cooldowns, `SurvivalStats` |
-| `survival/plugin.rs` | `SurvivalPlugin` + `SurvivalState`: the tick loop (drain, tier crossings, starvation reminders, telemetry), meal + manual-level writes, `status` |
-| `survival/routes.rs` | `/survival` (`GET`+`POST`), `/survival/feed`, `/foods` as `PluginRoute`s, with the plugin's own status mapping (400 / 409) |
-| `survival/config.rs` | the `survival` block as a `PluginConfig`: parse, validate with the model's own clamp, apply live, report stray keys |
+| `mod.rs` | the feature-blind host: `Plugin` (`init` / `tick` / `shutdown` + optional `status` / `routes` / `config`), `PluginHost` (`emit`, `notify`, `now_ms`, `rules_path`), `PluginRoute` (a path + an axum `MethodRouter`), `PluginConfig` (`key`, `describe`, `validate`, `apply`, `warnings`), the failure-tolerant registry, and the process-wide `install` / `routes` / `config_specs` / `stop` |
+| `wasm_host.rs` | the WebAssembly runtime: scans the plugin directory, compiles each file to a `wasmtime::Module`, instantiates it in **its own `Store`** with a fuel budget, defines the host imports, and wraps the instance in a `WasmPlugin` that implements `Plugin` |
+| `manifest.rs` | how the app finds plugins — `wasm_host::load_all(&mut registry)`. It names nothing, so there is nothing to edit when a plugin is added or removed |
 
-#### The four seams
+#### The guest ABI
 
-1. **Lifecycle.** `PluginRegistry` calls `init(Arc<dyn PluginHost>)` once,
-   `tick(host, dt)` every `TICK_INTERVAL` (1 s, `dt` clamped to `MAX_TICK_DT`),
-   and `shutdown(host)` once — or when the plugin is parked. A failed `init` is
-   logged and skipped; a panicking `tick` is caught, counted and after
-   `MAX_CONSECUTIVE_TICK_ERRORS` the plugin is parked *and still torn down*.
-2. **Routes.** A plugin returns `Vec<PluginRoute>`; `api::router` merges them
-   into the axum router (deduping paths, logging a collision). Handlers are
-   closures over the plugin's own state, so no global or service locator is
-   needed. A plugin that failed `init` contributes no routes — a 404 beats a
-   panic inside axum. `/plugins` is the host's own route, served whether or not
-   any plugin is installed.
-3. **Config.** A plugin returns `Arc<dyn PluginConfig>`. `GET /config` merges
-   `describe()` into its `settings` object and `warnings()` into the amber box;
-   `POST /config` hands the raw patch to `validate()` (which returns the
-   canonical JSON *text*, so the plugin keeps its own field order) and, after the
-   file is safely written, to `apply()` — which answers `Apply::Live` or
-   `Apply::Restart`. `src/settings.rs` has no feature-specific code left.
-4. **Host capabilities.** `emit` reaches the page and the SSE bus, `notify`
-   speaks through `do_speak`, `now_ms` is freezable in tests, `rules_path` is how
-   a plugin finds the file whose block it owns. Nothing OS- or window-shaped
-   crosses that boundary, which is why every plugin test runs without Tauri.
-
-#### Adding or removing a plugin
+JSON in, JSON out, through the guest's own allocator:
 
 ```text
-1. src/plugins/<name>/…      implement Plugin (+ PluginRoute / PluginConfig if needed)
-2. src/plugins/mod.rs        add `pub mod <name>;`
-3. src/plugins/manifest.rs   add `register(registry, Box::new(<Name>Plugin::new()));`
+alloc(len) -> ptr        the host writes its request into guest memory
+dealloc(ptr, len)        either side frees a buffer it owns
+plugin_init(ptr, len)    {"config": <the plugin's block or null>}
+plugin_tick(dt_ms)       one tick
+plugin_status()          the entry in GET /plugins
+plugin_routes()          [{"path": "/survival", "methods": ["GET","POST"]}, …]
+plugin_http(ptr, len)    {"method","path","query","body"} -> {"status","body"}
+plugin_config()          descriptor: {"key","title","describe"}
+plugin_config_validate(ptr, len)   {"current","patch"} -> {"ok","text"}
+plugin_config_apply(ptr, len)      <block> -> {"live": bool}
+plugin_config_warnings(ptr, len)   {"current"} -> {"warnings": […]}
 ```
 
-Remove it by deleting those three things. Nothing else references it:
-`cargo check` proves it, and `tools/verify_docs.py` scans `src/plugins/**/*.rs`
-for `PluginRoute` literals so the route table in the docs follows automatically.
+A reply packs `(ptr as i64) << 32 | len`; `0` means "no result". The host copies
+the bytes out, calls `dealloc`, and parses. A reply with an `error` key is a log
+line, never a panic.
+
+The guest may call exactly four host imports — that list *is* the plugin's
+capability surface:
+
+```text
+host_emit_event(name, payload)     -> the page and the GET /events bus
+host_notify(text, expression)      -> spoken through do_speak
+host_now_ms()                      -> the clock (wasm32 has none)
+host_log(level, message)           -> the app log
+```
+
+#### Isolation
+
+* **Memory**: one `Store` per plugin, bounds-checked linear memory; the host only
+  ever copies through the exported `alloc`/`dealloc` area, capped at 4 MiB per
+  message.
+* **CPU**: every call gets a fresh `FUEL_PER_CALL` (50 M instructions). A guest
+  that spins traps out instead of hanging the ticker.
+* **Crashes**: a guest panic (`panic = "abort"`) is a trap → `Err`; the registry
+  counts it and parks the plugin after `MAX_CONSECUTIVE_TICK_ERRORS`, running its
+  `shutdown` hook. The app keeps running.
+* **Loading**: a `.wasm` that will not compile or instantiate is logged and
+  skipped. A bad drop-in cannot stop the app from starting.
+* **Deadlock guard**: a guest cannot ask for the registry (`plugins::status()`)
+  from inside a call — that would re-enter the registry mutex the ticker already
+  holds. Anything the host knows (the plugin list, for instance) stays in a host
+  route, which is why `GET /survival` no longer embeds `plugins`.
+
+#### Building and dropping a plugin in
+
+```bash
+./scripts/build-plugin.sh          # every plugins/<name>/ crate -> plugins/<name>.wasm
+# or by hand:
+cd plugins/survival
+cargo build --release --target wasm32-unknown-unknown
+cp target/wasm32-unknown-unknown/release/char_rig_survival_plugin.wasm ../survival.wasm
+```
+
+Then restart `avatar-desktop.exe` — no Rust build of the app, no feature flag.
+The plugin's routes appear in the API, its config block appears in the settings
+modal, and its entry appears in `GET /plugins`. Delete the `.wasm` to remove it.
+
+`tools/verify_docs.py` reads the route table out of the guest sources
+(`plugins/*/src/*.rs`, the `ROUTES` const) as well as `api.rs` and
+`src/plugins/**`, so the documented endpoints follow the plugin.
 
 ### `src-tauri/src/models.rs` (1081 lines)
 

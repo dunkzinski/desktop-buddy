@@ -811,13 +811,14 @@ curl -s localhost:8765/survival
   "saturation": 40.0,
   "tier": "peckish",
   "label": "Peckish",
-  "expression": "thinking",
-  "plugins": [ /* the same array as GET /plugins */ ]
+  "expression": "thinking"
 }
 ```
 
 `tier` is one of `satiated`, `peckish`, `hungry`, `starving`; `label` is the
-human wording and `expression` the face the avatar wears in that tier.
+human wording and `expression` the face the avatar wears in that tier. The
+plugin list lives at `GET /plugins` only: the route is answered by a WebAssembly
+guest, which cannot read the host's registry from inside a call.
 `seconds_to_next_tier` counts down to the next *worse* tier (or `null` when
 already starving) and `seconds_to_starving` to the `hungry` floor.
 
@@ -898,7 +899,9 @@ curl -s localhost:8765/foods
 ### `GET /plugins`
 
 The plugin registry: every registered plugin, its lifecycle state, tick and
-error counters and the last error it raised.
+error counters and the last error it raised. Plugins are **WebAssembly modules**
+loaded from the `plugins/` directory at startup — the routes below are answered
+by a guest instance, not by code in this binary.
 
 ```bash
 curl -s localhost:8765/plugins
@@ -939,10 +942,11 @@ registry keeps the rest running. `GET /plugins` also emits the `plugins` frame
 whenever the registry's own status changes.
 
 **The routes are the plugins'.** `/survival`, `/survival/feed` and `/foods` come
-from the survival plugin's `Plugin::routes`, and `/plugins` is the host's own
-introspection route (it answers even with nothing installed). `api.rs` names none
-of them: a plugin that is not installed contributes no routes, and an app with no
-plugins at all still serves `/plugins`. The same is true of config blocks —
+from the survival plugin: its `plugin_routes()` export declares them, and the
+host maps each one to an axum route that proxies the request into the Wasm
+instance. `/plugins` is the host's own introspection route (it answers even with
+nothing installed). `api.rs` names none of them: delete `plugins/survival.wasm`
+and those three endpoints disappear while `/plugins` still answers. The same is true of config blocks —
 `GET /config` lists a section only if a plugin claims it.
 
 ### `POST /shutdown`

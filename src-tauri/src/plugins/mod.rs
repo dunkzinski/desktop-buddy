@@ -29,14 +29,15 @@
 //! Two lines at the top of this file plus one directory:
 //!
 //! ```text
-//! pub mod manifest;   // <- the ONLY file that names a plugin
-//! pub mod survival;   // <- the plugin's own directory
+//! pub mod manifest;   // <- loads the plugins (no plugin is named here)
+//! pub mod wasm_host;  // <- the WebAssembly runtime that does the loading
 //! ```
 //!
-//! Removing a feature is therefore: delete its directory, drop its `pub mod`
-//! line, and delete its one `register` call in [`manifest`]. `lib.rs` and
-//! `api.rs` do not change — that is the whole point, and
-//! `tests::a_plugin_can_be_dropped_without_touching_the_host` keeps it honest.
+//! Plugins are **not compiled into this binary**: [`wasm_host`] scans a
+//! `plugins/` directory at startup and instantiates every `*.wasm` it finds.
+//! Removing a feature is deleting its `.wasm` file; nothing in `lib.rs`,
+//! `api.rs` or this file changes. `tests::a_plugin_can_be_dropped_without_
+//! touching_the_host` keeps the host honest about that.
 //!
 //! ## Threading
 //!
@@ -46,7 +47,7 @@
 //! `tick`, never across the sleep.
 
 pub mod manifest;
-pub mod survival;
+pub mod wasm_host;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};

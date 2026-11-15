@@ -183,34 +183,48 @@ byte-for-byte alone.
 
 ---
 
-## Plugins (a feature you can delete in three lines)
+## Plugins (WebAssembly, dropped in at runtime)
 
-Features that are not the avatar engine itself are plugins, and the core does not
-know they exist. The host in `src/plugins/mod.rs` defines four seams — lifecycle
-(`init` / `tick` / `shutdown`), HTTP routes, an owned config block, and the host
-capabilities a plugin may use (`emit`, `notify`, `now_ms`, `rules_path`) — and
-nothing else. `lib.rs` and `api.rs` contain no survival type, constant, route or
-event.
-
-The shipped example is the survival plugin:
+Features that are not the avatar engine itself are **WebAssembly plugins**. They
+are not compiled into the app: at startup the host scans `plugins/` for `*.wasm`,
+instantiates each one in its own sandbox (own linear memory, own instruction
+budget) and wires up whatever it contributes.
 
 ```text
-src/plugins/survival/model.rs    hunger, saturation, tiers, the food catalog
-src/plugins/survival/plugin.rs   the tick loop, telemetry, meal announcements
-src/plugins/survival/routes.rs   /survival, /survival/feed, /foods
-src/plugins/survival/config.rs   the `survival` block of watcher_rules.json
+plugins/
+├── survival/            the guest crate (its own Cargo workspace)
+│   ├── Cargo.toml       crate-type = ["cdylib", "rlib"], targets wasm32-unknown-unknown
+│   └── src/
+│       ├── lib.rs       the ABI: alloc/dealloc + plugin_* exports, 4 host imports
+│       ├── model.rs     hunger, saturation, tiers, the food catalog
+│       ├── plugin.rs    the tick loop, telemetry, meal announcements
+│       ├── routes.rs    ROUTES = [("/survival", …), …] + the request dispatcher
+│       └── config.rs    the `survival` block of watcher_rules.json
+└── survival.wasm        the built artifact — this is what the app loads
 ```
 
-It contributes its own endpoints (they are not listed in `api.rs`), parses and
-validates its own config section (the Settings modal just asks the registry which
-sections exist), and is switched off by `survival.enabled: false` — the plugin
-stays installed but idle, so the bars freeze and the routes keep answering
-instead of 404-ing.
+The guest talks to the app through exactly four imports (`host_emit_event`,
+`host_notify`, `host_now_ms`, `host_log`) and exports JSON-over-memory functions:
+`plugin_init`, `plugin_tick`, `plugin_status`, `plugin_routes`, `plugin_http`,
+and the config hooks. The host (`src-tauri/src/plugins/wasm_host.rs`) turns
+`plugin_routes` into axum routes that proxy each request into the instance.
 
-Removing it is three edits: delete `src/plugins/survival/`, drop its `pub mod`
-line, delete its one `register` call in `src/plugins/manifest.rs`. Adding a
-plugin is the same in reverse. `GET /plugins` lists what is installed, and
-`tools/verify_docs.py` reads the route table straight out of the plugin sources.
+**Build and install a plugin** (no app rebuild):
+
+```bash
+./scripts/build-plugin.sh          # compiles plugins/*/ for wasm32-unknown-unknown
+                                   # and copies each artifact to plugins/<name>.wasm
+```
+
+Restart `avatar-desktop.exe` and its routes, its config block in the Settings
+modal and its entry in `GET /plugins` are live. Delete `plugins/survival.wasm`
+and they are gone — the app still starts and still serves `/plugins`.
+
+Isolation is the point: a plugin that traps is parked by the registry (the app
+keeps running), every call is fuel-metered so a spinning guest cannot hang the
+ticker, and a `.wasm` that will not load is logged and skipped. `survival.enabled:
+false` keeps the plugin installed but idle — the bars freeze and the routes keep
+answering with `"enabled": false`.
 
 ---
 
@@ -805,8 +819,10 @@ src-tauri/            Rust application (Tauri 2)
   src/settings.rs     GET/POST /config: reads and edits watcher_rules.json by byte span
   src/plugins/
     mod.rs            feature-blind plugin host: Plugin trait, PluginHost, PluginRoute, PluginConfig, registry
-    manifest.rs       the only file that names a plugin (add/remove one here)
-    survival/         the survival feature, self-contained: model.rs, plugin.rs, routes.rs, config.rs
+    wasm_host.rs      the WebAssembly runtime: scans plugins/*.wasm, sandboxes each instance, proxies routes
+    manifest.rs       how the app finds plugins (calls wasm_host::load_all — names nothing)
+plugins/              guest plugin crates + the .wasm the app loads at runtime
+scripts/build-plugin.sh   builds every plugin for wasm32-unknown-unknown
   src/bin/
     char-rig-mcp.rs   second binary: stdio MCP server exposing the avatar_* tools over HTTP
     char-rig-watcher.rs  third binary: SSE + /context watcher that wakes Hermes on triggers

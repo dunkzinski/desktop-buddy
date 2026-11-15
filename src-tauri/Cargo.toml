@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "AI Avatar Desktop - transparent avatar walking on the desktop, driven by a local HTTP API"
 authors = ["Austin Dunkzinski"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.85"
 
 [lib]
 name = "avatar_desktop_lib"
@@ -29,6 +29,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 # `stream` feeds `src/bin/char-rig-watcher.rs`, which consumes the SSE body of
 # `GET /events` chunk by chunk (`Response::bytes_stream`).
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "stream", "rustls-tls"] }
+wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std"] }
 
 # Windows-specific: global cursor polling for selective click-through, plus the
 # desktop-context probes behind `GET /context`

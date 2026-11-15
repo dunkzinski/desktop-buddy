@@ -1,0 +1,25 @@
+[package]
+name = "char-rig-survival-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "The survival feature as a dynamically loaded WebAssembly plugin for char-rig"
+publish = false
+
+# Its own workspace on purpose: the app crate must not depend on this one. It is
+# built separately and the host loads the .wasm at runtime.
+[workspace]
+
+[lib]
+# `cdylib` is the .wasm artifact; `rlib` keeps `cargo test` working natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,7 +1,8 @@
 """Cross-check the markdown docs against the actual Rust/JS source.
 
 Checks:
-  1. every `.route()` in api.rs and every `PluginRoute` in src/plugins/ appears in
+  1. every `.route()` in api.rs, every `PluginRoute` in src/plugins/ and every entry in
+     a guest crate's ROUTES table appears in
      API.md and ARCHITECTURE.md
   2. every registered tauri command appears in both docs
   3. every event type emitted on the SSE bus is documented
@@ -42,8 +43,19 @@ for plugin_path in sorted((ROOT / "src-tauri/src/plugins").rglob("*.rs")):
             plugin_path.read_text(encoding="utf-8"),
         )
     )
+# Guest plugins live outside the app crate (plugins/<name>/src/*.rs) and declare
+# their endpoints as data: ("/path", &["GET", ...]). Read that table too — it is
+# the same one the Wasm host asks the instance for at startup.
+wasm_routes = set()
+for guest_path in sorted((ROOT / "plugins").rglob("src/*.rs")):
+    wasm_routes |= set(
+        re.findall(r'\("(/[A-Za-z0-9_/\-]+)",\s*&\[', guest_path.read_text(encoding="utf-8"))
+    )
+routes |= wasm_routes
 routes |= plugin_routes
 print(f"routes in api.rs + plugins ({len(routes)}): {', '.join(sorted(routes))}")
+if wasm_routes:
+    print(f"  of which from guest wasm crates ({len(wasm_routes)}): {', '.join(sorted(wasm_routes))}")
 print(f"  of which contributed by plugins ({len(plugin_routes)}): {', '.join(sorted(plugin_routes))}")
 
 
