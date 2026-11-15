@@ -677,6 +677,13 @@ else:
                     "metabolism",
                     "notify",
                     "telemetry_secs",
+                    "cravings",
+                    "craving_below_hunger",
+                    "craving_below_saturation",
+                    "craving_interval_secs",
+                    "craving_duration_secs",
+                    "fishing",
+                    "inventory",
                 }
                 if not isinstance(survival_block, dict):
                     problems.append("watcher_rules.json: survival is not an object")
@@ -723,6 +730,33 @@ else:
                                 problems.append(
                                     f"watcher_rules.json: survival.metabolism.{field} {value} is outside 0..100"
                                 )
+                    if not isinstance(survival_block.get("cravings"), bool):
+                        problems.append(
+                            "watcher_rules.json: survival.cravings must be a boolean"
+                        )
+                    for field in ("craving_below_hunger", "craving_below_saturation"):
+                        value = survival_block.get(field)
+                        if isinstance(value, bool) or not isinstance(value, (int, float)):
+                            problems.append(
+                                f"watcher_rules.json: survival.{field} must be a number"
+                            )
+                        elif not 0.0 <= value <= 100.0:
+                            problems.append(
+                                f"watcher_rules.json: survival.{field} {value} is outside 0..100"
+                            )
+                    for field, low, high in (
+                        ("craving_interval_secs", 60, 86400),
+                        ("craving_duration_secs", 30, 3600),
+                    ):
+                        value = survival_block.get(field)
+                        if isinstance(value, bool) or not isinstance(value, int):
+                            problems.append(
+                                f"watcher_rules.json: survival.{field} must be an integer"
+                            )
+                        elif not low <= value <= high:
+                            problems.append(
+                                f"watcher_rules.json: survival.{field} {value} is outside {low}..{high}"
+                            )
                     for key in sorted(survival_keys):
                         if f"`{key}`" not in arch_md:
                             problems.append(f"ARCHITECTURE.md: survival.{key} is not documented")
@@ -731,6 +765,124 @@ else:
                             problems.append(
                                 f"ARCHITECTURE.md: survival.metabolism.{key} is not documented"
                             )
+
+                    # The fishing mini-game owns its own sub-block: every key is
+                    # both schema-checked here and required in ARCHITECTURE.md,
+                    # because a keybind nobody documents is a keybind nobody
+                    # finds.
+                    fishing_keys = {
+                        "enabled",
+                        "require_rod",
+                        "bait_required",
+                        "hook_key",
+                        "reel_key",
+                        "mouse_button",
+                        "min_wait_secs",
+                        "max_wait_secs",
+                        "hook_window_ms",
+                        "reel_period_ms",
+                        "sweet_width",
+                        "difficulty",
+                    }
+                    fishing = survival_block.get("fishing")
+                    if fishing is None:
+                        problems.append("watcher_rules.json: survival.fishing is missing")
+                    elif not isinstance(fishing, dict):
+                        problems.append("watcher_rules.json: survival.fishing must be an object")
+                    else:
+                        stray = set(fishing) - fishing_keys
+                        if stray:
+                            problems.append(
+                                "watcher_rules.json: survival.fishing has unknown keys "
+                                f"{sorted(stray)} (these are silently ignored by the loader)"
+                            )
+                        for field in ("enabled", "require_rod", "bait_required"):
+                            if not isinstance(fishing.get(field), bool):
+                                problems.append(
+                                    f"watcher_rules.json: survival.fishing.{field} must be a boolean"
+                                )
+                        for field in ("hook_key", "reel_key"):
+                            value = fishing.get(field)
+                            if not isinstance(value, str) or not value.strip():
+                                problems.append(
+                                    f"watcher_rules.json: survival.fishing.{field} must be a "
+                                    "non-empty key name"
+                                )
+                        button = fishing.get("mouse_button")
+                        if isinstance(button, bool) or not isinstance(button, int) or not 0 <= button <= 2:
+                            problems.append(
+                                "watcher_rules.json: survival.fishing.mouse_button must be 0, 1 or 2"
+                            )
+                        for field, low, high, kind in (
+                            ("min_wait_secs", 1, 120, int),
+                            ("max_wait_secs", 1, 120, int),
+                            ("hook_window_ms", 250, 8000, int),
+                            ("reel_period_ms", 300, 6000, int),
+                        ):
+                            value = fishing.get(field)
+                            if isinstance(value, bool) or not isinstance(value, kind):
+                                problems.append(
+                                    f"watcher_rules.json: survival.fishing.{field} must be an integer"
+                                )
+                            elif not low <= value <= high:
+                                problems.append(
+                                    f"watcher_rules.json: survival.fishing.{field} {value} is "
+                                    f"outside {low}..{high}"
+                                )
+                        if fishing.get("max_wait_secs", 0) < fishing.get("min_wait_secs", 0):
+                            problems.append(
+                                "watcher_rules.json: survival.fishing.max_wait_secs is below "
+                                "min_wait_secs"
+                            )
+                        width = fishing.get("sweet_width")
+                        if isinstance(width, bool) or not isinstance(width, (int, float)):
+                            problems.append(
+                                "watcher_rules.json: survival.fishing.sweet_width must be a number"
+                            )
+                        elif not 0.04 <= width <= 0.6:
+                            problems.append(
+                                f"watcher_rules.json: survival.fishing.sweet_width {width} is "
+                                "outside 0.04..0.6"
+                            )
+                        difficulty = fishing.get("difficulty")
+                        if isinstance(difficulty, bool) or not isinstance(difficulty, (int, float)):
+                            problems.append(
+                                "watcher_rules.json: survival.fishing.difficulty must be a number"
+                            )
+                        elif not 0.5 <= difficulty <= 2.0:
+                            problems.append(
+                                f"watcher_rules.json: survival.fishing.difficulty {difficulty} is "
+                                "outside 0.5..2.0"
+                            )
+                        for key in sorted(fishing_keys):
+                            if f"`{key}`" not in arch_md:
+                                problems.append(
+                                    f"ARCHITECTURE.md: survival.fishing.{key} is not documented"
+                                )
+
+                    # The bag: one number, but a full-bag 409 depends on it.
+                    inventory = survival_block.get("inventory")
+                    if inventory is None:
+                        problems.append("watcher_rules.json: survival.inventory is missing")
+                    elif not isinstance(inventory, dict):
+                        problems.append("watcher_rules.json: survival.inventory must be an object")
+                    else:
+                        stray = set(inventory) - {"slots"}
+                        if stray:
+                            problems.append(
+                                f"watcher_rules.json: survival.inventory has unknown keys {sorted(stray)}"
+                            )
+                        slots = inventory.get("slots")
+                        if isinstance(slots, bool) or not isinstance(slots, int):
+                            problems.append(
+                                "watcher_rules.json: survival.inventory.slots must be an integer"
+                            )
+                        elif not 4 <= slots <= 40:
+                            problems.append(
+                                f"watcher_rules.json: survival.inventory.slots {slots} is outside 4..40"
+                            )
+                        if "`slots`" not in arch_md:
+                            problems.append("ARCHITECTURE.md: survival.inventory.slots is not documented")
 
             # vision: screen capture + a named local VL profile. The profile name
             # must resolve, or a screenshot would silently fall back to the text

@@ -196,10 +196,18 @@ plugins/
 │   ├── Cargo.toml       crate-type = ["cdylib", "rlib"], targets wasm32-unknown-unknown
 │   └── src/
 │       ├── lib.rs       the ABI: alloc/dealloc + plugin_* exports, 4 host imports
-│       ├── model.rs     hunger, saturation, tiers, the food catalog
-│       ├── plugin.rs    the tick loop, telemetry, meal announcements
+│       ├── model.rs     hunger, saturation, tiers, the food catalog (raw
+│       │                ingredients vs. cooked dishes), recipes and cravings
+│       ├── inventory.rs the item catalog (fish, bait, gear, material, junk) and
+│       │                the slot-limited, stack-aware bag
+│       ├── fishing.rs   the four-phase mini-game: hidden bite, reaction window,
+│       │                the triangle-wave reel, the catch table and the prose
+│       ├── plugin.rs    the tick loop, telemetry, meal announcements, craving
+│       │                rolls, the bag/fishing actions and the spontaneous lines
+│       │                spoken via host_notify
 │       ├── routes.rs    ROUTES = [("/survival", …), …] + the request dispatcher
-│       └── config.rs    the `survival` block of watcher_rules.json
+│       └── config.rs    the `survival` block of watcher_rules.json (metabolism,
+│                        cravings, fishing and inventory)
 └── survival.wasm        the built artifact — this is what the app loads
 ```
 

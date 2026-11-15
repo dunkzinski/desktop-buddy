@@ -97,7 +97,7 @@ pub fn log(level: u32, message: &str) {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {
-    use std::sync::Mutex;
+    use std::cell::RefCell;
 
     #[derive(Default)]
     pub struct Recorder {
@@ -107,18 +107,20 @@ mod tests {
         pub clock: u64,
     }
 
-    static RECORDER: Mutex<Option<Recorder>> = Mutex::new(None);
-
-    fn with<F: FnOnce(&mut Recorder)>(f: F) {
-        let mut guard = match RECORDER.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let recorder = guard.get_or_insert_with(|| Recorder {
+    // **Thread-local on purpose.** `#[test]` functions run in parallel threads,
+    // and a process-global recorder makes every assertion that reads it
+    // (notifies, events, the fake clock) racy: one test's `take()` empties
+    // another's buffer. One recorder per test thread removes the race without a
+    // serialising mutex, and gives every test the same starting clock.
+    thread_local! {
+        static RECORDER: RefCell<Recorder> = RefCell::new(Recorder {
             clock: 1_700_000_000_000,
             ..Recorder::default()
         });
-        f(recorder);
+    }
+
+    fn with<F: FnOnce(&mut Recorder)>(f: F) {
+        RECORDER.with(|cell| f(&mut cell.borrow_mut()));
     }
 
     pub fn record_event(name: &str, payload: serde_json::Value) {

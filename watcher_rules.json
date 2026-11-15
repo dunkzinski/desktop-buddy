@@ -147,6 +147,28 @@
       "saturation_per_min": 2.0
     },
     "notify": true,
-    "telemetry_secs": 60
+    "telemetry_secs": 60,
+    "cravings": true,
+    "craving_below_hunger": 70.0,
+    "craving_below_saturation": 15.0,
+    "craving_interval_secs": 900,
+    "craving_duration_secs": 600,
+    "fishing": {
+      "enabled": true,
+      "require_rod": true,
+      "bait_required": false,
+      "hook_key": "Space",
+      "reel_key": "Space",
+      "mouse_button": 0,
+      "min_wait_secs": 3,
+      "max_wait_secs": 12,
+      "hook_window_ms": 1400,
+      "reel_period_ms": 1500,
+      "sweet_width": 0.22,
+      "difficulty": 1.0
+    },
+    "inventory": {
+      "slots": 20
+    }
   }
 }

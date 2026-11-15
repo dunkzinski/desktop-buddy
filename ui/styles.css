@@ -792,12 +792,250 @@ input[type="range"]::-webkit-slider-thumb {
 .survival-actions { display: flex; gap: 7px; margin-top: 9px; }
 #survival-food { flex: 1 1 auto; width: auto; min-width: 0; }
 .feed-btn { flex: 0 0 auto; padding: 6px 14px; }
+#btn-crave { flex: 0 0 auto; font-size: 10px; padding: 6px 9px; }
+#btn-crave:disabled { opacity: 0.45; cursor: default; }
+
+/* ---------- craving row ---------- */
+
+.survival-craving {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 8px; padding: 5px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.survival-craving.active {
+  border-color: rgba(240, 176, 64, 0.35);
+  background: rgba(240, 176, 64, 0.10);
+}
+.survival-craving-label {
+  flex: 0 0 auto;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
+  text-transform: uppercase; color: #6e6e85;
+}
+.survival-craving-value {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 10.5px; color: #b9b9c9;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.survival-craving.active .survival-craving-value { color: #f0b040; }
+.survival-craving .mini-btn { font-size: 9.5px; padding: 2px 6px; line-height: 1; }
+
+/* ---------- crafting row ---------- */
+
+.survival-craft { display: flex; align-items: center; gap: 7px; margin-top: 7px; }
+.survival-craft-label {
+  flex: 0 0 auto;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
+  text-transform: uppercase; color: #6e6e85;
+}
+#survival-recipe { flex: 1 1 auto; width: auto; min-width: 0; }
+#btn-craft { flex: 0 0 auto; padding: 6px 12px; }
+#btn-craft:disabled { opacity: 0.45; cursor: default; }
 
 .survival-note {
   margin-top: 7px; min-height: 12px;
   font-size: 10.5px; line-height: 1.35; color: #8a8a9e;
 }
 .survival-note.error { color: #ff6b75; }
+
+/* ---------- survival tabs ---------- */
+
+.survival-tabs {
+  display: flex; gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.survival-tab {
+  flex: 1 1 0; min-width: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 6px 4px 7px;
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  color: #6e6e85; cursor: pointer;
+  font: inherit; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+.survival-tab:hover { color: #b9b9cc; }
+.survival-tab.active {
+  color: #8ec4f5;
+  border-bottom-color: #4a90d9;
+}
+.survival-tab-badge {
+  padding: 1px 5px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 8.5px; font-weight: 700; letter-spacing: 0;
+  color: #9a9ab0; font-variant-numeric: tabular-nums;
+}
+.survival-tab-badge.full { background: rgba(232, 17, 35, 0.22); color: #ff8d95; }
+
+/* ---------- "go fishing" row ---------- */
+
+.survival-goto {
+  display: flex; align-items: center; gap: 7px; margin-top: 8px;
+}
+.survival-goto-state {
+  flex: 1 1 auto; min-width: 0; text-align: right;
+  font-size: 9.5px; color: #6e6e85;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.survival-goto-state.active { color: #f0b040; }
+
+/* ---------- inventory (the Bag tab) ---------- */
+
+.inv-head {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 7px;
+}
+.inv-slots-label {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em;
+  text-transform: uppercase; color: #6e6e85;
+}
+.inv-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+}
+.inv-slot {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  cursor: default;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.inv-slot.empty { background: rgba(255, 255, 255, 0.015); border-style: dashed; }
+.inv-slot.filled { cursor: pointer; }
+.inv-slot.filled:hover { border-color: rgba(122, 182, 240, 0.45); }
+.inv-slot.selected {
+  border-color: rgba(122, 182, 240, 0.75);
+  background: rgba(74, 144, 217, 0.18);
+}
+.inv-slot.rarity-3 { border-color: rgba(122, 182, 240, 0.30); }
+.inv-slot.rarity-4 { border-color: rgba(240, 176, 64, 0.40); }
+.inv-icon { font-size: 17px; line-height: 1; }
+.inv-count {
+  position: absolute; right: 2px; bottom: 1px;
+  font-size: 8.5px; font-weight: 700; color: #d8d8e6;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  font-variant-numeric: tabular-nums;
+}
+.inv-detail {
+  margin-top: 7px; min-height: 26px;
+  padding: 5px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 10px; line-height: 1.35; color: #8a8a9e;
+}
+.inv-detail strong { color: #b9b9cc; font-weight: 600; }
+.inv-actions {
+  display: flex; align-items: center; gap: 5px; margin-top: 8px;
+}
+#inventory-item { flex: 1 1 auto; width: auto; min-width: 0; }
+#inventory-count {
+  flex: 0 0 42px; width: 42px;
+  padding: 5px 4px; text-align: center;
+  font-size: 10.5px;
+}
+#btn-inventory-add, #btn-inventory-use {
+  flex: 0 0 auto; font-size: 10px; padding: 6px 9px;
+}
+#btn-inventory-use:disabled { opacity: 0.45; cursor: default; }
+
+/* ---------- fishing mini-game ---------- */
+
+.fish-scene {
+  position: relative; height: 92px;
+  border-radius: 10px; overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, #1a2433 0%, #16202c 52%, #0d1a24 52%, #0a141c 100%);
+  cursor: pointer;
+}
+.fish-sky {
+  position: absolute; inset: 0 0 52% 0;
+  background: radial-gradient(120% 90% at 70% 0%, rgba(122, 182, 240, 0.20), transparent 70%);
+}
+.fish-water {
+  position: absolute; inset: 48% 0 0 0;
+  background: linear-gradient(180deg, rgba(74, 144, 217, 0.18), rgba(10, 20, 28, 0.6));
+  border-top: 1px solid rgba(122, 182, 240, 0.28);
+}
+.fish-bobber {
+  position: absolute; left: 50%; top: -14px;
+  transform: translateX(-50%);
+  font-size: 20px; line-height: 1;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+  transition: top 160ms ease, transform 160ms ease;
+}
+/* Waiting: a slow idle bob. */
+.fish-scene[data-phase="waiting"] .fish-bobber {
+  animation: bobber-idle 2.4s ease-in-out infinite;
+}
+/* Biting: it goes under, hard and fast. */
+.fish-scene[data-phase="biting"] .fish-bobber {
+  top: 4px;
+  animation: bobber-bite 260ms ease-in-out infinite alternate;
+}
+.fish-scene[data-phase="reeling"] .fish-bobber { top: -6px; }
+@keyframes bobber-idle {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50% { transform: translateX(-50%) translateY(4px); }
+}
+@keyframes bobber-bite {
+  from { transform: translateX(-50%) translateY(0) rotate(-8deg); }
+  to { transform: translateX(-50%) translateY(9px) rotate(8deg); }
+}
+.fish-ripple {
+  position: absolute; left: 50%; top: 2px;
+  width: 34px; height: 10px; margin-left: -17px;
+  border-radius: 50%;
+  border: 1px solid rgba(122, 182, 240, 0.45);
+  opacity: 0;
+}
+.fish-scene[data-phase="biting"] .fish-ripple {
+  animation: ripple 900ms ease-out infinite;
+}
+@keyframes ripple {
+  from { opacity: 0.7; transform: scale(0.5); }
+  to { opacity: 0; transform: scale(2.1); }
+}
+.fish-hint {
+  margin-top: 7px; min-height: 13px;
+  font-size: 10.5px; color: #b9b9cc; text-align: center;
+}
+.fish-scene[data-phase="biting"] + .fish-hint { color: #f0b040; font-weight: 600; }
+.fish-tension {
+  position: relative; height: 16px; margin-top: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.fish-sweet {
+  position: absolute; top: 0; bottom: 0;
+  background: linear-gradient(180deg, rgba(61, 220, 132, 0.55), rgba(61, 220, 132, 0.28));
+  border-left: 1px solid rgba(61, 220, 132, 0.75);
+  border-right: 1px solid rgba(61, 220, 132, 0.75);
+  border-radius: 3px;
+}
+.fish-marker {
+  position: absolute; top: -2px; bottom: -2px; left: 0;
+  width: 3px; margin-left: -1.5px;
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.9);
+  will-change: left;
+}
+.fish-actions {
+  display: flex; align-items: center; gap: 6px; margin-top: 8px;
+}
+#btn-fish-action { flex: 1 1 auto; }
+#btn-fish-cancel { flex: 0 0 auto; font-size: 10px; padding: 6px 9px; }
+.fish-stats {
+  margin-top: 6px; font-size: 9.5px; color: #6e6e85;
+  font-variant-numeric: tabular-nums;
+}
 
 /* ---------- settings modal ---------- */
 

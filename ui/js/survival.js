@@ -20,15 +20,48 @@ import { toast } from "./state.js";
 
 const DEFAULT_BASE = "http://127.0.0.1:8765";
 const POLL_MS = 15000;
+/** How often the fishing pane re-reads `GET /fishing` while a cast is out. The
+ *  host tick is 1 s, so a poll is what makes the bobber react promptly. */
+const FISHING_POLL_MS = 120;
 
 const survival = {
   base: DEFAULT_BASE,
   /** Catalog from `GET /foods`, so the picker can never send an unknown id. */
   foods: [],
+  /** Recipe book from `GET /recipes`, so the Cook row can never send a bad id. */
+  recipes: [],
   /** Last `GET /survival` body, for the debug surface and the note text. */
   status: null,
   ready: false,
+  /** Which of the card's three panes is showing: status | bag | fishing. */
+  tab: "status",
+  /** Last `GET /inventory` body. */
+  inventory: null,
+  /** Catalog id of the slot the user picked, or null. */
+  picked: null,
 };
+
+/**
+ * The fishing mini-game's client half.
+ *
+ * The *authority* is the plugin: it decides when the fish bites, whether the
+ * press was in the window, and — via its own clock — whether the reel marker
+ * was inside the sweet spot. This object only mirrors the session so the pane
+ * can draw it, which is why every action below is a POST followed by a re-read
+ * rather than a local state transition.
+ */
+const fishing = {
+  session: null,
+  config: null,
+  timer: 0,
+  raf: 0,
+  /** `casts-catches-escapes` of the last result spelled out, to dedupe the
+   *  note when both the SSE frame and a poll deliver the same outcome. */
+  resultKey: "",
+  /** Last phase rendered, so a transition only re-animates once. */
+  phase: "idle",
+};
+
 
 const el = (id) => document.getElementById(id);
 
@@ -60,7 +93,14 @@ export function toggleSurvivalCard(force) {
     button.setAttribute("aria-pressed", String(open));
   }
   // Opened long after the last poll? Then the numbers on show must be re-read.
-  if (open) refreshSurvival();
+  if (open) {
+    refreshSurvival();
+    refreshInventory();
+    if (survival.tab === "fishing") {
+      ensureFishingPoll();
+      pollFishing();
+    }
+  }
   return open;
 }
 
@@ -78,24 +118,111 @@ function setNote(text, isError) {
   note.classList.toggle("error", !!isError);
 }
 
-/** Fill the food picker from the catalog. Keeps the current choice if it survived. */
+/** Label for a catalog id, falling back to the raw id. */
+function foodLabel(id) {
+  const food = (survival.foods || []).find((f) => f.id === id);
+  return food ? food.label : id;
+}
+
+/**
+ * Fill the food picker from the catalog. Keeps the current choice if it survived.
+ *
+ * Crafted dishes are deliberately left out: they only exist once a recipe has
+ * been cooked, so listing them here would let a user eat the omelette without
+ * ever gathering the eggs. Raw ingredients and ready-made drinks (coffee) stay.
+ */
 function renderFoods(foods) {
   const select = el("survival-food");
   if (!select) return;
   const previous = select.value;
+  const feedable = (foods || []).filter((food) => !food.crafted_via);
+
+  const groups = [
+    ["Ingredients", feedable.filter((food) => food.kind === "raw")],
+    ["Meals & drinks", feedable.filter((food) => food.kind !== "raw")],
+  ];
+
   select.innerHTML = "";
-  for (const food of foods || []) {
-    const option = document.createElement("option");
-    option.value = food.id;
-    option.textContent = `${food.label} · +${Math.round(food.nutrition)}`;
-    option.title = food.effects && food.effects.length
-      ? `effects: ${food.effects.map((e) => e.expression || e.kind).join(", ")}`
-      : `saturation ratio ${food.saturation_ratio}`;
-    select.appendChild(option);
+  for (const [label, items] of groups) {
+    if (!items.length) continue;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    for (const food of items) {
+      const option = document.createElement("option");
+      option.value = food.id;
+      option.textContent = `${food.label} · +${Math.round(food.nutrition)}`;
+      option.title = food.effects && food.effects.length
+        ? `effects: ${food.effects.map((e) => e.expression || e.kind).join(", ")}`
+        : `saturation ratio ${food.saturation_ratio}`;
+      group.appendChild(option);
+    }
+    select.appendChild(group);
   }
-  if (previous && (foods || []).some((f) => f.id === previous)) select.value = previous;
+
+  if (previous && feedable.some((f) => f.id === previous)) select.value = previous;
   const button = el("btn-feed");
   if (button) button.disabled = !select.value;
+  syncFoodButtons();
+}
+
+/** Keep the Feed/Crave buttons in step with the food picker. */
+function syncFoodButtons() {
+  const select = el("survival-food");
+  const hasFood = !!(select && select.value);
+  const feed = el("btn-feed");
+  if (feed) feed.disabled = !hasFood;
+  const crave = el("btn-crave");
+  if (crave) crave.disabled = !hasFood;
+}
+
+/** Fill the recipe picker from `GET /recipes`. Keeps the current choice if it survived. */
+function renderRecipes(recipes) {
+  const select = el("survival-recipe");
+  if (!select) return;
+  const previous = select.value;
+  select.innerHTML = "";
+  for (const recipe of recipes || []) {
+    const option = document.createElement("option");
+    option.value = recipe.id;
+    const cost = (recipe.ingredients || [])
+      .map((i) => {
+        const label = foodLabel(i.food);
+        return i.count > 1 ? `${label}×${i.count}` : label;
+      })
+      .join(" + ");
+    option.textContent = `${recipe.label}${cost ? ` · ${cost}` : ""}`;
+    option.title = recipe.blurb || `cooks ${recipe.result_label || recipe.result}`;
+    select.appendChild(option);
+  }
+  if (previous && (recipes || []).some((r) => r.id === previous)) select.value = previous;
+  const button = el("btn-craft");
+  if (button) button.disabled = !select.value;
+}
+
+/**
+ * Paint the craving row. `craving` is the object `GET /survival` carries
+ * (`{kind, target, label, remaining_secs, …}`) or null when nothing is craved.
+ */
+function renderCraving(craving) {
+  const row = el("survival-craving-row");
+  const value = el("survival-craving");
+  const clear = el("btn-craving-clear");
+  const active = !!(craving && typeof craving === "object" && !craving.expired);
+  if (row) row.classList.toggle("active", active);
+  if (value) {
+    if (active) {
+      const remaining = Number(craving.remaining_secs);
+      const mins = Number.isFinite(remaining) && remaining > 0
+        ? ` · ${Math.ceil(remaining / 60)}m left`
+        : "";
+      value.textContent = `${craving.label || craving.target || "something"}${mins}`;
+      value.title = `${craving.kind === "group" ? "group" : "dish"}: ${craving.target || ""}`;
+    } else {
+      value.textContent = "—";
+      value.title = "nothing in particular";
+    }
+  }
+  if (clear) clear.hidden = !active;
 }
 
 function paintBar(kind, value) {
@@ -133,6 +260,9 @@ function normalize(raw) {
     tier: pick("tier") !== undefined ? pick("tier") : raw.to,
     label: pick("label"),
     expression: pick("expression"),
+    craving: pick("craving"),
+    well_fed_secs: pick("well_fed_secs"),
+    enabled: raw.enabled,
   };
 }
 
@@ -154,6 +284,7 @@ export function renderSurvival(raw) {
     }
     paintBar("hunger", NaN);
     paintBar("saturation", NaN);
+    renderCraving(null);
     return;
   }
 
@@ -169,6 +300,7 @@ export function renderSurvival(raw) {
 
   paintBar("hunger", hunger);
   paintBar("saturation", saturation);
+  renderCraving(status.craving);
 }
 
 /** `GET /survival` — the authoritative read. */
@@ -191,6 +323,124 @@ async function refreshFoods() {
     renderFoods(survival.foods);
   } catch (err) {
     setNote(`Food catalog unreachable: ${err.message}`, true);
+  }
+}
+
+async function refreshRecipes() {
+  try {
+    const res = await fetch(`${survival.base}/recipes`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    survival.recipes = Array.isArray(body.recipes) ? body.recipes : [];
+    renderRecipes(survival.recipes);
+  } catch (err) {
+    setNote(`Recipe book unreachable: ${err.message}`, true);
+  }
+}
+
+/**
+ * Turn a meal payload into the one-line note both Feed and Craft use.
+ * `label` is the dish, `tier_before`/`tier_after` the transition, and a
+ * crafted meal also carries `comfort_secs` worth mentioning.
+ */
+function mealNote(body, fallback) {
+  const before = typeof body.tier_before === "string" ? body.tier_before : "";
+  const after = typeof body.tier_after === "string" ? body.tier_after : "";
+  const gained = Number(body.hunger_after) - Number(body.hunger_before);
+  const moving = before && after && before !== after ? ` · ${before} → ${after}` : "";
+  const comfort = Number(body.comfort_secs) > 0
+    ? ` · well fed ${Math.round(Number(body.comfort_secs) / 60)}m`
+    : "";
+  const craving = body.craving_satisfied ? ` · craving satisfied` : "";
+  return `${body.label || fallback} eaten (+${Math.round(gained * 10) / 10} hunger)${moving}${comfort}${craving}`;
+}
+
+/** The Craft button: a real `POST /survival/craft` with a recipe id. */
+async function craft() {
+  const select = el("survival-recipe");
+  const button = el("btn-craft");
+  const recipe = select ? select.value : "";
+  if (!recipe) return;
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Cooking…";
+  }
+  setNote("");
+
+  try {
+    const res = await fetch(`${survival.base}/survival/craft`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ recipe }),
+    });
+    const body = await res.json().catch(() => ({}));
+
+    if (res.ok) {
+      const note = mealNote(body, recipe);
+      setNote(body.blurb ? `${note} — ${body.blurb}` : note);
+      toast(`${body.label || recipe} cooked`);
+    } else {
+      // 409 = refused (too_full / still_digesting), 400 = unknown recipe.
+      setNote(body.error || `craft failed (HTTP ${res.status})`, true);
+    }
+  } catch (err) {
+    setNote(`craft failed: ${err.message}`, true);
+  } finally {
+    if (button) {
+      button.disabled = !recipe;
+      button.textContent = "Craft";
+    }
+    refreshSurvival();
+  }
+}
+
+/** Set a craving for the food currently in the picker — `POST /survival {craving}`. */
+async function setCraving() {
+  const select = el("survival-food");
+  const food = select ? select.value : "";
+  if (!food) return;
+  const label = select.selectedOptions && select.selectedOptions[0]
+    ? select.selectedOptions[0].textContent.split(" · ")[0]
+    : food;
+  setNote("");
+  try {
+    const res = await fetch(`${survival.base}/survival`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ craving: food }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      setNote(`Now craving ${label}`);
+      toast(`Craving ${label}`);
+      renderSurvival(body);
+    } else {
+      setNote(body.error || `craving failed (HTTP ${res.status})`, true);
+    }
+  } catch (err) {
+    setNote(`craving failed: ${err.message}`, true);
+  }
+}
+
+/** Clear the current craving — `POST /survival {craving: null}`. */
+async function clearCraving() {
+  setNote("");
+  try {
+    const res = await fetch(`${survival.base}/survival`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ craving: null }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      setNote("Craving cleared");
+      renderSurvival(body);
+    } else {
+      setNote(body.error || `clear failed (HTTP ${res.status})`, true);
+    }
+  } catch (err) {
+    setNote(`clear failed: ${err.message}`, true);
   }
 }
 
@@ -222,11 +472,7 @@ async function feed() {
     const body = await res.json().catch(() => ({}));
 
     if (res.ok) {
-      const before = typeof body.tier_before === "string" ? body.tier_before : "";
-      const after = typeof body.tier_after === "string" ? body.tier_after : "";
-      const gained = Number(body.hunger_after) - Number(body.hunger_before);
-      const moving = before && after && before !== after ? ` · ${before} → ${after}` : "";
-      setNote(`${body.label || food} eaten (+${Math.round(gained * 10) / 10} hunger)${moving}`);
+      setNote(mealNote(body, food));
       toast(`${body.label || food} eaten`);
     } else {
       // 409 = refused (too_full / still_digesting), 400 = unknown id.
@@ -244,6 +490,541 @@ async function feed() {
   }
 }
 
+/**
+ * Switch the card's pane. The three panes are one card on purpose: the panel
+ * itself is already ~994 px tall, so a second and third floating card would
+ * fight for the same corner of the screen.
+ */
+export function showSurvivalTab(name) {
+  const target = ["status", "bag", "fishing"].includes(name) ? name : "status";
+  survival.tab = target;
+  for (const pane of document.querySelectorAll("[data-survival-pane]")) {
+    pane.classList.toggle("hidden", pane.dataset.survivalPane !== target);
+  }
+  for (const tab of document.querySelectorAll("[data-survival-tab]")) {
+    const active = tab.dataset.survivalTab === target;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
+  if (target === "bag") refreshInventory();
+  if (target === "fishing") {
+    // Coming back to a cast that is still out? Pick it up where it is.
+    ensureFishingPoll();
+    pollFishing();
+  } else {
+    stopMarker();
+  }
+  return target;
+}
+
+/* ------------------------------------------------------------------ *
+ * Inventory
+ * ------------------------------------------------------------------ */
+
+/** Fill the "add an item" picker from the catalog, grouped by kind. */
+function renderItemPicker(catalog) {
+  const select = el("inventory-item");
+  if (!select) return;
+  const previous = select.value;
+  const groups = new Map();
+  for (const item of catalog || []) {
+    const key = item.kind_label || item.kind || "Items";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  select.innerHTML = "";
+  for (const [label, items] of groups) {
+    const group = document.createElement("optgroup");
+    group.label = label;
+    for (const item of items) {
+      const option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = `${item.icon} ${item.label}`;
+      option.title = item.blurb || item.label;
+      group.appendChild(option);
+    }
+    select.appendChild(group);
+  }
+  if (previous && select.querySelector(`option[value="${CSS.escape(previous)}"]`)) {
+    select.value = previous;
+  }
+}
+
+/**
+ * Paint `GET /inventory`: one cell per slot, empty ones included, so the grid
+ * is stable and "3 of 20" means something.
+ */
+function renderInventory(body) {
+  if (!body || body.ok !== true) return;
+  survival.inventory = body;
+
+  const badge = el("survival-bag-count");
+  if (badge) {
+    badge.textContent = `${body.used}/${body.capacity}`;
+    badge.classList.toggle("full", !!body.full);
+    badge.title = body.full ? "the bag is full" : `${body.free} slot(s) free`;
+  }
+  const label = el("inventory-slots");
+  if (label) {
+    label.textContent = `${body.used} / ${body.capacity} slots${body.full ? " · full" : ""}`;
+  }
+
+  renderItemPicker(body.catalog);
+
+  const grid = el("inventory-grid");
+  if (grid) {
+    grid.innerHTML = "";
+    for (const slot of body.slots || []) {
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "inv-slot";
+      cell.dataset.index = String(slot.index);
+      if (!slot.id) {
+        cell.classList.add("empty");
+        cell.disabled = true;
+        cell.setAttribute("aria-label", `Empty slot ${slot.index + 1}`);
+        grid.appendChild(cell);
+        continue;
+      }
+      cell.classList.add("filled", `rarity-${slot.rarity || 1}`);
+      if (survival.picked === slot.id) cell.classList.add("selected");
+      cell.dataset.item = slot.id;
+      cell.title = `${slot.label} ×${slot.count}\n${slot.blurb || ""}`.trim();
+      cell.setAttribute("aria-label", `${slot.label}, ${slot.count} of ${slot.stack_max}`);
+
+      const icon = document.createElement("span");
+      icon.className = "inv-icon";
+      icon.textContent = slot.icon || "•";
+      const count = document.createElement("span");
+      count.className = "inv-count";
+      count.textContent = String(slot.count);
+      cell.append(icon, count);
+
+      cell.addEventListener("click", () => pickInventoryItem(slot));
+      cell.addEventListener("mouseenter", () => showItemDetail(slot));
+      grid.appendChild(cell);
+    }
+  }
+
+  // A picked item that left the bag (eaten, dropped) must not stay selected.
+  if (survival.picked && !(body.totals || []).some((t) => t.id === survival.picked)) {
+    survival.picked = null;
+  }
+  syncInventoryButtons();
+}
+
+function showItemDetail(slot) {
+  const detail = el("inventory-detail");
+  if (!detail) return;
+  if (!slot || !slot.id) {
+    detail.textContent = "Hover a slot for its details.";
+    return;
+  }
+  detail.innerHTML = "";
+  const name = document.createElement("strong");
+  name.textContent = slot.label;
+  const stack = slot.stack_max ? ` · stacks to ${slot.stack_max}` : "";
+  const edible = slot.edible ? " · edible" : "";
+  detail.append(
+    name,
+    document.createTextNode(` ×${slot.count}${stack}${edible}${slot.blurb ? ` — ${slot.blurb}` : ""}`),
+  );
+}
+
+function pickInventoryItem(slot) {
+  if (!slot || !slot.id) return;
+  survival.picked = survival.picked === slot.id ? null : slot.id;
+  showItemDetail(survival.picked ? slot : null);
+  // Repaint just the selection class rather than re-fetching the whole bag.
+  for (const cell of document.querySelectorAll("#inventory-grid .inv-slot.filled")) {
+    cell.classList.toggle("selected", cell.dataset.item === survival.picked);
+  }
+  syncInventoryButtons();
+}
+
+/** Keep the Use button honest about what the API will actually accept. */
+function syncInventoryButtons() {
+  const use = el("btn-inventory-use");
+  if (!use) return;
+  const totals = (survival.inventory && survival.inventory.totals) || [];
+  const held = totals.find((entry) => entry.id === survival.picked);
+  const catalog = (survival.inventory && survival.inventory.catalog) || [];
+  const definition = catalog.find((entry) => entry.id === survival.picked);
+  const usable = !!(held && definition && definition.food);
+  use.disabled = !usable;
+  use.title = held
+    ? usable
+      ? `Eat one ${definition.label} (POST /inventory/use)`
+      : `${definition.label} can only be held (POST /inventory/use would be a 400)`
+    : "Pick a slot first";
+  const add = el("btn-inventory-add");
+  if (add) add.disabled = !(el("inventory-item") && el("inventory-item").value);
+}
+
+function setInventoryNote(text, isError) {
+  const note = el("inventory-note");
+  if (!note) return;
+  note.textContent = text || "";
+  note.classList.toggle("error", !!isError);
+}
+
+/** `GET /inventory` — the authoritative read behind the grid. */
+async function refreshInventory() {
+  try {
+    const res = await fetch(`${survival.base}/inventory`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderInventory(await res.json());
+  } catch (err) {
+    setInventoryNote(`Inventory unreachable: ${err.message}`, true);
+  }
+}
+
+/** `POST /inventory/add` for the picker row. */
+async function addItem() {
+  const select = el("inventory-item");
+  const count = el("inventory-count");
+  const item = select ? select.value : "";
+  if (!item) return;
+  const amount = Math.max(1, Math.min(99, Number(count && count.value) || 1));
+  setInventoryNote("");
+  try {
+    const res = await fetch(`${survival.base}/inventory/add`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ item, count: amount }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      renderInventory(body);
+      const dropped = Number(body.leftover) || 0;
+      setInventoryNote(
+        `Added ${body.added} × ${item}${dropped ? ` (${dropped} did not fit)` : ""}`,
+      );
+      toast(`${body.added} × ${item} added`);
+    } else {
+      setInventoryNote(body.error || `add failed (HTTP ${res.status})`, true);
+    }
+  } catch (err) {
+    setInventoryNote(`add failed: ${err.message}`, true);
+  }
+}
+
+/** `POST /inventory/use` — eats one edible item through the meal path. */
+async function useItem() {
+  if (!survival.picked) return;
+  setInventoryNote("");
+  try {
+    const res = await fetch(`${survival.base}/inventory/use`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ item: survival.picked }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      setInventoryNote(`${body.item_label || body.label} eaten — ${body.remaining} left`);
+      toast(`${body.item_label || body.label} eaten`);
+      refreshInventory();
+      refreshSurvival();
+    } else {
+      // 409 = refused (full / digesting) or not held; 400 = not edible.
+      setInventoryNote(body.error || `use failed (HTTP ${res.status})`, true);
+    }
+  } catch (err) {
+    setInventoryNote(`use failed: ${err.message}`, true);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Fishing
+ * ------------------------------------------------------------------ */
+
+/** Triangle wave, exactly the plugin's `sweep_position`. */
+function sweepPosition(elapsedMs, periodMs) {
+  const period = Math.max(1, Number(periodMs) || 1);
+  const phase = ((elapsedMs % period) + period) % period / period;
+  return phase < 0.5 ? phase * 2 : (1 - phase) * 2;
+}
+
+/** Human name for a key code, so the hint can say "Space" not "Space". */
+function keyLabel(code) {
+  if (!code) return "Space";
+  if (code === "Space" || code === "space") return "Space";
+  if (code.startsWith("Key")) return code.slice(3);
+  if (code.startsWith("Digit")) return code.slice(5);
+  return code;
+}
+
+function setFishingNote(text, isError) {
+  const note = el("fishing-note");
+  if (!note) return;
+  note.textContent = text || "";
+  note.classList.toggle("error", !!isError);
+}
+
+/** Paint the phase chip on the Status pane, so a bite is visible from there. */
+function renderFishingChip(session) {
+  const chip = el("survival-fishing-state");
+  if (!chip) return;
+  const phase = (session && session.phase) || "idle";
+  chip.textContent = phase;
+  chip.classList.toggle("active", phase !== "idle");
+  chip.title = session && session.casts
+    ? `${session.casts} cast(s), ${session.catches} caught, ${session.escapes} lost`
+    : "no casts yet";
+}
+
+function renderFishingStats(session) {
+  const stats = el("fish-stats");
+  if (!stats) return;
+  if (!session) {
+    stats.textContent = "";
+    return;
+  }
+  stats.textContent =
+    `casts ${session.casts} · caught ${session.catches} · lost ${session.escapes}`;
+}
+
+/**
+ * Apply one `GET /fishing` (or cast/hook) body: phase, bobber, tension bar and
+ * the action button all follow from it.
+ */
+function applyFishingStatus(body) {
+  if (!body || body.ok !== true) return;
+  if (body.config) fishing.config = body.config;
+  const session = body.session || null;
+  fishing.session = session;
+  renderFishingChip(session);
+  renderFishingStats(session);
+
+  const scene = el("fish-scene");
+  const hint = el("fish-hint");
+  const action = el("btn-fish-action");
+  const cancel = el("btn-fish-cancel");
+  const tension = el("fish-tension");
+  const phase = (session && session.phase) || "idle";
+  const changed = phase !== fishing.phase;
+  fishing.phase = phase;
+
+  if (scene) scene.dataset.phase = phase;
+
+  if (hint) {
+    const hookKey = keyLabel((fishing.config && fishing.config.hook_key) || "Space");
+    const reelKey = keyLabel((fishing.config && fishing.config.reel_key) || "Space");
+    if (phase === "waiting") {
+      hint.textContent = "Bobber's out. Wait for the dip…";
+    } else if (phase === "biting") {
+      hint.textContent = `It's biting! Press ${hookKey} now!`;
+    } else if (phase === "reeling") {
+      hint.textContent = `Press ${reelKey} in the green.`;
+    } else {
+      hint.textContent = "Cast the line.";
+    }
+  }
+
+  if (action) {
+    action.textContent =
+      phase === "biting" ? "Strike!" : phase === "reeling" ? "Reel!" : "Cast";
+    // Pressing while the line is merely out does nothing server-side, so the
+    // button is disabled rather than producing a pointless 409.
+    action.disabled = phase === "waiting";
+  }
+  if (cancel) cancel.disabled = phase === "idle";
+
+  if (phase === "reeling" && session && session.reel) {
+    if (tension) tension.classList.remove("hidden");
+    const sweet = el("fish-sweet");
+    const reel = session.reel;
+    if (sweet) {
+      sweet.style.left = `${Math.max(0, Math.min(1, reel.sweet_start)) * 100}%`;
+      sweet.style.width = `${Math.max(0, Math.min(1, reel.sweet_width)) * 100}%`;
+      sweet.title = `sweet spot ${Math.round(reel.sweet_start * 100)}–${Math.round(
+        reel.sweet_end * 100,
+      )}%`;
+    }
+    if (changed || !fishing.raf) startMarker(reel);
+  } else {
+    stopMarker();
+    if (tension) tension.classList.add("hidden");
+  }
+
+  // A settled session stops the poll; the next cast restarts it.
+  if (!session || !session.active) {
+    stopFishingPoll();
+  }
+}
+
+/** Animate the reel marker off the plugin's own timeline. */
+function startMarker(reel) {
+  stopMarker();
+  const marker = el("fish-marker");
+  const tension = el("fish-tension");
+  if (!marker) return;
+  const startedMs = Number(reel.started_ms) || Date.now();
+  const periodMs = Number(reel.period_ms) || 1;
+  const deadlineMs = Number(reel.deadline_ms) || startedMs + periodMs * 2;
+  // The plugin's clock and `Date.now()` are both epoch ms on this machine; the
+  // offset only absorbs the round-trip of the request that delivered `reel`.
+  const skew = startedMs - Date.now();
+
+  const tick = () => {
+    const elapsed = Math.max(0, Date.now() + skew - startedMs);
+    const position = sweepPosition(elapsed, periodMs);
+    marker.style.left = `${position * 100}%`;
+    if (tension) tension.setAttribute("aria-valuenow", String(Math.round(position * 100)));
+    if (Date.now() + skew > deadlineMs) {
+      stopMarker();
+      return;
+    }
+    fishing.raf = window.requestAnimationFrame(tick);
+  };
+  fishing.raf = window.requestAnimationFrame(tick);
+}
+
+function stopMarker() {
+  if (fishing.raf) {
+    window.cancelAnimationFrame(fishing.raf);
+    fishing.raf = 0;
+  }
+}
+
+function ensureFishingPoll() {
+  if (fishing.timer) return;
+  fishing.timer = window.setInterval(pollFishing, FISHING_POLL_MS);
+}
+
+function stopFishingPoll() {
+  if (fishing.timer) {
+    window.clearInterval(fishing.timer);
+    fishing.timer = 0;
+  }
+}
+
+/** `GET /fishing` — cheap enough to run at 120 ms, and it is what makes the
+ *  bobber react faster than the host's 1 s tick. */
+async function pollFishing() {
+  if (!survivalCardOpen() || survival.tab !== "fishing") return;
+  try {
+    const res = await fetch(`${survival.base}/fishing`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    applyFishingStatus(await res.json());
+  } catch (err) {
+    stopFishingPoll();
+    setFishingNote(`Fishing API unreachable: ${err.message}`, true);
+  }
+}
+
+async function postFishing(path, body) {
+  const res = await fetch(`${survival.base}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const payload = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, payload };
+}
+
+/** The one button/key/scene-click action: cast → strike → reel. */
+async function pressFishingAction() {
+  const phase = (fishing.session && fishing.session.phase) || "idle";
+  if (phase === "waiting") return; // nothing to do but wait
+  if (phase === "biting") return hookFish();
+  if (phase === "reeling") return reelFish();
+  return castLine();
+}
+
+async function castLine() {
+  setFishingNote("");
+  const { ok, status, payload } = await postFishing("/fishing/cast");
+  if (!ok) {
+    setFishingNote(payload.error || `cast failed (HTTP ${status})`, true);
+    pollFishing();
+    return;
+  }
+  applyFishingStatus({ ok: true, session: payload.session, config: fishing.config });
+  ensureFishingPoll();
+}
+
+async function hookFish() {
+  const { ok, status, payload } = await postFishing("/fishing/hook");
+  if (!ok) {
+    setFishingNote(payload.error || `hook failed (HTTP ${status})`, true);
+    pollFishing();
+    return;
+  }
+  // The reel payload is not a full status body, so re-read for the session.
+  ensureFishingPoll();
+  await pollFishing();
+  setFishingNote("Hooked — press when the marker is in the green.");
+}
+
+async function reelFish() {
+  const { ok, status, payload } = await postFishing("/fishing/reel");
+  if (!ok) {
+    setFishingNote(payload.error || `reel failed (HTTP ${status})`, true);
+    pollFishing();
+    return;
+  }
+  applyFishingResult(payload);
+  await pollFishing();
+}
+
+async function cancelFishing() {
+  const { ok, status, payload } = await postFishing("/fishing/cancel");
+  if (!ok) {
+    setFishingNote(payload.error || `cancel failed (HTTP ${status})`, true);
+  } else {
+    applyFishingResult(payload);
+  }
+  await pollFishing();
+}
+
+const ESCAPE_PROSE = {
+  spooked: "It took the bait and got away.",
+  missed_the_spot: "You struck too early — it slipped the hook.",
+  timed_out: "The line went slack.",
+  cancelled: "Reeled in.",
+  inventory_full: "Caught it, but the bag is full.",
+};
+
+/** Spell out a `fishing-result` frame once, whoever delivered it. */
+function applyFishingResult(payload) {
+  if (!payload || typeof payload !== "object") return;
+  const key = `${payload.casts}-${payload.catches}-${payload.escapes}-${payload.caught ? 1 : 0}`;
+  if (key === fishing.resultKey) return;
+  fishing.resultKey = key;
+
+  if (payload.caught) {
+    setFishingNote(`Caught a ${payload.label}! It's in the bag.`);
+    toast(`${payload.icon || "🐟"} ${payload.label} caught`);
+  } else {
+    const reason = ESCAPE_PROSE[payload.reason] || `Nothing landed (${payload.reason || "lost"}).`;
+    setFishingNote(reason, payload.reason === "inventory_full");
+  }
+  refreshInventory();
+}
+
+/**
+ * Keyboard hook. Only the two configured codes act, and only while the fishing
+ * pane is the visible one — otherwise Space in the command bar would cast a
+ * line. Default is prevented so the page does not scroll.
+ */
+function onFishingKey(event) {
+  const config = fishing.config;
+  if (!config || !survivalCardOpen() || survival.tab !== "fishing") return;
+  if (event.repeat) return;
+  const phase = (fishing.session && fishing.session.phase) || "idle";
+  if (phase !== "biting" && phase !== "reeling") return;
+  const hook = String(config.hook_key || "").toLowerCase();
+  const reel = String(config.reel_key || "").toLowerCase();
+  const code = String(event.code || "").toLowerCase();
+  if (code !== hook && code !== reel) return;
+  event.preventDefault();
+  pressFishingAction();
+}
+
+/* ------------------------------------------------------------------ */
+
+
 /** Wire the widget, hydrate it, then follow the events. Safe to call twice. */
 export async function setupSurvival() {
   if (survival.ready) return;
@@ -255,12 +1036,82 @@ export async function setupSurvival() {
     feed();
   });
 
+  // The picker drives which actions are legal, so keep the buttons honest.
+  el("survival-food")?.addEventListener("change", syncFoodButtons);
+  el("btn-crave")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    setCraving();
+  });
+  el("btn-craving-clear")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    clearCraving();
+  });
+  el("btn-craft")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    craft();
+  });
+  el("survival-recipe")?.addEventListener("change", () => {
+    const select = el("survival-recipe");
+    const craftBtn = el("btn-craft");
+    if (craftBtn) craftBtn.disabled = !(select && select.value);
+  });
+
   // The pop-out: the panel button toggles the card, the ✕ and Esc close it.
   el("btn-survival")?.addEventListener("click", () => toggleSurvivalCard());
   el("btn-survival-close")?.addEventListener("click", () => toggleSurvivalCard(false));
 
+  // ---- tabs -------------------------------------------------------------
+  for (const tab of document.querySelectorAll("[data-survival-tab]")) {
+    tab.addEventListener("click", (event) => {
+      event.preventDefault();
+      showSurvivalTab(tab.dataset.survivalTab);
+    });
+  }
+  el("btn-open-fishing")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    showSurvivalTab("fishing");
+  });
+
+  // ---- inventory --------------------------------------------------------
+  el("btn-inventory-reload")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    refreshInventory();
+  });
+  el("btn-inventory-add")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    addItem();
+  });
+  el("btn-inventory-use")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    useItem();
+  });
+  el("inventory-item")?.addEventListener("change", syncInventoryButtons);
+
+  // ---- fishing ----------------------------------------------------------
+  el("btn-fish-action")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    pressFishingAction();
+  });
+  el("btn-fish-cancel")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    cancelFishing();
+  });
+  const scene = el("fish-scene");
+  if (scene) {
+    // A scene click is the configured mouse button, so the whole pond is the
+    // hit target: click to cast, click to strike, click to reel.
+    scene.addEventListener("pointerdown", (event) => {
+      const wanted = Number((fishing.config && fishing.config.mouse_button) ?? 0);
+      if (event.button !== wanted) return;
+      event.preventDefault();
+      pressFishingAction();
+    });
+  }
+  document.addEventListener("keydown", onFishingKey);
+
   await resolveBase();
-  await Promise.all([refreshFoods(), refreshSurvival()]);
+  await Promise.all([refreshFoods(), refreshRecipes(), refreshSurvival()]);
+  await refreshInventory();
 
   // Pushed updates: the telemetry frame and every meal outcome.
   await listen("survival", (event) => renderSurvival(event.payload));
@@ -273,6 +1124,32 @@ export async function setupSurvival() {
     // The meal payload carries no full stats — ask for the authoritative ones.
     refreshSurvival();
   });
+  // A cooked dish and a craving change both arrive as their own events; the
+  // authoritative read carries the whole picture (bars, tier, craving).
+  await listen("survival-craft", () => refreshSurvival());
+  await listen("survival-craving", () => refreshSurvival());
+
+  // The bag is pushed too: a catch, an eaten fish and a crafted dish all change
+  // it, and the tab is often hidden while they happen.
+  await listen("inventory-changed", () => refreshInventory());
+
+  // Fishing: the plugin owns the phase, so every frame just asks it again.
+  // `fishing-result` also spells the outcome out, because the poll may already
+  // have moved on to `idle` by the time it lands.
+  await listen("fishing-started", () => {
+    ensureFishingPoll();
+    pollFishing();
+  });
+  await listen("fishing-bite", () => {
+    // A bite is worth interrupting for even from the Status tab.
+    toast("Something's biting! 🎣");
+    pollFishing();
+  });
+  await listen("fish-hooked", () => {
+    ensureFishingPoll();
+    pollFishing();
+  });
+  await listen("fishing-result", (event) => applyFishingResult(event.payload));
 
   setInterval(refreshSurvival, POLL_MS);
   survival.ready = true;
@@ -282,9 +1159,35 @@ export async function setupSurvival() {
     base: survival.base,
     ready: survival.ready,
     open: survivalCardOpen(),
+    tab: survival.tab,
     foods: survival.foods.map((f) => f.id),
+    recipes: survival.recipes.map((r) => r.id),
     tier: survival.status ? survival.status.tier : null,
     hunger: survival.status ? survival.status.hunger : null,
     saturation: survival.status ? survival.status.saturation : null,
+    craving: survival.status && survival.status.craving
+      ? survival.status.craving.label || survival.status.craving.target
+      : null,
+    inventory: survival.inventory
+      ? {
+          used: survival.inventory.used,
+          capacity: survival.inventory.capacity,
+          full: survival.inventory.full,
+          totals: (survival.inventory.totals || []).map((t) => `${t.id}×${t.count}`),
+          picked: survival.picked,
+        }
+      : null,
+    fishing: {
+      phase: fishing.session ? fishing.session.phase : "idle",
+      casts: fishing.session ? fishing.session.casts : 0,
+      catches: fishing.session ? fishing.session.catches : 0,
+      escapes: fishing.session ? fishing.session.escapes : 0,
+      polling: !!fishing.timer,
+      animating: !!fishing.raf,
+      sweet: fishing.session && fishing.session.reel
+        ? [fishing.session.reel.sweet_start, fishing.session.reel.sweet_end]
+        : null,
+      hookKey: fishing.config ? fishing.config.hook_key : null,
+    },
   });
 }

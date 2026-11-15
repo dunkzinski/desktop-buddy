@@ -413,9 +413,9 @@ export function wireRegions() {
   // click-through, so it is published only while visible.
   const historyDrawer = document.getElementById("history-drawer");
   if (historyDrawer && !historyDrawer.classList.contains("hidden")) push(historyDrawer);
-  // The survival card is another floating card: its select, Feed button and ✕
-  // must accept clicks over the click-through desktop, so its box goes in only
-  // while it is open.
+  // The survival card is another floating card: its pickers, Feed/Crave/Craft
+  // buttons and ✕ must accept clicks over the click-through desktop, so its
+  // box goes in only while it is open.
   // The settings modal is a full-screen sheet: while it is up it must take
   // every click (it is the only thing on screen), so its box is published in
   // place of nothing.

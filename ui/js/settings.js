@@ -54,6 +54,21 @@ const FIELDS = [
   { tab: "survival", section: "survival", key: "telemetry_secs", label: "Telemetry interval", hint: "seconds, 0 = off", type: "number", min: 0, max: 86400, step: 30 },
   { tab: "survival", section: "survival", key: "start_hunger", label: "Start hunger", hint: "0–100", type: "number", min: 0, max: 100, step: 1 },
   { tab: "survival", section: "survival", key: "start_saturation", label: "Start saturation", hint: "0–100", type: "number", min: 0, max: 100, step: 1 },
+
+  { tab: "survival", section: "fishing", key: "enabled", label: "Fishing", type: "bool" },
+  { tab: "survival", section: "fishing", key: "hook_key", label: "Hook key", hint: "KeyboardEvent.code, e.g. Space", type: "text" },
+  { tab: "survival", section: "fishing", key: "reel_key", label: "Reel key", hint: "KeyboardEvent.code, e.g. Space", type: "text" },
+  { tab: "survival", section: "fishing", key: "mouse_button", label: "Mouse button", hint: "0 left · 1 middle · 2 right", type: "number", min: 0, max: 2, step: 1 },
+  { tab: "survival", section: "fishing", key: "difficulty", label: "Difficulty", hint: "0.5 forgiving – 2.0 brutal", type: "number", min: 0.5, max: 2, step: 0.05 },
+  { tab: "survival", section: "fishing", key: "min_wait_secs", label: "Shortest wait", hint: "seconds before a bite", type: "number", min: 1, max: 120, step: 1 },
+  { tab: "survival", section: "fishing", key: "max_wait_secs", label: "Longest wait", hint: "seconds before a bite", type: "number", min: 1, max: 120, step: 1 },
+  { tab: "survival", section: "fishing", key: "hook_window_ms", label: "Reaction window", hint: "ms to strike after the dip", type: "number", min: 250, max: 8000, step: 50 },
+  { tab: "survival", section: "fishing", key: "reel_period_ms", label: "Marker sweep", hint: "ms per full pass", type: "number", min: 300, max: 6000, step: 50 },
+  { tab: "survival", section: "fishing", key: "sweet_width", label: "Sweet spot width", hint: "fraction of the bar", type: "number", min: 0.04, max: 0.6, step: 0.01 },
+  { tab: "survival", section: "fishing", key: "require_rod", label: "A cast needs the rod", type: "bool" },
+  { tab: "survival", section: "fishing", key: "bait_required", label: "A cast spends bait", type: "bool" },
+
+  { tab: "survival", section: "inventory", key: "slots", label: "Bag slots", hint: "4–40", type: "number", min: 4, max: 40, step: 1 },
 ];
 
 const settings = {
@@ -230,16 +245,25 @@ function buildForm() {
   profiles.id = "settings-profiles";
   panes.ai.appendChild(profiles);
 
-  // Survival: toggles first, then the numbers.
-  const survivalGroup = document.createElement("div");
-  survivalGroup.className = "set-group";
-  const survivalHeading = document.createElement("h4");
-  survivalHeading.textContent = "Metabolism";
-  survivalGroup.appendChild(survivalHeading);
-  for (const field of FIELDS.filter((f) => f.tab === "survival")) {
-    survivalGroup.appendChild(fieldRow(field));
+  // Survival: metabolism first, then the fishing mini-game and the bag — each
+  // block is its own group so the pane reads as three short forms.
+  for (const [title, sections] of [
+    ["Metabolism", ["survival"]],
+    ["Fishing mini-game", ["fishing"]],
+    ["Bag", ["inventory"]],
+  ]) {
+    const group = document.createElement("div");
+    group.className = "set-group";
+    const heading = document.createElement("h4");
+    heading.textContent = title;
+    group.appendChild(heading);
+    for (const field of FIELDS.filter(
+      (f) => f.tab === "survival" && sections.includes(f.section),
+    )) {
+      group.appendChild(fieldRow(field));
+    }
+    panes.survival.appendChild(group);
   }
-  panes.survival.appendChild(survivalGroup);
 
   return true;
 }

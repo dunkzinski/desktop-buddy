@@ -9,7 +9,15 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::model::{SurvivalConfig, HUNGER_MAX, MAX_DRAIN_PER_MIN, MIN_DRAIN_PER_MIN};
+use crate::fishing::{
+    MAX_DIFFICULTY, MAX_HOOK_WINDOW_MS, MAX_REEL_PERIOD_MS, MAX_SWEET_WIDTH, MAX_WAIT_SECS,
+    MIN_DIFFICULTY, MIN_HOOK_WINDOW_MS, MIN_REEL_PERIOD_MS, MIN_SWEET_WIDTH, MIN_WAIT_SECS,
+};
+use crate::inventory::{MAX_SLOTS, MIN_SLOTS};
+use crate::model::{
+    SurvivalConfig, HUNGER_MAX, MAX_CRAVING_DURATION_SECS, MAX_DRAIN_PER_MIN,
+    MIN_CRAVING_DURATION_SECS, MIN_CRAVING_INTERVAL_SECS, MIN_DRAIN_PER_MIN,
+};
 use crate::with_state;
 
 /// The top-level key this plugin owns in `watcher_rules.json`.
@@ -24,11 +32,49 @@ const KNOWN_KEYS: &[&str] = &[
     "metabolism",
     "notify",
     "telemetry_secs",
+    "cravings",
+    "craving_below_hunger",
+    "craving_below_saturation",
+    "craving_interval_secs",
+    "craving_duration_secs",
+    "fishing",
+    "inventory",
 ];
 const KNOWN_METABOLISM_KEYS: &[&str] = &["hunger_per_min", "saturation_per_min"];
+/// The nested blocks that merge one level deep, so a patch can carry a single
+/// field of one of them without restating the whole object.
+const KNOWN_NESTED: &[(&str, &[&str])] = &[
+    ("metabolism", KNOWN_METABOLISM_KEYS),
+    (
+        "fishing",
+        &[
+            "enabled",
+            "require_rod",
+            "bait_required",
+            "hook_key",
+            "reel_key",
+            "mouse_button",
+            "min_wait_secs",
+            "max_wait_secs",
+            "hook_window_ms",
+            "reel_period_ms",
+            "sweet_width",
+            "difficulty",
+        ],
+    ),
+    ("inventory", &["slots"]),
+];
 
-/// Merge `patch` over `current`, merging `metabolism` one level deeper so a
-/// patch can carry a single drain rate.
+/// The known keys of a nested block, if `key` names one.
+fn nested_keys(key: &str) -> Option<&'static [&'static str]> {
+    KNOWN_NESTED
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, keys)| *keys)
+}
+
+/// Merge `patch` over `current`, merging a nested block one level deeper so a
+/// patch can carry a single drain rate or one keybind.
 fn merged(current: Option<&Value>, patch: &Value) -> Result<Value, String> {
     let patch = patch
         .as_object()
@@ -46,21 +92,29 @@ fn merged(current: Option<&Value>, patch: &Value) -> Result<Value, String> {
                 KNOWN_KEYS.join(", ")
             ));
         }
-        let merged_value = match (target.get(key), value) {
-            (Some(Value::Object(existing)), Value::Object(incoming)) => {
-                let mut nested: Map<String, Value> = existing.clone();
+        let merged_value = match value {
+            // Any nested block merges one level deep, whether or not the file
+            // already carries it — an unknown inner key is rejected either way.
+            Value::Object(incoming) => {
+                let known = nested_keys(key);
+                let mut nested: Map<String, Value> = match target.get(key) {
+                    Some(Value::Object(existing)) => existing.clone(),
+                    _ => Map::new(),
+                };
                 for (inner, inner_value) in incoming {
-                    if !KNOWN_METABOLISM_KEYS.contains(&inner.as_str()) {
-                        return Err(format!(
-                            "`survival.metabolism.{inner}` is not a setting this plugin owns (try {})",
-                            KNOWN_METABOLISM_KEYS.join(", ")
-                        ));
+                    if let Some(known) = known {
+                        if !known.contains(&inner.as_str()) {
+                            return Err(format!(
+                                "`survival.{key}.{inner}` is not a setting this plugin owns (try {})",
+                                known.join(", ")
+                            ));
+                        }
                     }
                     nested.insert(inner.clone(), inner_value.clone());
                 }
                 Value::Object(nested)
             }
-            _ => value.clone(),
+            other => other.clone(),
         };
         target.insert(key.clone(), merged_value);
     }
@@ -91,6 +145,78 @@ fn check(config: &SurvivalConfig) -> Result<(), String> {
     }
     if clean.telemetry_secs != config.telemetry_secs {
         return Err("`survival.telemetry_secs` must be 0 (off) or at least 60".to_string());
+    }
+    if clean.craving_below_hunger != config.craving_below_hunger {
+        return Err(format!(
+            "`survival.craving_below_hunger` must be between 0 and {HUNGER_MAX}"
+        ));
+    }
+    if clean.craving_below_saturation != config.craving_below_saturation {
+        return Err(format!(
+            "`survival.craving_below_saturation` must be between 0 and {HUNGER_MAX}"
+        ));
+    }
+    if clean.craving_interval_secs != config.craving_interval_secs {
+        return Err(format!(
+            "`survival.craving_interval_secs` must be between {MIN_CRAVING_INTERVAL_SECS} and 86400"
+        ));
+    }
+    if clean.craving_duration_secs != config.craving_duration_secs {
+        return Err(format!(
+            "`survival.craving_duration_secs` must be between {MIN_CRAVING_DURATION_SECS} and {MAX_CRAVING_DURATION_SECS}"
+        ));
+    }
+    // Fishing: every field the sanitizer could have moved is named explicitly,
+    // so an out-of-range timing or keybind says which one.
+    let fishing = &config.fishing;
+    if !(MIN_WAIT_SECS..=MAX_WAIT_SECS).contains(&fishing.min_wait_secs) {
+        return Err(format!(
+            "`survival.fishing.min_wait_secs` must be between {MIN_WAIT_SECS} and {MAX_WAIT_SECS}"
+        ));
+    }
+    if !(MIN_WAIT_SECS..=MAX_WAIT_SECS).contains(&fishing.max_wait_secs) {
+        return Err(format!(
+            "`survival.fishing.max_wait_secs` must be between {MIN_WAIT_SECS} and {MAX_WAIT_SECS}"
+        ));
+    }
+    if fishing.max_wait_secs < fishing.min_wait_secs {
+        return Err(
+            "`survival.fishing.max_wait_secs` must not be below `min_wait_secs`".to_string(),
+        );
+    }
+    if !(MIN_HOOK_WINDOW_MS..=MAX_HOOK_WINDOW_MS).contains(&fishing.hook_window_ms) {
+        return Err(format!(
+            "`survival.fishing.hook_window_ms` must be between {MIN_HOOK_WINDOW_MS} and {MAX_HOOK_WINDOW_MS}"
+        ));
+    }
+    if !(MIN_REEL_PERIOD_MS..=MAX_REEL_PERIOD_MS).contains(&fishing.reel_period_ms) {
+        return Err(format!(
+            "`survival.fishing.reel_period_ms` must be between {MIN_REEL_PERIOD_MS} and {MAX_REEL_PERIOD_MS}"
+        ));
+    }
+    if !(MIN_SWEET_WIDTH..=MAX_SWEET_WIDTH).contains(&fishing.sweet_width) {
+        return Err(format!(
+            "`survival.fishing.sweet_width` must be between {MIN_SWEET_WIDTH} and {MAX_SWEET_WIDTH}"
+        ));
+    }
+    if !(MIN_DIFFICULTY..=MAX_DIFFICULTY).contains(&fishing.difficulty) {
+        return Err(format!(
+            "`survival.fishing.difficulty` must be between {MIN_DIFFICULTY} and {MAX_DIFFICULTY}"
+        ));
+    }
+    if fishing.mouse_button > 2 {
+        return Err(
+            "`survival.fishing.mouse_button` must be 0 (left), 1 (middle) or 2 (right)"
+                .to_string(),
+        );
+    }
+    if fishing.hook_key.trim().is_empty() || fishing.reel_key.trim().is_empty() {
+        return Err("`survival.fishing.hook_key` and `reel_key` must name a key".to_string());
+    }
+    if !(MIN_SLOTS..=MAX_SLOTS).contains(&config.inventory.slots) {
+        return Err(format!(
+            "`survival.inventory.slots` must be between {MIN_SLOTS} and {MAX_SLOTS}"
+        ));
     }
     Ok(())
 }
@@ -153,6 +279,28 @@ pub fn warnings(block: Option<&Value>) -> Vec<String> {
             ));
         }
     }
+    // `fishing` and `inventory` get the same treatment; the loop keeps a new
+    // nested block from silently joining the "no warnings" club.
+    for (name, known) in KNOWN_NESTED {
+        if *name == "metabolism" {
+            continue;
+        }
+        let Some(nested) = block.get(*name).and_then(Value::as_object) else {
+            continue;
+        };
+        let stray: Vec<&str> = nested
+            .keys()
+            .filter(|key| !known.contains(&key.as_str()))
+            .map(String::as_str)
+            .collect();
+        if !stray.is_empty() {
+            warnings.push(format!(
+                "survival.{name}: {} ignored key(s): {}",
+                stray.len(),
+                stray.join(", ")
+            ));
+        }
+    }
     warnings
 }
 
@@ -200,5 +348,73 @@ mod tests {
     fn a_clean_block_produces_no_warnings() {
         assert!(warnings(Some(&json!({ "enabled": true, "notify": false }))).is_empty());
         assert!(warnings(None).is_empty());
+    }
+
+    #[test]
+    fn validate_merges_a_nested_fishing_key_without_restating_the_block() {
+        let current = json!({ "fishing": { "difficulty": 1.5, "hook_key": "Space" } });
+        let text = validate(Some(&current), &json!({ "fishing": { "reel_key": "Enter" } }))
+            .expect("validate");
+        let block: Value = serde_json::from_str(&text).expect("parse");
+        assert_eq!(block["fishing"]["reel_key"], "Enter");
+        assert_eq!(block["fishing"]["hook_key"], "Space", "siblings survived");
+        assert_eq!(block["fishing"]["difficulty"], 1.5);
+        // The merged block still parses as the loader's own struct.
+        let config: SurvivalConfig = serde_json::from_value(block).expect("typing");
+        assert_eq!(config.fishing.reel_key, "Enter");
+    }
+
+    #[test]
+    fn validate_names_a_bad_fishing_key_and_a_bad_range() {
+        let unknown = validate(None, &json!({ "fishing": { "bobber_size": 3 } }))
+            .expect_err("unknown key");
+        assert!(unknown.contains("bobber_size"), "{unknown}");
+
+        let window = validate(None, &json!({ "fishing": { "hook_window_ms": 10 } }))
+            .expect_err("too short");
+        assert!(window.contains("hook_window_ms"), "{window}");
+
+        let difficulty = validate(None, &json!({ "fishing": { "difficulty": 9.0 } }))
+            .expect_err("too hard");
+        assert!(difficulty.contains("difficulty"), "{difficulty}");
+
+        let button =
+            validate(None, &json!({ "fishing": { "mouse_button": 5 } })).expect_err("no such button");
+        assert!(button.contains("mouse_button"), "{button}");
+    }
+
+    #[test]
+    fn validate_bounds_the_bag_and_the_keybinds() {
+        let slots =
+            validate(None, &json!({ "inventory": { "slots": 2 } })).expect_err("too small");
+        assert!(slots.contains("slots"), "{slots}");
+
+        let key = validate(None, &json!({ "fishing": { "hook_key": "  " } }))
+            .expect_err("blank key");
+        assert!(key.contains("hook_key"), "{key}");
+
+        let wait = validate(
+            None,
+            &json!({ "fishing": { "min_wait_secs": 30, "max_wait_secs": 5 } }),
+        )
+        .expect_err("max below min");
+        assert!(wait.contains("max_wait_secs"), "{wait}");
+
+        // The shipped defaults validate cleanly.
+        let text = validate(None, &json!({})).expect("defaults");
+        let block: Value = serde_json::from_str(&text).expect("parse");
+        assert_eq!(block["inventory"]["slots"], 20);
+        assert_eq!(block["fishing"]["hook_key"], "Space");
+        assert!(block["fishing"]["difficulty"].is_number());
+    }
+
+    #[test]
+    fn an_unknown_inventory_key_is_reported_as_a_warning() {
+        let warnings = warnings(Some(&json!({
+            "enabled": true,
+            "inventory": { "slots": 20, "bags": 2 }
+        })));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("bags"));
     }
 }

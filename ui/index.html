@@ -302,7 +302,16 @@
     <span class="hd-spacer"></span>
     <button class="mini-btn" id="btn-survival-close" title="Close (Esc)" aria-label="Close">✕</button>
   </header>
-  <div class="survival-body">
+  <nav class="survival-tabs" role="tablist" aria-label="Survival sections">
+    <button class="survival-tab active" type="button" role="tab" aria-selected="true"
+            data-survival-tab="status" title="Hunger, saturation, cravings and cooking">Status</button>
+    <button class="survival-tab" type="button" role="tab" aria-selected="false"
+            data-survival-tab="bag" title="Everything the avatar is carrying (GET /inventory)">Bag
+      <span class="survival-tab-badge" id="survival-bag-count">—</span></button>
+    <button class="survival-tab" type="button" role="tab" aria-selected="false"
+            data-survival-tab="fishing" title="Cast, hook and reel">Fishing</button>
+  </nav>
+  <div class="survival-body" data-survival-pane="status">
     <div class="survival-bar-row" title="Hunger only falls once saturation is empty">
       <span class="survival-bar-name">Hunger</span>
       <div class="survival-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
@@ -317,14 +326,87 @@
       </div>
       <span class="survival-bar-value" id="survival-saturation">—</span>
     </div>
+    <div class="survival-craving" id="survival-craving-row"
+         title="What the avatar is craving right now">
+      <span class="survival-craving-label">Craving</span>
+      <span class="survival-craving-value" id="survival-craving">—</span>
+      <button class="mini-btn" id="btn-craving-clear" hidden
+              title="Clear the craving (POST /survival {craving: null})"
+              aria-label="Clear craving">✕</button>
+    </div>
     <div class="survival-actions">
       <select id="survival-food" title="What to eat (from GET /foods)">
         <option value="">no foods</option>
       </select>
       <button class="control-btn primary feed-btn" id="btn-feed"
               title="Eat one item (POST /survival/feed)">Feed</button>
+      <button class="mini-btn" id="btn-crave" disabled
+              title="Set a craving for the selected food (POST /survival {craving})">Crave</button>
+    </div>
+    <div class="survival-craft">
+      <span class="survival-craft-label">Cook</span>
+      <select id="survival-recipe" title="A recipe from GET /recipes">
+        <option value="">no recipes</option>
+      </select>
+      <button class="control-btn" id="btn-craft" disabled
+              title="Cook the selected recipe (POST /survival/craft)">Craft</button>
+    </div>
+    <div class="survival-goto">
+      <button class="mini-btn" id="btn-open-fishing"
+              title="Open the fishing mini-game">🎣 Go fishing</button>
+      <span class="survival-goto-state" id="survival-fishing-state">idle</span>
     </div>
     <div class="survival-note" id="survival-note" aria-live="polite"></div>
+  </div>
+
+  <div class="survival-body hidden" data-survival-pane="bag">
+    <div class="inv-head">
+      <span class="inv-slots-label" id="inventory-slots">—</span>
+      <span class="hd-spacer"></span>
+      <button class="mini-btn" id="btn-inventory-reload"
+              title="Re-read GET /inventory">↻</button>
+    </div>
+    <div class="inv-grid" id="inventory-grid" role="grid" aria-label="Inventory slots"></div>
+    <div class="inv-detail" id="inventory-detail" aria-live="polite">
+      Hover a slot for its details.
+    </div>
+    <div class="inv-actions">
+      <select id="inventory-item" title="Item to add (from GET /inventory's catalog)">
+        <option value="">no items</option>
+      </select>
+      <input id="inventory-count" type="number" min="1" max="99" step="1" value="1"
+             title="How many to add" aria-label="How many">
+      <button class="mini-btn" id="btn-inventory-add"
+              title="Add to the bag (POST /inventory/add)">Add</button>
+      <button class="control-btn primary" id="btn-inventory-use" disabled
+              title="Use the selected item (POST /inventory/use)">Use</button>
+    </div>
+    <div class="survival-note" id="inventory-note" aria-live="polite"></div>
+  </div>
+
+  <div class="survival-body hidden" data-survival-pane="fishing">
+    <div class="fish-scene" id="fish-scene" data-phase="idle"
+         title="Click to cast, hook and reel">
+      <div class="fish-sky"></div>
+      <div class="fish-water" id="fish-water">
+        <div class="fish-ripple" id="fish-ripple"></div>
+        <div class="fish-bobber" id="fish-bobber">🎣</div>
+      </div>
+    </div>
+    <div class="fish-hint" id="fish-hint">Cast the line.</div>
+    <div class="fish-tension hidden" id="fish-tension" role="progressbar"
+         aria-valuemin="0" aria-valuemax="100" aria-label="Reel tension">
+      <div class="fish-sweet" id="fish-sweet"></div>
+      <div class="fish-marker" id="fish-marker"></div>
+    </div>
+    <div class="fish-actions">
+      <button class="control-btn primary" id="btn-fish-action"
+              title="Cast (POST /fishing/cast), then hook and reel">Cast</button>
+      <button class="mini-btn" id="btn-fish-cancel" disabled
+              title="Reel in and give up (POST /fishing/cancel)">Reel in</button>
+    </div>
+    <div class="fish-stats" id="fish-stats"></div>
+    <div class="survival-note" id="fishing-note" aria-live="polite"></div>
   </div>
 </aside>
 

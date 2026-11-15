@@ -53,7 +53,9 @@
 use std::sync::Mutex;
 
 pub mod config;
+pub mod fishing;
 pub mod host;
+pub mod inventory;
 pub mod model;
 pub mod plugin;
 pub mod routes;

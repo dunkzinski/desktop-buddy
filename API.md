@@ -834,6 +834,33 @@ Both fields are optional (send at least one; neither ⇒ **400**). Values are
 clamped to 0–100. A tier change caused here emits the same `survival-threshold`
 frame a natural crossing would.
 
+The same endpoint drives the avatar's **craving**, so the dialogue can be
+demonstrated without waiting for the interval:
+
+```bash
+curl -s -X POST localhost:8765/survival -H 'content-type: application/json' -d '{"craving": "omelette"}'
+curl -s -X POST localhost:8765/survival -H 'content-type: application/json' -d '{"craving": {"group": "sweet"}}'
+curl -s -X POST localhost:8765/survival -H 'content-type: application/json' -d '{"craving": null}'
+```
+
+A food id resolves first, then a food group (`fruit`, `vegetable`, `dairy`,
+`protein`, `grain`, `sweet`, `drink`; plurals accepted). Anything else is a
+**400**. The response is the full `GET /survival` body, whose `craving` object
+is `null` when there is nothing pending:
+
+```json
+{
+  "kind": "group",
+  "target": "dairy",
+  "label": "something dairy",
+  "started_ms": 1763000000000,
+  "duration_secs": 600,
+  "ends_ms": 1763000600000,
+  "remaining_secs": 600,
+  "expired": false
+}
+```
+
 ### `POST /survival/feed`
 
 Eat one item from the catalog (`GET /foods`):
@@ -870,6 +897,56 @@ elapsed; `cooldown_remaining_secs` says how long). An unknown id is a **400**
 that lists the valid ids. An accepted meal emits `survival-meal` and, when the
 tier changes, `survival-threshold`.
 
+### `POST /survival/craft`
+
+Cook a recipe. Either name it:
+
+```bash
+curl -s -X POST localhost:8765/survival/craft \
+     -H 'content-type: application/json' -d '{"recipe": "omelette"}'
+```
+
+...or hand over the ingredients and let the recipe book name the dish. Order
+does not matter, **counts do**:
+
+```bash
+curl -s -X POST localhost:8765/survival/craft \
+     -H 'content-type: application/json' -d '{"ingredients": ["egg", "cheese", "egg"]}'
+curl -s -X POST localhost:8765/survival/craft \
+     -H 'content-type: application/json' -d '{"ingredients": {"noodles": 2, "egg": 1, "mushroom": 1}}'
+```
+
+The dish is eaten straight away, so the response is the usual `EatOutcome` plus
+the crafting fields:
+
+```json
+{
+  "ok": true,
+  "accepted": true,
+  "food": "omelette",
+  "label": "Cheese omelette",
+  "kind": "cooked",
+  "recipe": "omelette",
+  "recipe_label": "Cheese omelette",
+  "blurb": "Two eggs and a fistful of cheese. Fast, hot, filling.",
+  "cooked_with": [{"food": "egg", "count": 2}, {"food": "cheese", "count": 1}],
+  "comfort_secs": 240,
+  "hunger_before": 40.0,
+  "hunger_after": 66.0,
+  "saturation_before": 0.0,
+  "saturation_after": 22.1,
+  "tier_before": "hungry",
+  "tier_after": "peckish",
+  "craving_satisfied": null
+}
+```
+
+An ingredient list that matches no recipe is a **400** that echoes the ids it
+was given; a full or still-digesting avatar is a **409** with the usual
+`refusal`. A cook emits `survival-meal` and `survival-craft` (and
+`survival-craving` when the dish settles a craving). `comfort_secs` is the
+well-fed window: hunger drains at half rate for that long.
+
 ### `GET /foods`
 
 The static food catalog — the ids `POST /survival/feed` accepts, with what each
@@ -882,19 +959,268 @@ curl -s localhost:8765/foods
 ```json
 {
   "ok": true,
-  "count": 4,
+  "count": 20,
+  "raw_count": 8,
+  "cooked_count": 12,
+  "crafted_count": 6,
   "foods": [
     {
       "id": "apple",
       "label": "Apple",
-      "hunger": 10.0,
-      "saturation": 9.0,
-      "cooldown_secs": 30,
+      "kind": "raw",
+      "group": "fruit",
+      "group_label": "fruit",
+      "nutrition": 12.0,
+      "saturation_ratio": 0.5,
+      "comfort_secs": 0,
+      "crafted_via": null,
+      "cooldown_secs": 10,
       "effects": []
+    }
+  ],
+  "recipes": []
+}
+```
+
+### `GET /recipes`
+
+The recipe book — what `POST /survival/craft` can produce and from what:
+
+```bash
+curl -s localhost:8765/recipes
+```
+
+```json
+{
+  "ok": true,
+  "count": 6,
+  "recipes": [
+    {
+      "id": "omelette",
+      "label": "Cheese omelette",
+      "result": "omelette",
+      "result_label": "Cheese omelette",
+      "blurb": "Two eggs and a fistful of cheese. Fast, hot, filling.",
+      "ingredients": [{"food": "egg", "count": 2}, {"food": "cheese", "count": 1}]
     }
   ]
 }
 ```
+
+`GET /foods` carries the same array under `recipes`, so a client can offer
+crafting from one request.
+
+### `GET /inventory`
+
+The avatar's bag: one entry per slot (empty slots included), the grouped totals,
+and the static item catalog. `slots` is what the grid renders; `totals` is the
+short "how much of what" a note line needs.
+
+```bash
+curl -s localhost:8765/inventory
+```
+
+```json
+{
+  "ok": true,
+  "capacity": 20,
+  "used": 3,
+  "free": 17,
+  "full": false,
+  "slots": [
+    {
+      "index": 0,
+      "id": "fishing_rod",
+      "count": 1,
+      "label": "Fishing rod",
+      "icon": "🎣",
+      "kind": "tool",
+      "stack_max": 1,
+      "rarity": 2,
+      "blurb": "A rod, a line, and a bobber. Required to fish.",
+      "food": null,
+      "edible": false
+    },
+    {"index": 1, "id": "worm_bait", "count": 5},
+    {"index": 3, "id": null}
+  ],
+  "totals": [
+    {"id": "fishing_rod", "count": 1, "label": "Fishing rod", "icon": "🎣", "kind": "tool", "slot": 0}
+  ],
+  "catalog": [
+    {"id": "minnow", "label": "Minnow", "icon": "🐟", "kind": "fish", "kind_label": "Fish",
+     "stack_max": 20, "blurb": "Small, silver, and mostly bones.", "food": "minnow", "rarity": 1}
+  ]
+}
+```
+
+A fresh avatar starts with a fishing rod, five worm bait and two driftwood, so
+the Fishing tab is playable before anything is gathered. `capacity` is
+`survival.inventory.slots`; an empty slot is `{"index": n, "id": null}`.
+
+The catalog's `kind` is one of `fish`, `bait`, `tool`, `material` or `junk`, and
+`food` names the `GET /foods` entry an edible item becomes when it is used.
+
+### `POST /inventory/add`
+
+```bash
+curl -s -X POST localhost:8765/inventory/add -H 'content-type: application/json' \
+     -d '{"item": "minnow", "count": 3}'
+```
+
+`item` (or `id`) is a catalog id, `count` defaults to `1` and is clamped to
+1–99. Existing partial stacks are topped up before an empty slot is taken, so
+25 minnows are one full slot (20) plus a five-item slot. The reply is the whole
+`GET /inventory` body with `added`, `leftover` and `change` added:
+`leftover` is the part that did not fit. An unknown id is a **400**; a bag with
+no room is a **409**. Both name the item.
+
+An add emits `inventory-changed` with `{item, label, icon, delta, count, source,
+inventory}` where `inventory` is the same summary `GET /survival` carries.
+
+### `POST /inventory/remove`
+
+The mirror image — same body, same reply shape, `removed` instead of `added`:
+
+```bash
+curl -s -X POST localhost:8765/inventory/remove -H 'content-type: application/json' \
+     -d '{"item": "worm_bait", "count": 2}'
+```
+
+Asking for more than the bag holds is a **409** (`only 3 worm baits in the bag,
+cannot remove 5`) rather than a silent partial removal. Stacks drain from the
+last slot first, so earlier slots stay full.
+
+### `POST /inventory/use`
+
+Spend one item. Address it by `item`, `id` or `slot` (the grid's index):
+
+```bash
+curl -s -X POST localhost:8765/inventory/use -H 'content-type: application/json' \
+     -d '{"slot": 3}'
+```
+
+An **edible** item goes through exactly the path `POST /survival/feed` uses, so
+a caught trout restores hunger, grants its saturation buffer and starts the
+digestion cooldown. The reply is the meal payload plus `item`, `item_label`,
+`remaining` and `change`. The item is spent **only if the meal was accepted** —
+a full avatar gets a **409** (`refusal: "too_full"`) and keeps the fish. Gear
+and bait are a **400**: they can be held, not used.
+
+### `GET /fishing`
+
+The live fishing session. This route also runs the state machine to the current
+moment, so it is the precise way to follow a cast: the host tick is 1 s, and the
+page polls this at ~120 ms while the line is out.
+
+```bash
+curl -s localhost:8765/fishing
+```
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "session": {
+    "phase": "reeling",
+    "active": true,
+    "hook_window_ms": 1400,
+    "min_wait_secs": 3,
+    "max_wait_secs": 12,
+    "hook_key": "Space",
+    "reel_key": "Space",
+    "mouse_button": 0,
+    "reel": {
+      "period_ms": 1500,
+      "sweet_start": 0.41,
+      "sweet_width": 0.22,
+      "sweet_end": 0.63,
+      "started_ms": 1700000000000,
+      "deadline_ms": 1700000003000,
+      "elapsed_ms": 375,
+      "position": 0.5
+    },
+    "casts": 1,
+    "catches": 0,
+    "escapes": 0
+  },
+  "config": {"enabled": true, "hook_key": "Space", "difficulty": 1.0},
+  "inventory": {"capacity": 20, "used": 3, "free": 17, "full": false}
+}
+```
+
+`phase` is `idle`, `waiting`, `biting` or `reeling`. `reel` is `null` unless the
+phase is `reeling`. Note what is **absent**: `bite_at_ms` is never published, so
+a client cannot pre-aim at the bite — it learns the fish is on when the phase
+flips.
+
+### `POST /fishing/cast`
+
+Puts the line in the water. Needs a `fishing_rod` in the bag
+(`fishing.require_rod`), and spends one bait when `fishing.bait_required` is on.
+
+```bash
+curl -s -X POST localhost:8765/fishing/cast
+```
+
+The wait is drawn here from `fishing.min_wait_secs`–`max_wait_secs` and kept
+private; the reply is `{phase: "waiting", casts, min_wait_secs, max_wait_secs,
+hook_window_ms, hook_key, reel_key, mouse_button, session, inventory}` and the
+`fishing-started` event carries the same. A cast while a session is running, or
+without the rod (or bait), is a **409** naming which.
+
+### `POST /fishing/hook`
+
+The reaction press. Legal only while the phase is `biting`:
+
+```bash
+curl -s -X POST localhost:8765/fishing/hook
+```
+
+Too early (`waiting`), too late (the window lapsed, so the phase is `idle`) or
+already hooked (`reeling`) are all **409** with the reason. Success starts the
+reel: the reply is `{phase: "reeling", reel, reel_key, mouse_button,
+difficulty, casts}` and `fish-hooked` carries the same sweep parameters the page
+draws.
+
+### `POST /fishing/reel`
+
+The precision press — one per hook. The plugin recomputes the marker position
+from **its own clock** and compares it with the sweet spot; a client cannot
+widen the window by lying about where the marker was.
+
+```bash
+curl -s -X POST localhost:8765/fishing/reel
+```
+
+```json
+{
+  "caught": true,
+  "stored": true,
+  "item": "silver_trout",
+  "label": "Silver trout",
+  "icon": "🎏",
+  "junk": false,
+  "reason": null,
+  "position": 0.52,
+  "sweet": {"start": 0.41, "end": 0.63},
+  "casts": 1,
+  "catches": 1,
+  "escapes": 0,
+  "inventory": {"capacity": 20, "used": 4, "free": 16, "full": false}
+}
+```
+
+A miss (or letting the two-sweep deadline pass) answers the same shape with
+`caught: false` and a `reason`: `missed_the_spot`, `timed_out`, `spooked`,
+`cancelled` or `inventory_full`. That last one means the fish was landed but the
+bag had no room, so `caught` stays `false` and nothing is stored. Every outcome
+emits `fishing-result`, and a stored catch also emits `inventory-changed`.
+
+### `POST /fishing/cancel`
+
+Gives up on the current cast and reports it as a `fishing-result` with
+`reason: "cancelled"`. Nothing to cancel is a **409**.
 
 ### `GET /plugins`
 
@@ -929,6 +1255,12 @@ curl -s localhost:8765/plugins
         "meals": 2,
         "telemetry_secs": 60,
         "frames": 3,
+        "inventory_used": 3,
+        "inventory_capacity": 20,
+        "fishing_phase": "idle",
+        "casts": 0,
+        "catches": 0,
+        "escapes": 0,
         "uptime_ms": 42000
       }
     }
@@ -941,12 +1273,15 @@ repeatedly in its tick is parked as `failed` and its `shutdown` hook runs; the
 registry keeps the rest running. `GET /plugins` also emits the `plugins` frame
 whenever the registry's own status changes.
 
-**The routes are the plugins'.** `/survival`, `/survival/feed` and `/foods` come
+**The routes are the plugins'.** `/survival`, `/survival/feed`,
+`/survival/craft`, `/inventory`, `/inventory/add`, `/inventory/remove`,
+`/inventory/use`, `/fishing`, `/fishing/cast`, `/fishing/hook`,
+`/fishing/reel`, `/fishing/cancel`, `/foods` and `/recipes` come
 from the survival plugin: its `plugin_routes()` export declares them, and the
 host maps each one to an axum route that proxies the request into the Wasm
 instance. `/plugins` is the host's own introspection route (it answers even with
 nothing installed). `api.rs` names none of them: delete `plugins/survival.wasm`
-and those three endpoints disappear while `/plugins` still answers. The same is true of config blocks —
+and those endpoints disappear while `/plugins` still answers. The same is true of config blocks —
 `GET /config` lists a section only if a plugin claims it.
 
 ### `POST /shutdown`
