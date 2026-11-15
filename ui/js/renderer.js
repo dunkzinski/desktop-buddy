@@ -69,7 +69,11 @@ function drawFace(w, h) {
     ? clamp(speech.mouthSmooth, 0, 1)
     : (avatar.blendshapes.mouth_open || 0);
   const eyeWide = avatar.blendshapes.eye_wide || 0;
+  const eyeSquint = avatar.blendshapes.eye_squint || 0;
   const browUp = avatar.blendshapes.brow_up || 0;
+  const browAngle = avatar.blendshapes.brow_angle || 0;
+  const mouthCurve = avatar.blendshapes.mouth_curve || 0;
+  const mouthWide = avatar.blendshapes.mouth_wide || 0;
   const scale = w / 116;
   // The procedural face has no pupil parts: the iris arcs move with the gaze.
   const gazeX = gazeDir.x * GAZE_RADIUS * 0.85 * scale;
@@ -82,10 +86,11 @@ function drawFace(w, h) {
 
   const eyeY = -12 * scale - browUp * 10 * scale;
   const eyeR = (11 + eyeWide * 7) * scale;
+  const eyeH = eyeR * (0.72 - clamp(eyeSquint, 0, 1) * 0.34);
   ctx.fillStyle = "#ffffff";
   ctx.beginPath();
-  ctx.ellipse(-22 * scale, eyeY, eyeR, eyeR * 0.72, 0, 0, TAU);
-  ctx.ellipse(22 * scale, eyeY, eyeR, eyeR * 0.72, 0, 0, TAU);
+  ctx.ellipse(-22 * scale, eyeY, eyeR, eyeH, 0, 0, TAU);
+  ctx.ellipse(22 * scale, eyeY, eyeR, eyeH, 0, 0, TAU);
   ctx.fill();
 
   ctx.fillStyle = "#101018";
@@ -97,17 +102,19 @@ function drawFace(w, h) {
   ctx.strokeStyle = "#1e2233";
   ctx.lineWidth = 3 * scale;
   ctx.lineCap = "round";
-  ctx.beginPath();
   const brow = eyeY - 18 * scale - browUp * 8 * scale;
-  ctx.moveTo(-38 * scale, brow + 4 * scale);
-  ctx.lineTo(-9 * scale, brow - 2 * scale);
-  ctx.moveTo(9 * scale, brow - 2 * scale);
-  ctx.lineTo(38 * scale, brow + 4 * scale);
+  // +brow_angle pulls the inner ends down (angry), -brow_angle lifts them (sad).
+  const browTilt = clamp(browAngle, -1, 1) * 7 * scale;
+  ctx.beginPath();
+  ctx.moveTo(-38 * scale, brow + 4 * scale - browTilt);
+  ctx.lineTo(-9 * scale, brow - 2 * scale + browTilt);
+  ctx.moveTo(9 * scale, brow - 2 * scale + browTilt);
+  ctx.lineTo(38 * scale, brow + 4 * scale - browTilt);
   ctx.stroke();
 
-  const mouthY = 20 * scale;
-  const mouthW = (22 + mouthOpen * 30) * scale;
-  const mouthH = (7 + mouthOpen * 26) * scale;
+  const mouthY = 20 * scale - clamp(mouthCurve, -1, 1) * 3 * scale;
+  const mouthW = (22 + mouthOpen * 30 + mouthWide * 10) * scale;
+  const mouthH = (7 + mouthOpen * 26 + Math.abs(mouthCurve) * 3) * scale;
   ctx.fillStyle = "#210a12";
   ctx.beginPath();
   ctx.ellipse(0, mouthY, mouthW, mouthH, 0, 0, TAU);
@@ -170,15 +177,42 @@ function drawPart(bone, part) {
   ctx.scale(scale, scale);
 
   const state = activeState(part);
+  const blend = (key) => (Number.isFinite(avatar.blendshapes[key]) ? avatar.blendshapes[key] : 0);
   if (part.tag === "mouth") {
     // Sprite variants switch per character (state.js::mouthState); this squash
     // is the procedural fallback and follows the same text-driven openness.
     const open = avatar.talk
       ? clamp(speech.mouthSmooth, 0, 1)
-      : clamp(avatar.blendshapes.mouth_open || 0, 0, 1);
-    ctx.scale(1 + open * 0.18, 1 + open * 0.55);
-  } else if (part.tag === "eye" && state === "__blink__") {
-    ctx.scale(1, 0.12);
+      : clamp(blend("mouth_open"), 0, 1);
+    const wide = clamp(blend("mouth_wide"), 0, 1);
+    const curve = clamp(blend("mouth_curve"), -1, 1);
+    ctx.scale(1 + open * 0.18 + wide * 0.3, 1 + open * 0.55 + Math.abs(curve) * 0.12);
+    // A mouth authored as two halves (or with corner parts) tilts each side by
+    // the curve, so +curve reads as a smile and -curve as a frown.
+    const side = Math.sign(part.offset[0] || 0);
+    if (side) {
+      ctx.translate(0, -curve * h * 1.0);
+      ctx.rotate(-side * curve * 0.6);
+    } else {
+      ctx.rotate(curve * 0.12);
+    }
+  } else if (part.tag === "eye") {
+    const wide = clamp(blend("eye_wide"), 0, 1);
+    const squint = clamp(blend("eye_squint"), 0, 1);
+    ctx.scale(1 + wide * 0.12, 1 + wide * 0.18 - squint * 0.45);
+    if (state === "__blink__") ctx.scale(1, 0.12);
+  } else if (part.tag === "brow") {
+    // +brow_up lifts the brow, +brow_angle pulls its inner end down (angry);
+    // the sign of `offset.x` mirrors the tilt for the other side.
+    const up = clamp(blend("brow_up"), -1, 1);
+    const angle = clamp(blend("brow_angle"), -1, 1);
+    const side = Math.sign(part.offset[0] || 0) || 1;
+    ctx.translate(0, -up * h * 0.9);
+    ctx.rotate(-side * angle * 0.55);
+  }
+  if (isPupilPart(part)) {
+    const wide = clamp(blend("eye_wide"), 0, 1);
+    ctx.scale(1 + wide * 0.25, 1 + wide * 0.25);
   }
 
   // Gaze: pupils drift inside the socket; a rig without a pupil part moves the

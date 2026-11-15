@@ -37,8 +37,18 @@ export const avatar = {
   wavePhase: 0,
   time: 0,
   expression: "neutral",
-  blendshapes: { mouth_open: 0, eye_wide: 0, brow_up: 0 },
-  targetBlendshapes: { mouth_open: 0, eye_wide: 0, brow_up: 0 },
+  // Seven channels, all 0..1 except the two signed ones. `brow_angle` and
+  // `mouth_curve` are signed: positive = inner brow down / mouth corners up.
+  blendshapes: {
+    mouth_open: 0, mouth_wide: 0, mouth_curve: 0,
+    eye_wide: 0, eye_squint: 0,
+    brow_up: 0, brow_angle: 0,
+  },
+  targetBlendshapes: {
+    mouth_open: 0, mouth_wide: 0, mouth_curve: 0,
+    eye_wide: 0, eye_squint: 0,
+    brow_up: 0, brow_angle: 0,
+  },
   blendSpeed: 3,
   manualUntil: 0,
   revision: 0,
@@ -184,12 +194,13 @@ export const EXPRESSION_PRESETS = ["neutral", "happy", "surprised", "thinking", 
 
 /** Procedural fallback: drives shape parts and mouths/eyes without variants. */
 export const EXPRESSIONS = {
-  neutral:   { mouth_open: 0,    eye_wide: 0,    brow_up: 0,    time: 0.3 },
-  happy:     { mouth_open: 0.55, eye_wide: 0.15, brow_up: 0.35, time: 0.3 },
-  surprised: { mouth_open: 0.9,  eye_wide: 0.85, brow_up: 0.85, time: 0.2 },
-  thinking:  { mouth_open: 0.1,  eye_wide: 0,    brow_up: 0.2,  time: 0.35 },
-  sad:       { mouth_open: 0.15, eye_wide: 0,    brow_up: 0.6,  time: 0.5 },
-  angry:     { mouth_open: 0.25, eye_wide: 0.2,  brow_up: 0.75, time: 0.3 },
+  // `brow_angle` and `mouth_curve` are signed: + = inner brow down / corners up.
+  neutral:   { mouth_open: 0,    mouth_wide: 0,    mouth_curve: 0,    eye_wide: 0,    eye_squint: 0,    brow_up: 0,     brow_angle: 0,     time: 0.3 },
+  happy:     { mouth_open: 0.45, mouth_wide: 0.35, mouth_curve: 0.9,  eye_wide: 0.1,  eye_squint: 0.35, brow_up: 0.3,   brow_angle: -0.15, time: 0.3 },
+  surprised: { mouth_open: 0.95, mouth_wide: 0.1,  mouth_curve: 0,    eye_wide: 0.9,  eye_squint: 0,    brow_up: 0.9,   brow_angle: -0.1,  time: 0.2 },
+  thinking:  { mouth_open: 0.08, mouth_wide: 0,    mouth_curve: -0.2, eye_wide: 0,    eye_squint: 0.3,  brow_up: 0.15,  brow_angle: 0.45,  time: 0.35 },
+  sad:       { mouth_open: 0.12, mouth_wide: 0,    mouth_curve: -0.85, eye_wide: 0,   eye_squint: 0.45, brow_up: 0.05,  brow_angle: -0.85, time: 0.5 },
+  angry:     { mouth_open: 0.3,  mouth_wide: 0.2,  mouth_curve: -0.6, eye_wide: 0.05, eye_squint: 0.55, brow_up: -0.15, brow_angle: 0.9,   time: 0.3 },
 };
 
 /**
@@ -418,11 +429,13 @@ export function setExpression(name, options) {
     return;
   }
   avatar.expression = name;
-  avatar.targetBlendshapes = {
-    mouth_open: preset.mouth_open,
-    eye_wide: preset.eye_wide,
-    brow_up: preset.brow_up,
-  };
+  // Copy every channel the preset declares (all but `time`), so adding a
+  // blendshape to EXPRESSIONS needs no change here.
+  const target = {};
+  for (const [key, value] of Object.entries(preset)) {
+    if (key !== "time" && Number.isFinite(value)) target[key] = value;
+  }
+  avatar.targetBlendshapes = target;
   avatar.blendSpeed = 1 / Math.max(0.05, preset.time);
 
   // drive sprite variants of semantic parts when the rig has them

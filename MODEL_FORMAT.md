@@ -240,6 +240,140 @@ Loading, importing or saving a rig rejects, with a readable message:
   is not a finite number
 * a keyframe that references a bone id that does not exist in `bones`
 
+## Authoring a rig that reads well
+
+Everything below was learned building `models/emberwing` (a 22-bone, 96-part
+shape-only moth) and is the difference between a rig that merely loads and one
+that looks deliberate. `label` is what the model dropdown shows; `notes` is
+free-form and ignored by the renderer.
+
+### Bone frames and mirroring
+
+A bone's local frame is `+x` along the bone and `+y` perpendicular to it, so
+**which way local `+y` points on screen depends on the bone's rotation**:
+
+| bone points | `rotation` | local `+y` on screen |
+| --- | --- | --- |
+| right | `0` | down |
+| down | `+π/2` | left |
+| left | `π` | up |
+| up | `-π/2` | right |
+
+That is why a mirrored pair cannot share numbers. Build one side, then derive
+the other by negating the bone's `pos.x` and `rotation`, and every part's
+`offset.y` and `rotation` (sizes, `offset.x`, `z` and colours stay):
+
+```python
+def mirror(bone, sx):            # sx = -1 for the left side, +1 for the right
+    bone["pos"][0] *= sx
+    bone["rotation"] *= sx
+    for part in bone["parts"]:
+        part["offset"][1] *= sx
+        part["rotation"] *= sx
+```
+
+A wing authored at `π + 0.55` (up-left) therefore has its twin at `-0.55`
+(up-right), and a clip that raises both wings writes `+a` on the left and `-a`
+on the right. Get the sign wrong and the pair flaps in opposite directions —
+which reads as a broken rig, not a style.
+
+### `limits` are opt-in, and they clamp the bind pose too
+
+`clampRotation` treats a missing or non-finite bound as free rotation, so a bone
+with no `limits` key spins 360°. But **if you do declare limits, the bind
+`rotation` is clamped as well** — the schema example's `±3.1416` silently turns
+a wing authored at `π + 0.55` into `π`, while its `-0.55` twin renders as
+authored. The rig loads, the offline preview looks right, and the live avatar
+has one wing up and one flat.
+
+* Omit `limits` on bones that need to swing past π (wings, antennae, tails).
+* Or widen them: `"limits": { "min": -5.2, "max": 5.2 }` covers a bind angle
+  plus a ±1 rad clip on top of it.
+* Keep tight limits where they are the point (a neck, a knee) — the editor and
+  every clip respect them.
+
+### Draw order: a bone's `z` beats a part's `z`
+
+`sortedDrawables` sorts by `bone.z` first and `part.z` only as a tie-break, so
+**every part of a child bone paints over every part of its parent**, whatever
+the part `z` values say. A wing "tip" bone at `z: 9` will cover the eyespot you
+put on the wing panel at `z: 8` — the spot appears cut in half. Either keep the
+detail on the bone that owns the panel, or give the child a lower `z` than the
+parent and accept that the tip then draws underneath.
+
+### Silhouette recipes
+
+* **Build a wing (or any soft mass) from a stack of ellipses**, not one: a big
+  round shoulder, a narrower mid panel, a small tip. Overlapping ellipses of the
+  same colour merge into one tapering silhouette; a single ellipse reads as a
+  blob and a capsule reads as a sausage.
+* **Never lay a straight capsule along a curved edge.** A capsule is a straight
+  line and an ellipse edge is an arc, so the two diverge and the capsule pokes
+  out into empty space — the classic "stray scratch" across a wing. Capsules are
+  for limbs, veins and antennae that run *along* the bone axis, well inside the
+  artwork.
+* **Skip thin bright rim lines.** A 3–4 px highlight in a light colour reads as
+  a scratch at avatar scale; use a slightly lighter *panel* instead.
+* **One eyespot = four parts**: a dark ring, an accent disc, a bright core and a
+  small offset pip. That is the whole trick behind a face that looks alive.
+* **Separate values, not hues.** The body should be clearly lighter than the
+  wings (`#46335f` body over `#1a1330` wings) or the whole creature turns into
+  one violet mass. Two accent colours are plenty (here: ember `#ff7a3d` and gold
+  `#ffc857`); a third only works as a tiny highlight.
+* **Keep the head clear of the wings.** Attach wings at the thorax, not at the
+  head, and leave a gap so the face is never occluded by a wing panel.
+* 90–100 parts is a comfortable budget for a detailed shape rig; the cost is
+  authoring time, not runtime.
+
+### Clip amplitudes
+
+* Bind angles are already dramatic. A wing resting at 31° above horizontal only
+  needs `+0.6 rad` to look fully flared; past `~0.9 rad` it crosses over the
+  head and the pose reads as "hands up" rather than "wings out".
+* The sampler smoothsteps between keys, so **keys are the extremes** — you do
+  not need extra keys to soften a move, only to change its rhythm.
+* Mirror every wing/leg delta by sign (see above), and stagger limbs with
+  `anim.phase` (±π) rather than with different amplitudes.
+* `scale` on a single part (a lantern, an eye, a core) is the cheapest "pulse"
+  in the format: `1.0 → 1.4 → 1.0` over a clip reads as a glow.
+
+### Tags that make a shape-only face work
+
+| tag | what the renderer does with it |
+| --- | --- |
+| `head` | the bone owning it gets the hover tilt and the gaze yaw bias (`isHeadBone` also matches a bone whose **id** contains `head`) |
+| `pupil` | offset by the gaze vector (also matched by `pupil` in the part id); once any pupil exists, `eye` parts stop drifting |
+| `eye` | squashed to 12 % height for the auto-blink |
+| `mouth` | squashed/stretched by `mouth_open` while talking or emoting; two halves also lift/tilt with `mouth_curve` |
+| `brow` | rises with `brow_up` and tilts with `brow_angle` (mirrored by `offset.x`) |
+
+A rig with no `pupil` part still looks alive — the whole eye sprite drifts a
+little instead — but tagging real pupils gives the crisp "eyes follow the
+cursor" read.
+
+### Verifying a new rig without guessing
+
+1. **Offline first.** Re-implement `computeWorld` + `partWorldMatrix` +
+   `drawShape` in a throwaway PIL script and render PNGs. The three rules to
+   copy exactly: an ellipse is centred on `-size · pivot` (so author with
+   `pivot: [0, 0]`), a capsule spans `[-h/2, w - h/2]` on x, and the part
+   transform is `translate(bone) · rotate(bone) · scale(bone·part) ·
+   translate(offset) · rotate(part.rotation)`. This catches most geometry
+   mistakes in seconds.
+2. **Then the app.** `GET /models` must report `error: null` with the expected
+   `bones`/`parts` counts, and `POST /model {"name": "..."}` must return
+   `ok: true`.
+3. **Prove the mirror numerically**, not by eye: play a clip and sample
+   `animationOffset(bone).rotation` for both sides in one `Runtime.evaluate` —
+   `wing_u_l` must equal `-wing_u_r` at every sample.
+4. **Prove the face**: `POST /emote {"expression": "happy"}` and read
+   `avatar.blendshapes` (`mouth_open`, `eye_wide`, `brow_up` non-zero), then move
+   the real OS cursor and check `__avatarDebug.gaze()` reports
+   `cursorTracking: true` with a non-zero `tilt`.
+5. **Screenshot with the bounds, not the alpha**: read
+   `__avatarDebug.bounds()` in the same CDP run as `Page.captureScreenshot` and
+   crop with those numbers.
+
 ## Rig editor
 
 Open with the **wrench** button in the titlebar, the **Rig edit** button in the
@@ -464,6 +598,46 @@ Facial parts are driven by their **tag** and their **variants**:
   does it for you: select the part, pick an expression in **expr**, press
   **Bind PNG**, and choose the sprite. The preset strip (N/H/S/T/Sa/A) previews
   each expression with one click.
+
+### Procedural expression channels (shape parts, no sprites)
+
+Every expression is a set of seven blendshapes, eased toward the preset over
+`time` seconds. Shape parts read them by tag, so a rig with no sprites still
+acts:
+
+| channel | range | what it does |
+| --- | --- | --- |
+| `mouth_open` | 0..1 | mouth squash (also driven by the typewriter/voice while talking) |
+| `mouth_wide` | 0..1 | mouth widens |
+| `mouth_curve` | -1..1 | + = corners up (smile), − = corners down (frown) |
+| `eye_wide` | 0..1 | eyes grow, pupils dilate |
+| `eye_squint` | 0..1 | eyes flatten (happy/sad/angry) |
+| `brow_up` | -1..1 | brows rise (+) or drop (−) |
+| `brow_angle` | -1..1 | + = inner ends down (angry), − = inner ends up (sad) |
+
+| tag | response |
+| --- | --- |
+| `mouth` | squash + widen + corner lift/tilt |
+| `eye` | widen/squint, plus the blink squash |
+| `brow` | vertical travel + mirrored tilt |
+| `pupil` | dilates with `eye_wide` |
+
+Two authoring rules make the mouth and brows read:
+
+* **A mouth needs two halves.** `mouth_curve` lifts and tilts each half by the
+  sign of its `offset.x`, so author `mouth_l` / `mouth_r` (or a centre plus two
+  corner parts) at `x = ±7`; a single centred ellipse can only tilt.
+* **Brows must be ellipses, not capsules.** A capsule's origin sits at its left
+  end (`[-h/2, w-h/2]`), so a mirrored pair is not symmetric — the right brow
+  ends up shifted outward by `w - h`. Ellipses are centred on their `offset`,
+  so `±x` mirrors exactly. This is the commonest "one eyebrow is funky" bug in
+  a hand-written face.
+
+Presets live in `ui/js/state.js::EXPRESSIONS`: neutral is all zeros; happy is
+`mouth_curve 0.9 / eye_squint 0.35 / brow_up 0.3`; surprised is
+`mouth_open 0.95 / eye_wide 0.9 / brow_up 0.9`; sad is
+`brow_angle -0.85 / mouth_curve -0.85`; angry is
+`brow_angle 0.9 / eye_squint 0.55 / brow_up -0.15`.
 
 Example:
 

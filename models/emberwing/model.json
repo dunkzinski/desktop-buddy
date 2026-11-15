@@ -778,11 +778,12 @@
         },
         {
           "id": "brow_l",
-          "shape": "capsule",
+          "shape": "ellipse",
           "color": "#120e1c",
+          "tag": "brow",
           "size": [
-            24,
-            6
+            30,
+            8
           ],
           "pivot": [
             0,
@@ -792,17 +793,18 @@
             -31,
             -24
           ],
-          "rotation": 0.28,
+          "rotation": -0.12,
           "scale": 1.0,
           "z": 5
         },
         {
           "id": "brow_r",
-          "shape": "capsule",
+          "shape": "ellipse",
           "color": "#120e1c",
+          "tag": "brow",
           "size": [
-            24,
-            6
+            30,
+            8
           ],
           "pivot": [
             0,
@@ -812,7 +814,7 @@
             31,
             -24
           ],
-          "rotation": -0.28,
+          "rotation": 0.12,
           "scale": 1.0,
           "z": 5
         },
@@ -861,18 +863,18 @@
           "shape": "capsule",
           "color": "#b79ce0",
           "size": [
-            16,
-            7
+            14,
+            5
           ],
           "pivot": [
             0,
             0
           ],
           "offset": [
-            -8,
-            18
+            -12,
+            24
           ],
-          "rotation": 1.15,
+          "rotation": 1.25,
           "scale": 1.0,
           "z": 5
         },
@@ -881,37 +883,58 @@
           "shape": "capsule",
           "color": "#b79ce0",
           "size": [
-            16,
-            7
+            14,
+            5
           ],
           "pivot": [
             0,
             0
           ],
           "offset": [
-            8,
-            18
+            12,
+            24
           ],
-          "rotation": 1.99,
+          "rotation": 1.89,
           "scale": 1.0,
           "z": 5
         },
         {
-          "id": "mouth",
+          "id": "mouth_l",
           "shape": "ellipse",
-          "color": "#7d1f3e",
+          "color": "#c2416b",
           "tag": "mouth",
           "size": [
-            20,
-            8
+            17,
+            10
           ],
           "pivot": [
             0,
             0
           ],
           "offset": [
+            -7,
+            10
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 4
+        },
+        {
+          "id": "mouth_r",
+          "shape": "ellipse",
+          "color": "#c2416b",
+          "tag": "mouth",
+          "size": [
+            17,
+            10
+          ],
+          "pivot": [
             0,
-            14
+            0
+          ],
+          "offset": [
+            7,
+            10
           ],
           "rotation": 0.0,
           "scale": 1.0,
