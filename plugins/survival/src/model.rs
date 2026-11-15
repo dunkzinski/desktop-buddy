@@ -1450,6 +1450,47 @@ impl SurvivalStats {
         )
     }
 
+    /// Clamp a **deserialized** stat block into the ranges a live one obeys.
+    ///
+    /// A save file is not trustworthy: it can be hand-edited, written by a build
+    /// with different limits, or half-written. Everything that drives an event
+    /// (hunger, saturation, the comfort window, the simulated clock) is clamped
+    /// here, so a corrupt save degrades into a sane avatar instead of a bar at
+    /// `1e9` or a `NaN` tier. `now_ms` is passed in, like everywhere else in the
+    /// model, so an already-lapsed craving is dropped instead of announced.
+    pub fn sanitized(mut self, now_ms: u64) -> Self {
+        self.hunger = if self.hunger.is_finite() {
+            self.hunger.clamp(0.0, HUNGER_MAX)
+        } else {
+            HUNGER_MAX
+        };
+        self.saturation = if self.saturation.is_finite() {
+            self.saturation.clamp(0.0, self.hunger)
+        } else {
+            0.0
+        };
+        self.well_fed_secs = if self.well_fed_secs.is_finite() {
+            self.well_fed_secs.max(0.0)
+        } else {
+            0.0
+        };
+        self.simulated_secs = if self.simulated_secs.is_finite() {
+            self.simulated_secs.max(0.0)
+        } else {
+            0.0
+        };
+        self.metabolism = self.metabolism.sanitized();
+        // A craving loaded from disk whose deadline already passed is simply
+        // lapsed; the tick would clear it, but leaving it out keeps the first
+        // status after a restore honest.
+        if let Some(craving) = &self.craving {
+            if craving.is_expired(now_ms) {
+                self.craving = None;
+            }
+        }
+        self
+    }
+
     pub fn tier(&self) -> HungerTier {
         HungerTier::of(self.hunger)
     }
@@ -2325,6 +2366,35 @@ mod tests {
         // An explicit zero is a real balance and must be honoured.
         let broke: SurvivalStats = serde_json::from_str(r#"{"coins":0}"#).unwrap();
         assert_eq!(broke.coins, 0);
+    }
+
+    #[test]
+    fn a_deserialized_stat_block_is_clamped_into_range() {
+        // A hand-edited or corrupt save must land on a sane avatar, not a bar at
+        // 1e9 or a negative clock.
+        let decoded: SurvivalStats = serde_json::from_str(
+            r#"{"hunger": 1e9, "saturation": 500, "well_fed_secs": -2, "simulated_secs": -1, "coins": 7}"#,
+        )
+        .unwrap();
+        let clean = decoded.sanitized(0);
+        assert_eq!(clean.hunger, HUNGER_MAX);
+        assert!(clean.saturation <= clean.hunger);
+        assert_eq!(clean.well_fed_secs, 0.0);
+        assert_eq!(clean.simulated_secs, 0.0);
+        assert_eq!(clean.coins, 7, "the wallet is not clamped away");
+        assert_eq!(clean.tier(), HungerTier::Satiated);
+    }
+
+    #[test]
+    fn a_lapsed_craving_is_dropped_on_restore() {
+        let mut stats = stats(40.0, 0.0);
+        let craving = Craving::new(CravingKind::Food, "omelette", 1_000, 600);
+        let ends = craving.ends_ms();
+        stats.begin_craving(craving);
+        // Still running when the save is read…
+        assert!(stats.clone().sanitized(ends - 1).craving.is_some());
+        // …and gone when its deadline has passed.
+        assert!(stats.sanitized(ends + 1).craving.is_none());
     }
 
     #[test]

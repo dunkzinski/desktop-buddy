@@ -109,8 +109,26 @@ fn parse_trade(body: &Value) -> Result<(String, u32), String> {
     Ok((item.to_string(), count))
 }
 
-/// Dispatch one proxied request.
+/// Dispatch one proxied request, then persist any change it made.
+///
+/// The flush lives **here**, not at the end of every arm: several arms return
+/// early (a craft by recipe id, a slot-based use), and an early return that
+/// skipped the save would leave a purchase in memory only. One wrapper covers
+/// them all, and a `GET` never writes.
 pub fn handle(state: &mut Survival, request: &Value) -> Value {
+    let response = dispatch(state, request);
+    let method = request
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("GET");
+    if method.eq_ignore_ascii_case("post") {
+        state.flush_state();
+    }
+    response
+}
+
+/// The router itself. Reads never mutate; writes mark the session dirty.
+fn dispatch(state: &mut Survival, request: &Value) -> Value {
     let method = request
         .get("method")
         .and_then(Value::as_str)
@@ -967,6 +985,88 @@ mod tests {
         );
         assert_eq!(unknown["status"], json!(400));
         assert!(unknown["body"]["error"].as_str().unwrap_or("").contains("diamond"));
+    }
+
+    #[test]
+    fn a_post_writes_the_session_and_a_get_never_does() {
+        let mut state = hungry_plugin();
+        take_recorded();
+
+        let response = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/store/buy",
+                "body": { "item": "egg", "count": 2 },
+            }),
+        );
+        assert_eq!(response["status"], json!(200));
+        let recorded = take_recorded();
+        assert_eq!(
+            recorded.states.len(),
+            1,
+            "a mutation is on disk before the reply lands"
+        );
+        let saved: Value = serde_json::from_slice(&recorded.states[0]).expect("json");
+        assert_eq!(saved["stats"]["coins"], json!(94), "2 eggs cost 6");
+        assert!(saved["inventory"]["stacks"]
+            .as_array()
+            .expect("stacks")
+            .iter()
+            .any(|row| row["id"] == "egg" && row["count"] == 2));
+
+        // A read is not a change.
+        handle(&mut state, &json!({ "method": "GET", "path": "/store" }));
+        assert!(take_recorded().states.is_empty(), "GET must not write");
+
+        // A refused trade is not a change either.
+        let refused = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/store/buy",
+                "body": { "item": "fishing_rod", "count": 5 },
+            }),
+        );
+        assert_eq!(refused["status"], json!(409));
+        assert!(
+            take_recorded().states.is_empty(),
+            "a refused purchase must not touch the save"
+        );
+    }
+
+    #[test]
+    fn a_craft_saves_even_though_its_arm_returns_early() {
+        // The recipe arm answers with `return`, which is exactly why the flush
+        // is a wrapper around the dispatcher and not a line at the end of it.
+        let mut state = hungry_plugin();
+        stock(&mut state, &[("egg", 2), ("cheese", 1)]);
+        take_recorded();
+
+        let response = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/survival/craft",
+                "body": { "recipe": "omelette" },
+            }),
+        );
+        assert_eq!(response["status"], json!(200));
+        let recorded = take_recorded();
+        assert_eq!(recorded.states.len(), 1, "the early return still flushed");
+        let saved: Value = serde_json::from_slice(&recorded.states[0]).expect("json");
+        assert!(
+            saved["inventory"]["stacks"]
+                .as_array()
+                .expect("stacks")
+                .iter()
+                .all(|row| row["id"] != "egg" && row["id"] != "cheese"),
+            "the saved bag must be the one after the pantry paid: {saved}"
+        );
+        assert!(
+            saved["stats"]["hunger"].as_f64().unwrap() > 40.0,
+            "the saved bars must be the ones after the meal"
+        );
     }
 
     #[test]

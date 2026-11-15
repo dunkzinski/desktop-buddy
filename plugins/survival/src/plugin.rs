@@ -27,6 +27,7 @@ use crate::model::{
     self, Craving, CravingKind, EatOutcome, FoodGroup, HungerTier, SurvivalConfig, SurvivalStats,
 };
 use crate::fishing::{self, EscapeReason, Fishing, FishingPhase, ReelSpec};
+use crate::persist;
 use crate::store;
 
 /// `survival` — a periodic telemetry frame.
@@ -58,6 +59,11 @@ const BITE_NOTICE: &str = "Something's on the line — now!";
 
 /// How often a starving avatar repeats itself, in seconds.
 const STARVATION_REPEAT_SECS: f64 = 300.0;
+/// How often the tick writes a dirty session to disk. Mutations save
+/// immediately (`flush_state` from the route dispatcher); this cadence exists
+/// only for the slow hunger drift, so a kill can lose at most half a minute of
+/// metabolism, never a purchase.
+const SAVE_INTERVAL_MS: u64 = 30_000;
 /// Per-mille chance *per tick* that a low-saturation avatar takes an impulse
 /// craving instead of waiting out the interval. 4‰ at the host's 1 s tick is
 /// roughly one impulse every four minutes of empty-stomach time.
@@ -212,6 +218,19 @@ pub struct Survival {
     inventory: Inventory,
     /// The fishing session (idle between casts).
     fishing: Fishing,
+    /// Where the host persists this session, as handed over at `plugin_init`.
+    /// `None` until the host says (or when it has nowhere to write).
+    state_path: Option<String>,
+    /// True when a save file was applied at init.
+    restored: bool,
+    /// Epoch ms of the last successful save (0 = never).
+    saved_ms: u64,
+    /// Successful saves this session.
+    saves: u64,
+    /// Something changed since the last successful save.
+    dirty: bool,
+    /// Epoch ms of the last save attempt, so the periodic flush has a cadence.
+    last_save_ms: u64,
 }
 
 impl Survival {
@@ -233,6 +252,12 @@ impl Survival {
             rng: Rng::new(started_ms ^ 0x5DEE_CE66_D001_A2F3),
             inventory,
             fishing: Fishing::default(),
+            state_path: None,
+            restored: false,
+            saved_ms: 0,
+            saves: 0,
+            dirty: false,
+            last_save_ms: 0,
         }
     }
 
@@ -305,7 +330,120 @@ impl Survival {
             "coins": stats["coins"],
             "inventory": self.inventory.summary_json(),
             "fishing": self.fishing.to_json(now, &self.config.fishing),
+            "persistence": {
+                "path": self.state_path,
+                "restored": self.restored,
+                "dirty": self.dirty,
+                "saved_ms": self.saved_ms,
+                "saves": self.saves,
+            },
         })
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Persistence
+     * ---------------------------------------------------------------- */
+
+    /// Remember where the host writes this session — it names the file, the
+    /// guest only ever asks for it to be written.
+    pub fn adopt_state_path(&mut self, path: Option<String>) {
+        self.state_path = path.filter(|path| !path.trim().is_empty());
+    }
+
+    /// Apply the save file the host handed over at `plugin_init`.
+    ///
+    /// Returns the number of bag rows restored, or `None` when there was
+    /// nothing usable (no file, another schema version, corrupt JSON). The file
+    /// is never trusted: the stats are clamped by
+    /// [`crate::model::SurvivalStats::sanitized`] and the bag goes through
+    /// [`Inventory::from_saved`], which reports what it had to drop.
+    pub fn restore_state(&mut self, saved: &Value) -> Option<usize> {
+        let persist::Snapshot {
+            saved_ms,
+            stats,
+            inventory: saved_bag,
+            ..
+        } = persist::Snapshot::from_value(saved)?;
+        let now = host::now_ms();
+        let stats = stats.sanitized(now);
+        let stacks: Vec<(String, u32)> = saved_bag
+            .stacks
+            .iter()
+            .map(|stack| (stack.id.clone(), stack.count))
+            .collect();
+        self.stats = stats;
+        self.last_tier = self.stats.tier();
+        let (bag, dropped) = Inventory::from_saved(self.config.inventory.slots, &stacks);
+        self.inventory = bag;
+        self.restored = true;
+        self.saved_ms = saved_ms;
+        self.starving_secs = 0.0;
+        if dropped > 0 {
+            host::log(
+                host::LEVEL_WARN,
+                &format!(
+                    "survival wasm: the save dropped {dropped} item(s) this build cannot hold"
+                ),
+            );
+        }
+        Some(self.inventory.used())
+    }
+
+    /// The snapshot this session would write right now.
+    pub fn snapshot(&self) -> persist::Snapshot {
+        persist::Snapshot::capture(&self.stats, &self.inventory, host::now_ms())
+    }
+
+    /// Write the session if it changed since the last save.
+    ///
+    /// Called after every mutating request and on the tick's cadence, so the
+    /// file is never more than one action (or half a minute of hunger) behind.
+    /// A failed write keeps the dirty flag, and the next flush retries.
+    pub fn flush_state(&mut self) -> bool {
+        if !self.dirty {
+            return false;
+        }
+        let bytes = match self.snapshot().encode() {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                host::log(host::LEVEL_ERROR, &format!("survival wasm: {err}"));
+                return false;
+            }
+        };
+        if !host::save_state(&bytes) {
+            host::log(
+                host::LEVEL_WARN,
+                "survival wasm: the host could not write the save; keeping it in memory",
+            );
+            return false;
+        }
+        self.dirty = false;
+        self.saves += 1;
+        self.saved_ms = host::now_ms();
+        self.last_save_ms = self.saved_ms;
+        true
+    }
+
+    /// Mark the world changed and try to write it immediately.
+    ///
+    /// Every mutation ends here rather than in the periodic flush: buying an
+    /// egg or cooking a meal has to survive a kill a second later, and these are
+    /// user-paced (one small file write per action).
+    fn save_after_change(&mut self) {
+        self.dirty = true;
+        self.flush_state();
+    }
+
+    /// The tick's cadence. Hunger drains continuously, so a dirty session is
+    /// written at most once per [`SAVE_INTERVAL_MS`] — that is the only thing
+    /// this path is for; actions save themselves.
+    fn save_periodically(&mut self, now_ms: u64) {
+        if !self.dirty {
+            return;
+        }
+        if now_ms.saturating_sub(self.last_save_ms) >= SAVE_INTERVAL_MS {
+            self.flush_state();
+        }
     }
 
     /// One tick. Returns `Err` only for something a human should see; every
@@ -318,6 +456,11 @@ impl Survival {
 
         let now = host::now_ms();
         let outcome = self.stats.advance(dt_secs);
+        // Hunger moved, so the session on disk is now stale. The periodic flush
+        // at the end of the tick is what actually writes it.
+        if dt_secs > 0.0 {
+            self.dirty = true;
+        }
         let payload = self.stats.to_json(now);
 
         if outcome.worsened() {
@@ -395,6 +538,7 @@ impl Survival {
             }
         }
 
+        self.save_periodically(now);
         Ok(())
     }
 
@@ -405,6 +549,7 @@ impl Survival {
         if let Some(craving) = self.stats.craving.clone() {
             if craving.is_expired(now_ms) {
                 self.stats.clear_craving();
+                self.dirty = true;
                 host::emit(
                     EVENT_CRAVING,
                     &json!({
@@ -474,6 +619,7 @@ impl Survival {
         self.stats.begin_craving(craving.clone());
         self.craving_elapsed = 0.0;
         let variant = self.rng.next_u64();
+        self.dirty = true;
         host::emit(
             EVENT_CRAVING,
             &json!({
@@ -503,6 +649,7 @@ impl Survival {
         if !outcome.accepted {
             return payload;
         }
+        self.dirty = true;
 
         let expression = payload["effects"]
             .as_array()
@@ -742,6 +889,7 @@ impl Survival {
                 }),
             );
         }
+        self.save_after_change();
         Ok(payload)
     }
 
@@ -829,6 +977,10 @@ impl Survival {
     /// Emit `inventory-changed` and return the short payload used as the body
     /// of the mutation routes.
     fn emit_inventory(&mut self, item: &str, delta: i64, source: &str) -> Value {
+        // Every bag change goes through here — a catch, a meal, a purchase, a
+        // sale, bait spent on a cast — so this is the one place that has to
+        // notice. `flush_state` (on POST) does the writing.
+        self.dirty = true;
         let definition = inventory::find_item(item);
         let payload = json!({
             "item": item,
@@ -978,6 +1130,8 @@ impl Survival {
     /// site, so a trade's reply and its event can never disagree about the
     /// balance that resulted.
     fn emit_store(&mut self, mut payload: Value) -> Value {
+        // A trade changed the wallet and the bag: the session on disk is stale.
+        self.dirty = true;
         if let Some(object) = payload.as_object_mut() {
             object.insert("coins".to_string(), json!(self.stats.coins));
             object.insert("inventory".to_string(), self.inventory.summary_json());
@@ -1669,6 +1823,134 @@ mod tests {
             "expected a spoken line: {:?}",
             recorded.notifies
         );
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Persistence
+     * ---------------------------------------------------------------- */
+
+    fn saved_document() -> Value {
+        json!({
+            "version": crate::persist::STATE_VERSION,
+            "saved_ms": 1_700_000_000_000u64,
+            "stats": {
+                "hunger": 42.0,
+                "saturation": 8.0,
+                "coins": 77,
+                "meals": 3,
+                "last_meal": "omelette",
+                "last_meal_ms": 0,
+                "well_fed_secs": 0.0,
+                "simulated_secs": 120.0
+            },
+            "inventory": {
+                "capacity": 20,
+                "stacks": [
+                    {"id": "egg", "count": 2},
+                    {"id": "driftwood", "count": 1}
+                ]
+            }
+        })
+    }
+
+    #[test]
+    fn a_save_file_brings_back_the_wallet_bag_and_bars() {
+        let mut state = Survival::new(SurvivalConfig::default());
+        take_recorded();
+        let rows = state.restore_state(&saved_document()).expect("restore");
+
+        assert_eq!(rows, 2, "two bag rows");
+        assert_eq!(state.coins(), 77, "the wallet came back");
+        assert_eq!(state.stats().hunger, 42.0);
+        assert_eq!(state.stats().saturation, 8.0);
+        assert_eq!(state.stats().meals, 3);
+        assert_eq!(state.inventory().count("egg"), 2);
+        assert_eq!(
+            state.inventory().count("worm_bait"),
+            0,
+            "the save replaced the starter bag rather than merging into it"
+        );
+
+        // `GET /survival` says so, which is how a restart is proven live.
+        let status = state.status_json();
+        assert_eq!(status["persistence"]["restored"], json!(true));
+        assert_eq!(status["persistence"]["saved_ms"], json!(1_700_000_000_000u64));
+        assert_eq!(status["coins"], json!(77));
+    }
+
+    #[test]
+    fn an_unusable_save_is_ignored_and_the_avatar_starts_fresh() {
+        let mut state = plugin(100.0, 0.0);
+        take_recorded();
+        assert!(state.restore_state(&json!(null)).is_none(), "no file");
+        assert!(state.restore_state(&json!({})).is_none(), "no version");
+        assert!(
+            state.restore_state(&json!({"version": 99, "stats": {"coins": 5}})).is_none(),
+            "a future schema is not half-applied"
+        );
+        assert_eq!(state.coins(), 100, "starter balance");
+        assert_eq!(state.inventory().count("worm_bait"), 5, "starter bag");
+        assert_eq!(state.status_json()["persistence"]["restored"], json!(false));
+        assert!(take_recorded().states.is_empty(), "a failed restore writes nothing");
+    }
+
+    #[test]
+    fn a_corrupt_save_is_clamped_before_it_reaches_the_bars() {
+        let document = json!({
+            "version": crate::persist::STATE_VERSION,
+            "saved_ms": 0,
+            "stats": {
+                "hunger": 1e9,
+                "saturation": 1e9,
+                "coins": 5,
+                "well_fed_secs": -3.0,
+                "simulated_secs": -1.0
+            }
+        });
+        let mut state = plugin(100.0, 0.0);
+        assert!(state.restore_state(&document).is_some());
+        assert_eq!(state.stats().hunger, model::HUNGER_MAX);
+        assert!(state.stats().saturation <= state.stats().hunger);
+        assert_eq!(state.stats().well_fed_secs, 0.0);
+        assert_eq!(state.stats().simulated_secs, 0.0);
+        assert_eq!(state.coins(), 5, "the wallet is kept, not clamped away");
+    }
+
+    #[test]
+    fn the_tick_writes_the_hunger_drift_on_its_cadence() {
+        let mut state = plugin(60.0, 0.0);
+        take_recorded();
+
+        // Hunger moved, but the cadence has not elapsed: nothing on disk yet.
+        state.tick(1.0).expect("tick");
+        assert!(take_recorded().states.is_empty(), "no write before the cadence");
+
+        // Thirty seconds later the same drift is worth a save.
+        crate::host::set_now_ms(crate::host::now_ms() + SAVE_INTERVAL_MS);
+        state.tick(1.0).expect("tick");
+        let recorded = take_recorded();
+        assert_eq!(recorded.states.len(), 1, "one save per cadence window");
+        let saved: Value = serde_json::from_slice(&recorded.states[0]).expect("json");
+        assert_eq!(saved["version"], crate::persist::STATE_VERSION);
+        assert!(saved["stats"]["hunger"].as_f64().unwrap() < 60.0);
+    }
+
+    #[test]
+    fn a_trade_marks_the_session_dirty_and_flushing_writes_it() {
+        let mut state = plugin(40.0, 0.0);
+        take_recorded();
+        state.store_buy("egg", 2).expect("buy");
+        assert!(
+            state.status_json()["persistence"]["dirty"].as_bool().unwrap(),
+            "the purchase left the session unsaved"
+        );
+        assert!(state.flush_state(), "the dispatcher's flush writes it");
+        let recorded = take_recorded();
+        assert_eq!(recorded.states.len(), 1, "one save for one action");
+        let saved: Value = serde_json::from_slice(&recorded.states[0]).expect("json");
+        assert_eq!(saved["stats"]["coins"], json!(94), "6 coins spent");
+        let stacks = saved["inventory"]["stacks"].as_array().expect("stacks");
+        assert!(stacks.iter().any(|row| row["id"] == "egg" && row["count"] == 2));
     }
 
     #[test]

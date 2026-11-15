@@ -813,7 +813,14 @@ curl -s localhost:8765/survival
   "tier": "peckish",
   "label": "Peckish",
   "expression": "thinking",
-  "coins": 100
+  "coins": 100,
+  "persistence": {
+    "path": "plugins/survival.state.json",
+    "restored": true,
+    "dirty": false,
+    "saved_ms": 1763000123456,
+    "saves": 12
+  }
 }
 ```
 
@@ -825,6 +832,15 @@ guest, which cannot read the host's registry from inside a call.
 already starving) and `seconds_to_starving` to the `hungry` floor. `coins` is the
 wallet the shop spends and fills — it lives on `stats` and is flattened to the
 top level here; see `GET /store`.
+
+`persistence` is how a restart is proven from a shell: `path` is the file the
+host writes (`plugins/survival.state.json`, beside the `.wasm`), `restored` says
+whether this session began from it, `saved_ms` is the epoch ms of the last
+successful save (0 = never) and `saves` counts them. `dirty` is true in the
+instant between a change and its write. Everything the avatar owns — the bars,
+`meals`, the craving, **the coins and the whole bag** — is in that file, so a
+purchase or a cooked meal survives a restart; `ARCHITECTURE.md` documents the
+write cadence and the schema.
 
 Override the bars by hand — used by tests, the UI's debug drawer and automation
 that wants to force a state:

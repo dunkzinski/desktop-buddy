@@ -23,6 +23,7 @@ mod imp {
         pub fn host_notify(text_ptr: u32, text_len: u32, expression_ptr: u32, expression_len: u32);
         pub fn host_now_ms() -> i64;
         pub fn host_log(level: u32, msg_ptr: u32, msg_len: u32);
+        pub fn host_state_save(ptr: u32, len: u32) -> i32;
     }
 }
 
@@ -91,6 +92,27 @@ pub fn log(level: u32, message: &str) {
     }
 }
 
+/// Persist the guest's saved state. `true` means the host wrote it.
+///
+/// This is the fifth import, added for persistence: the guest has no
+/// filesystem, so the host owns the bytes (atomically, next to the `.wasm`).
+/// A `false` is not fatal — the plugin keeps its dirty flag and tries again —
+/// but it is worth a warning line, because it means progress is only in memory.
+pub fn save_state(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        imp::host_state_save(bytes.as_ptr() as u32, bytes.len() as u32) == 0
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        tests::record_state_save(bytes);
+        true
+    }
+}
+
 /* ------------------------------------------------------------------ *
  * Native: a recording stub
  * ------------------------------------------------------------------ */
@@ -105,6 +127,9 @@ mod tests {
         pub notifies: Vec<(String, String)>,
         pub logs: Vec<(u32, String)>,
         pub clock: u64,
+        /// Every `host_state_save` payload, in order — what the host would have
+        /// written to disk.
+        pub states: Vec<Vec<u8>>,
     }
 
     // **Thread-local on purpose.** `#[test]` functions run in parallel threads,
@@ -135,6 +160,10 @@ mod tests {
         with(|recorder| recorder.logs.push((level, message.to_string())));
     }
 
+    pub fn record_state_save(bytes: &[u8]) {
+        with(|recorder| recorder.states.push(bytes.to_vec()));
+    }
+
     pub fn now_ms() -> u64 {
         let mut value = 0;
         with(|recorder| value = recorder.clock);
@@ -148,6 +177,7 @@ mod tests {
             out.events = std::mem::take(&mut recorder.events);
             out.notifies = std::mem::take(&mut recorder.notifies);
             out.logs = std::mem::take(&mut recorder.logs);
+            out.states = std::mem::take(&mut recorder.states);
             out.clock = recorder.clock;
         });
         out

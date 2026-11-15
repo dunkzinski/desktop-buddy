@@ -206,6 +206,8 @@ plugins/
 │       ├── store.rs     the shop: the price list (bait, driftwood, and every
 │       │                cooking ingredient the recipes use), buy/sell pricing
 │       │                and the shelf categories
+│       ├── persist.rs   what survives a restart: the JSON snapshot, its
+│       │                schema version and the encode/decode pair
 │       ├── fishing.rs   the four-phase mini-game: hidden bite, reaction window,
 │       │                the triangle-wave reel, the catch table and the prose
 │       ├── plugin.rs    the tick loop, telemetry, meal announcements, craving
@@ -217,11 +219,20 @@ plugins/
 └── survival.wasm        the built artifact — this is what the app loads
 ```
 
-The guest talks to the app through exactly four imports (`host_emit_event`,
-`host_notify`, `host_now_ms`, `host_log`) and exports JSON-over-memory functions:
-`plugin_init`, `plugin_tick`, `plugin_status`, `plugin_routes`, `plugin_http`,
-and the config hooks. The host (`src-tauri/src/plugins/wasm_host.rs`) turns
-`plugin_routes` into axum routes that proxy each request into the instance.
+The guest talks to the app through exactly five imports (`host_emit_event`,
+`host_notify`, `host_now_ms`, `host_log`, `host_state_save`) and exports
+JSON-over-memory functions: `plugin_init`, `plugin_tick`, `plugin_status`,
+`plugin_routes`, `plugin_http`, and the config hooks. The host
+(`src-tauri/src/plugins/wasm_host.rs`) turns `plugin_routes` into axum routes
+that proxy each request into the instance.
+
+**It remembers.** A guest has no filesystem, so persistence is one import:
+the host hands the last save back inside `plugin_init` and writes a fresh one
+after every action (plus a 30 s cadence for the hunger drift) to
+`plugins/survival.state.json` — atomically, capped at 1 MiB, versioned, and
+ignored if it is corrupt. The bars, the meals, the craving, the coins and the
+whole bag come back on the next launch; the file is gitignored, and deleting it
+starts a fresh session.
 
 **Build and install a plugin** (no app rebuild):
 

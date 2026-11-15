@@ -11,7 +11,7 @@
 //! ```text
 //! alloc(len: u32) -> u32               the host writes its request here
 //! dealloc(ptr: u32, len: u32)          the host frees a buffer either side owns
-//! plugin_init(ptr, len) -> i64         {"config": <block or null>}
+//! plugin_init(ptr, len) -> i64         {"config", "state", "state_path"}
 //! plugin_tick(dt_ms: i64) -> i64       null
 //! plugin_status() -> i64                null
 //! plugin_routes() -> i64                null
@@ -34,10 +34,15 @@
 //! host_notify(text_ptr, text_len, expression_ptr, expression_len)
 //! host_now_ms() -> i64
 //! host_log(level, msg_ptr, msg_len)
+//! host_state_save(ptr, len) -> i32
 //! ```
 //!
 //! They are the *only* way back out. Growing this list is the whole cost of a
-//! new plugin capability, which is why it stays small.
+//! new plugin capability, which is why it stays small. `host_state_save` is the
+//! fifth and exists for exactly one reason: a guest has no filesystem, so
+//! persistence has to be a host import. The host owns the file
+//! (`plugins/<name>.state.json`) and hands the last content back inside
+//! `plugin_init`, which keeps the write path atomic and the guest sandboxed.
 //!
 //! # Building
 //!
@@ -57,6 +62,7 @@ pub mod fishing;
 pub mod host;
 pub mod inventory;
 pub mod model;
+pub mod persist;
 pub mod plugin;
 pub mod routes;
 pub mod store;
@@ -166,7 +172,28 @@ pub extern "C" fn plugin_init(ptr: u32, len: u32) -> i64 {
         .unwrap_or_default()
         .sanitized();
 
-    let state = Survival::new(config.clone());
+    let mut state = Survival::new(config.clone());
+    // The host owns the file: it names it (`plugins/survival.state.json`) and
+    // hands the last content over here. A guest that cannot save still runs.
+    state.adopt_state_path(
+        request
+            .get("state_path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    );
+    let restored = request
+        .get("state")
+        .filter(|value| value.is_object())
+        .and_then(|value| state.restore_state(value));
+    let summary = match restored {
+        Some(rows) => format!(
+            "restored {} bag row(s), {} coins, hunger {:.1}",
+            rows,
+            state.stats().coins,
+            state.stats().hunger
+        ),
+        None => "no usable save — starting a fresh session".to_string(),
+    };
     {
         let mut guard = match STATE.lock() {
             Ok(guard) => guard,
@@ -175,10 +202,14 @@ pub extern "C" fn plugin_init(ptr: u32, len: u32) -> i64 {
         *guard = Some(state);
     }
     host::log(host::LEVEL_INFO, &format!(
-        "survival wasm: initialised (enabled {}, hunger {}/min)",
+        "survival wasm: initialised ({summary}; enabled {}, hunger {}/min)",
         config.enabled, config.metabolism.hunger_per_min
     ));
-    reply(&serde_json::json!({ "ok": true, "enabled": config.enabled }))
+    reply(&serde_json::json!({
+        "ok": true,
+        "enabled": config.enabled,
+        "restored": restored.is_some(),
+    }))
 }
 
 /// One tick. The host passes real elapsed milliseconds; events go out through

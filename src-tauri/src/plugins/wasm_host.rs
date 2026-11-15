@@ -31,6 +31,7 @@
 //! host_notify(text_ptr, text_len, expression_ptr, expression_len)
 //! host_now_ms() -> i64
 //! host_log(level, msg_ptr, msg_len)
+//! host_state_save(ptr, len) -> i32   0 = written (the host owns the file)
 //! ```
 //!
 //! # Isolation
@@ -127,6 +128,9 @@ fn engine() -> &'static Engine {
 pub struct HostState {
     host: Option<Arc<dyn PluginHost>>,
     id: String,
+    /// Where `host_state_save` writes this plugin's session. Beside the `.wasm`,
+    /// so the file a plugin owns cannot collide with another plugin's.
+    state_path: PathBuf,
 }
 
 /* ------------------------------------------------------------------ *
@@ -143,6 +147,8 @@ struct Inner {
     config_title: String,
     /// File stem, for logs and `GET /plugins`.
     file_name: String,
+    /// `plugins/<name>.state.json` — read at init, written by the import.
+    state_path: PathBuf,
 }
 
 impl Inner {
@@ -322,11 +328,13 @@ impl WasmPlugin {
             format!("{} is not a loadable wasm module: {err:?}", path.display())
         })?;
 
+        let state_path = state_path_for(path);
         let mut store = Store::new(
             engine,
             HostState {
                 host: None,
                 id: id.to_string(),
+                state_path: state_path.clone(),
             },
         );
         // `consume_fuel(true)` starts a store with **zero** fuel, and
@@ -350,6 +358,7 @@ impl WasmPlugin {
             config_key: String::new(),
             config_title: String::new(),
             file_name: stem.clone(),
+            state_path,
         };
 
         // Ask the guest what config block it claims before anything else: the
@@ -400,9 +409,17 @@ impl Plugin for WasmPlugin {
         } else {
             read_config_block(host.rules_path(), &self.inner.config_key)
         };
-        let reply = self
-            .inner
-            .call_json("plugin_init", &json!({ "config": block }))?;
+        // The guest has no filesystem: the host reads the save and hands it
+        // over, together with the path it will be written back to.
+        let state = read_state(&self.inner.state_path);
+        let reply = self.inner.call_json(
+            "plugin_init",
+            &json!({
+                "config": block,
+                "state": state,
+                "state_path": self.inner.state_path.display().to_string(),
+            }),
+        )?;
         if let Some(error) = reply.get("error").and_then(Value::as_str) {
             return Err(error.to_string());
         }
@@ -673,6 +690,32 @@ fn build_linker(engine: &Engine) -> Result<Linker<HostState>, String> {
         .func_wrap("env", "host_now_ms", || -> i64 { epoch_ms() as i64 })
         .map_err(|err| format!("could not define host_now_ms: {err}"))?;
 
+    // Persistence: the guest hands over a JSON snapshot and the host owns the
+    // file. 0 = written, negative = refused (the guest keeps its dirty flag and
+    // retries). A guest running without a state path still works — every action
+    // just stays in memory until the host says where to write.
+    linker
+        .func_wrap(
+            "env",
+            "host_state_save",
+            |mut caller: Caller<'_, HostState>, ptr: u32, len: u32| -> i32 {
+                let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+                    return -1;
+                };
+                let bytes = read_bytes(memory.data(&caller), ptr, len);
+                let path = caller.data().state_path.clone();
+                let id = caller.data().id.clone();
+                match write_state(&path, &bytes) {
+                    Ok(()) => 0,
+                    Err(err) => {
+                        log::warn!("wasm [{id}]: {err}");
+                        -2
+                    }
+                }
+            },
+        )
+        .map_err(|err| format!("could not define host_state_save: {err}"))?;
+
     linker
         .func_wrap(
             "env",
@@ -703,6 +746,81 @@ fn read_string(memory: &[u8], ptr: u32, len: u32) -> String {
         return String::new();
     }
     String::from_utf8_lossy(&memory[start..end]).to_string()
+}
+
+/// The same bounds check for a byte slice (a save is not UTF-8 on its own).
+fn read_bytes(memory: &[u8], ptr: u32, len: u32) -> Vec<u8> {
+    let start = ptr as usize;
+    let end = start.saturating_add(len as usize);
+    if start >= memory.len() || end > memory.len() {
+        return Vec::new();
+    }
+    memory[start..end].to_vec()
+}
+
+/// Largest save the host will read or write. A bag, some bars and a wallet are
+/// a few kilobytes; a megabyte is a corrupted or hostile guest, not a session.
+const MAX_STATE_BYTES: usize = 1 << 20;
+
+/// `plugins/survival.wasm` → `plugins/survival.state.json`.
+fn state_path_for(plugin: &Path) -> PathBuf {
+    plugin.with_extension("state.json")
+}
+
+/// Read a plugin's saved session. `None` (with a log line) means "start fresh":
+/// a missing file is normal, a corrupt one must not stop the app from starting.
+fn read_state(path: &Path) -> Option<Value> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("wasm: could not read {}: {err}", path.display());
+            }
+            return None;
+        }
+    };
+    if bytes.len() > MAX_STATE_BYTES {
+        log::warn!(
+            "wasm: {} is {} bytes (limit {MAX_STATE_BYTES}); the plugin starts fresh",
+            path.display(),
+            bytes.len()
+        );
+        return None;
+    }
+    match serde_json::from_slice(&bytes) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            log::warn!(
+                "wasm: {} is not valid JSON ({err}); the plugin starts fresh",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// Write a session through a temp file, so a crash mid-write cannot leave a
+/// truncated file that still parses.
+fn write_state(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("the guest handed over an empty save".to_string());
+    }
+    if bytes.len() > MAX_STATE_BYTES {
+        return Err(format!(
+            "save is {} bytes (limit {MAX_STATE_BYTES})",
+            bytes.len()
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+    }
+    let tmp = path.with_extension("state.json.tmp");
+    std::fs::write(&tmp, bytes).map_err(|err| format!("could not write {}: {err}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|err| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("could not replace {}: {err}", path.display())
+    })
 }
 
 /// Read `key`'s block out of the rules file. Missing file, missing key or a
@@ -788,6 +906,47 @@ mod tests {
         let (ptr, len) = unpack(((7i64) << 32) | 13);
         assert_eq!((ptr, len), (7, 13));
         assert_eq!(unpack(0), (0, 0));
+    }
+
+    #[test]
+    fn the_state_file_sits_beside_the_plugin() {
+        let plugin = PathBuf::from("plugins").join("survival.wasm");
+        assert_eq!(
+            state_path_for(&plugin),
+            PathBuf::from("plugins").join("survival.state.json")
+        );
+    }
+
+    #[test]
+    fn a_save_round_trips_and_a_bad_file_starts_fresh() {
+        let dir = std::env::temp_dir().join(format!("char-rig-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("survival.state.json");
+
+        // Nothing saved yet: normal, not an error.
+        assert!(read_state(&path).is_none());
+
+        write_state(&path, br#"{"version":1,"saved_ms":5}"#).expect("first write");
+        assert_eq!(read_state(&path).expect("state")["saved_ms"], 5);
+
+        // Overwriting goes through a temp file and leaves nothing behind.
+        write_state(&path, br#"{"version":1,"saved_ms":6}"#).expect("rewrite");
+        assert_eq!(read_state(&path).expect("state")["saved_ms"], 6);
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .expect("dir")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name != "survival.state.json")
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+
+        // A corrupt file must not stop the app: it reads as "no save".
+        std::fs::write(&path, b"{not json").expect("corrupt");
+        assert!(read_state(&path).is_none());
+        // …and an empty payload is refused rather than truncating the file.
+        assert!(write_state(&path, b"").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

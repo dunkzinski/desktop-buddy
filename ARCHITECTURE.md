@@ -455,15 +455,45 @@ A reply packs `(ptr as i64) << 32 | len`; `0` means "no result". The host copies
 the bytes out, calls `dealloc`, and parses. A reply with an `error` key is a log
 line, never a panic.
 
-The guest may call exactly four host imports — that list *is* the plugin's
-capability surface:
+The guest may call five host imports — that list *is* the plugin's capability
+surface:
 
 ```text
 host_emit_event(name, payload)     -> the page and the GET /events bus
 host_notify(text, expression)      -> spoken through do_speak
 host_now_ms()                      -> the clock (wasm32 has none)
 host_log(level, message)           -> the app log
+host_state_save(bytes)             -> writes this plugin's save file
 ```
+
+#### Persistence: the host owns the bytes
+
+A Wasm guest has no filesystem, so a plugin that has to remember anything gets
+one narrow door: `host_state_save` writes, and the last file is handed **back
+inside `plugin_init`** (`{"config": …, "state": …, "state_path": …}`). That is
+deliberate — the guest never names a path, the host writes atomically, and the
+snapshot never has to travel through an HTTP route.
+
+* **Where**: `plugins/<name>.state.json`, beside the `.wasm` it belongs to
+  (`state_path_for`). Deleting the `.wasm` deletes the feature; deleting the
+  state file starts a fresh session.
+* **When**: after every mutating request (the survival dispatcher flushes any
+  `POST` before returning), and on a 30 s tick cadence for the continuous hunger
+  drift. Actions are user-paced, so that is one small write per click, and a
+  kill right after a purchase loses nothing.
+* **How**: temp file + rename (`write_state`), capped at 1 MiB, so a crash
+  mid-write cannot leave a truncated file that still parses. A corrupt or
+  oversized file is logged and ignored; the plugin starts fresh.
+* **Schema**: `{"version", "saved_ms", "stats": <SurvivalStats>, "inventory":
+  {"capacity", "stacks": [{id, count}]}}`, versioned by
+  `plugins/survival/src/persist.rs`. A version this build does not know is
+  ignored rather than migrated. The file is never trusted: stats go through
+  `SurvivalStats::sanitized` (clamps hunger/saturation, drops an already-lapsed
+  craving) and the bag through `Inventory::from_saved` (unknown ids and overflow
+  are *reported* as dropped, not silently truncated); the live slot count still
+  comes from the config, not from the save.
+* `GET /survival` carries `persistence: {path, restored, dirty, saved_ms,
+  saves}`, which is how a restart is proven from a shell.
 
 #### Isolation
 

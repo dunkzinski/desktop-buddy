@@ -543,6 +543,49 @@ impl Inventory {
         }
     }
 
+    /// The bag as saved state: `(id, count)` per **occupied slot**, in slot
+    /// order. The capacity itself is config, not state, so it is not saved.
+    pub fn saved_stacks(&self) -> Vec<(String, u32)> {
+        self.slots
+            .iter()
+            .flatten()
+            .map(|stack| (stack.id.clone(), stack.count))
+            .collect()
+    }
+
+    /// Rebuild a bag from [`Inventory::saved_stacks`].
+    ///
+    /// Slot order is preserved (one saved row per slot), and the result is
+    /// *reported*, never silently truncated: a stack whose id this build no
+    /// longer stocks, or one that does not fit a shrunken capacity, comes back
+    /// as `dropped`. Losing an unknown row is the right price for loading an
+    /// old save; refusing the whole pantry would be a bug.
+    pub fn from_saved(capacity: usize, stacks: &[(String, u32)]) -> (Self, u32) {
+        let mut bag = Self::new(capacity);
+        let mut dropped = 0;
+        let mut index = 0;
+        for (id, count) in stacks {
+            let Some(definition) = find_item(id) else {
+                dropped += *count;
+                continue;
+            };
+            let mut remaining = *count;
+            // A saved row is one slot, but a stack that grew past `stack_max`
+            // because the catalog changed spills into the next slot(s).
+            while remaining > 0 && index < bag.slots.len() {
+                let moved = definition.stack_max.max(1).min(remaining);
+                bag.slots[index] = Some(Stack {
+                    id: definition.id.to_string(),
+                    count: moved,
+                });
+                remaining -= moved;
+                index += 1;
+            }
+            dropped += remaining;
+        }
+        (bag, dropped)
+    }
+
     /// Resize the bag (a live config change).
     ///
     /// Growing just appends empty slots. Shrinking would truncate the tail and
@@ -848,6 +891,73 @@ mod tests {
         assert!(bag.is_full());
         assert_eq!(bag.to_json()["full"], json!(true));
         assert_eq!(bag.summary_json()["free"], json!(0));
+    }
+
+    #[test]
+    fn a_saved_bag_round_trips_through_slot_order() {
+        let mut bag = Inventory::new(8);
+        bag.add("worm_bait", 5);
+        bag.add("minnow", 3);
+        bag.add("driftwood", 2);
+        let stacks = bag.saved_stacks();
+        assert_eq!(
+            stacks,
+            vec![
+                ("worm_bait".to_string(), 5),
+                ("minnow".to_string(), 3),
+                ("driftwood".to_string(), 2),
+            ],
+            "one row per occupied slot, in slot order"
+        );
+
+        let (restored, dropped) = Inventory::from_saved(8, &stacks);
+        assert_eq!(dropped, 0);
+        assert_eq!(restored.saved_stacks(), stacks);
+        assert_eq!(restored.used(), bag.used());
+        // Same contents, same cells: the grid a player saw is the grid they get.
+        let json = restored.to_json();
+        assert_eq!(json["slots"][0]["id"], "worm_bait");
+        assert_eq!(json["slots"][0]["count"], json!(5));
+        assert_eq!(json["slots"][1]["id"], "minnow");
+    }
+
+    #[test]
+    fn restoring_drops_unknown_ids_and_surplus_instead_of_refusing_the_bag() {
+        let stacks = vec![
+            ("egg".to_string(), 2),
+            ("diamond".to_string(), 4),
+            ("minnow".to_string(), 3),
+        ];
+        let (bag, dropped) = Inventory::from_saved(6, &stacks);
+        assert_eq!(dropped, 4, "the unknown id is reported, not hidden");
+        assert_eq!(bag.count("egg"), 2);
+        assert_eq!(bag.count("minnow"), 3);
+        assert_eq!(bag.count("diamond"), 0);
+
+        // A bag that shrank since the save keeps what fits and reports the rest.
+        let mut full = Inventory::new(6);
+        full.add("old_boot", 2); // 6 slots, all occupied:
+        full.add("minnow", 20);
+        full.add("driftwood", 16);
+        full.add("river_weed", 16);
+        full.add("silver_trout", 5);
+        full.add("river_perch", 10);
+        assert_eq!(full.used(), 6);
+        let (small, dropped) = Inventory::from_saved(MIN_SLOTS, &full.saved_stacks());
+        assert_eq!(small.capacity(), MIN_SLOTS);
+        assert_eq!(small.used(), MIN_SLOTS);
+        assert_eq!(dropped, 15, "the two rows that no longer fit are counted");
+        assert_eq!(small.count("silver_trout"), 0);
+    }
+
+    #[test]
+    fn a_saved_stack_that_outgrew_its_stack_max_spills_into_the_next_slot() {
+        // Hand-written save: 30 minnows in one row when the catalog stacks 20.
+        let stacks = vec![("minnow".to_string(), 30)];
+        let (bag, dropped) = Inventory::from_saved(6, &stacks);
+        assert_eq!(dropped, 0);
+        assert_eq!(bag.count("minnow"), 30);
+        assert_eq!(bag.used(), 2, "20 + 10");
     }
 
     #[test]

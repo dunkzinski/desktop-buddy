@@ -16,3 +16,6 @@ desktop.ini
 # Plugin build outputs (run scripts/build-plugin.sh)
 plugins/*/target/
 plugins/*.wasm
+# ...and the session each plugin saves beside its .wasm
+plugins/*.state.json
+plugins/*.state.json.tmp
