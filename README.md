@@ -258,7 +258,8 @@ surplus. A session starts with **100 coins** (`STARTING_COINS`, on the same
 `SurvivalStats` the hunger bars live on, so it shows up in `GET /survival` and in
 the telemetry frames), `GET /store` lists the price list with the balance and the
 player's holdings, `POST /store/buy` spends coins to stock the bag and
-`POST /store/sell` hands gathered material back for coins. Every trade is
+`POST /store/sell` hands anything in the bag back for coins — the shelf is what the
+shop *sells*, not the limit of what it *buys*. Every trade is
 **all-or-nothing** — the purse and the free space are checked before anything
 moves — and publishes a `store-transaction` event so the page sees the new
 balance without polling.
@@ -274,13 +275,17 @@ balance without polling.
   **409** `insufficient_coins` (with `required` and `shortfall`) or **409**
   `inventory_full` (with `room`), and costs nothing.
 * **`POST /store/sell`** — the mirror; selling more than the bag holds is **409**
-  `not_enough_items`, and an id the shop does not stock (a caught fish, a boot) is
-  **400**.
+  `not_enough_items`, and an id that is not an item at all is **400**. The counter
+  takes the whole catalog, not the thirteen shelf lines: a stocked id pays its
+  `sell_price`, a caught fish pays `2 × rarity` (minnow 2, perch 4, trout 6, ember
+  eel 8), and junk pays 1 coin — so a full bag can always be cleared.
 
 The Survival card's fourth tab (*Store*) is the front end: it lists the shelves
 with both prices and how many the player already holds, and its **Buy** / **Sell**
 buttons are those two routes with a **Qty** box, so the loop can be played without
-a terminal.
+a terminal. The **Bag** tab carries a **Sell +N** button beside *Use*: it sells one
+unit of the selected stack without leaving the bag, and the note line prints
+`Sold 1 × Silver trout for 6 coins · 106 coins left`.
 
 That closes the loop the rest of the feature already had: bait is spent on every
 cast, the driftwood and river weed the line drags up are worth coins, and the

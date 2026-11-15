@@ -125,6 +125,11 @@ impl ItemDefinition {
             "blurb": self.blurb,
             "food": self.food,
             "rarity": self.rarity,
+            // The shop's counter price for one unit — the same number a sale
+            // pays out, so the bag can show "Sell +6" without a second request
+            // or a second copy of the price table. `None` only when the id is
+            // unknown (see `crate::store::sell_value`).
+            "sell_price": crate::store::sell_value(self.id),
         })
     }
 
@@ -631,9 +636,11 @@ impl Inventory {
                         "blurb": definition.map(|item| item.blurb),
                         "food": definition.and_then(|item| item.food),
                         "edible": definition.map(|item| item.is_edible()).unwrap_or(false),
+                        // What the shop pays for one of these from the bag.
+                        "sell_price": definition.and_then(|item| crate::store::sell_value(item.id)),
                     })
                 }
-                None => json!({ "index": index, "id": null }),
+                None => json!({ "index": index, "id": null, "sell_price": Value::Null }),
             })
             .collect();
 
@@ -879,6 +886,7 @@ mod tests {
         assert_eq!(slots[0]["icon"], "🎏");
         assert_eq!(slots[0]["edible"], json!(true));
         assert_eq!(slots[0]["food"], "silver_trout");
+        assert_eq!(slots[0]["sell_price"], json!(6), "the shop pays 2 x rarity");
         assert!(slots[1]["id"].is_null(), "empty slots are reported, not skipped");
         assert_eq!(json["totals"][0]["count"], json!(2));
         assert!(json["catalog"].as_array().expect("catalog").len() == ITEMS.len());

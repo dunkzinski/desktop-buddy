@@ -939,10 +939,12 @@ input[type="range"]::-webkit-slider-thumb {
   padding: 5px 4px; text-align: center;
   font-size: 10.5px;
 }
-#btn-inventory-add, #btn-inventory-use {
+#btn-inventory-add, #btn-inventory-use, #btn-inventory-sell {
   flex: 0 0 auto; font-size: 10px; padding: 6px 9px;
 }
-#btn-inventory-use:disabled { opacity: 0.45; cursor: default; }
+#btn-inventory-use:disabled, #btn-inventory-sell:disabled {
+  opacity: 0.45; cursor: default;
+}
 
 /* ---------- store (the Store tab) ---------- */
 

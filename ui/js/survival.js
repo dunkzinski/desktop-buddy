@@ -686,9 +686,13 @@ function showItemDetail(slot) {
   name.textContent = slot.label;
   const stack = slot.stack_max ? ` · stacks to ${slot.stack_max}` : "";
   const edible = slot.edible ? " · edible" : "";
+  const price = Number(slot.sell_price) || 0;
+  const worth = price > 0 ? ` · sells for ${price}` : "";
   detail.append(
     name,
-    document.createTextNode(` ×${slot.count}${stack}${edible}${slot.blurb ? ` — ${slot.blurb}` : ""}`),
+    document.createTextNode(
+      ` ×${slot.count}${stack}${edible}${worth}${slot.blurb ? ` — ${slot.blurb}` : ""}`,
+    ),
   );
 }
 
@@ -703,21 +707,45 @@ function pickInventoryItem(slot) {
   syncInventoryButtons();
 }
 
-/** Keep the Use button honest about what the API will actually accept. */
+/**
+ * Keep the Use and Sell buttons honest about what the API will accept.
+ *
+ * Sell is enabled for any selected slot the shop has a price for, which — since
+ * `store::sell_value` covers the whole item catalog — is every row in the bag,
+ * not just the thirteen on the Store tab. The number on the button is the same
+ * `unit_price` the trade reply will report.
+ */
 function syncInventoryButtons() {
   const use = el("btn-inventory-use");
-  if (!use) return;
+  const sell = el("btn-inventory-sell");
   const totals = (survival.inventory && survival.inventory.totals) || [];
   const held = totals.find((entry) => entry.id === survival.picked);
   const catalog = (survival.inventory && survival.inventory.catalog) || [];
   const definition = catalog.find((entry) => entry.id === survival.picked);
-  const usable = !!(held && definition && definition.food);
-  use.disabled = !usable;
-  use.title = held
-    ? usable
-      ? `Eat one ${definition.label} (POST /inventory/use)`
-      : `${definition.label} can only be held (POST /inventory/use would be a 400)`
-    : "Pick a slot first";
+
+  if (use) {
+    const usable = !!(held && definition && definition.food);
+    use.disabled = !usable;
+    use.title = held
+      ? usable
+        ? `Eat one ${definition.label} (POST /inventory/use)`
+        : `${definition.label} can only be held (POST /inventory/use would be a 400)`
+      : "Pick a slot first";
+  }
+
+  if (sell) {
+    const price = Number(held && definition ? definition.sell_price : 0) || 0;
+    const sellable = !!(held && held.count >= 1 && price > 0);
+    sell.disabled = !sellable;
+    sell.textContent = sellable ? `Sell +${price}` : "Sell";
+    sell.title = sellable
+      ? `Sell one ${definition.label} for ${price} coin${price === 1 ? "" : "s"} `
+        + "(POST /store/sell)"
+      : held
+        ? "the store will not buy this"
+        : "Pick a slot first";
+  }
+
   const add = el("btn-inventory-add");
   if (add) add.disabled = !(el("inventory-item") && el("inventory-item").value);
 }
@@ -792,6 +820,55 @@ async function useItem() {
     }
   } catch (err) {
     setInventoryNote(`use failed: ${err.message}`, true);
+  }
+}
+
+/**
+ * `POST /store/sell` straight from the bag — one unit of the picked stack.
+ *
+ * The counter buys anything in the item catalog, so this is the whole of "turn
+ * a catch into coins": the Store tab's shelf is only what the shop *sells*, and
+ * the bag is where the player actually stands when the purse is thin. The reply
+ * names the payout, so the note line never has to guess the price.
+ */
+async function sellPickedItem() {
+  const item = survival.picked;
+  if (!item) return;
+  const button = el("btn-inventory-sell");
+  const original = button ? button.textContent : "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Selling…";
+  }
+  setInventoryNote("");
+  try {
+    const res = await fetch(`${survival.base}/store/sell`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ item, count: 1 }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      const total = Number(body.total) || 0;
+      const coins = Number(body.coins);
+      setInventoryNote(
+        `Sold ${body.count} × ${body.label || item} for ${total} coin${total === 1 ? "" : "s"}`
+        + `${Number.isFinite(coins) ? ` · ${coins} coins left` : ""}`,
+      );
+      toast(`🪙 ${body.label || item} sold`);
+    } else {
+      // 409 = the bag no longer holds that many; 400 = not an item at all.
+      setInventoryNote(body.error || `sell failed (HTTP ${res.status})`, true);
+    }
+  } catch (err) {
+    setInventoryNote(`sell failed: ${err.message}`, true);
+  } finally {
+    if (button) button.textContent = original;
+    // The reply carries the balance but not the slotted grid, and the coin badge
+    // lives on the Store tab — re-read both. (`store-transaction` does the same;
+    // this keeps the pane honest without SSE.)
+    refreshInventory();
+    refreshStore();
   }
 }
 
@@ -1384,6 +1461,10 @@ export async function setupSurvival() {
     event.preventDefault();
     useItem();
   });
+  el("btn-inventory-sell")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    sellPickedItem();
+  });
   el("inventory-item")?.addEventListener("change", syncInventoryButtons);
 
   // ---- store -------------------------------------------------------------
@@ -1504,6 +1585,9 @@ export async function setupSurvival() {
           full: survival.inventory.full,
           totals: (survival.inventory.totals || []).map((t) => `${t.id}×${t.count}`),
           picked: survival.picked,
+          sellPrices: Object.fromEntries(
+            (survival.inventory.catalog || []).map((item) => [item.id, item.sell_price]),
+          ),
         }
       : null,
     store: survival.store

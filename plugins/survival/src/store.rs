@@ -23,7 +23,7 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::inventory::{self, Inventory};
+use crate::inventory::{self, Inventory, ItemKind};
 
 /// What a brand-new session's wallet holds.
 ///
@@ -268,6 +268,46 @@ pub fn find_item(id: &str) -> Option<&'static StoreItem> {
     default_catalog().iter().find(|item| item.id == needle)
 }
 
+/// What the shop pays for **one unit of anything the bag can hold**.
+///
+/// This is the *buy* side of the counter and it is deliberately wider than the
+/// shelf: [`default_catalog`] is what a player can purchase, but the shopkeeper
+/// will take anything that is not nailed down. Two rules, in order:
+///
+/// 1. a stocked id is worth its own [`StoreItem::sell_price`], so the shelf and
+///    the counter can never disagree about the one price both of them know;
+/// 2. anything else is priced from its kind and rarity — the same two fields
+///    the bag already draws with, so a new item needs no price-table edit:
+///
+///    | kind       | coins per unit          | example                        |
+///    |------------|-------------------------|--------------------------------|
+///    | fish       | `2 × rarity`            | minnow 2 … ember eel 8         |
+///    | ingredient | `rarity`                | apple 1 … cheese 2             |
+///    | material   | `rarity`                | driftwood 1, river weed 1      |
+///    | bait       | `1 + rarity`            | worm bait 2 … glowing lure 4   |
+///    | tool       | `4 × rarity`            | a spare fishing rod 8          |
+///    | junk       | `1` flat                | an old boot is still a boot    |
+///
+/// Junk pays one coin rather than zero: a cast that lands a boot should still
+/// clear the slot for something better, and a Sell button that is greyed out on
+/// a full bag would be the worst possible place to put the only unsellable row.
+/// Every catalog entry therefore has a positive price; `None` means only "this
+/// id is not in [`crate::inventory::ITEMS`]".
+pub fn sell_value(item_id: &str) -> Option<u32> {
+    let definition = inventory::find_item(item_id)?;
+    if let Some(stocked) = find_item(definition.id) {
+        return Some(stocked.sell_price);
+    }
+    let rarity = u32::from(definition.rarity);
+    Some(match definition.kind {
+        ItemKind::Fish => 2 * rarity,
+        ItemKind::Ingredient | ItemKind::Material => rarity,
+        ItemKind::Bait => 1 + rarity,
+        ItemKind::Tool => 4 * rarity,
+        ItemKind::Junk => 1,
+    })
+}
+
 /// The `catalog` array of `GET /store`, with the player's holdings attached.
 pub fn catalog_json(bag: &Inventory) -> Vec<Value> {
     default_catalog()
@@ -391,6 +431,49 @@ mod tests {
         }
         assert_eq!(StoreCategory::parse("materials"), Some(StoreCategory::Material));
         assert_eq!(StoreCategory::parse("weapons"), None);
+    }
+
+    #[test]
+    fn the_counter_buys_every_item_in_the_catalog_at_a_positive_price() {
+        // The shelf is 13 lines; the counter is the whole item catalog. A Sell
+        // button that is greyed out on a live row is the failure this pins.
+        for item in inventory::ITEMS {
+            let price = sell_value(item.id)
+                .unwrap_or_else(|| panic!("{} has no counter price", item.id));
+            assert!(price > 0, "{} is unsellable", item.id);
+        }
+        assert_eq!(sell_value("diamond"), None, "unknown ids are not items");
+    }
+
+    #[test]
+    fn a_stocked_item_keeps_its_listed_price_and_the_spread() {
+        for item in default_catalog() {
+            let price = sell_value(item.id).expect("stocked id is a catalog item");
+            assert_eq!(price, item.sell_price, "{} price drift", item.id);
+            assert!(
+                price < item.buy_price,
+                "{} sells for more than it costs",
+                item.id
+            );
+        }
+    }
+
+    #[test]
+    fn an_unstocked_item_prices_from_its_kind_and_rarity() {
+        // Fish scale with rarity: minnow 1, perch 2, trout 3, eel 4.
+        assert_eq!(sell_value("minnow"), Some(2));
+        assert_eq!(sell_value("river_perch"), Some(4));
+        assert_eq!(sell_value("silver_trout"), Some(6));
+        assert_eq!(sell_value("ember_eel"), Some(8));
+        // Junk is worth exactly one coin — the documented rule.
+        assert_eq!(sell_value("old_boot"), Some(1));
+        // Case and spacing go through the same normalization as every other id.
+        assert_eq!(sell_value(" Silver Trout "), Some(6));
+        // A fish is never worth as much as the priciest ingredient on the shelf:
+        // a lucky cast must not out-earn the whole economy.
+        assert!(
+            sell_value("ember_eel").unwrap() < find_item("glowing_lure").unwrap().buy_price
+        );
     }
 
     #[test]

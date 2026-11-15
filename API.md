@@ -1097,24 +1097,30 @@ curl -s localhost:8765/inventory
       "rarity": 2,
       "blurb": "A rod, a line, and a bobber. Required to fish.",
       "food": null,
-      "edible": false
+      "edible": false,
+      "sell_price": 30
     },
     {"index": 1, "id": "worm_bait", "count": 5},
-    {"index": 3, "id": null}
+    {"index": 3, "id": null, "sell_price": null}
   ],
   "totals": [
     {"id": "fishing_rod", "count": 1, "label": "Fishing rod", "icon": "🎣", "kind": "tool", "slot": 0}
   ],
   "catalog": [
     {"id": "minnow", "label": "Minnow", "icon": "🐟", "kind": "fish", "kind_label": "Fish",
-     "stack_max": 20, "blurb": "Small, silver, and mostly bones.", "food": "minnow", "rarity": 1}
+     "stack_max": 20, "blurb": "Small, silver, and mostly bones.", "food": "minnow", "rarity": 1,
+     "sell_price": 2}
   ]
 }
 ```
 
 A fresh avatar starts with a fishing rod, five worm bait and two driftwood, so
 the Fishing tab is playable before anything is gathered. `capacity` is
-`survival.inventory.slots`; an empty slot is `{"index": n, "id": null}`.
+`survival.inventory.slots`; an empty slot is
+`{"index": n, "id": null, "sell_price": null}`. Every occupied slot **and** every
+catalog entry carries `sell_price` — exactly what `POST /store/sell` pays for one
+unit of it — so the Bag tab can label its Sell button without a second request.
+The counter is wider than the shelf; see *`POST /store/sell`* for the rules.
 
 The catalog's `kind` is one of `fish`, `bait`, `ingredient`, `tool`, `material`
 or `junk`, and `food` names the `GET /foods` entry an edible item becomes when it
@@ -1311,10 +1317,14 @@ curl -s -X POST localhost:8765/store/sell -H 'content-type: application/json' \
 
 Selling is exact, not best-effort: asking for more than the bag holds is a **409**
 (`refusal: "not_enough_items"`, carrying `held` and `count`) instead of a silent
-partial sale, and an id the shop does not stock — a caught fish, an old boot — is
-a **400** even though the item exists in the bag. `sell_price` is paid per unit;
-the reply carries `total` and the new `coins`, and a `store-transaction` event is
-emitted with `action: "sell"`.
+partial sale. The shop **buys the whole item catalog**, not only the thirteen
+lines it stocks: a stocked id pays its listed `sell_price`, and every other
+catalog item pays a price derived from its `kind` and `rarity` — fish
+`2 × rarity` (`minnow` 2 … `ember_eel` 8), ingredients and materials `rarity`,
+bait `1 + rarity`, tools `4 × rarity`, and junk a flat **1** coin (an old boot is
+still worth clearing out of a full bag). Only an id that is not an item at all is
+a **400**. `unit_price` is paid per unit; the reply carries `total` and the new
+`coins`, and a `store-transaction` event is emitted with `action: "sell"`.
 
 ### `GET /fishing`
 

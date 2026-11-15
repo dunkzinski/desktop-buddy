@@ -1225,47 +1225,58 @@ impl Survival {
 
     /// `POST /store/sell` — hand goods back and bank the coins.
     ///
+    /// The counter buys **anything in the item catalog**, not only the thirteen
+    /// lines on the shelf: a caught fish, a spare rod and a boot all have a
+    /// price from [`store::sell_value`]. Only an id that is not an item at all
+    /// (or one that somehow priced at zero) is a 400.
+    ///
     /// Selling is exact, not best-effort: asking for more than the bag holds is
     /// a refusal rather than a silent partial sale, because a player who typed
     /// "sell 5" and got 3 would rightly call that a bug.
     pub fn store_sell(&mut self, id: &str, count: u32) -> Result<Value, FeedError> {
-        let item = store::find_item(id).ok_or_else(|| {
+        let definition = inventory::find_item(id).ok_or_else(|| {
             FeedError::denied(
                 400,
-                format!("the store does not buy {id:?} — GET /store lists what it takes"),
+                format!("{id:?} is not an item — GET /inventory lists the catalog"),
             )
         })?;
+        let Some(unit_price) = store::sell_value(definition.id).filter(|price| *price > 0) else {
+            return Err(FeedError::denied(
+                400,
+                format!("the store will not buy {}", definition.label),
+            ));
+        };
         let count = count.clamp(1, inventory::MAX_ADD);
-        let held = self.inventory.count(item.id);
+        let held = self.inventory.count(definition.id);
         if held < count {
             return Err(FeedError::Denied {
                 status: 409,
                 message: format!(
                     "only {held} {}(s) in the bag, cannot sell {count}",
-                    item.label
+                    definition.label
                 ),
                 body: json!({
                     "refusal": "not_enough_items",
-                    "item": item.id,
+                    "item": definition.id,
                     "count": count,
                     "held": held,
                 }),
             });
         }
 
-        let removed = self.inventory.remove(item.id, count);
-        let earned = item.sell_total(removed);
+        let removed = self.inventory.remove(definition.id, count);
+        let earned = unit_price.saturating_mul(removed);
         self.stats.add_coins(earned);
 
         Ok(self.emit_store(json!({
             "ok": true,
             "action": "sell",
-            "item": item.id,
-            "label": item.label,
-            "icon": item.icon,
+            "item": definition.id,
+            "label": definition.label,
+            "icon": definition.icon,
             "count": removed,
             "requested": count,
-            "unit_price": item.sell_price,
+            "unit_price": unit_price,
             "total": earned,
         })))
     }

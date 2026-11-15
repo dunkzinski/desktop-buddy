@@ -949,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn overselling_or_selling_what_the_store_does_not_buy_is_refused() {
+    fn overselling_or_selling_something_that_is_not_an_item_is_refused() {
         let mut state = plugin();
         let too_many = handle(
             &mut state,
@@ -964,18 +964,18 @@ mod tests {
         assert_eq!(too_many["body"]["held"], json!(5));
         assert_eq!(state.coins(), 100, "no partial sale, no partial payment");
 
-        // A real item the shop does not stock: the swung boot has no price.
-        let unstocked = handle(
+        // Not an inventory id at all: nothing to price, nothing to take.
+        let unknown = handle(
             &mut state,
             &json!({
                 "method": "POST",
                 "path": "/store/sell",
-                "body": { "item": "minnow", "count": 1 },
+                "body": { "item": "diamond", "count": 1 },
             }),
         );
-        assert_eq!(unstocked["status"], json!(400));
+        assert_eq!(unknown["status"], json!(400));
 
-        let unknown = handle(
+        let unbuyable = handle(
             &mut state,
             &json!({
                 "method": "POST",
@@ -983,8 +983,60 @@ mod tests {
                 "body": { "item": "diamond", "count": 1 },
             }),
         );
-        assert_eq!(unknown["status"], json!(400));
-        assert!(unknown["body"]["error"].as_str().unwrap_or("").contains("diamond"));
+        assert_eq!(unbuyable["status"], json!(400));
+        assert!(unbuyable["body"]["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("diamond"));
+    }
+
+    #[test]
+    fn the_counter_buys_a_caught_fish_the_shelf_never_stocks() {
+        // The shelf still sells the same thirteen lines…
+        let mut state = plugin();
+        let store = handle(&mut state, &json!({ "method": "GET", "path": "/store" }));
+        assert!(
+            store["body"]["catalog"]
+                .as_array()
+                .expect("catalog")
+                .iter()
+                .all(|entry| entry["category"] != "fish"),
+            "raw fish must not clutter the shelves"
+        );
+
+        // …but the counter takes the catch, at the rarity-derived price.
+        state.inventory_add("silver_trout", 3).expect("stock");
+        take_recorded();
+        let sold = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/store/sell",
+                "body": { "item": "silver_trout", "count": 2 },
+            }),
+        );
+        assert_eq!(sold["status"], json!(200));
+        let body = &sold["body"];
+        assert_eq!(body["action"], "sell");
+        assert_eq!(body["item"], "silver_trout");
+        assert_eq!(body["label"], "Silver trout");
+        assert_eq!(body["unit_price"], json!(6), "2 x rarity 3");
+        assert_eq!(body["total"], json!(12));
+        assert_eq!(body["coins"], json!(112));
+        assert_eq!(state.coins(), 112);
+        assert_eq!(state.inventory().count("silver_trout"), 1, "one left");
+
+        let recorded = take_recorded();
+        assert!(
+            recorded
+                .events
+                .iter()
+                .any(|(name, payload)| name == crate::plugin::EVENT_STORE
+                    && payload["action"] == "sell"
+                    && payload["item"] == "silver_trout"),
+            "a fish sale publishes store-transaction"
+        );
+        assert_eq!(recorded.states.len(), 1, "the sale is flushed to disk");
     }
 
     #[test]
