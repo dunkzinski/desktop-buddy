@@ -408,7 +408,7 @@ The local voice. One module, one worker thread, one config block.
 | `get_config`, `set_config` | `GET /config` / `POST /config` → `settings::config_json` / `settings::apply_config` (the write runs on `spawn_blocking`), then the live side effects: `tts::set_enabled`, `stt::set_enabled`, `plugins::apply_survival_config`, and one `ai_profile` frame so the watcher re-reads the file |
 | `start` | bind, spawn thread, Tokio runtime, axum serve, graceful shutdown |
 | `bind_first_available` | port fallback `preferred..preferred+9` |
-| `router` | 43 routes |
+| `router` | 39 core routes, then `crate::plugins::routes()` merged in (deduped by path) — **no plugin endpoint is named in this file** |
 | request bodies | `SetStateBody`, `MoveBody`, `ExpressionBody`, `ClickThroughBody`, `HitRegionsBody`, `ModelBody`, `RigBody`, `PoseBody`, `ImportBody`, `PartPatchBody`, `MouthBody`, `EmoteBody`, `SpeakBody` (incl. optional `details`), `ReplyBody`, `AlertBody`, `ClipboardBody`, `AnimateBody`, `TtsBody`, `SttBody` |
 | `ApiError` | `IntoResponse` → `{"ok":false,"error":…}` + status |
 | `context` | `GET /context` — OS probes (title, process, idle, `window_rect`, `visible_windows`, `foreground_hwnd`, `screen`), `avatar_state` snapshot and the `recent_events` history |
@@ -419,6 +419,59 @@ The local voice. One module, one worker thread, one config block.
 | `event_name` | maps a frame `type` onto the SSE `event:` field (`&'static str`) |
 | `list_animations`, `animate`, `stop_animation` | `GET /animations` (clip catalogue from the loaded rig) and the two stop/play spellings for `POST /animate` |
 | handlers | one per route (see §7) |
+
+### `src-tauri/src/plugins/` (the plugin host + the survival plugin)
+
+Everything feature-shaped that is not part of the avatar engine itself lives
+here. The host is **feature-blind**: it knows what a plugin *is*, never what one
+*does*. `lib.rs` and `api.rs` contain no survival type, constant, route or event
+— removing the survival directory would leave them untouched.
+
+| file | responsibility |
+| --- | --- |
+| `mod.rs` | `Plugin` (`init` / `tick` / `shutdown` + optional `status` / `routes` / `config`), `PluginHost` (`emit`, `notify`, `now_ms`, `rules_path`), `PluginRoute` (a path + an axum `MethodRouter`), `PluginConfig` (`key`, `describe`, `validate`, `apply`, `warnings`), `PluginRegistry` (lifecycle, panic containment, parking), and the process-wide `install` / `routes` / `config_specs` / `stop` |
+| `manifest.rs` | **the only file that names a plugin.** One `register` line per plugin; delete it (plus the directory and the `pub mod` line) to remove the feature |
+| `survival/mod.rs` | the plugin's own module tree |
+| `survival/model.rs` | hunger, saturation, `HungerTier`, `Metabolism`, the 7-food catalog, meal cooldowns, `SurvivalStats` |
+| `survival/plugin.rs` | `SurvivalPlugin` + `SurvivalState`: the tick loop (drain, tier crossings, starvation reminders, telemetry), meal + manual-level writes, `status` |
+| `survival/routes.rs` | `/survival` (`GET`+`POST`), `/survival/feed`, `/foods` as `PluginRoute`s, with the plugin's own status mapping (400 / 409) |
+| `survival/config.rs` | the `survival` block as a `PluginConfig`: parse, validate with the model's own clamp, apply live, report stray keys |
+
+#### The four seams
+
+1. **Lifecycle.** `PluginRegistry` calls `init(Arc<dyn PluginHost>)` once,
+   `tick(host, dt)` every `TICK_INTERVAL` (1 s, `dt` clamped to `MAX_TICK_DT`),
+   and `shutdown(host)` once — or when the plugin is parked. A failed `init` is
+   logged and skipped; a panicking `tick` is caught, counted and after
+   `MAX_CONSECUTIVE_TICK_ERRORS` the plugin is parked *and still torn down*.
+2. **Routes.** A plugin returns `Vec<PluginRoute>`; `api::router` merges them
+   into the axum router (deduping paths, logging a collision). Handlers are
+   closures over the plugin's own state, so no global or service locator is
+   needed. A plugin that failed `init` contributes no routes — a 404 beats a
+   panic inside axum. `/plugins` is the host's own route, served whether or not
+   any plugin is installed.
+3. **Config.** A plugin returns `Arc<dyn PluginConfig>`. `GET /config` merges
+   `describe()` into its `settings` object and `warnings()` into the amber box;
+   `POST /config` hands the raw patch to `validate()` (which returns the
+   canonical JSON *text*, so the plugin keeps its own field order) and, after the
+   file is safely written, to `apply()` — which answers `Apply::Live` or
+   `Apply::Restart`. `src/settings.rs` has no feature-specific code left.
+4. **Host capabilities.** `emit` reaches the page and the SSE bus, `notify`
+   speaks through `do_speak`, `now_ms` is freezable in tests, `rules_path` is how
+   a plugin finds the file whose block it owns. Nothing OS- or window-shaped
+   crosses that boundary, which is why every plugin test runs without Tauri.
+
+#### Adding or removing a plugin
+
+```text
+1. src/plugins/<name>/…      implement Plugin (+ PluginRoute / PluginConfig if needed)
+2. src/plugins/mod.rs        add `pub mod <name>;`
+3. src/plugins/manifest.rs   add `register(registry, Box::new(<Name>Plugin::new()));`
+```
+
+Remove it by deleting those three things. Nothing else references it:
+`cargo check` proves it, and `tools/verify_docs.py` scans `src/plugins/**/*.rs`
+for `PluginRoute` literals so the route table in the docs follows automatically.
 
 ### `src-tauri/src/models.rs` (1081 lines)
 
@@ -1010,9 +1063,9 @@ A bubble is transient by design, so the session's turns are also kept in a log:
 
 ### Survival card (hunger, saturation, feeding)
 
-The avatar has two bars and a mood about them. The numbers live in
-`src-tauri/src/survival.rs` and are drained by the `metabolism` plugin, so they
-keep moving whether or not the card is on screen.
+The avatar has two bars and a mood about them. The numbers live in the survival
+plugin (`src-tauri/src/plugins/survival/model.rs`) and are drained by that
+plugin's own tick, so they keep moving whether or not the card is on screen.
 
 * **Open it** with the **Survival** button in the control panel; `Esc` or the
   **✕** closes it. It is a **pop-out card pinned top-left**, deliberately not a
@@ -1053,8 +1106,9 @@ form now. **Settings ⚙** in the control panel opens a modal with three tabs �
   deliberately *not* editable here — they are prose, and the modal would mangle
   them; the file stays the place for those.
 * **Survival**: the hunger system switch, tier notifications, both drain rates,
-  the telemetry interval and the starting values. These apply **live** (the
-  metabolism plugin re-reads the config on its next tick).
+  the telemetry interval and the starting values. The section comes from the
+  plugin itself (`PluginConfig::describe`/`validate`/`apply`) — the editor has no
+  survival code — and the change is applied **live** on the plugin's next tick.
 * **Saving** sends only the fields you changed. The server validates each block
   with the same struct the runtime loads it from, writes just the affected
   blocks (leaving every other byte alone, with a `.bak` beside the file) and
@@ -1757,15 +1811,18 @@ just that member's byte span (`src-tauri/src/settings.rs`), so `app_rules`,
 untouched. The body answers with the fresh `GET` payload plus `applied` (dotted
 paths) and `restart_required`.
 
-Live: `tts.enabled`, `stt.enabled`, everything under `survival` (the metabolism
-plugin picks the new config up on its next tick) and everything under `ai` /
+Live: `tts.enabled`, `stt.enabled`, **every block a plugin owns** (the editor
+asks `plugins::config_specs()` and each plugin applies its own section through
+`PluginConfig::apply`, reporting live vs restart) and everything under `ai` /
 `vision` (the `ai_profile` frame is what makes `char-rig-watcher.exe` re-read the
 file). A Piper/Whisper **path** or `stt.hotkey` is read once at startup, so it is
 reported under `restart_required` instead of being pretended live.
 
 ### `/survival`, `/survival/feed`, `/foods`, `/plugins`
 
-The survival plugin's HTTP surface. `GET /survival` returns the appetite
+These four endpoints are **contributed by plugins**, not listed in `api.rs`: the
+survival plugin returns `/survival`, `/survival/feed` and `/foods` from
+`Plugin::routes`, and the host adds its own `/plugins`. `GET /survival` returns the appetite
 (`config`, `stats`, and the tier duplicated at the top level) plus the plugin
 list; `POST /survival` overrides `hunger`/`saturation` (at least one, clamped
 0–100, **400** if neither); `POST /survival/feed` eats one catalog id and returns
@@ -1781,16 +1838,16 @@ curl -s localhost:8765/foods
 curl -s localhost:8765/plugins
 ```
 
-The config is not frozen at startup: `POST /config` calls
-`plugins::apply_survival_config`, which stores the override, updates the live
-stats' drain rates in place and is what the plugins read on their next tick, so
-`GET /survival`'s `config` echo never disagrees with the numbers being applied.
+The config is not frozen at startup: `POST /config` hands the validated block to
+the plugin's `PluginConfig::apply`, which stores it in the plugin's state and
+updates the live stats' drain rates in place, so `GET /survival`'s `config` echo
+never disagrees with the numbers being applied.
 
 ### The `survival` block
 
 | key | type | meaning |
 |---|---|---|
-| `enabled` | bool | installs the metabolism + telemetry plugins at all |
+| `enabled` | bool | `false` keeps the plugin installed but idle: no drain, no telemetry, routes still answer |
 | `start_hunger` | 0–100 | where a fresh avatar starts on the hunger bar |
 | `start_saturation` | 0–hunger | starting saturation (drains first, shields hunger) |
 | `metabolism` | object | `hunger_per_min` and `saturation_per_min`, each 0.01–100 |

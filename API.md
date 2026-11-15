@@ -768,9 +768,12 @@ rate. The answer is the same body as `GET` plus `applied` (dotted paths) and
 ### `GET /survival` / `POST /survival`
 
 The avatar's appetite — hunger and saturation on a 0–100 scale, the metabolic
-drain rate and the current hunger tier. It is driven by the survival plugin
-(see `GET /plugins`), ticks in the background, and starts from the `survival`
-block in `watcher_rules.json` (omitting the block uses the built-in defaults).
+drain rate and the current hunger tier. Every byte of this lives in the survival
+plugin (see `GET /plugins`): its own state, its own tick, its own routes and its
+own `survival` block in `watcher_rules.json` (omitting the block uses the
+built-in defaults). `enabled: false` keeps the plugin installed but idle — the
+bars freeze and the routes keep answering with `"enabled": false` rather than
+404-ing.
 
 ```bash
 curl -s localhost:8765/survival
@@ -910,12 +913,21 @@ curl -s localhost:8765/plugins
   "plugins": [
     {
       "id": "survival",
-      "description": "Tracks hunger and saturation and announces tier changes.",
+      "description": "Hunger, saturation and tiers: drains on the wall clock, publishes telemetry and serves the feeding routes.",
       "state": "active",
       "ticks": 42,
       "errors": 0,
       "last_error": null,
-      "status": { "hunger": 24.9, "saturation": 39.9, "tier": "peckish" }
+      "status": {
+        "enabled": true,
+        "tier": "peckish",
+        "hunger": 24.9,
+        "saturation": 39.9,
+        "meals": 2,
+        "telemetry_secs": 60,
+        "frames": 3,
+        "uptime_ms": 42000
+      }
     }
   ]
 }
@@ -925,6 +937,13 @@ curl -s localhost:8765/plugins
 repeatedly in its tick is parked as `failed` and its `shutdown` hook runs; the
 registry keeps the rest running. `GET /plugins` also emits the `plugins` frame
 whenever the registry's own status changes.
+
+**The routes are the plugins'.** `/survival`, `/survival/feed` and `/foods` come
+from the survival plugin's `Plugin::routes`, and `/plugins` is the host's own
+introspection route (it answers even with nothing installed). `api.rs` names none
+of them: a plugin that is not installed contributes no routes, and an app with no
+plugins at all still serves `/plugins`. The same is true of config blocks —
+`GET /config` lists a section only if a plugin claims it.
 
 ### `POST /shutdown`
 

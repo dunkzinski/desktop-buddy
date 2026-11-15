@@ -1,419 +1,329 @@
-//! Unit tests for the plugin host.
+//! Registry behaviour, with **no shipped plugin involved**.
 //!
-//! Everything here runs without Tauri: a [`RecordingHost`] stands in for the
-//! window, and time is whatever the test says it is.
+//! These tests are the proof that the host is feature-blind: every plugin here
+//! is a stub defined in this file. If the host ever grows a dependency on a
+//! shipped plugin, one of these stops compiling.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::routing::get;
 use serde_json::{json, Value};
 
-use super::builtin::{MetabolismPlugin, TelemetryPlugin};
 use super::*;
-use crate::survival::{SurvivalConfig, SurvivalStats};
 
-/// A host that records instead of rendering.
-struct RecordingHost {
-    stats: SurvivalHandle,
+/* ------------------------------------------------------------------ *
+ * Stub plugins + a recording host
+ * ------------------------------------------------------------------ */
+
+#[derive(Default)]
+struct Recorder {
     events: Mutex<Vec<(String, Value)>>,
     spoken: Mutex<Vec<(String, String)>>,
-    now: AtomicU64,
 }
 
-impl RecordingHost {
-    fn new(stats: SurvivalStats) -> Arc<Self> {
-        Arc::new(Self {
-            stats: Arc::new(Mutex::new(stats)),
-            events: Mutex::new(Vec::new()),
-            spoken: Mutex::new(Vec::new()),
-            now: AtomicU64::new(1_000),
-        })
-    }
-
-    fn events(&self) -> Vec<(String, Value)> {
-        self.events.lock().unwrap().clone()
-    }
-
-    fn names(&self) -> Vec<String> {
-        self.events()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect()
-    }
-
-    fn spoken(&self) -> Vec<(String, String)> {
-        self.spoken.lock().unwrap().clone()
-    }
-}
-
-impl PluginHost for RecordingHost {
+impl PluginHost for Recorder {
     fn emit(&self, event: &str, payload: Value) {
         self.events
             .lock()
-            .unwrap()
+            .expect("events")
             .push((event.to_string(), payload));
     }
-
     fn notify(&self, text: &str, expression: &str) {
         self.spoken
             .lock()
-            .unwrap()
+            .expect("spoken")
             .push((text.to_string(), expression.to_string()));
     }
-
-    fn survival(&self) -> SurvivalHandle {
-        Arc::clone(&self.stats)
-    }
-
-    fn now_ms(&self) -> u64 {
-        self.now.load(Ordering::Relaxed)
-    }
 }
 
-/// A plugin that does exactly what the test tells it to.
-struct FakePlugin {
+/// A plugin that counts its own hooks.
+struct CountingPlugin {
     id: &'static str,
-    init_result: Result<(), String>,
-    tick_result: Result<(), String>,
-    panic_on_tick: bool,
-    inits: Arc<AtomicU64>,
-    ticks: Arc<AtomicU64>,
-    shutdowns: Arc<AtomicU64>,
-    /// Recorded `dt` values, so ordering and clamping are observable.
-    seen: Arc<Mutex<Vec<Duration>>>,
+    inits: Arc<AtomicU32>,
+    ticks: Arc<AtomicU32>,
+    shutdowns: Arc<AtomicU32>,
+    routes: usize,
+    config: bool,
 }
 
-impl FakePlugin {
-    fn new(id: &'static str) -> Self {
-        Self {
-            id,
-            init_result: Ok(()),
-            tick_result: Ok(()),
-            panic_on_tick: false,
-            inits: Arc::new(AtomicU64::new(0)),
-            ticks: Arc::new(AtomicU64::new(0)),
-            shutdowns: Arc::new(AtomicU64::new(0)),
-            seen: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-}
-
-impl Plugin for FakePlugin {
+impl Plugin for CountingPlugin {
     fn id(&self) -> &'static str {
         self.id
     }
-
     fn description(&self) -> &'static str {
-        "test double"
+        "counts its own hooks"
     }
-
-    fn init(&mut self, _host: &dyn PluginHost) -> Result<(), String> {
-        self.inits.fetch_add(1, Ordering::Relaxed);
-        self.init_result.clone()
+    fn init(&mut self, _host: Arc<dyn PluginHost>) -> Result<(), String> {
+        self.inits.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
-
-    fn tick(&mut self, _host: &dyn PluginHost, dt: Duration) -> Result<(), String> {
-        self.ticks.fetch_add(1, Ordering::Relaxed);
-        self.seen.lock().unwrap().push(dt);
-        assert!(!self.panic_on_tick, "fake plugin panics on purpose");
-        self.tick_result.clone()
+    fn tick(&mut self, _host: &dyn PluginHost, _dt: Duration) -> Result<(), String> {
+        self.ticks.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
-
     fn shutdown(&mut self, _host: &dyn PluginHost) {
-        self.shutdowns.fetch_add(1, Ordering::Relaxed);
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+    }
+    fn status(&self) -> Value {
+        json!({ "ticks": self.ticks.load(Ordering::SeqCst) })
+    }
+    fn routes(&self) -> Vec<PluginRoute> {
+        // A distinct static path per stub route; the handlers are never called.
+        const A: [&str; 3] = ["/stub-a1", "/stub-a2", "/stub-a3"];
+        const B: [&str; 3] = ["/stub-b1", "/stub-b2", "/stub-b3"];
+        let table = if self.id == "a" { A } else { B };
+        (0..self.routes)
+            .map(|index| PluginRoute::get(table[index], || async { "" }))
+            .collect()
+    }
+    fn config(&self) -> Option<Arc<dyn PluginConfig>> {
+        self.config
+            .then(|| Arc::new(StubConfig) as Arc<dyn PluginConfig>)
     }
 }
 
-fn registry_with(plugins: Vec<Box<dyn Plugin>>) -> PluginRegistry {
-    let mut registry = PluginRegistry::new();
-    for plugin in plugins {
-        registry.register(plugin).expect("registration");
+struct StubConfig;
+
+impl PluginConfig for StubConfig {
+    fn key(&self) -> &'static str {
+        "stub"
     }
-    registry
+    fn describe(&self) -> Value {
+        json!({ "enabled": true })
+    }
+    fn validate(&self, _current: Option<&Value>, patch: &Value) -> Result<String, String> {
+        Ok(serde_json::to_string(patch).expect("json"))
+    }
+    fn apply(&self, _block: &Value) -> Apply {
+        Apply::Live
+    }
 }
 
+/// Fails `init`.
+struct BrokenPlugin;
+
+impl Plugin for BrokenPlugin {
+    fn id(&self) -> &'static str {
+        "broken"
+    }
+    fn init(&mut self, _host: Arc<dyn PluginHost>) -> Result<(), String> {
+        Err("no thanks".to_string())
+    }
+    fn tick(&mut self, _host: &dyn PluginHost, _dt: Duration) -> Result<(), String> {
+        panic!("a failed plugin must never be ticked");
+    }
+    fn routes(&self) -> Vec<PluginRoute> {
+        vec![PluginRoute::new(
+            "/broken",
+            get(|| async { "should never be served" }),
+        )]
+    }
+}
+
+/// Panics on every tick.
+struct PanickingPlugin {
+    shutdowns: Arc<AtomicU32>,
+}
+
+impl Plugin for PanickingPlugin {
+    fn id(&self) -> &'static str {
+        "panicky"
+    }
+    fn tick(&mut self, _host: &dyn PluginHost, _dt: Duration) -> Result<(), String> {
+        panic!("boom");
+    }
+    fn shutdown(&mut self, _host: &dyn PluginHost) {
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+type Counters = (Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>);
+
+fn counting(id: &'static str, routes: usize, config: bool) -> (Box<dyn Plugin>, Counters) {
+    let inits = Arc::new(AtomicU32::new(0));
+    let ticks = Arc::new(AtomicU32::new(0));
+    let shutdowns = Arc::new(AtomicU32::new(0));
+    (
+        Box::new(CountingPlugin {
+            id,
+            inits: Arc::clone(&inits),
+            ticks: Arc::clone(&ticks),
+            shutdowns: Arc::clone(&shutdowns),
+            routes,
+            config,
+        }),
+        (inits, ticks, shutdowns),
+    )
+}
+
+/* ------------------------------------------------------------------ *
+ * Registry lifecycle
+ * ------------------------------------------------------------------ */
+
 #[test]
-fn registering_rejects_duplicate_and_malformed_ids() {
+fn init_tick_and_shutdown_reach_every_plugin() {
+    let host: Arc<dyn PluginHost> = Arc::new(Recorder::default());
     let mut registry = PluginRegistry::new();
-    registry.register(Box::new(FakePlugin::new("alpha"))).unwrap();
-    let duplicate = registry
-        .register(Box::new(FakePlugin::new("alpha")))
-        .expect_err("duplicate ids must be refused");
-    assert!(duplicate.contains("already registered"), "{duplicate}");
+    let (first, (inits_a, ticks_a, down_a)) = counting("first", 0, false);
+    let (second, (inits_b, ticks_b, down_b)) = counting("second", 0, false);
+    registry.register(first).expect("register");
+    registry.register(second).expect("register");
 
-    let bad = registry
-        .register(Box::new(FakePlugin::new("Not Lowercase")))
-        .expect_err("ids are lowercase");
-    assert!(bad.contains("lowercase"), "{bad}");
-    assert_eq!(registry.len(), 1);
-}
+    let status = registry.init_all(Arc::clone(&host));
+    assert_eq!(status["count"], json!(2));
+    assert_eq!(status["active"], json!(2));
+    assert_eq!(inits_a.load(Ordering::SeqCst), 1);
+    assert_eq!(inits_b.load(Ordering::SeqCst), 1);
 
-#[test]
-fn init_marks_plugins_active_and_a_failure_is_contained() {
-    let host = RecordingHost::new(SurvivalStats::default());
-    let good = FakePlugin::new("good");
-    let inits = Arc::clone(&good.inits);
-    let mut bad = FakePlugin::new("bad");
-    bad.init_result = Err("no device".to_string());
-    let bad_ticks = Arc::clone(&bad.ticks);
-
-    let mut registry = registry_with(vec![Box::new(good), Box::new(bad)]);
-    let status = registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
-
-    assert_eq!(inits.load(Ordering::Relaxed), 1);
-    assert_eq!(registry.active_count(), 1);
-    let plugins = status["plugins"].as_array().unwrap();
-    assert_eq!(plugins[0]["state"], "active");
-    assert_eq!(plugins[1]["state"], "failed");
-    assert_eq!(plugins[1]["last_error"], "no device");
-
-    // The failed plugin is never ticked.
     registry.tick_all(Duration::from_secs(1));
-    assert_eq!(bad_ticks.load(Ordering::Relaxed), 0);
+    assert_eq!(ticks_a.load(Ordering::SeqCst), 1);
+    assert_eq!(ticks_b.load(Ordering::SeqCst), 1);
+
+    registry.shutdown_all();
+    assert_eq!(down_a.load(Ordering::SeqCst), 1);
+    assert_eq!(down_b.load(Ordering::SeqCst), 1);
+    // Idempotent.
+    registry.shutdown_all();
+    assert_eq!(down_a.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn ticks_run_in_registration_order_and_report_the_interval() {
-    let host = RecordingHost::new(SurvivalStats::default());
-    let first = FakePlugin::new("first");
-    let second = FakePlugin::new("second");
-    let (first_ticks, second_ticks) = (Arc::clone(&first.ticks), Arc::clone(&second.ticks));
-    let seen = Arc::clone(&first.seen);
+fn a_duplicate_or_malformed_id_is_rejected() {
+    let mut registry = PluginRegistry::new();
+    let (first, _) = counting("dup", 0, false);
+    registry.register(first).expect("first");
+    let (second, _) = counting("dup", 0, false);
+    assert!(registry.register(second).is_err(), "same id");
 
-    let mut registry = registry_with(vec![Box::new(first), Box::new(second)]);
-    registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
-    registry.tick_all(Duration::from_millis(1500));
-    registry.tick_all(Duration::from_millis(250));
+    let (bad, _) = counting("Not Allowed", 0, false);
+    assert!(registry.register(bad).is_err(), "bad id");
 
-    assert_eq!(first_ticks.load(Ordering::Relaxed), 2);
-    assert_eq!(second_ticks.load(Ordering::Relaxed), 2);
-    assert_eq!(
-        *seen.lock().unwrap(),
-        vec![Duration::from_millis(1500), Duration::from_millis(250)]
-    );
-    assert_eq!(registry.status()["ticks"], 2);
+    let (empty, _) = counting("", 0, false);
+    assert!(registry.register(empty).is_err(), "empty id");
 }
 
 #[test]
-fn a_panicking_plugin_is_caught_and_parked_after_three_strikes() {
-    let host = RecordingHost::new(SurvivalStats::default());
-    let mut explosive = FakePlugin::new("explosive");
-    explosive.panic_on_tick = true;
-    let ticks = Arc::clone(&explosive.ticks);
-    let shutdowns = Arc::clone(&explosive.shutdowns);
-    let quiet = FakePlugin::new("quiet");
-    let quiet_ticks = Arc::clone(&quiet.ticks);
+fn a_failed_init_is_skipped_not_fatal() {
+    let host: Arc<dyn PluginHost> = Arc::new(Recorder::default());
+    let mut registry = PluginRegistry::new();
+    registry.register(Box::new(BrokenPlugin)).expect("register");
+    let (good, (_, ticks, _)) = counting("good", 0, false);
+    registry.register(good).expect("register");
 
-    let mut registry = registry_with(vec![Box::new(explosive), Box::new(quiet)]);
-    registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
+    let status = registry.init_all(Arc::clone(&host));
+    assert_eq!(status["active"], json!(1), "only the good one is active");
+    assert_eq!(status["plugins"][0]["state"], json!("failed"));
+    assert_eq!(status["plugins"][0]["last_error"], json!("no thanks"));
 
-    // Three ticks: the panic never escapes, and the ticker keeps going.
-    for _ in 0..4 {
+    // The broken plugin is never ticked (its tick would panic).
+    registry.tick_all(Duration::from_secs(1));
+    assert_eq!(ticks.load(Ordering::SeqCst), 1);
+
+    // …and its routes are withdrawn rather than served from half-built state.
+    let paths: Vec<&str> = registry.routes().iter().map(|route| route.path).collect();
+    assert!(!paths.contains(&"/broken"), "{paths:?}");
+}
+
+#[test]
+fn a_panicking_tick_is_parked_and_still_gets_shutdown() {
+    let host: Arc<dyn PluginHost> = Arc::new(Recorder::default());
+    let shutdowns = Arc::new(AtomicU32::new(0));
+    let mut registry = PluginRegistry::new();
+    registry
+        .register(Box::new(PanickingPlugin {
+            shutdowns: Arc::clone(&shutdowns),
+        }))
+        .expect("register");
+    registry.init_all(Arc::clone(&host));
+
+    for _ in 0..MAX_CONSECUTIVE_TICK_ERRORS {
         registry.tick_all(Duration::from_secs(1));
     }
-    assert_eq!(ticks.load(Ordering::Relaxed), MAX_CONSECUTIVE_TICK_ERRORS as u64);
-    assert_eq!(shutdowns.load(Ordering::Relaxed), 1, "a parked plugin is shut down");
-    assert_eq!(quiet_ticks.load(Ordering::Relaxed), 4, "the neighbour keeps ticking");
+    assert_eq!(shutdowns.load(Ordering::SeqCst), 1, "parked, then torn down");
 
     let status = registry.status();
-    assert_eq!(status["plugins"][0]["state"], "failed");
-    assert_eq!(status["plugins"][1]["state"], "active");
-}
+    assert_eq!(status["plugins"][0]["state"], json!("failed"));
+    assert_eq!(status["active"], json!(0));
 
-#[test]
-fn a_transient_error_does_not_park_a_plugin() {
-    let host = RecordingHost::new(SurvivalStats::default());
-    let mut flaky = FakePlugin::new("flaky");
-    flaky.tick_result = Err("temporary".to_string());
-    let _ticks = Arc::clone(&flaky.ticks);
-    let mut registry = registry_with(vec![Box::new(flaky)]);
-    registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
-
-    // Two failures, then the plugin recovers: the streak resets.
+    // A parked plugin is not ticked again.
     registry.tick_all(Duration::from_secs(1));
-    registry.tick_all(Duration::from_secs(1));
-    assert_eq!(registry.status()["plugins"][0]["state"], "active");
-    assert_eq!(registry.status()["plugins"][0]["errors"], 2);
-}
-
-#[test]
-fn shutdown_runs_every_plugin_once_and_marks_it_stopped() {
-    let host = RecordingHost::new(SurvivalStats::default());
-    let plugin = FakePlugin::new("once");
-    let shutdowns = Arc::clone(&plugin.shutdowns);
-    let mut registry = registry_with(vec![Box::new(plugin)]);
-    registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
-
-    registry.shutdown_all();
-    registry.shutdown_all();
-    assert_eq!(shutdowns.load(Ordering::Relaxed), 1);
-    assert_eq!(registry.status()["plugins"][0]["state"], "stopped");
-    assert_eq!(registry.active_count(), 0);
-}
-
-#[test]
-fn ticking_before_install_is_a_warn_not_a_panic() {
-    let mut registry = registry_with(vec![Box::new(FakePlugin::new("orphan"))]);
-    registry.tick_all(Duration::from_secs(1));
-    assert_eq!(registry.status()["ticks"], 0, "nothing ran without a host");
-}
-
-#[test]
-fn the_metabolism_plugin_drains_and_announces_a_crossing_once() {
-    let host = RecordingHost::new(SurvivalStats::new(80.5, 0.0, Default::default()));
-    let mut registry = registry_with(vec![Box::new(MetabolismPlugin::new(SurvivalConfig::default()))]);
-    registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
-
-    // 60 s at 1.5/min takes 80.5 → 79.0, crossing into peckish.
-    registry.tick_all(Duration::from_secs(60));
-    let thresholds: Vec<Value> = host
-        .events()
-        .into_iter()
-        .filter(|(name, _)| name == EVENT_THRESHOLD)
-        .map(|(_, payload)| payload)
-        .collect();
-    assert_eq!(thresholds.len(), 1, "one event per crossing");
-    assert_eq!(thresholds[0]["from"], "satiated");
-    assert_eq!(thresholds[0]["to"], "peckish");
-    assert_eq!(thresholds[0]["expression"], "neutral");
-
-    // The stats really moved, and the host was told out loud.
-    let hunger = crate::survival::lock_stats(&host.stats).hunger;
-    assert!((hunger - 79.0).abs() < 0.001, "hunger {hunger}");
-    assert_eq!(host.spoken().len(), 1);
-    assert_eq!(host.spoken()[0].1, "neutral");
-
-    // A second tick inside the same tier announces nothing new.
-    registry.tick_all(Duration::from_secs(60));
-    let after = host
-        .events()
-        .into_iter()
-        .filter(|(name, _)| name == EVENT_THRESHOLD)
-        .count();
-    assert_eq!(after, 1);
-}
-
-#[test]
-fn the_metabolism_plugin_is_silent_when_notifications_are_off() {
-    let host = RecordingHost::new(SurvivalStats::new(80.5, 0.0, Default::default()));
-    let config = SurvivalConfig {
-        notify: false,
-        ..SurvivalConfig::default()
-    };
-    let mut registry = registry_with(vec![Box::new(MetabolismPlugin::new(config))]);
-    registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
-    registry.tick_all(Duration::from_secs(60));
-
-    assert_eq!(host.spoken().len(), 0, "notify=false keeps it quiet");
     assert_eq!(
-        host.events()
-            .into_iter()
-            .filter(|(name, _)| name == EVENT_THRESHOLD)
-            .count(),
-        1,
-        "the event still fires"
+        registry.status()["plugins"][0]["errors"],
+        json!(MAX_CONSECUTIVE_TICK_ERRORS)
     );
 }
 
+/* ------------------------------------------------------------------ *
+ * Contributions: routes + config
+ * ------------------------------------------------------------------ */
+
 #[test]
-fn a_disabled_survival_config_means_no_plugins() {
-    let host = RecordingHost::new(SurvivalStats::default());
-    let config = SurvivalConfig {
-        enabled: false,
-        ..SurvivalConfig::default()
-    };
-    // `install()` is process-wide, so this mirrors what it does with the config.
+fn routes_are_collected_from_every_live_plugin() {
+    let host: Arc<dyn PluginHost> = Arc::new(Recorder::default());
     let mut registry = PluginRegistry::new();
-    assert!(!config.enabled);
-    assert!(registry.is_empty());
-    registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
-    assert_eq!(registry.active_count(), 0);
+    let (a, _) = counting("a", 2, false);
+    let (b, _) = counting("b", 1, false);
+    registry.register(a).expect("register");
+    registry.register(b).expect("register");
+    registry.init_all(Arc::clone(&host));
+
+    let paths: Vec<&str> = registry.routes().iter().map(|route| route.path).collect();
+    assert_eq!(paths, vec!["/stub-a1", "/stub-a2", "/stub-b1"]);
 }
 
 #[test]
-fn the_telemetry_plugin_frames_on_its_interval() {
-    let host = RecordingHost::new(SurvivalStats::new(70.0, 10.0, Default::default()));
-    let mut registry = registry_with(vec![Box::new(TelemetryPlugin::new(60))]);
-    registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
+fn config_specs_are_collected_only_from_plugins_that_own_one() {
+    let host: Arc<dyn PluginHost> = Arc::new(Recorder::default());
+    let mut registry = PluginRegistry::new();
+    let (owner, _) = counting("owner", 0, true);
+    let (bare, _) = counting("bare", 0, false);
+    registry.register(owner).expect("register");
+    registry.register(bare).expect("register");
+    registry.init_all(Arc::clone(&host));
 
-    // 59 s: nothing yet. The 60th second pushes a frame.
-    registry.tick_all(Duration::from_secs(59));
-    assert!(host
-        .events()
-        .iter()
-        .all(|(name, _)| name != EVENT_SURVIVAL));
-    registry.tick_all(Duration::from_secs(1));
-    let frames: Vec<Value> = host
-        .events()
-        .into_iter()
-        .filter(|(name, _)| name == EVENT_SURVIVAL)
-        .map(|(_, payload)| payload)
-        .collect();
-    assert_eq!(frames.len(), 1, "one frame per interval");
-    assert_eq!(frames[0]["source"], "telemetry");
-    assert_eq!(frames[0]["stats"]["tier"], "peckish");
+    let specs = registry.config_specs();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].key(), "stub");
 
-    // A minute later there is a second frame.
-    registry.tick_all(Duration::from_secs(60));
-    assert_eq!(
-        host.events()
-            .into_iter()
-            .filter(|(name, _)| name == EVENT_SURVIVAL)
-            .count(),
-        2
+    registry.shutdown_all();
+    assert!(
+        registry.config_specs().is_empty(),
+        "a stopped plugin owns nothing"
     );
 }
 
+/* ------------------------------------------------------------------ *
+ * Zero-footprint guarantees
+ * ------------------------------------------------------------------ */
+
 #[test]
-fn telemetry_cannot_be_configured_faster_than_a_minute() {
-    // 0 or 5 are both clamped to 60 s, so a chatty config cannot flood the bus.
-    for configured in [0u64, 5, 60] {
-        let host = RecordingHost::new(SurvivalStats::default());
-        let mut registry = registry_with(vec![Box::new(TelemetryPlugin::new(configured))]);
-        registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
-        registry.tick_all(Duration::from_secs(30));
-        assert!(
-            host.events().iter().all(|(name, _)| name != EVENT_SURVIVAL),
-            "{configured} should not fire at 30 s"
-        );
+fn a_plugin_can_be_dropped_without_touching_the_host() {
+    // An empty registry is a legal app: no plugins, no plugin routes, no config
+    // sections, and no panic anywhere.
+    let host: Arc<dyn PluginHost> = Arc::new(Recorder::default());
+    let mut registry = PluginRegistry::new();
+    assert!(registry.is_empty());
+
+    let status = registry.init_all(Arc::clone(&host));
+    assert_eq!(status["count"], json!(0));
+    assert_eq!(status["ticks"], json!(0));
+    registry.tick_all(Duration::from_secs(1));
+    registry.shutdown_all();
+
+    assert!(registry.routes().is_empty());
+    assert!(registry.config_specs().is_empty());
+}
+
+#[test]
+fn the_host_owns_the_introspection_route() {
+    // `/plugins` belongs to the registry, not to any plugin: it answers even on
+    // a host with nothing installed.
+    let paths: Vec<&str> = routes().iter().map(|route| route.path).collect();
+    assert!(paths.contains(&"/plugins"), "{paths:?}");
+    let status = status();
+    for key in ["ok", "ticks", "count", "active", "plugins"] {
+        assert!(status.get(key).is_some(), "missing {key}");
     }
 }
-
-#[test]
-fn the_status_body_names_every_plugin_and_its_health() {
-    let host = RecordingHost::new(SurvivalStats::default());
-    let mut registry = registry_with(vec![
-        Box::new(MetabolismPlugin::new(SurvivalConfig::default())),
-        Box::new(TelemetryPlugin::new(60)),
-    ]);
-    registry.init_all(Arc::clone(&host) as Arc<dyn PluginHost>);
-    registry.tick_all(Duration::from_secs(1));
-
-    let status = registry.status();
-    assert_eq!(status["ok"], true);
-    assert_eq!(status["count"], 2);
-    assert_eq!(status["active"], 2);
-    assert_eq!(status["plugins"][0]["id"], "metabolism");
-    assert_eq!(status["plugins"][1]["id"], "telemetry");
-    assert_eq!(status["plugins"][0]["status"]["last_tier"], "satiated");
-    assert_eq!(status["plugins"][1]["status"]["interval_secs"], 60);
-    assert!(registry.is_active("metabolism"));
-    assert!(!registry.is_active("nope"));
-}
-
-#[test]
-fn feed_rejects_a_food_the_pantry_does_not_have() {
-    // `feed` needs the process-wide install, so check the resolution path it
-    // uses instead; the API-level behaviour is covered by the route tests.
-    assert!(crate::survival::find_food("nothing_like_this").is_none());
-    let error = FeedError::UnknownFood("nothing_like_this".to_string());
-    assert_eq!(error.status_code(), 400);
-    assert!(error.to_string().contains("nothing_like_this"));
-    assert_eq!(FeedError::NotInstalled.status_code(), 400);
-    assert_eq!(
-        FeedError::Refused(json!({"label": "Cake", "refusal": "too_full"})).status_code(),
-        409
-    );
-}
-

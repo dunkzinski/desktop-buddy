@@ -183,6 +183,37 @@ byte-for-byte alone.
 
 ---
 
+## Plugins (a feature you can delete in three lines)
+
+Features that are not the avatar engine itself are plugins, and the core does not
+know they exist. The host in `src/plugins/mod.rs` defines four seams — lifecycle
+(`init` / `tick` / `shutdown`), HTTP routes, an owned config block, and the host
+capabilities a plugin may use (`emit`, `notify`, `now_ms`, `rules_path`) — and
+nothing else. `lib.rs` and `api.rs` contain no survival type, constant, route or
+event.
+
+The shipped example is the survival plugin:
+
+```text
+src/plugins/survival/model.rs    hunger, saturation, tiers, the food catalog
+src/plugins/survival/plugin.rs   the tick loop, telemetry, meal announcements
+src/plugins/survival/routes.rs   /survival, /survival/feed, /foods
+src/plugins/survival/config.rs   the `survival` block of watcher_rules.json
+```
+
+It contributes its own endpoints (they are not listed in `api.rs`), parses and
+validates its own config section (the Settings modal just asks the registry which
+sections exist), and is switched off by `survival.enabled: false` — the plugin
+stays installed but idle, so the bars freeze and the routes keep answering
+instead of 404-ing.
+
+Removing it is three edits: delete `src/plugins/survival/`, drop its `pub mod`
+line, delete its one `register` call in `src/plugins/manifest.rs`. Adding a
+plugin is the same in reverse. `GET /plugins` lists what is installed, and
+`tools/verify_docs.py` reads the route table straight out of the plugin sources.
+
+---
+
 ## Speaking out loud (local voice)
 
 Every speech bubble — from `lfm3-fast`, from `hermes_cli`, from `POST /speak`,
@@ -771,6 +802,11 @@ src-tauri/            Rust application (Tauri 2)
   src/tts.rs          local Piper voice: config, text sanitizing, `avatar-tts` playback thread
   src/stt.rs          push-to-talk: `stt` config, cpal capture (mono downmix), 16 kHz resample, whisper-cli + Silero VAD, `avatar-ptt` worker
   src/platform/       the OS boundary: types, hotkey grammar, win32.rs, unix.rs (Linux/macOS)
+  src/settings.rs     GET/POST /config: reads and edits watcher_rules.json by byte span
+  src/plugins/
+    mod.rs            feature-blind plugin host: Plugin trait, PluginHost, PluginRoute, PluginConfig, registry
+    manifest.rs       the only file that names a plugin (add/remove one here)
+    survival/         the survival feature, self-contained: model.rs, plugin.rs, routes.rs, config.rs
   src/bin/
     char-rig-mcp.rs   second binary: stdio MCP server exposing the avatar_* tools over HTTP
     char-rig-watcher.rs  third binary: SSE + /context watcher that wakes Hermes on triggers

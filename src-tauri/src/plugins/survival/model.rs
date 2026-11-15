@@ -1,4 +1,7 @@
-//! Survival stats: hunger, saturation and the metabolic drain between meals.
+//! The survival model: hunger, saturation, tiers and the metabolic drain.
+//!
+//! Private to the survival plugin (`crate::plugins::survival`): nothing outside
+//! that directory imports it, which is what keeps the feature removable.
 //!
 //! The avatar is a persistent companion, so it gets a persistent appetite. Two
 //! numbers drive everything:
@@ -857,14 +860,6 @@ impl SurvivalStats {
             "seconds_to_starving": self.seconds_until(HUNGRY_MIN).map(|s| s.round() as u64),
         })
     }
-}
-
-/// Borrow the shared stats. Poisoning is recovered, exactly like
-/// [`crate::lock_or_recover`]: one panicking reader must not disable hunger.
-pub fn lock_stats(handle: &crate::plugins::SurvivalHandle) -> std::sync::MutexGuard<'_, SurvivalStats> {
-    handle
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// What one tick changed.

@@ -1,7 +1,8 @@
 """Cross-check the markdown docs against the actual Rust/JS source.
 
 Checks:
-  1. every `.route()` in api.rs appears in API.md and ARCHITECTURE.md
+  1. every `.route()` in api.rs and every `PluginRoute` in src/plugins/ appears in
+     API.md and ARCHITECTURE.md
   2. every registered tauri command appears in both docs
   3. every event type emitted on the SSE bus is documented
   4. every command the UI actually invokes is registered
@@ -27,7 +28,23 @@ lib_expressions = []
 
 # ---------- 1. routes ----------
 routes = set(re.findall(r'\.route\(\s*"([^"]+)"', api_rs))
-print(f"routes in api.rs ({len(routes)}): {', '.join(sorted(routes))}")
+# Plugins contribute their own endpoints, so those are not in api.rs at all:
+# `PluginRoute::get("/x", ..)` / `::post` / `::get_post` / `::new` are the ways a
+# route reaches the router now. Scan every plugin file for them.
+plugin_routes = set()
+for plugin_path in sorted((ROOT / "src-tauri/src/plugins").rglob("*.rs")):
+    # Test stubs are not routes the app serves.
+    if plugin_path.name == "tests.rs" or plugin_path.name.endswith("_tests.rs"):
+        continue
+    plugin_routes |= set(
+        re.findall(
+            r'PluginRoute::(?:get|post|get_post|new)\(\s*"([^"]+)"',
+            plugin_path.read_text(encoding="utf-8"),
+        )
+    )
+routes |= plugin_routes
+print(f"routes in api.rs + plugins ({len(routes)}): {', '.join(sorted(routes))}")
+print(f"  of which contributed by plugins ({len(plugin_routes)}): {', '.join(sorted(plugin_routes))}")
 
 
 def doc_routes(text):

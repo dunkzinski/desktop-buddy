@@ -215,20 +215,6 @@ impl ApiError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self { status: StatusCode::BAD_REQUEST, message: message.into() }
     }
-
-    /// A refusal carries its own status: "not installed" and "no such food" are
-    /// 400s, while "the avatar is too full to eat" is a 409 — the request was
-    /// well-formed, the creature simply said no.
-    fn status(status: StatusCode, message: impl Into<String>) -> Self {
-        Self { status, message: message.into() }
-    }
-}
-
-impl From<crate::plugins::FeedError> for ApiError {
-    fn from(err: crate::plugins::FeedError) -> Self {
-        let status = StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
-        Self::status(status, err.to_string())
-    }
 }
 
 impl IntoResponse for ApiError {
@@ -336,9 +322,9 @@ fn bind_first_available(preferred_port: u16) -> std::io::Result<std::net::TcpLis
 /// The page is served from a custom scheme (`http://tauri.localhost`), so every
 /// call it makes to `http://127.0.0.1:8765` is cross-origin and a `POST` with
 /// `content-type: application/json` is preceded by an `OPTIONS` preflight. The
-/// router answers no route for `OPTIONS`, so without this layer the survival
-/// widget's Feed button (and any other in-page fetch) fails in the browser
-/// before it ever reaches a handler.
+/// router answers no route for `OPTIONS`, so without this layer every in-page
+/// `fetch` (the settings modal, and any plugin-provided UI) fails
+/// in the browser before it ever reaches a handler.
 ///
 /// Preflights are answered here instead of being forwarded: the method routers
 /// only register `GET`/`POST`, so letting the request through would produce a
@@ -372,7 +358,7 @@ async fn allow_webview_cors(req: axum::extract::Request, next: Next) -> Response
 }
 
 fn router(api: ApiCtx) -> Router {
-    Router::new()
+    let mut router: Router<ApiCtx> = Router::new()
         .route("/health", get(health))
         .route("/context", get(context))
         .route("/clipboard", get(clipboard).post(set_clipboard))
@@ -411,11 +397,33 @@ fn router(api: ApiCtx) -> Router {
         .route("/ai-profiles", get(ai_profiles))
         .route("/ai-profile", post(switch_ai_profile))
         .route("/config", get(get_config).post(set_config))
-        .route("/survival", get(survival_state).post(set_survival))
-        .route("/survival/feed", post(survival_feed))
-        .route("/foods", get(foods))
-        .route("/plugins", get(plugins_status))
-        .route("/shutdown", post(shutdown_app))
+        .route("/shutdown", post(shutdown_app));
+
+    // Everything else is a plugin's business. The host merges whatever the
+    // installed plugins contribute — it has no endpoint names of its own beyond
+    // the core surface above, so dropping a plugin drops its routes.
+    if !crate::plugins::installed() {
+        // The router is built once, so this is the moment plugin routes must
+        // exist. `setup` installs plugins first; if that ever regresses, say so
+        // instead of silently serving a plugin-less API.
+        log::warn!("api: plugins are not installed yet; no plugin routes will be served");
+    }
+    let mut seen: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+    let mut contributed = 0usize;
+    for route in crate::plugins::routes() {
+        if !seen.insert(route.path) {
+            log::warn!(
+                "two plugins registered {:?}; keeping the first contribution",
+                route.path
+            );
+            continue;
+        }
+        router = router.route(route.path, route.methods);
+        contributed += 1;
+    }
+    log::info!("api: merged {contributed} plugin route(s)");
+
+    router
         .layer(middleware::from_fn(allow_webview_cors))
         .with_state(api)
 }
@@ -950,8 +958,9 @@ async fn get_config(State(api): State<ApiCtx>) -> Json<Value> {
 /// untouched. Live effects, in order:
 ///
 /// * `tts.enabled` / `stt.enabled` → the runtime mute switches;
-/// * `survival.*` → `plugins::apply_survival_config` (the metabolism plugin
-///   reads it on its next tick, so new drain rates bite within a second);
+/// * **any block a plugin owns** (`settings::apply_config` asks
+///   `plugins::config_specs()`), applied through the plugin's own
+///   `PluginConfig::apply`, which reports whether it is live or needs a restart;
 /// * `ai.*` / `vision.*` → one `ai_profile` SSE frame, which is what makes
 ///   `char-rig-watcher.exe` re-read the file (new endpoints, models, capture
 ///   mode) without being restarted.
@@ -990,12 +999,6 @@ async fn set_config(
     {
         crate::stt::set_enabled(enabled);
     }
-    if patch.get("survival").is_some() {
-        // Re-read what was actually written: one source of truth, and it also
-        // means a value the sanitizer clamped on load is the one applied.
-        let (config, _) = crate::survival::SurvivalConfig::load(Some(&path));
-        crate::plugins::apply_survival_config(&config);
-    }
     if applied.ai_changed {
         // The watcher adopts an `ai_profile` frame by re-reading the rules file.
         api.shared.emit_event(
@@ -1012,76 +1015,6 @@ async fn set_config(
     body["applied"] = json!(applied.applied);
     body["restart_required"] = json!(applied.restart_required);
     Ok(Json(body))
-}
-
-/* ------------------------------------------------------------------ *
- * Survival: hunger, saturation and the food that refills them.
- * ------------------------------------------------------------------ */
-
-/// `GET /survival` — the live stats, the effective config and the plugin list.
-///
-/// Everything here is read under the stats mutex, so `hunger` and `tier` in one
-/// response always describe the same instant.
-async fn survival_state() -> Json<Value> {
-    Json(crate::plugins::survival_status())
-}
-
-#[derive(Debug, Deserialize)]
-struct SurvivalBody {
-    /// New hunger level, 0–100. Absent ⇒ leave it alone.
-    #[serde(default)]
-    hunger: Option<f32>,
-    /// New saturation level, 0–100. Absent ⇒ leave it alone.
-    #[serde(default)]
-    saturation: Option<f32>,
-}
-
-/// `POST /survival {"hunger": 12}` — override the bars by hand.
-///
-/// Used by tests, by the UI's debug drawer and by automation that wants to force
-/// a state. A tier change caused here emits the same `survival-threshold` event
-/// a natural crossing would, so listeners never miss one.
-async fn set_survival(Json(body): Json<SurvivalBody>) -> Result<Json<Value>, ApiError> {
-    if body.hunger.is_none() && body.saturation.is_none() {
-        return Err(ApiError::bad_request(
-            "send at least one of `hunger` or `saturation`",
-        ));
-    }
-    crate::plugins::set_levels(body.hunger, body.saturation)
-        .map(Json)
-        .map_err(ApiError::from)
-}
-
-#[derive(Debug, Deserialize)]
-struct FeedBody {
-    /// Catalog id, e.g. `"apple"`. `id` is accepted as an alias so an agent that
-    /// read the catalog's `id` field can round-trip it without guessing.
-    #[serde(default)]
-    food: Option<String>,
-    #[serde(default)]
-    id: Option<String>,
-}
-
-/// `POST /survival/feed {"food": "apple"}` — eat one item from the catalog.
-///
-/// Returns 409 when the avatar refuses (full, or still digesting), 400 for an
-/// unknown id. A successful feed emits `survival-meal` and announces the tier.
-async fn survival_feed(Json(body): Json<FeedBody>) -> Result<Json<Value>, ApiError> {
-    let food = body
-        .food
-        .or(body.id)
-        .ok_or_else(|| ApiError::bad_request("send `food` (a catalog id)"))?;
-    crate::plugins::feed(&food).map(Json).map_err(ApiError::from)
-}
-
-/// `GET /foods` — the static catalog, so an agent can pick a valid id.
-async fn foods() -> Json<Value> {
-    Json(crate::survival::food_catalog())
-}
-
-/// `GET /plugins` — every registered plugin, its state and its last error.
-async fn plugins_status() -> Json<Value> {
-    Json(crate::plugins::status())
 }
 
 async fn shutdown_app(State(api): State<ApiCtx>) -> Json<Value> {

@@ -18,7 +18,7 @@
 //!    and the edited block is compared against the value we meant to write.
 //! 3. **A refusal beats a bad value.** Every block is validated by the same
 //!    typed struct the app loads it with ([`TtsConfig`], [`SttConfig`],
-//!    [`SurvivalConfig`]), so a setting the modal can write is a setting the
+//!    struct), so a setting the modal can write is a setting the
 //!    runtime can read.
 //!
 //! A previous version is kept as `watcher_rules.json.bak` on every write.
@@ -27,8 +27,8 @@ use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
+use crate::plugins::PluginConfig;
 use crate::stt::SttConfig;
-use crate::survival::SurvivalConfig;
 use crate::tts::TtsConfig;
 
 /// Keys this module is allowed to write, per block.
@@ -57,14 +57,6 @@ const VISION_KEYS: &[&str] = &[
     "max_image_dim",
     "jpeg_quality",
     "trigger_phrases",
-];
-const SURVIVAL_KEYS: &[&str] = &[
-    "enabled",
-    "start_hunger",
-    "start_saturation",
-    "metabolism",
-    "notify",
-    "telemetry_secs",
 ];
 /// Fields of one `ai_profiles` entry the modal may edit.
 const PROFILE_KEYS: &[&str] = &["max_tokens", "timeout_secs", "endpoint", "model"];
@@ -162,7 +154,6 @@ pub fn config_json(path: Option<&Path>) -> Value {
 
     let tts: TtsConfig = block(&document, "tts");
     let stt: SttConfig = block(&document, "stt");
-    let survival: SurvivalConfig = block(&document, "survival");
 
     let vision_raw = document.get("vision").cloned().unwrap_or(Value::Null);
     let vision = json!({
@@ -214,12 +205,7 @@ pub fn config_json(path: Option<&Path>) -> Value {
     // A block whose keys are all unknown parses to *defaults* — the file looks
     // configured while the app runs on something else. Say so out loud.
     let mut warnings: Vec<String> = Vec::new();
-    for (key, allowed) in [
-        ("tts", TTS_KEYS),
-        ("stt", STT_KEYS),
-        ("vision", VISION_KEYS),
-        ("survival", SURVIVAL_KEYS),
-    ] {
+    for (key, allowed) in [("tts", TTS_KEYS), ("stt", STT_KEYS), ("vision", VISION_KEYS)] {
         if let Some(block) = document.get(key).filter(|value| value.is_object()) {
             let stray = unknown_keys(block, allowed);
             if !stray.is_empty() {
@@ -233,16 +219,32 @@ pub fn config_json(path: Option<&Path>) -> Value {
         }
     }
 
+    // Plugin-owned sections: the plugin describes its own effective config and
+    // reports its own stray keys. This is the only place the editor touches
+    // them, and it has no idea what any of them mean.
+    let mut plugin_sections = serde_json::Map::new();
+    for spec in crate::plugins::config_specs() {
+        let key = spec.key();
+        plugin_sections.insert(key.to_string(), spec.describe());
+        warnings.extend(spec.warnings(document.get(key)));
+    }
+
+    let mut settings = serde_json::Map::new();
+    settings.insert("tts".to_string(), tts_value);
+    settings.insert("stt".to_string(), stt_value);
+    settings.insert("vision".to_string(), vision);
+    for (key, value) in plugin_sections {
+        settings.insert(key, value);
+    }
+    settings.insert(
+        "ai".to_string(),
+        json!({ "active_profile": active, "profiles": profiles }),
+    );
+
     json!({
         "ok": true,
         "path": path.display().to_string(),
-        "settings": {
-            "tts": tts_value,
-            "stt": stt_value,
-            "vision": vision,
-            "survival": survival.to_json(),
-            "ai": { "active_profile": active, "profiles": profiles },
-        },
+        "settings": Value::Object(settings),
         "paths": paths,
         "warnings": warnings,
     })
@@ -591,42 +593,6 @@ fn validate_stt(block: &SttConfig, patch: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// `SurvivalConfig::sanitized` is the runtime's own clamp, so reuse it as the
-/// validator: if sanitizing changed a field, that field was out of range. The
-/// error names the field that failed rather than the whole block.
-fn validate_survival(block: &SurvivalConfig) -> Result<(), String> {
-    let clean = block.clone().sanitized();
-    if clean.start_hunger != block.start_hunger {
-        return Err(format!(
-            "`survival.start_hunger` must be between 0 and {}",
-            crate::survival::HUNGER_MAX
-        ));
-    }
-    if clean.start_saturation != block.start_saturation {
-        return Err(
-            "`survival.start_saturation` must be between 0 and `start_hunger`".to_string()
-        );
-    }
-    if clean.metabolism.hunger_per_min != block.metabolism.hunger_per_min {
-        return Err(format!(
-            "`survival.metabolism.hunger_per_min` must be between {} and {}",
-            crate::survival::MIN_DRAIN_PER_MIN,
-            crate::survival::MAX_DRAIN_PER_MIN
-        ));
-    }
-    if clean.metabolism.saturation_per_min != block.metabolism.saturation_per_min {
-        return Err(format!(
-            "`survival.metabolism.saturation_per_min` must be between {} and {}",
-            crate::survival::MIN_DRAIN_PER_MIN,
-            crate::survival::MAX_DRAIN_PER_MIN
-        ));
-    }
-    if clean.telemetry_secs != block.telemetry_secs {
-        return Err("`survival.telemetry_secs` must be 0 (off) or at least 60".to_string());
-    }
-    Ok(())
-}
-
 /* ------------------------------------------------------------------ *
  * POST /config
  * ------------------------------------------------------------------ */
@@ -640,7 +606,10 @@ pub fn apply_config(path: &Path, patch: &Value) -> Result<Applied, String> {
         .as_object()
         .ok_or_else(|| "the request body must be a JSON object".to_string())?;
     if patch.is_empty() {
-        return Err("nothing to apply: send at least one of tts, stt, vision, survival, ai".to_string());
+        return Err(
+            "nothing to apply: send at least one section (tts, stt, vision, ai, or a plugin block)"
+                .to_string(),
+        );
     }
 
     let (text, document) = read_document(path)?;
@@ -680,16 +649,38 @@ pub fn apply_config(path: &Path, patch: &Value) -> Result<Applied, String> {
         }
     }
 
-    /* survival — applied live by the caller through `plugins::` */
-    if let Some(block_patch) = patch.get("survival") {
-        let block: SurvivalConfig =
-            typed_block(block_patch, document.get("survival"), SURVIVAL_KEYS, "survival")?;
-        validate_survival(&block)?;
-        let rendered = serde_json::to_string_pretty(&block)
-            .map_err(|err| format!("`survival`: {err}"))?;
-        next = replace_value(&next, "survival", &indented(&rendered, 2, newline))?;
-        for key in object_patch(block_patch, "survival")?.keys() {
-            applied.push(format!("survival.{key}"));
+    /* Plugin-owned sections: the plugin validates and canonicalises its own
+       block, and later applies it. The editor never learns what is in it. */
+    let specs = crate::plugins::config_specs();
+    let mut to_apply: Vec<(std::sync::Arc<dyn PluginConfig>, Value)> = Vec::new();
+    for spec in &specs {
+        let key = spec.key();
+        let Some(block_patch) = patch.get(key) else {
+            continue;
+        };
+        let rendered = spec.validate(document.get(key), block_patch)?;
+        let block: Value = serde_json::from_str(&rendered)
+            .map_err(|err| format!("`{key}`: the plugin returned invalid JSON: {err}"))?;
+        next = replace_value(&next, key, &indented(&rendered, 2, newline))?;
+        for field in object_patch(block_patch, key)?.keys() {
+            applied.push(format!("{key}.{field}"));
+        }
+        to_apply.push((std::sync::Arc::clone(spec), block));
+    }
+
+    // A block nothing claims is a typo, not a plugin that is not installed: say
+    // which keys *are* owned so the caller can see the difference.
+    for key in patch.keys() {
+        if matches!(key.as_str(), "tts" | "stt" | "vision" | "ai") {
+            continue;
+        }
+        if !specs.iter().any(|spec| spec.key() == key.as_str()) {
+            let mut known: Vec<&str> = vec!["tts", "stt", "vision", "ai"];
+            known.extend(specs.iter().map(|spec| spec.key()));
+            return Err(format!(
+                "no plugin owns `{key}` (known sections: {})",
+                known.join(", ")
+            ));
         }
     }
 
@@ -789,6 +780,14 @@ pub fn apply_config(path: &Path, patch: &Value) -> Result<Applied, String> {
         log::warn!("settings: could not write {}: {err}", backup.display());
     }
     write_atomic(path, &next)?;
+
+    // Only now that the file is on disk do the plugins adopt the new blocks, so
+    // a failed write can never leave the runtime ahead of the config.
+    for (spec, block) in to_apply {
+        if spec.apply(&block).is_restart() {
+            restart.push(spec.key().to_string());
+        }
+    }
 
     log::info!("settings: wrote {} ({} field(s))", path.display(), applied.len());
 
@@ -911,9 +910,11 @@ mod tests {
         // The rest of the block survived (partial patch, not a replacement).
         assert_eq!(doc["tts"]["model_path"], json!("C:\\old\\voice.onnx"));
         assert_eq!(doc["tts"]["length_scale"], json!(1.0));
-        // Everything outside the block is untouched, including key order.
+        // Everything outside the block is untouched, including key order — and
+        // that includes the block no installed plugin owns (`survival` here:
+        // these unit tests run with an empty registry).
         assert!(text.contains(r#""hotkey": "Alt+Space""#));
-        assert!(text.contains("metabolic_drain_rate") || text.contains("\"survival\""));
+        assert!(text.contains("metabolic_drain_rate"), "an unowned block survives");
         assert_eq!(doc["quick_tasks"][0]["label"], json!("x"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -992,25 +993,39 @@ mod tests {
     fn apply_config_leaves_a_backup_of_the_previous_file() {
         let dir = temp_dir("bak");
         let path = write_sample(&dir);
-        apply_config(&path, &json!({ "survival": { "enabled": false } })).expect("apply");
+        apply_config(&path, &json!({ "tts": { "length_scale": 1.3 } })).expect("apply");
         let backup = std::fs::read_to_string(dir.join("watcher_rules.json.bak")).expect("backup");
         assert_eq!(backup, SAMPLE);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn config_json_reports_the_stray_survival_keys_as_a_warning() {
-        let dir = temp_dir("warn");
+    fn a_block_no_plugin_owns_is_absent_from_get_config() {
+        // Zero footprint: with no survival plugin installed, `GET /config` does
+        // not offer that section at all (and its raw text stays in the file —
+        // see `apply_config_writes_the_tts_block_and_keeps_every_other_key`).
+        let dir = temp_dir("unowned");
         let path = write_sample(&dir);
         let body = config_json(Some(&path));
         assert_eq!(body["ok"], json!(true));
-        let warnings = body["warnings"].as_array().expect("warnings");
         assert!(
-            warnings.iter().any(|w| w.as_str().unwrap_or("").contains("metabolic_drain_rate")),
-            "{warnings:?}"
+            body["settings"].get("survival").is_none(),
+            "no plugin claims it: {:?}",
+            body["settings"]
         );
-        // The effective survival block is the typed default, not the stray keys.
-        assert_eq!(body["settings"]["survival"]["metabolism"]["hunger_per_min"], json!(1.5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_patch_for_a_block_no_plugin_owns_is_rejected_with_the_known_sections() {
+        let dir = temp_dir("unowned-patch");
+        let path = write_sample(&dir);
+        let before = std::fs::read_to_string(&path).expect("read");
+        let err = apply_config(&path, &json!({ "survival": { "enabled": false } }))
+            .expect_err("reject");
+        assert!(err.contains("no plugin owns `survival`"), "{err}");
+        assert!(err.contains("tts"), "lists the known sections: {err}");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
