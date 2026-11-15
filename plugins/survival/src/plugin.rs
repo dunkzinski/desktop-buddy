@@ -27,6 +27,7 @@ use crate::model::{
     self, Craving, CravingKind, EatOutcome, FoodGroup, HungerTier, SurvivalConfig, SurvivalStats,
 };
 use crate::fishing::{self, EscapeReason, Fishing, FishingPhase, ReelSpec};
+use crate::store;
 
 /// `survival` — a periodic telemetry frame.
 pub const EVENT_SURVIVAL: &str = "survival";
@@ -40,6 +41,8 @@ pub const EVENT_CRAFT: &str = "survival-craft";
 pub const EVENT_CRAVING: &str = "survival-craving";
 /// `inventory-changed` — the bag gained or lost items.
 pub const EVENT_INVENTORY: &str = "inventory-changed";
+/// `store-transaction` — a purchase or a sale moved coins and items.
+pub const EVENT_STORE: &str = "store-transaction";
 /// `fishing-started` — a cast went out, the bobber is floating.
 pub const EVENT_FISHING_STARTED: &str = "fishing-started";
 /// `fishing-bite` — the bobber dipped; a reaction window is open.
@@ -299,6 +302,7 @@ impl Survival {
             "expression": stats["expression"],
             "craving": stats["craving"],
             "well_fed_secs": stats["well_fed_secs"],
+            "coins": stats["coins"],
             "inventory": self.inventory.summary_json(),
             "fishing": self.fishing.to_json(now, &self.config.fishing),
         })
@@ -557,16 +561,137 @@ impl Survival {
 
     /// `POST /survival/craft` with an explicit ingredient list. Order does not
     /// matter, counts do — the multiset has to match a recipe exactly.
+    ///
+    /// Naming the ingredients does not magic them into existence: the same bag
+    /// check runs, so the list has to be what the player actually holds.
     pub fn craft_from_ingredients(&mut self, ingredients: &[String]) -> Result<Value, FeedError> {
         let recipe = model::recipe_for_ingredients(ingredients)
             .ok_or_else(|| FeedError::NoRecipe(ingredients.to_vec()))?;
         self.cook(recipe)
     }
 
+    /// What the bag is short of for `recipe`, as `{item, label, need, held,
+    /// short}` entries. Empty means the recipe can be cooked right now.
+    pub fn missing_for(&self, recipe: &model::Recipe) -> Vec<Value> {
+        recipe
+            .ingredients
+            .iter()
+            .filter_map(|ingredient| {
+                let need = u32::from(ingredient.count);
+                let held = self.inventory.count(ingredient.food);
+                if held >= need {
+                    return None;
+                }
+                let label = inventory::find_item(ingredient.food)
+                    .map(|item| item.label)
+                    .unwrap_or(ingredient.food);
+                Some(json!({
+                    "item": ingredient.food,
+                    "label": label,
+                    "need": need,
+                    "held": held,
+                    "short": need - held,
+                }))
+            })
+            .collect()
+    }
+
+    /// The recipe book with the bag folded in: every line carries `held`, and
+    /// each recipe `can_cook` plus the `missing` list. A client can grey out
+    /// what it cannot cook without re-implementing the check.
+    pub fn recipes_json(&self) -> Value {
+        let recipes: Vec<Value> = model::RECIPES
+            .iter()
+            .map(|recipe| {
+                let missing = self.missing_for(recipe);
+                let mut body = recipe.to_json();
+                if let Some(object) = body.as_object_mut() {
+                    object.insert("can_cook".to_string(), json!(missing.is_empty()));
+                    object.insert("missing".to_string(), Value::Array(missing));
+                    object.insert(
+                        "ingredients".to_string(),
+                        Value::Array(
+                            recipe
+                                .ingredients
+                                .iter()
+                                .map(|ingredient| {
+                                    json!({
+                                        "food": ingredient.food,
+                                        "count": ingredient.count,
+                                        "held": self.inventory.count(ingredient.food),
+                                    })
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
+                body
+            })
+            .collect();
+        json!({ "ok": true, "count": recipes.len(), "recipes": recipes })
+    }
+
+    /// Take a recipe's ingredients out of the bag, publishing one
+    /// `inventory-changed` frame per line and returning what actually left.
+    fn consume_recipe(&mut self, recipe: &'static model::Recipe) -> Vec<Value> {
+        let mut consumed = Vec::new();
+        for ingredient in recipe.ingredients {
+            let removed = self.inventory.remove(ingredient.food, u32::from(ingredient.count));
+            if removed == 0 {
+                continue;
+            }
+            let change = self.emit_inventory(ingredient.food, -i64::from(removed), "cook");
+            consumed.push(json!({
+                "item": ingredient.food,
+                "label": change["label"],
+                "icon": change["icon"],
+                "count": removed,
+                "remaining": change["count"],
+            }));
+        }
+        consumed
+    }
+
+    /// Cook one recipe: check the bag, then eat, then spend the ingredients.
+    ///
+    /// The order matters and is pinned by tests. A missing ingredient costs
+    /// nothing (409 `missing_ingredients`, naming what is short), and a refused
+    /// meal (`too_full`, `still_digesting`) consumes nothing either — the
+    /// ingredients are only taken once the dish was actually eaten.
     fn cook(&mut self, recipe: &'static model::Recipe) -> Result<Value, FeedError> {
         let food = model::find_food(recipe.result)
             .ok_or_else(|| FeedError::UnknownFood(recipe.result.to_string()))?;
+
+        let missing = self.missing_for(recipe);
+        if !missing.is_empty() {
+            let short = missing
+                .iter()
+                .filter_map(|entry| {
+                    let label = entry["label"].as_str()?;
+                    let need = entry["short"].as_u64()?;
+                    Some(format!("{need} × {label}"))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(FeedError::Denied {
+                status: 409,
+                message: format!("cannot cook {} — still need {short}", recipe.label),
+                body: json!({
+                    "refusal": "missing_ingredients",
+                    "recipe": recipe.id,
+                    "recipe_label": recipe.label,
+                    "missing": missing,
+                    "inventory": self.inventory.summary_json(),
+                }),
+            });
+        }
+
         let outcome = self.stats.eat(food, host::now_ms());
+        let consumed = if outcome.accepted {
+            self.consume_recipe(recipe)
+        } else {
+            Vec::new()
+        };
         let mut payload = self.finish_meal(&outcome);
         if let Some(object) = payload.as_object_mut() {
             object.insert("recipe".to_string(), json!(recipe.id));
@@ -574,6 +699,7 @@ impl Survival {
             object.insert("blurb".to_string(), json!(recipe.blurb));
             object.insert("kind".to_string(), json!(food.kind.as_str()));
             object.insert("comfort_secs".to_string(), json!(food.comfort_secs));
+            object.insert("consumed".to_string(), json!(consumed));
             object.insert(
                 "cooked_with".to_string(),
                 json!(
@@ -815,6 +941,179 @@ impl Survival {
             object.insert("change".to_string(), changed);
         }
         Ok(payload)
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Store & economy
+     * ---------------------------------------------------------------- */
+
+    /// The wallet, for tests and for the read-only routes.
+    pub fn coins(&self) -> u32 {
+        self.stats.coins
+    }
+
+    /// `GET /store` — the price list, what the player already holds, and the
+    /// balance to spend. One request is enough to draw the whole shop.
+    pub fn store_json(&self) -> Value {
+        json!({
+            "ok": true,
+            "coins": self.stats.coins,
+            "starting_coins": model::STARTING_COINS,
+            "count": store::default_catalog().len(),
+            "catalog": store::catalog_json(&self.inventory),
+            "categories": store::StoreCategory::ALL
+                .iter()
+                .map(|category| json!({
+                    "id": category.as_str(),
+                    "label": category.label(),
+                }))
+                .collect::<Vec<_>>(),
+            "inventory": self.inventory.summary_json(),
+        })
+    }
+
+    /// Publish a completed trade and hand the caller its body.
+    ///
+    /// Coins and the bag summary are attached here rather than at each call
+    /// site, so a trade's reply and its event can never disagree about the
+    /// balance that resulted.
+    fn emit_store(&mut self, mut payload: Value) -> Value {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("coins".to_string(), json!(self.stats.coins));
+            object.insert("inventory".to_string(), self.inventory.summary_json());
+        }
+        host::emit(EVENT_STORE, &payload);
+        payload
+    }
+
+    /// `POST /store/buy` — spend coins and put the goods in the bag.
+    ///
+    /// All-or-nothing by design: both refusals (purse, capacity) are checked
+    /// before anything moves, so a failed purchase costs the player nothing and
+    /// a successful one cannot half-land. That is why [`Inventory::room_for`]
+    /// exists — `add` on its own would happily accept a partial stack after the
+    /// coins were already gone.
+    pub fn store_buy(&mut self, id: &str, count: u32) -> Result<Value, FeedError> {
+        let item = store::find_item(id).ok_or_else(|| {
+            FeedError::denied(
+                400,
+                format!("the store does not stock {id:?} — GET /store lists what it sells"),
+            )
+        })?;
+        let count = count.clamp(1, inventory::MAX_ADD);
+        let Some(cost) = item.buy_total(count) else {
+            return Err(FeedError::denied(
+                400,
+                format!("{} x{count} is not a price the purse can express", item.label),
+            ));
+        };
+        if self.stats.coins < cost {
+            let shortfall = cost - self.stats.coins;
+            return Err(FeedError::Denied {
+                status: 409,
+                message: format!(
+                    "not enough coins — {} x{count} costs {cost}, the purse holds {}",
+                    item.label, self.stats.coins
+                ),
+                body: json!({
+                    "refusal": "insufficient_coins",
+                    "item": item.id,
+                    "count": count,
+                    "required": cost,
+                    "coins": self.stats.coins,
+                    "shortfall": shortfall,
+                }),
+            });
+        }
+        let room = self.inventory.room_for(item.id, count);
+        if room < count {
+            return Err(FeedError::Denied {
+                status: 409,
+                message: format!(
+                    "the bag can only take {room} more {} — nothing was bought",
+                    item.label
+                ),
+                body: json!({
+                    "refusal": "inventory_full",
+                    "item": item.id,
+                    "count": count,
+                    "room": room,
+                }),
+            });
+        }
+
+        // Past both refusals the trade cannot fail: the bag had room for every
+        // unit, so `add` cannot come up short.
+        let outcome = self.inventory.add(item.id, count);
+        let charged = item.buy_total(outcome.added).unwrap_or(0);
+        if !self.stats.try_spend_coins(charged) {
+            // Unreachable while `room_for` and `add` share one stacking rule.
+            // Undo rather than hand out free goods if a future rule diverges.
+            self.inventory.remove(item.id, outcome.added);
+            return Err(FeedError::denied(
+                409,
+                "the purse changed mid-trade — nothing was bought",
+            ));
+        }
+
+        Ok(self.emit_store(json!({
+            "ok": true,
+            "action": "buy",
+            "item": item.id,
+            "label": item.label,
+            "icon": item.icon,
+            "count": outcome.added,
+            "requested": count,
+            "unit_price": item.buy_price,
+            "total": charged,
+        })))
+    }
+
+    /// `POST /store/sell` — hand goods back and bank the coins.
+    ///
+    /// Selling is exact, not best-effort: asking for more than the bag holds is
+    /// a refusal rather than a silent partial sale, because a player who typed
+    /// "sell 5" and got 3 would rightly call that a bug.
+    pub fn store_sell(&mut self, id: &str, count: u32) -> Result<Value, FeedError> {
+        let item = store::find_item(id).ok_or_else(|| {
+            FeedError::denied(
+                400,
+                format!("the store does not buy {id:?} — GET /store lists what it takes"),
+            )
+        })?;
+        let count = count.clamp(1, inventory::MAX_ADD);
+        let held = self.inventory.count(item.id);
+        if held < count {
+            return Err(FeedError::Denied {
+                status: 409,
+                message: format!(
+                    "only {held} {}(s) in the bag, cannot sell {count}",
+                    item.label
+                ),
+                body: json!({
+                    "refusal": "not_enough_items",
+                    "item": item.id,
+                    "count": count,
+                    "held": held,
+                }),
+            });
+        }
+
+        let removed = self.inventory.remove(item.id, count);
+        let earned = item.sell_total(removed);
+        self.stats.add_coins(earned);
+
+        Ok(self.emit_store(json!({
+            "ok": true,
+            "action": "sell",
+            "item": item.id,
+            "label": item.label,
+            "icon": item.icon,
+            "count": removed,
+            "requested": count,
+            "unit_price": item.sell_price,
+            "total": earned,
+        })))
     }
 
     /* ---------------------------------------------------------------- *
@@ -1167,9 +1466,22 @@ mod tests {
         panic!("no craving appeared within 1000 ticks");
     }
 
+    /// Put `(id, count)` pairs in the bag, then forget the frames that put them
+    /// there — every cooking test starts here now that a recipe is paid for out
+    /// of the inventory.
+    fn stock(state: &mut Survival, items: &[(&str, u32)]) {
+        for (id, count) in items {
+            state
+                .inventory_add(id, *count)
+                .unwrap_or_else(|err| panic!("stock {id}: {err}"));
+        }
+        take_recorded();
+    }
+
     #[test]
     fn a_craftable_recipe_produces_the_named_dish() {
         let mut state = plugin(40.0, 0.0);
+        stock(&mut state, &[("egg", 2), ("cheese", 1)]);
         let payload = state
             .craft_from_ingredients(&["egg".into(), "cheese".into(), "egg".into()])
             .expect("omelette");
@@ -1178,6 +1490,88 @@ mod tests {
         assert_eq!(payload["kind"], "cooked");
         assert_eq!(payload["accepted"], json!(true));
         assert!(payload["comfort_secs"].as_u64().unwrap() > 0);
+        // The ingredients really came out of the bag, and the reply says so.
+        assert_eq!(state.inventory().count("egg"), 0);
+        assert_eq!(state.inventory().count("cheese"), 0);
+        let consumed = payload["consumed"].as_array().expect("consumed");
+        assert_eq!(consumed.len(), 2, "one line per ingredient: {consumed:?}");
+        assert_eq!(consumed[0]["item"], "egg");
+        assert_eq!(consumed[0]["count"], json!(2));
+    }
+
+    #[test]
+    fn a_cook_without_the_ingredients_is_refused_and_spends_nothing() {
+        let mut state = plugin(40.0, 0.0);
+        stock(&mut state, &[("egg", 1)]);
+        let err = state.craft("omelette").expect_err("one egg is not two");
+        assert_eq!(err.status_code(), 409);
+        let body = err.to_json();
+        assert_eq!(body["refusal"], "missing_ingredients");
+        assert_eq!(body["recipe"], "omelette");
+        let missing = body["missing"].as_array().expect("missing");
+        assert_eq!(missing.len(), 2, "egg short by one, cheese absent: {missing:?}");
+        assert_eq!(missing[0]["short"], json!(1));
+        // Nothing was eaten or spent: the egg is still there.
+        assert_eq!(state.inventory().count("egg"), 1);
+        assert_eq!(state.stats().meals, 0);
+    }
+
+    #[test]
+    fn a_refused_meal_does_not_eat_the_ingredients() {
+        // A satiated avatar (100/60) refuses a meal, and the pantry survives.
+        let mut state = plugin(100.0, 60.0);
+        stock(&mut state, &[("egg", 2), ("cheese", 1)]);
+        let err = state.craft("omelette").expect_err("too full");
+        assert_eq!(err.status_code(), 409);
+        assert_eq!(err.to_json()["refusal"], "too_full");
+        assert_eq!(state.inventory().count("egg"), 2);
+        assert_eq!(state.inventory().count("cheese"), 1);
+    }
+
+    #[test]
+    fn cooking_announces_the_ingredients_leaving_the_bag() {
+        let mut state = plugin(40.0, 0.0);
+        stock(&mut state, &[("noodles", 2), ("egg", 1), ("mushroom", 1)]);
+        state.craft("ramen").expect("ramen");
+        let recorded = take_recorded();
+        let changes: Vec<&Value> = recorded
+            .events
+            .iter()
+            .filter(|(name, _)| name == EVENT_INVENTORY)
+            .map(|(_, payload)| payload)
+            .collect();
+        assert_eq!(changes.len(), 3, "one frame per ingredient: {changes:?}");
+        assert!(changes.iter().all(|change| change["source"] == "cook"));
+        assert_eq!(state.inventory().count("noodles"), 0);
+        assert_eq!(state.inventory().count("egg"), 0);
+        assert_eq!(state.inventory().count("mushroom"), 0);
+    }
+
+    #[test]
+    fn the_recipe_book_reports_what_can_be_cooked() {
+        let mut state = plugin(40.0, 0.0);
+        let before = state.recipes_json();
+        let omelette = before["recipes"]
+            .as_array()
+            .expect("recipes")
+            .iter()
+            .find(|recipe| recipe["id"] == "omelette")
+            .expect("omelette");
+        assert_eq!(omelette["can_cook"], json!(false));
+        assert_eq!(omelette["ingredients"][0]["held"], json!(0));
+        assert!(omelette["ingredients"][0]["count"].is_number());
+
+        stock(&mut state, &[("egg", 2), ("cheese", 1)]);
+        let after = state.recipes_json();
+        let omelette = after["recipes"]
+            .as_array()
+            .expect("recipes")
+            .iter()
+            .find(|recipe| recipe["id"] == "omelette")
+            .expect("omelette");
+        assert_eq!(omelette["can_cook"], json!(true));
+        assert!(omelette["missing"].as_array().expect("missing").is_empty());
+        assert_eq!(omelette["ingredients"][0]["held"], json!(2));
     }
 
     #[test]
@@ -1193,6 +1587,7 @@ mod tests {
     #[test]
     fn craft_by_recipe_id_still_works() {
         let mut state = plugin(40.0, 0.0);
+        stock(&mut state, &[("noodles", 2), ("egg", 1), ("mushroom", 1)]);
         let payload = state.craft("Ramen").expect("case-insensitive id");
         assert_eq!(payload["food"], "ramen");
         assert_eq!(payload["recipe_label"], "Bowl of ramen");
@@ -1206,6 +1601,7 @@ mod tests {
     #[test]
     fn cooking_a_meal_leaves_the_avatar_well_fed() {
         let mut state = plugin(40.0, 0.0);
+        stock(&mut state, &[("noodles", 1), ("tomato", 2), ("cheese", 1)]);
         let payload = state.craft("pasta").expect("pasta");
         assert!(state.stats().is_well_fed());
         assert_eq!(
@@ -1213,7 +1609,8 @@ mod tests {
             payload["comfort_secs"].as_u64().unwrap() as f32
         );
         // The halved-drain arithmetic itself is pinned in the model's tests; a
-        // raw ingredient, by contrast, grants no comfort at all.
+        // raw ingredient, by contrast, grants no comfort at all. (Feeding is the
+        // hand-it-a-snack path and does not need the bag.)
         advance_clock(31_000);
         state.feed("tomato").expect("tomato");
         assert!(!state.stats().is_well_fed(), "raw food is not comfort food");

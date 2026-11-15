@@ -78,7 +78,7 @@ ui/
     ├── editor.js       # Rig Edit Mode overlay gizmos (`drawEditorOverlay`, `hitTest`, mouse/wheel handlers), inspector rendering/bindings (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `bindExpressionSprite`, `saveRig`, `resetRig`), and the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`)
     ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), text-driven lip sync (`mouthPoseFor`, `setMouthFrom`, `stepMouth`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
     ├── bridge.js       # Tauri IPC commands, event listeners (`avatar-state-changed`, `emote`, `speak`, `avatar-animate`, etc.), hit-region publishing (`wireRegions`, `setClickThrough`), state sync (`reportState`, `applyRemoteState`, `applyPartPatch`)
-    ├── survival.js     # The **Survival** pop-out card and its three tabs: `setupSurvival` (hydrate from `GET /survival` + `GET /foods` + `GET /inventory`, follow the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `fishing-*` events, 15 s survival poll floor), `renderSurvival` (tier badge, the two bars and the craving row, from any of the payload shapes), `feed` (the real `POST /survival/feed`), `setCraving` / `clearCraving`, `craft`, `showSurvivalTab` (status / bag / fishing), `renderInventory` + `addItem` + `useItem` (`GET /inventory`, `POST /inventory/add`, `POST /inventory/use`), the fishing mini-game (`castLine` / `hookFish` / `reelFish` / `cancelFishing`, a 120 ms `GET /fishing` poll, `startMarker` animating off the plugin's sweep), `toggleSurvivalCard` / `survivalCardOpen`
+    ├── survival.js     # The **Survival** pop-out card and its four tabs: `setupSurvival` (hydrate from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follow the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events, 15 s survival poll floor), `renderSurvival` (tier badge, the two bars and the craving row, from any of the payload shapes), `feed` (the real `POST /survival/feed`), `setCraving` / `clearCraving`, `craft` + `syncCraftButton` (the recipe picker's `can_cook`/`missing`, so a cook the bag cannot pay for is not clickable), `showSurvivalTab` (status / bag / fishing / store), `renderInventory` + `addItem` + `useItem` (`GET /inventory`, `POST /inventory/add`, `POST /inventory/use`), the shop (`renderStore` + `renderWallet` + `pickStoreItem` + `syncStoreButtons` + `trade` over `GET /store`, `POST /store/buy`, `POST /store/sell`), the fishing mini-game (`castLine` / `hookFish` / `reelFish` / `cancelFishing`, a 120 ms `GET /fishing` poll, `startMarker` animating off the plugin's sweep), `toggleSurvivalCard` / `survivalCardOpen`
     ├── settings.js     # The **Settings** modal over `GET /config` / `POST /config`: `setupSettings` (build the form from one `FIELDS` spec, hydrate from the server, prime at startup), `renderSettings` (values, per-path ✓/✗, stray-key warnings), `collectPatch` (sends **only** what changed), `save` (partial `POST /config`, then reports applied vs `restart_required`), `toggleSettings` / `settingsOpen`
     └── main.js         # Entry point: DOM bindings, keyboard shortcuts, gaze targeting (`updateGaze`, `attachGazeTracking`), `window.__avatarDebug`, `requestAnimationFrame` main loop (`step`, `frame` — bubble re-anchor), the ask/task command bar (`openCommandBar`, `sendUserMessage`, quick-task chips, `resetSession`)
 ```
@@ -646,7 +646,7 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/settings.js` | The **Settings** modal (`#settings-modal`, three tabs): a declarative `FIELDS` spec drives the whole form (label, dotted `section.key`, input type, Browse… `kind`), `renderSettings` paints the `GET /config` body including the per-path ✓/✗ marks and the *stray key* warnings, `collectPatch` diffs the form against the loaded body so a save sends only what changed, and `save` reports `applied` vs `restart_required` from `POST /config` |
 | `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar, `H` toggles the History drawer), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), **gaze targeting** (`attachGazeTracking` — page `mousemove` plus the global `cursor-pos` stream; `updateGaze` — `look_at` > focused command bar > perch > global cursor (4 s) > idle glances, plus the eased hover weight and the clamped head-bone yaw bias), `window.__avatarDebug`, the **AI Brain** select (`setAiProfile` + a toast, with `refreshAiProfiles` every 12 s beside the watcher poll), behaviour loop (`step`, `startWalk`, `wander` — held back while a bubble is up), `requestAnimationFrame` driver (`frame`: `step` → `render` → `positionBubble`), play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
 | `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions || `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions |
-| `ui/js/survival.js` | The **Survival** card (top-left pop-out, not a panel section) with three tabs. `setupSurvival` hydrates from `GET /survival` + `GET /foods` + `GET /inventory`, follows the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `fishing-*` events with a 15 s survival poll as the floor, `renderSurvival` flattens every payload shape into the tier badge, the two bars and the craving row, `feed` is a real `POST /survival/feed`, `setCraving` / `clearCraving` drive `POST /survival`, `craft` is a real `POST /survival/craft` fed by the recipe picker (a 409 refusal prints the API's own prose). `showSurvivalTab` switches status / bag / fishing; `renderInventory` draws one cell per slot from `GET /inventory`, and `addItem` / `useItem` are real `POST /inventory/add` and `POST /inventory/use`; the fishing pane runs `castLine` / `hookFish` / `reelFish` / `cancelFishing` against the plugin, polls `GET /fishing` at 120 ms so the bobber beats the 1 s host tick, and animates the marker from the published sweep. `toggleSurvivalCard` / `survivalCardOpen` drive the card and Esc chain |
+| `ui/js/survival.js` | The **Survival** card (top-left pop-out, not a panel section) with four tabs. `setupSurvival` hydrates from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follows the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events with a 15 s survival poll as the floor, `renderSurvival` flattens every payload shape into the tier badge, the two bars and the craving row, `feed` is a real `POST /survival/feed`, `setCraving` / `clearCraving` drive `POST /survival`, `craft` is a real `POST /survival/craft` fed by the recipe picker, which comes from `GET /recipes` with the bag folded in (`can_cook`, `missing`, per-line `held`) so `syncCraftButton` can disable a cook that could not pay (a 409 `missing_ingredients` / refusal prints the API's own prose). `showSurvivalTab` switches status / bag / fishing / store; `renderInventory` draws one cell per slot from `GET /inventory`, and `addItem` / `useItem` are real `POST /inventory/add` and `POST /inventory/use`; the store pane draws one row per shelf entry from `GET /store` (`renderStore`, grouped by category, with the wallet and each entry's `owned` count), keeps Buy/Sell honest against the purse and the bag (`syncStoreButtons`) and trades for real through `trade` — a 409 `insufficient_coins` / `inventory_full` / `not_enough_items` prints the API's own prose; the fishing pane runs `castLine` / `hookFish` / `reelFish` / `cancelFishing` against the plugin, polls `GET /fishing` at 120 ms so the bobber beats the 1 s host tick, and animates the marker from the published sweep. `toggleSurvivalCard` / `survivalCardOpen` drive the card and Esc chain |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
 `ipc, state → rig → animator → {renderer, speech, editor, bridge}; editor → bridge; all → main`.
@@ -1088,7 +1088,7 @@ A bubble is transient by design, so the session's turns are also kept in a log:
   instead of guessing from bubbles that already dismissed themselves. `role` is
   `"user"` or `"assistant"`.
 
-### Survival card (hunger, saturation, feeding, cooking, the bag, fishing)
+### Survival card (hunger, saturation, feeding, cooking, the bag, fishing, the shop)
 
 The avatar has two bars and a mood about them. The numbers live in the survival
 plugin (`plugins/survival/src/model.rs`) and are drained by that plugin's own
@@ -1104,8 +1104,10 @@ tick, so they keep moving whether or not the card is on screen.
   `starving`, coloured), the **Hunger** bar and the **Saturation** bar — which
   drains first and shields hunger, so it buys more time than its number suggests
   — and the **craving row** (`Apple · 10m left`, or `—` when nothing is pending).
-  The card has three **tabs** — *Status*, *Bag* and *Fishing* — because a
-  second floating card would fight the first one for the same corner.
+  The card has four **tabs** — *Status*, *Bag*, *Fishing* and *Store* — because a
+  second floating card would fight the first one for the same corner. The tab
+  strip's coin badge carries the wallet, so the balance is visible from every
+  pane.
 * **Feed** really is a `POST /survival/feed` from the page: it sends
   `{"food": "<id>"}` and renders whatever comes back. A refusal (409: full, or
   still digesting) prints the API's own prose in the note line instead of
@@ -1118,9 +1120,17 @@ tick, so they keep moving whether or not the card is on screen.
   craving the plugin rolls on its own, and it is how you demonstrate the
   proactive dialogue without waiting for the interval.
 * **Cook** is a real `POST /survival/craft {"recipe": "<id>"}` driven by the
-  recipe picker from `GET /recipes`; the dish is produced and eaten in one step,
-  and its `comfort_secs` window halves the hunger drain for that long. The same
-  409 refusals apply, so a cook during digestion prints the API's reason.
+  recipe picker from `GET /recipes`. Cooking spends ingredients **from the bag**,
+  so the picker is honest about it: an option whose pantry is short reads
+  `Cheese omelette · Egg×2 (own 0) + Cheese (own 0) · missing`, its tooltip lists
+  the shortfall, and `syncCraftButton` disables Craft until `can_cook` is true
+  (title: *"still needs 2 × Egg, 1 × Cheese — buy them on the Store tab"*). A
+  successful cook prints the dish, the tier change, the comfort window and what
+  left the pantry (`used 2 × Egg, 1 × Cheese`); a refusal prints the API's own
+  prose. The dish is eaten in the same call and its `comfort_secs` window halves
+  the hunger drain for that long. Feeding is the other path: the Status picker
+  now shows `own N` per raw ingredient too, but with nobody having asked — a
+  `POST /survival/feed` still just eats the id you hand it.
 * **Where the numbers come from.** `GET /survival` on open/start, the
   `survival` telemetry event, a `GET /survival` re-read on `survival-meal`,
   `survival-threshold`, `survival-craft` and `survival-craving`, plus a 15 s poll
@@ -1147,6 +1157,19 @@ tick, so they keep moving whether or not the card is on screen.
   parameters the plugin published — while the *press* is judged by the plugin's
   own clock, so a doctored client cannot widen the sweet spot. A landed fish
   goes into the bag (visible on the Bag tab); a miss prints why it got away.
+* **Store tab.** The shop, drawn from `GET /store`: the wallet in the pane head
+  and on the tab badge, then one row per shelf entry (13 of them, four shelves,
+  in a scrolling list) grouped by category, each
+  with its icon, `own N`, and both prices (`buy` amber, `sell` green; a row the
+  purse cannot afford is dimmed). Clicking a row selects it, the **Qty** box
+  (1–99) sets the size, and **Buy** / **Sell** are real `POST /store/buy` and
+  `POST /store/sell` calls — the note line prints the trade (`Bought 3 × Worm
+  bait for 12 coins · 94 left`) or the plugin's refusal verbatim, and the pane
+  re-reads `GET /store` afterwards because the reply carries the balance but not
+  the new `owned` counts. Buy/Sell are greyed out only when the trade is
+  *certain* to be refused (empty purse, not enough held); everything else is the
+  server's decision. A `store-transaction` frame from anywhere — this pane, an
+  agent's `curl` — repaints the shelf and the bag.
 * **For agents.** `POST /survival {"hunger": 12}` moves the bars by hand, the
   same as clicking Feed does in the UI; `POST /fishing/cast`, then `POST /fishing/hook`, then `POST /fishing/reel`
   play the mini-game from a script.
@@ -1883,14 +1906,16 @@ reported under `restart_required` instead of being pretended live.
 
 ### `/survival`, `/survival/feed`, `/survival/craft`, `/inventory`, `/inventory/add`,
 `/inventory/remove`, `/inventory/use`, `/fishing`, `/fishing/cast`, `/fishing/hook`,
-`/fishing/reel`, `/fishing/cancel`, `/foods`, `/recipes`, `/plugins`
+`/fishing/reel`, `/fishing/cancel`, `/foods`, `/recipes`, `/store`, `/store/buy`,
+`/store/sell`, `/plugins`
 
 These endpoints are **contributed by plugins**, not listed in `api.rs`: the
 survival plugin returns `/survival`, `/survival/feed`, `/survival/craft`, the
-four `/inventory` routes and the five `/fishing` routes from its
-`plugin_routes()` export, and the host adds
+four `/inventory` routes, the five `/fishing` routes and the three `/store`
+routes from its `plugin_routes()` export, and the host adds
 its own `/plugins`. `GET /survival` returns the appetite
-(`config`, `stats`, `craving` and the tier duplicated at the top level);
+(`config`, `stats`, `craving`, the `coins` wallet and the tier duplicated at the
+top level);
 `POST /survival` overrides `hunger`/`saturation` (at least one of those or
 `craving`, clamped 0–100, **400** if none); `POST /survival/feed` eats one catalog id and returns
 the `EatOutcome` (**409** when refused as `too_full` or `still_digesting`, **400**
@@ -1907,12 +1932,64 @@ later it lapses, and any matching meal settles it. Each of those moments emits
 line through `host_notify`, so tier changes are no longer the only thing the
 avatar says without being asked. `POST /survival/craft` cooks a recipe: send
 `recipe` (an id from `GET /recipes`) or the `ingredients` themselves
-(`["egg","egg","cheese"]` or `{"egg":2,"cheese":1}`) and the matching
-recipe's dish is produced and eaten in one step: the bag holds fish, bait, gear
-and material, not finished meals, so a cook never has to find a slot. Cooked
-dishes carry a `comfort_secs` window during which the hunger drain is halved,
-and `GET /foods` separates `raw` ingredients from `cooked` dishes via `kind`,
-`group` and `crafted_via`.
+(`["egg","egg","cheese"]` or `{"egg":2,"cheese":1}`) and the matching recipe's
+dish is produced and eaten in one step.
+
+Cooking is **paid for out of the bag**: the ingredients are inventory items
+(`ItemKind::Ingredient`, one per raw food the recipe book names), the plugin
+checks the bag before eating and takes them out only after the meal was
+accepted. Two refusals exist and neither spends anything — **409**
+`missing_ingredients` (with `{item, label, need, held, short}` per line) and the
+meal refusals (`too_full`, `still_digesting`). `GET /recipes` therefore reports
+the bag too: each line carries `held`, and every recipe `can_cook` plus a
+`missing` list, which is what lets the UI disable Craft honestly. Cooking a dish
+never needs a free slot — the finished meal is eaten, never held. Cooked dishes
+carry a `comfort_secs` window during which the hunger drain is halved, and
+`GET /foods` separates `raw` ingredients from `cooked` dishes via `kind`, `group`
+and `crafted_via`.
+
+#### Store & economy
+
+The bag needs somewhere to send its surplus, so the plugin ships a shop. The
+wallet is a **stat** — `SurvivalStats::coins`, `STARTING_COINS` = 100 — so it is
+serialized with everything else, appears in `GET /survival` and rides along in
+every `survival` telemetry frame. A state saved before the economy existed has no
+`coins` key at all and its serde default is the *starting balance*, not zero, so
+upgrading does not bankrupt anyone. The price list is data:
+`plugins/survival/src/store.rs` holds `StoreItem { id, label, icon, buy_price,
+sell_price, category }` and `default_catalog()`: two baits, the **eight cooking
+ingredients the recipe book uses** (`apple`, `egg`, `cheese`, `tomato`,
+`mushroom`, `noodles`, `bread`, `honey` — so a recipe is never a dead end), two
+materials and the rod. `category` is one of `bait`, `ingredient`, `material` or
+`tool`.
+
+* `GET /store` returns the catalog — each entry with its prices, `category`,
+  `owned` count and the bag's `stack_max` — plus `coins`, `starting_coins` and
+  the inventory summary.
+* `POST /store/buy` is **all-or-nothing**: the purse and the free space are both
+  checked before anything moves, so a refused purchase costs nothing and an
+  accepted one cannot half-land. It is `Inventory::room_for` that makes the
+  second half honest — it predicts what an `add` would accept by running the real
+  stacking rule on a throwaway copy, so the shop and the bag can never disagree
+  about what "fits" (which is exactly why full slots still allow a topped-up
+  stack). `insufficient_coins` and `inventory_full` are **409** with the numbers
+  (`required`/`shortfall`, `room`); an unknown id or a `count` outside 1–99 is a
+  **400**.
+* `POST /store/sell` is exact: more than the bag holds is a **409**
+  (`not_enough_items`, with `held`), an id the shop does not stock is a **400**,
+  and a successful sale removes the items and credits `sell_price × count`.
+* every trade publishes `store-transaction` with the action, item, `unit_price`,
+  `total` and the resulting balance, so the page and the SSE bus never need to
+  re-read `GET /store` to stay current.
+
+Four invariants hold the subsystem together and are pinned in `store.rs`'s
+tests: every stocked id exists in the item catalog, the shop's `category` agrees
+with the item's `kind`, `sell_price` is always below `buy_price`, and **every
+ingredient any recipe names is on the ingredients shelf** (and vice versa — no
+dead stock). That spread is what keeps the loop a loop rather than a coin
+printer: sell the driftwood and river weed the casts drag up (or the fish you do
+not want to eat), buy bait for the next cast, and buy the eggs and cheese that
+turn into a cooked meal worth far more hunger than either ingredient alone.
 
 ```bash
 curl -s localhost:8765/survival

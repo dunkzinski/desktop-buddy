@@ -6,9 +6,15 @@
  * answers, and the button really does `POST /survival/feed`, so the widget can
  * never disagree with what an agent sees.
  *
+ * The same card carries four panes — Status, Bag, Fishing and Store — and each
+ * one is the same kind of client: the bag is `GET /inventory`, the mini-game is
+ * `GET /fishing`, and the shop is `GET /store` with real `POST /store/buy` and
+ * `POST /store/sell` trades. Nothing here decides an outcome; it mirrors the
+ * plugin and reports its refusals verbatim.
+ *
  * Two update paths, deliberately:
- *   * the `survival` / `survival-meal` Tauri events (telemetry plugin and every
- *     meal, pushed as they happen), and
+ *   * the `survival` / `survival-meal` / `store-transaction` Tauri events
+ *     (telemetry plugin and every meal or trade, pushed as they happen), and
  *   * a slow `GET /survival` poll, because the telemetry plugin can be disabled
  *     in `watcher_rules.json` and a stalled widget is worse than a stale one.
  *
@@ -33,12 +39,16 @@ const survival = {
   /** Last `GET /survival` body, for the debug surface and the note text. */
   status: null,
   ready: false,
-  /** Which of the card's three panes is showing: status | bag | fishing. */
+  /** Which of the card's four panes is showing: status | bag | fishing | store. */
   tab: "status",
   /** Last `GET /inventory` body. */
   inventory: null,
   /** Catalog id of the slot the user picked, or null. */
   picked: null,
+  /** Last `GET /store` body: `{coins, catalog, categories, inventory, …}`. */
+  store: null,
+  /** Catalog id of the shelf row the user picked, or null. */
+  storePicked: null,
 };
 
 /**
@@ -96,6 +106,7 @@ export function toggleSurvivalCard(force) {
   if (open) {
     refreshSurvival();
     refreshInventory();
+    refreshStore();
     if (survival.tab === "fishing") {
       ensureFishingPoll();
       pollFishing();
@@ -129,13 +140,18 @@ function foodLabel(id) {
  *
  * Crafted dishes are deliberately left out: they only exist once a recipe has
  * been cooked, so listing them here would let a user eat the omelette without
- * ever gathering the eggs. Raw ingredients and ready-made drinks (coffee) stay.
+ * ever gathering the eggs. Raw ingredients and ready-made drinks (coffee) stay,
+ * and each raw line shows how many the bag already holds — the same numbers the
+ * Cook row and the Store tab work from.
  */
 function renderFoods(foods) {
   const select = el("survival-food");
   if (!select) return;
   const previous = select.value;
   const feedable = (foods || []).filter((food) => !food.crafted_via);
+  const owned = new Map(
+    ((survival.inventory && survival.inventory.totals) || []).map((entry) => [entry.id, entry.count]),
+  );
 
   const groups = [
     ["Ingredients", feedable.filter((food) => food.kind === "raw")],
@@ -150,7 +166,8 @@ function renderFoods(foods) {
     for (const food of items) {
       const option = document.createElement("option");
       option.value = food.id;
-      option.textContent = `${food.label} · +${Math.round(food.nutrition)}`;
+      const held = owned.get(food.id);
+      option.textContent = `${food.label} · +${Math.round(food.nutrition)}${held ? ` · own ${held}` : ""}`;
       option.title = food.effects && food.effects.length
         ? `effects: ${food.effects.map((e) => e.expression || e.kind).join(", ")}`
         : `saturation ratio ${food.saturation_ratio}`;
@@ -175,7 +192,14 @@ function syncFoodButtons() {
   if (crave) crave.disabled = !hasFood;
 }
 
-/** Fill the recipe picker from `GET /recipes`. Keeps the current choice if it survived. */
+/**
+ * Fill the recipe picker from `GET /recipes`.
+ *
+ * The book carries the bag now — `can_cook`, `missing` and a `held` count per
+ * line — because cooking draws from the inventory. The option text shows what a
+ * recipe still needs, and `syncCraftButton` keeps Craft honest: a recipe whose
+ * ingredients are absent is a guaranteed 409 and should not look clickable.
+ */
 function renderRecipes(recipes) {
   const select = el("survival-recipe");
   if (!select) return;
@@ -185,18 +209,46 @@ function renderRecipes(recipes) {
     const option = document.createElement("option");
     option.value = recipe.id;
     const cost = (recipe.ingredients || [])
-      .map((i) => {
-        const label = foodLabel(i.food);
-        return i.count > 1 ? `${label}×${i.count}` : label;
+      .map((ingredient) => {
+        const label = foodLabel(ingredient.food);
+        const counted = ingredient.count > 1 ? `${label}×${ingredient.count}` : label;
+        return Number(ingredient.held) >= Number(ingredient.count)
+          ? counted
+          : `${counted} (own ${Number(ingredient.held) || 0})`;
       })
       .join(" + ");
-    option.textContent = `${recipe.label}${cost ? ` · ${cost}` : ""}`;
-    option.title = recipe.blurb || `cooks ${recipe.result_label || recipe.result}`;
+    const missing = (recipe.missing || []).length;
+    option.textContent = `${recipe.label}${cost ? ` · ${cost}` : ""}${missing ? " · missing" : ""}`;
+    option.title = missing
+      ? `${recipe.blurb || ""}\nmissing: ${(recipe.missing || [])
+          .map((entry) => `${entry.short} × ${entry.label}`)
+          .join(", ")}`
+      : `${recipe.blurb || recipe.label}\ncookable from the bag`;
     select.appendChild(option);
   }
   if (previous && (recipes || []).some((r) => r.id === previous)) select.value = previous;
+  syncCraftButton();
+}
+
+/** Craft is only enabled for a recipe the bag can actually pay for. */
+function syncCraftButton() {
+  const select = el("survival-recipe");
   const button = el("btn-craft");
-  if (button) button.disabled = !select.value;
+  if (!select || !button) return;
+  const recipe = (survival.recipes || []).find((entry) => entry.id === select.value);
+  if (!recipe) {
+    button.disabled = true;
+    button.title = "Pick a recipe";
+    return;
+  }
+  const cookable = recipe.can_cook === true;
+  button.disabled = !cookable;
+  const missing = (recipe.missing || [])
+    .map((entry) => `${entry.short} × ${entry.label}`)
+    .join(", ");
+  button.title = cookable
+    ? `Cook ${recipe.label} from the bag (POST /survival/craft)`
+    : `${recipe.label} still needs ${missing} — buy them on the Store tab`;
 }
 
 /**
@@ -377,21 +429,27 @@ async function craft() {
     const body = await res.json().catch(() => ({}));
 
     if (res.ok) {
-      const note = mealNote(body, recipe);
+      const used = Array.isArray(body.consumed) && body.consumed.length
+        ? ` · used ${body.consumed.map((line) => `${line.count} × ${line.label}`).join(", ")}`
+        : "";
+      const note = `${mealNote(body, recipe)}${used}`;
       setNote(body.blurb ? `${note} — ${body.blurb}` : note);
       toast(`${body.label || recipe} cooked`);
     } else {
-      // 409 = refused (too_full / still_digesting), 400 = unknown recipe.
+      // 409 = refused: missing_ingredients, too_full or still_digesting;
+      // 400 = unknown recipe. The plugin's prose is the honest message.
       setNote(body.error || `craft failed (HTTP ${res.status})`, true);
     }
   } catch (err) {
     setNote(`craft failed: ${err.message}`, true);
   } finally {
-    if (button) {
-      button.disabled = !recipe;
-      button.textContent = "Craft";
-    }
+    if (button) button.textContent = "Craft";
+    // The ingredients left the bag, so the pantry, the picker and the button
+    // all have to catch up — the events do it too, this covers a muted plugin.
     refreshSurvival();
+    refreshInventory();
+    refreshRecipes();
+    syncCraftButton();
   }
 }
 
@@ -491,12 +549,12 @@ async function feed() {
 }
 
 /**
- * Switch the card's pane. The three panes are one card on purpose: the panel
+ * Switch the card's pane. The four panes are one card on purpose: the panel
  * itself is already ~994 px tall, so a second and third floating card would
  * fight for the same corner of the screen.
  */
 export function showSurvivalTab(name) {
-  const target = ["status", "bag", "fishing"].includes(name) ? name : "status";
+  const target = ["status", "bag", "fishing", "store"].includes(name) ? name : "status";
   survival.tab = target;
   for (const pane of document.querySelectorAll("[data-survival-pane]")) {
     pane.classList.toggle("hidden", pane.dataset.survivalPane !== target);
@@ -507,6 +565,7 @@ export function showSurvivalTab(name) {
     tab.setAttribute("aria-selected", String(active));
   }
   if (target === "bag") refreshInventory();
+  if (target === "store") refreshStore();
   if (target === "fishing") {
     // Coming back to a cast that is still out? Pick it up where it is.
     ensureFishingPoll();
@@ -610,6 +669,8 @@ function renderInventory(body) {
   if (survival.picked && !(body.totals || []).some((t) => t.id === survival.picked)) {
     survival.picked = null;
   }
+  // The Feed picker shows `own N` per ingredient, so it repaints with the bag.
+  if (survival.foods.length) renderFoods(survival.foods);
   syncInventoryButtons();
 }
 
@@ -731,6 +792,248 @@ async function useItem() {
     }
   } catch (err) {
     setInventoryNote(`use failed: ${err.message}`, true);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Store
+ * ------------------------------------------------------------------ */
+
+function setStoreNote(text, isError) {
+  const note = el("store-note");
+  if (!note) return;
+  note.textContent = text || "";
+  note.classList.toggle("error", !!isError);
+}
+
+/** Paint the wallet in the pane head and the coin badge on the tab. */
+function renderWallet(coins) {
+  const value = Number(coins);
+  const known = Number.isFinite(value);
+  const badge = el("survival-coins");
+  if (badge) {
+    badge.textContent = known ? String(value) : "—";
+    badge.title = known ? `${value} coin${value === 1 ? "" : "s"}` : "coins unknown";
+  }
+  const wallet = el("store-wallet");
+  if (wallet) {
+    wallet.textContent = known ? `🪙 ${value} coins` : "wallet unavailable";
+    wallet.classList.toggle("off", !known);
+  }
+}
+
+/** The selected shelf entry, or null. */
+function storeItem() {
+  const catalog = (survival.store && survival.store.catalog) || [];
+  return catalog.find((entry) => entry.id === survival.storePicked) || null;
+}
+
+/** How many units a trade asks for — the input is user-typed, so clamp it. */
+function storeCount() {
+  const input = el("store-count");
+  return Math.max(1, Math.min(99, Number(input && input.value) || 1));
+}
+
+function pickStoreItem(id) {
+  if (!id) return;
+  survival.storePicked = survival.storePicked === id ? null : id;
+  for (const row of document.querySelectorAll("#store-list .store-row")) {
+    row.classList.toggle("selected", row.dataset.item === survival.storePicked);
+  }
+  syncStoreButtons();
+}
+
+/**
+ * Keep Buy/Sell honest about what the plugin will actually accept.
+ *
+ * Both are still validated server-side — this only stops a click that is
+ * *certain* to be refused (an empty purse, a stack the bag does not hold) from
+ * turning into a red note.
+ */
+function syncStoreButtons() {
+  const item = storeItem();
+  const coins = survival.store ? Number(survival.store.coins) : NaN;
+  const count = storeCount();
+
+  const buy = el("btn-store-buy");
+  if (buy) {
+    const cost = item ? Number(item.buy_price) * count : 0;
+    const affordable = !!item && (!Number.isFinite(coins) || coins >= cost);
+    buy.disabled = !item || !affordable;
+    buy.title = !item
+      ? "Pick an item first"
+      : affordable
+        ? `Buy ${count} × ${item.label} for ${cost} coins (POST /store/buy)`
+        : `${count} × ${item.label} costs ${cost}, the purse holds ${coins}`;
+  }
+
+  const sell = el("btn-store-sell");
+  if (sell) {
+    const owned = item ? Number(item.owned) || 0 : 0;
+    const can = !!item && owned >= count;
+    sell.disabled = !can;
+    sell.title = !item
+      ? "Pick an item first"
+      : can
+        ? `Sell ${count} × ${item.label} for ${Number(item.sell_price) * count} coins (POST /store/sell)`
+        : `you hold ${owned} ${item.label}, cannot sell ${count}`;
+  }
+}
+
+/**
+ * Paint `GET /store`: the wallet, then one row per shelf entry grouped by its
+ * category. `owned` comes straight from the plugin, so the Sell button knows
+ * how much the bag really holds without a second request.
+ */
+function renderStore(body) {
+  if (!body || body.ok !== true) return;
+  survival.store = body;
+  renderWallet(body.coins);
+
+  const list = el("store-list");
+  if (!list) return;
+
+  const catalog = Array.isArray(body.catalog) ? body.catalog : [];
+  // A picked id that left the shelves (a stock rotation, a failed read) must not
+  // stay selected; otherwise default to the first entry so Buy/Sell are live.
+  if (!survival.storePicked || !catalog.some((item) => item.id === survival.storePicked)) {
+    survival.storePicked = catalog.length ? catalog[0].id : null;
+  }
+
+  list.innerHTML = "";
+  if (!catalog.length) {
+    const empty = document.createElement("div");
+    empty.className = "store-empty";
+    empty.textContent = "The shop is empty.";
+    list.appendChild(empty);
+    syncStoreButtons();
+    return;
+  }
+
+  const groups = new Map();
+  for (const category of body.categories || []) groups.set(category.id, []);
+  for (const item of catalog) {
+    const key = item.category || "material";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+
+  const coins = Number(body.coins);
+  for (const items of groups.values()) {
+    if (!items.length) continue;
+    const heading = document.createElement("div");
+    heading.className = "store-heading";
+    heading.textContent = items[0].category_label || items[0].category || "Items";
+    list.appendChild(heading);
+
+    for (const item of items) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "store-row";
+      row.dataset.item = item.id;
+      row.classList.toggle("selected", item.id === survival.storePicked);
+      row.classList.toggle("broke", Number.isFinite(coins) && coins < Number(item.buy_price));
+      row.title = `${item.label} — buy ${item.buy_price}, sell ${item.sell_price}`
+        + `\nyou hold ${item.owned}${item.stack_max ? ` · stacks to ${item.stack_max}` : ""}`;
+      row.setAttribute("aria-label", `${item.label}, ${item.owned} owned`);
+      row.setAttribute("role", "listitem");
+
+      const icon = document.createElement("span");
+      icon.className = "store-icon";
+      icon.textContent = item.icon || "•";
+      const name = document.createElement("span");
+      name.className = "store-name";
+      name.textContent = item.label;
+      const owned = document.createElement("span");
+      owned.className = "store-owned";
+      owned.textContent = item.owned ? `own ${item.owned}` : "";
+
+      const prices = document.createElement("span");
+      prices.className = "store-prices";
+      const buy = document.createElement("span");
+      buy.className = "store-buy-price";
+      buy.textContent = `buy ${item.buy_price}`;
+      const sell = document.createElement("span");
+      sell.className = "store-sell-price";
+      sell.textContent = `sell ${item.sell_price}`;
+      prices.append(buy, sell);
+
+      row.append(icon, name, owned, prices);
+      row.addEventListener("click", () => pickStoreItem(item.id));
+      list.appendChild(row);
+    }
+  }
+  syncStoreButtons();
+}
+
+/** `GET /store` — the authoritative read behind the shelf. */
+async function refreshStore() {
+  try {
+    const res = await fetch(`${survival.base}/store`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderStore(await res.json());
+  } catch (err) {
+    setStoreNote(`Store unreachable: ${err.message}`, true);
+  }
+}
+
+/**
+ * One trade: `POST /store/buy` or `POST /store/sell` for the selected row.
+ *
+ * The reply carries the new balance but not the new `owned` counts, so the pane
+ * re-reads `GET /store` afterwards — and the bag too, because a purchase lands
+ * items in it. A refusal (409: empty purse, full bag, not enough held; 400:
+ * unknown id) is printed verbatim, which is also how you tell a real bug from a
+ * refusal.
+ */
+async function trade(action) {
+  const item = storeItem();
+  if (!item) return;
+  const buying = action === "buy";
+  const count = storeCount();
+  const button = el(buying ? "btn-store-buy" : "btn-store-sell");
+  const original = button ? button.textContent : "";
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = buying ? "Buying…" : "Selling…";
+  }
+  setStoreNote("");
+
+  try {
+    const res = await fetch(`${survival.base}/store/${buying ? "buy" : "sell"}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ item: item.id, count }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      const moved = Number(body.count) || count;
+      const total = Number(body.total) || 0;
+      const coins = Number(body.coins);
+      setStoreNote(
+        `${buying ? "Bought" : "Sold"} ${moved} × ${body.label || item.label} `
+        + `for ${total} coin${total === 1 ? "" : "s"}`
+        + `${Number.isFinite(coins) ? ` · ${coins} left` : ""}`,
+      );
+      toast(`${buying ? "🛒" : "🪙"} ${moved} × ${body.label || item.label}`);
+    } else {
+      setStoreNote(body.error || `trade failed (HTTP ${res.status})`, true);
+    }
+  } catch (err) {
+    setStoreNote(`trade failed: ${err.message}`, true);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = original;
+    }
+    // The reply carries the balance but not the new `owned` counts, and buying
+    // an ingredient changes what the Cook row can pay for — so re-read all
+    // three. (The events do the same; this keeps the pane honest without them,
+    // e.g. in a plain browser.)
+    refreshStore();
+    refreshInventory();
+    refreshRecipes();
   }
 }
 
@@ -1050,11 +1353,7 @@ export async function setupSurvival() {
     event.preventDefault();
     craft();
   });
-  el("survival-recipe")?.addEventListener("change", () => {
-    const select = el("survival-recipe");
-    const craftBtn = el("btn-craft");
-    if (craftBtn) craftBtn.disabled = !(select && select.value);
-  });
+  el("survival-recipe")?.addEventListener("change", syncCraftButton);
 
   // The pop-out: the panel button toggles the card, the ✕ and Esc close it.
   el("btn-survival")?.addEventListener("click", () => toggleSurvivalCard());
@@ -1087,6 +1386,22 @@ export async function setupSurvival() {
   });
   el("inventory-item")?.addEventListener("change", syncInventoryButtons);
 
+  // ---- store -------------------------------------------------------------
+  el("btn-store-reload")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    refreshStore();
+  });
+  el("btn-store-buy")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    trade("buy");
+  });
+  el("btn-store-sell")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    trade("sell");
+  });
+  el("store-count")?.addEventListener("input", syncStoreButtons);
+  el("store-count")?.addEventListener("change", syncStoreButtons);
+
   // ---- fishing ----------------------------------------------------------
   el("btn-fish-action")?.addEventListener("click", (event) => {
     event.preventDefault();
@@ -1112,6 +1427,7 @@ export async function setupSurvival() {
   await resolveBase();
   await Promise.all([refreshFoods(), refreshRecipes(), refreshSurvival()]);
   await refreshInventory();
+  await refreshStore();
 
   // Pushed updates: the telemetry frame and every meal outcome.
   await listen("survival", (event) => renderSurvival(event.payload));
@@ -1130,8 +1446,20 @@ export async function setupSurvival() {
   await listen("survival-craving", () => refreshSurvival());
 
   // The bag is pushed too: a catch, an eaten fish and a crafted dish all change
-  // it, and the tab is often hidden while they happen.
-  await listen("inventory-changed", () => refreshInventory());
+  // it, and the tab is often hidden while they happen. The recipe book's
+  // `can_cook` follows the pantry, so it re-reads with the bag.
+  await listen("inventory-changed", () => {
+    refreshInventory();
+    refreshRecipes();
+  });
+
+  // A trade moved coins and items; the pane needs both. This is also what keeps
+  // a second window (or an agent's curl) in step with the shelf.
+  await listen("store-transaction", () => {
+    refreshStore();
+    refreshInventory();
+    refreshRecipes();
+  });
 
   // Fishing: the plugin owns the phase, so every frame just asks it again.
   // `fishing-result` also spells the outcome out, because the poll may already
@@ -1162,6 +1490,7 @@ export async function setupSurvival() {
     tab: survival.tab,
     foods: survival.foods.map((f) => f.id),
     recipes: survival.recipes.map((r) => r.id),
+    cookable: survival.recipes.filter((r) => r.can_cook).map((r) => r.id),
     tier: survival.status ? survival.status.tier : null,
     hunger: survival.status ? survival.status.hunger : null,
     saturation: survival.status ? survival.status.saturation : null,
@@ -1175,6 +1504,13 @@ export async function setupSurvival() {
           full: survival.inventory.full,
           totals: (survival.inventory.totals || []).map((t) => `${t.id}×${t.count}`),
           picked: survival.picked,
+        }
+      : null,
+    store: survival.store
+      ? {
+          coins: survival.store.coins,
+          picked: survival.storePicked,
+          entries: (survival.store.catalog || []).map((item) => `${item.id}×${item.owned}`),
         }
       : null,
     fishing: {

@@ -805,13 +805,15 @@ curl -s localhost:8765/survival
     "meals": 0,
     "last_meal": null,
     "seconds_to_next_tier": 900,
-    "seconds_to_starving": 1800
+    "seconds_to_starving": 1800,
+    "coins": 100
   },
   "hunger": 25.0,
   "saturation": 40.0,
   "tier": "peckish",
   "label": "Peckish",
-  "expression": "thinking"
+  "expression": "thinking",
+  "coins": 100
 }
 ```
 
@@ -820,7 +822,9 @@ human wording and `expression` the face the avatar wears in that tier. The
 plugin list lives at `GET /plugins` only: the route is answered by a WebAssembly
 guest, which cannot read the host's registry from inside a call.
 `seconds_to_next_tier` counts down to the next *worse* tier (or `null` when
-already starving) and `seconds_to_starving` to the `hungry` floor.
+already starving) and `seconds_to_starving` to the `hungry` floor. `coins` is the
+wallet the shop spends and fills — it lives on `stats` and is flattened to the
+top level here; see `GET /store`.
 
 Override the bars by hand — used by tests, the UI's debug drawer and automation
 that wants to force a state:
@@ -916,8 +920,10 @@ curl -s -X POST localhost:8765/survival/craft \
      -H 'content-type: application/json' -d '{"ingredients": {"noodles": 2, "egg": 1, "mushroom": 1}}'
 ```
 
-The dish is eaten straight away, so the response is the usual `EatOutcome` plus
-the crafting fields:
+Cooking **draws from the bag**. Every ingredient has to be in the inventory
+first — buy it at `GET /store`, or catch/forage it — and it is taken out of the
+bag only once the dish has actually been eaten. The response is the usual
+`EatOutcome` plus the crafting fields:
 
 ```json
 {
@@ -930,6 +936,10 @@ the crafting fields:
   "recipe_label": "Cheese omelette",
   "blurb": "Two eggs and a fistful of cheese. Fast, hot, filling.",
   "cooked_with": [{"food": "egg", "count": 2}, {"food": "cheese", "count": 1}],
+  "consumed": [
+    {"item": "egg", "label": "Egg", "icon": "🥚", "count": 2, "remaining": 0},
+    {"item": "cheese", "label": "Cheese", "icon": "🧀", "count": 1, "remaining": 0}
+  ],
   "comfort_secs": 240,
   "hunger_before": 40.0,
   "hunger_after": 66.0,
@@ -942,10 +952,30 @@ the crafting fields:
 ```
 
 An ingredient list that matches no recipe is a **400** that echoes the ids it
-was given; a full or still-digesting avatar is a **409** with the usual
-`refusal`. A cook emits `survival-meal` and `survival-craft` (and
-`survival-craving` when the dish settles a craving). `comfort_secs` is the
-well-fed window: hunger drains at half rate for that long.
+was given. A recipe whose ingredients the bag does not hold is a **409**
+`missing_ingredients` with a `missing` array of `{item, label, need, held,
+short}`, and it costs nothing:
+
+```json
+{
+  "ok": false,
+  "error": "cannot cook Cheese omelette — still need 2 × Egg, 1 × Cheese",
+  "refusal": "missing_ingredients",
+  "recipe": "omelette",
+  "recipe_label": "Cheese omelette",
+  "missing": [
+    {"item": "egg", "label": "Egg", "need": 2, "held": 0, "short": 2},
+    {"item": "cheese", "label": "Cheese", "need": 1, "held": 0, "short": 1}
+  ]
+}
+```
+
+A full or still-digesting avatar is a **409** with the usual `refusal`, and that
+refusal consumes nothing either: the ingredients leave the bag only after the
+meal was accepted. A cook emits `survival-meal` and `survival-craft` (and
+`survival-craving` when the dish settles a craving), plus one `inventory-changed`
+per ingredient with `source: "cook"`, so a bag view stays current.
+`comfort_secs` is the well-fed window: hunger drains at half rate for that long.
 
 ### `GET /foods`
 
@@ -959,8 +989,8 @@ curl -s localhost:8765/foods
 ```json
 {
   "ok": true,
-  "count": 20,
-  "raw_count": 8,
+  "count": 24,
+  "raw_count": 12,
   "cooked_count": 12,
   "crafted_count": 6,
   "foods": [
@@ -1001,14 +1031,26 @@ curl -s localhost:8765/recipes
       "result": "omelette",
       "result_label": "Cheese omelette",
       "blurb": "Two eggs and a fistful of cheese. Fast, hot, filling.",
-      "ingredients": [{"food": "egg", "count": 2}, {"food": "cheese", "count": 1}]
+      "ingredients": [
+        {"food": "egg", "count": 2, "held": 2},
+        {"food": "cheese", "count": 1, "held": 1}
+      ],
+      "can_cook": true,
+      "missing": []
     }
   ]
 }
 ```
 
-`GET /foods` carries the same array under `recipes`, so a client can offer
-crafting from one request.
+Each recipe also reports the bag: every ingredient line carries `held`, and
+`can_cook` is true only when the inventory covers every line. `missing` lists
+what is short, in the same `{item, label, need, held, short}` shape the craft
+route refuses with — so a Cook button can be disabled honestly instead of
+turning a click into a 409. A recipe with no ingredients held reports
+`"can_cook": false` and its full `missing` list.
+
+`GET /foods` carries the same enriched array under `recipes`, so a client can
+offer crafting from one request.
 
 ### `GET /inventory`
 
@@ -1058,8 +1100,11 @@ A fresh avatar starts with a fishing rod, five worm bait and two driftwood, so
 the Fishing tab is playable before anything is gathered. `capacity` is
 `survival.inventory.slots`; an empty slot is `{"index": n, "id": null}`.
 
-The catalog's `kind` is one of `fish`, `bait`, `tool`, `material` or `junk`, and
-`food` names the `GET /foods` entry an edible item becomes when it is used.
+The catalog's `kind` is one of `fish`, `bait`, `ingredient`, `tool`, `material`
+or `junk`, and `food` names the `GET /foods` entry an edible item becomes when it
+is used. **Ingredients** (`apple`, `egg`, `cheese`, `tomato`, `mushroom`,
+`noodles`, `bread`, `honey`) are food items: using one eats it raw, and
+`POST /survival/craft` spends them to cook a recipe.
 
 ### `POST /inventory/add`
 
@@ -1106,6 +1151,154 @@ digestion cooldown. The reply is the meal payload plus `item`, `item_label`,
 `remaining` and `change`. The item is spent **only if the meal was accepted** —
 a full avatar gets a **409** (`refusal: "too_full"`) and keeps the fish. Gear
 and bait are a **400**: they can be held, not used.
+
+### `GET /store`
+
+The shop's price list, the player's coin balance, and how much of each entry the
+bag already holds — one request is enough to draw the whole shop.
+
+```bash
+curl -s localhost:8765/store
+```
+
+```json
+{
+  "ok": true,
+  "coins": 89,
+  "starting_coins": 100,
+  "count": 13,
+  "catalog": [
+    {
+      "id": "worm_bait",
+      "label": "Worm bait",
+      "icon": "🪱",
+      "buy_price": 4,
+      "sell_price": 1,
+      "category": "bait",
+      "category_label": "Bait",
+      "owned": 5,
+      "stack_max": 64
+    },
+    {
+      "id": "egg",
+      "label": "Egg",
+      "icon": "🥚",
+      "buy_price": 3,
+      "sell_price": 1,
+      "category": "ingredient",
+      "category_label": "Ingredients",
+      "owned": 0,
+      "stack_max": 12
+    }
+  ],
+  "categories": [
+    {"id": "bait", "label": "Bait"},
+    {"id": "ingredient", "label": "Ingredients"},
+    {"id": "material", "label": "Materials"},
+    {"id": "tool", "label": "Tools"}
+  ],
+  "inventory": {"capacity": 20, "used": 3, "free": 17, "full": false, "totals": []}
+}
+```
+
+The Survival card's *Store* tab is a client of these three routes — it draws the
+shelf from this body and trades through the two POSTs, so what a player sees and
+what an agent gets from `curl` cannot diverge.
+
+`coins` is the authoritative wallet: the economy lives in the survival plugin, on
+the same `SurvivalStats` the hunger bars do, so it also rides along in
+`GET /survival` (`stats.coins`, plus the flattened `coins`) and in every
+`survival` telemetry frame. A new session starts with **100** (`starting_coins`),
+which is enough for a dozen casts of bait — the shop is usable before the first
+fish is caught.
+
+Every catalog entry's `id` is also an id in `GET /inventory`'s `catalog`, so
+buying one puts exactly that item in the bag: `stack_max` here is the bag's own
+stack limit and `owned` is how many the player already holds (what a sell button
+greys itself out on). `category` is one of `bait`, `ingredient`, `material`,
+`tool` and always matches the item's own `kind`.
+
+The shelf carries **13** entries: two baits (`worm_bait` 4/1, `glowing_lure`
+24/10), the eight cooking ingredients `GET /recipes` uses (`apple` 4/2, `egg`
+3/1, `cheese` 5/2, `tomato` 3/1, `mushroom` 3/1, `noodles` 4/1, `bread` 4/2,
+`honey` 8/3), two materials (`driftwood` 6/3, `river_weed` 5/2) and the rod
+(75/30). An omelette therefore costs 11 coins — two eggs and a cheese — which is
+the loop cooking runs on. `sell_price` is always below `buy_price` —
+reselling is a loss, which is what makes the shop a sink rather than a coin
+printer.
+
+### `POST /store/buy`
+
+```bash
+curl -s -X POST localhost:8765/store/buy -H 'content-type: application/json' \
+     -d '{"item": "worm_bait", "count": 3}'
+```
+
+`item` (or `id`) is a catalog id from `GET /store`; `count` defaults to `1` and
+must be an integer from 1 to 99. Anything else is a **400** rather than a silent
+clamp: a purchase is the one place where quietly changing the number spends the
+player's coins on something they did not ask for.
+
+The purchase is **all-or-nothing**. Both refusals are checked before anything
+moves, so a failed buy costs nothing and a successful one cannot half-land:
+
+| status | `refusal` | when |
+|---|---|---|
+| 200 | — | the goods are in the bag and the coins are gone |
+| 400 | — | unknown item id, or a `count` that is not 1–99 |
+| 409 | `insufficient_coins` | the tab is larger than the purse |
+| 409 | `inventory_full` | the bag cannot take every unit |
+
+```json
+{
+  "ok": false,
+  "error": "not enough coins — Fishing rod x2 costs 150, the purse holds 100",
+  "refusal": "insufficient_coins",
+  "item": "fishing_rod",
+  "count": 2,
+  "required": 150,
+  "coins": 100,
+  "shortfall": 50
+}
+```
+
+A purchase that lands answers with the trade and the resulting balance:
+
+```json
+{
+  "ok": true,
+  "action": "buy",
+  "item": "worm_bait",
+  "label": "Worm bait",
+  "icon": "🪱",
+  "count": 3,
+  "requested": 3,
+  "unit_price": 4,
+  "total": 12,
+  "coins": 88,
+  "inventory": {"capacity": 20, "used": 3, "free": 17, "full": false, "totals": []}
+}
+```
+
+`total` is `unit_price × count`, and `count` is what actually landed in the bag.
+The same body is published as a `store-transaction` event, so the page and the
+SSE bus see the new balance without asking.
+
+### `POST /store/sell`
+
+The mirror image — same body, same reply shape, `action: "sell"`:
+
+```bash
+curl -s -X POST localhost:8765/store/sell -H 'content-type: application/json' \
+     -d '{"item": "driftwood", "count": 2}'
+```
+
+Selling is exact, not best-effort: asking for more than the bag holds is a **409**
+(`refusal: "not_enough_items"`, carrying `held` and `count`) instead of a silent
+partial sale, and an id the shop does not stock — a caught fish, an old boot — is
+a **400** even though the item exists in the bag. `sell_price` is paid per unit;
+the reply carries `total` and the new `coins`, and a `store-transaction` event is
+emitted with `action: "sell"`.
 
 ### `GET /fishing`
 

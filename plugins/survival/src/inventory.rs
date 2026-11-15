@@ -46,6 +46,8 @@ pub enum ItemKind {
     Fish,
     /// Consumed by a cast when `fishing.bait_required` is on.
     Bait,
+    /// Cooking stock. Held until a recipe eats it; also edible raw.
+    Ingredient,
     /// Permanent gear; always `stack_max: 1`.
     Tool,
     /// Crafting stock — held for later, not eaten.
@@ -56,9 +58,10 @@ pub enum ItemKind {
 
 impl ItemKind {
     /// Every kind, in the order a UI should group them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Fish,
         Self::Bait,
+        Self::Ingredient,
         Self::Tool,
         Self::Material,
         Self::Junk,
@@ -68,6 +71,7 @@ impl ItemKind {
         match self {
             Self::Fish => "fish",
             Self::Bait => "bait",
+            Self::Ingredient => "ingredient",
             Self::Tool => "tool",
             Self::Material => "material",
             Self::Junk => "junk",
@@ -79,6 +83,7 @@ impl ItemKind {
         match self {
             Self::Fish => "Fish",
             Self::Bait => "Bait",
+            Self::Ingredient => "Ingredients",
             Self::Tool => "Tools",
             Self::Material => "Materials",
             Self::Junk => "Junk",
@@ -175,6 +180,91 @@ pub const ITEMS: &[ItemDefinition] = &[
         blurb: "Warm to the touch, which should not be possible.",
         food: Some("ember_eel"),
         rarity: 4,
+    },
+    /* ------------------------------ ingredients ----------------------------- */
+    // The cooking pantry. Every id here is a `FoodKind::Raw` entry in
+    // `crate::model::FOODS`, `food` points at it, and `RECIPES` consumes these
+    // exact ids — so a recipe can only be cooked once the bag actually holds
+    // them, and the store is the way to stock up.
+    ItemDefinition {
+        id: "apple",
+        label: "Apple",
+        icon: "🍎",
+        kind: ItemKind::Ingredient,
+        stack_max: 12,
+        blurb: "Crisp, sweet, and the start of a pie.",
+        food: Some("apple"),
+        rarity: 1,
+    },
+    ItemDefinition {
+        id: "egg",
+        label: "Egg",
+        icon: "🥚",
+        kind: ItemKind::Ingredient,
+        stack_max: 12,
+        blurb: "One egg is never enough. Two is a start.",
+        food: Some("egg"),
+        rarity: 1,
+    },
+    ItemDefinition {
+        id: "cheese",
+        label: "Cheese",
+        icon: "🧀",
+        kind: ItemKind::Ingredient,
+        stack_max: 12,
+        blurb: "Melts into anything and improves it.",
+        food: Some("cheese"),
+        rarity: 2,
+    },
+    ItemDefinition {
+        id: "tomato",
+        label: "Tomato",
+        icon: "🍅",
+        kind: ItemKind::Ingredient,
+        stack_max: 12,
+        blurb: "Soft, red, and better cooked down.",
+        food: Some("tomato"),
+        rarity: 1,
+    },
+    ItemDefinition {
+        id: "mushroom",
+        label: "Mushroom",
+        icon: "🍄",
+        kind: ItemKind::Ingredient,
+        stack_max: 12,
+        blurb: "Picked from somewhere dark. Smells earthy.",
+        food: Some("mushroom"),
+        rarity: 2,
+    },
+    ItemDefinition {
+        id: "noodles",
+        label: "Noodles",
+        icon: "🍜",
+        kind: ItemKind::Ingredient,
+        stack_max: 12,
+        blurb: "A dried block of them. Boil and hope.",
+        food: Some("noodles"),
+        rarity: 1,
+    },
+    ItemDefinition {
+        id: "bread",
+        label: "Bread",
+        icon: "🍞",
+        kind: ItemKind::Ingredient,
+        stack_max: 12,
+        blurb: "Half a loaf. Toasts, fries, or feeds you as it is.",
+        food: Some("bread"),
+        rarity: 1,
+    },
+    ItemDefinition {
+        id: "honey",
+        label: "Honey",
+        icon: "🍯",
+        kind: ItemKind::Ingredient,
+        stack_max: 8,
+        blurb: "Thick, golden, and worth the sticky fingers.",
+        food: Some("honey"),
+        rarity: 2,
     },
     /* --------------------------------- bait --------------------------------- */
     ItemDefinition {
@@ -319,6 +409,22 @@ impl Inventory {
 
     pub fn is_full(&self) -> bool {
         self.free() == 0
+    }
+
+    /// How many of `id` would actually fit **right now**, without changing
+    /// anything. `0` for an unknown id.
+    ///
+    /// A shop purchase has to be all-or-nothing: charging for items that then
+    /// bounce off a full bag is the one failure a player would notice. Cloning
+    /// the bag (at most [`MAX_SLOTS`] slots) and running the real [`add`] is
+    /// cheaper in review risk than a second copy of the stacking rules that can
+    /// drift from the first — the shop and the bag can never disagree about
+    /// what "fits" means.
+    ///
+    /// [`add`]: Inventory::add
+    pub fn room_for(&self, id: &str, count: u32) -> u32 {
+        let mut probe = self.clone();
+        probe.add(id, count).added
     }
 
     /// Total of one item id across every stack.
@@ -742,6 +848,27 @@ mod tests {
         assert!(bag.is_full());
         assert_eq!(bag.to_json()["full"], json!(true));
         assert_eq!(bag.summary_json()["free"], json!(0));
+    }
+
+    #[test]
+    fn room_for_predicts_an_add_without_changing_the_bag() {
+        let mut bag = tiny();
+        bag.add("old_boot", 2); // 1 slot, full stack
+        bag.add("minnow", 18); // 1 slot, stack_max 20 → 2 of room left
+        bag.add("driftwood", 16); // 1 slot
+        bag.add("river_weed", 16); // 1 slot — the bag is full
+
+        // Topping up an existing stack still fits even with no empty slots…
+        assert_eq!(bag.room_for("minnow", 2), 2);
+        assert_eq!(bag.room_for("minnow", 5), 2, "only the stack's own room counts");
+        // …while an item with no stack here has nowhere to go.
+        assert_eq!(bag.room_for("silver_trout", 1), 0);
+        assert_eq!(bag.room_for("diamond", 1), 0, "unknown ids never fit");
+
+        // The probe never mutated the bag.
+        assert_eq!(bag.count("minnow"), 18);
+        assert!(bag.is_full());
+        assert!(bag.add("silver_trout", 1).leftover == 1, "the real add agrees");
     }
 
     #[test]

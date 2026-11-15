@@ -944,6 +944,76 @@ input[type="range"]::-webkit-slider-thumb {
 }
 #btn-inventory-use:disabled { opacity: 0.45; cursor: default; }
 
+/* ---------- store (the Store tab) ---------- */
+
+.store-head { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
+.store-wallet {
+  font-size: 11px; font-weight: 700; color: #f0b040;
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+}
+.store-wallet.off { color: #6e6e85; font-weight: 600; }
+.store-list {
+  display: flex; flex-direction: column; gap: 4px;
+  /* Five stocked rows plus their three shelf headings (~252 px) fit without a
+     scrollbar; a longer catalog scrolls rather than growing the card. */
+  max-height: 280px; overflow-y: auto;
+}
+.store-empty { padding: 10px 2px; font-size: 10.5px; color: #6e6e85; }
+.store-heading {
+  margin-top: 3px; padding: 0 2px;
+  font-size: 8.5px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: #6e6e85;
+}
+.store-heading:first-child { margin-top: 0; }
+.store-row {
+  display: flex; align-items: center; gap: 7px;
+  width: 100%; padding: 5px 7px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.store-row:hover { border-color: rgba(122, 182, 240, 0.45); }
+.store-row.selected {
+  border-color: rgba(122, 182, 240, 0.75);
+  background: rgba(74, 144, 217, 0.18);
+}
+.store-row.broke { opacity: 0.6; }
+.store-icon { font-size: 15px; line-height: 1; }
+.store-name {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 10.5px; color: #b9b9c9;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.store-owned {
+  flex: 0 0 auto;
+  font-size: 9px; color: #6e6e85; font-variant-numeric: tabular-nums;
+}
+.store-prices {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 1px;
+  font-size: 9.5px; font-variant-numeric: tabular-nums;
+}
+.store-buy-price { color: #f0b040; }
+.store-sell-price { color: #3ddc84; }
+.store-row.broke .store-buy-price { color: #6e6e85; }
+.store-actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.store-qty-label {
+  flex: 0 0 auto;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
+  text-transform: uppercase; color: #6e6e85;
+}
+#store-count {
+  flex: 0 0 42px; width: 42px;
+  padding: 5px 4px; text-align: center;
+  font-size: 10.5px;
+}
+#btn-store-buy { flex: 1 1 auto; padding: 6px 12px; }
+#btn-store-sell { flex: 0 0 auto; font-size: 10px; padding: 6px 9px; }
+#btn-store-buy:disabled, #btn-store-sell:disabled { opacity: 0.45; cursor: default; }
+.survival-tab-badge.coins { background: rgba(240, 176, 64, 0.16); color: #f0b040; }
+
 /* ---------- fishing mini-game ---------- */
 
 .fish-scene {

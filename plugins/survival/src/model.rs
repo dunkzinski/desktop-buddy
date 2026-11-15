@@ -58,6 +58,23 @@ pub const MAX_DRAIN_PER_MIN: f32 = 100.0;
 /// the avatar starves *gradually*.
 pub const MAX_TICK_SECS: f64 = 900.0;
 
+/// What a fresh wallet holds.
+///
+/// The economy's seed money: enough for a dozen casts of bait or a couple of
+/// glowing lures, so the store is usable before the first fish is caught. It
+/// lives here (not in [`crate::store`]) because it is a *stat*, exactly like
+/// `start_hunger`: something a new session is born with.
+pub const STARTING_COINS: u32 = 100;
+
+/// Serde default for [`SurvivalStats::coins`].
+///
+/// A state saved before the economy existed has no `coins` key at all, and a
+/// plain `0` would hand every returning player an empty purse. Missing means
+/// "never had a wallet", which is the same as a fresh one.
+fn starting_coins() -> u32 {
+    STARTING_COINS
+}
+
 /// Share of the normal hunger drain that applies while a crafted meal has the
 /// avatar *well fed*. Comfort food buys time as well as points, which is what
 /// makes cooking worth the ingredients.
@@ -1384,6 +1401,11 @@ pub struct SurvivalStats {
     /// Seconds left of the *well fed* window a cooked meal grants. While this is
     /// above zero the hunger drain runs at [`WELL_FED_DRAIN_FACTOR`].
     pub well_fed_secs: f32,
+    /// The wallet, in coins. Earned by selling at the store, spent on stocking
+    /// the bag. A new session starts with [`STARTING_COINS`]; a state that
+    /// predates the economy also lands on that value rather than on zero.
+    #[serde(default = "starting_coins")]
+    pub coins: u32,
 }
 
 impl Default for SurvivalStats {
@@ -1415,6 +1437,7 @@ impl SurvivalStats {
             last_meal_ms: 0,
             craving: None,
             well_fed_secs: 0.0,
+            coins: STARTING_COINS,
         }
     }
 
@@ -1434,6 +1457,25 @@ impl SurvivalStats {
     /// Whether the avatar is currently well fed by a cooked meal.
     pub fn is_well_fed(&self) -> bool {
         self.well_fed_secs > 0.0
+    }
+
+    /// Credit the wallet, returning how many coins actually landed. Saturates:
+    /// a wallet at `u32::MAX` is already absurd, and wrapping it to zero would
+    /// be the one bug that costs a player their savings.
+    pub fn add_coins(&mut self, amount: u32) -> u32 {
+        let before = self.coins;
+        self.coins = self.coins.saturating_add(amount);
+        self.coins - before
+    }
+
+    /// Debit the wallet if it can afford `amount`. `false` means "no change" —
+    /// the caller is responsible for reporting the shortfall.
+    pub fn try_spend_coins(&mut self, amount: u32) -> bool {
+        if self.coins < amount {
+            return false;
+        }
+        self.coins -= amount;
+        true
     }
 
     /// Install a craving and return the one it replaced, if any. A new craving
@@ -1675,6 +1717,7 @@ impl SurvivalStats {
             "seconds_to_starving": self.seconds_until(HUNGRY_MIN).map(|s| s.round() as u64),
             "craving": self.craving.as_ref().map(|craving| craving.to_json(now_ms)),
             "well_fed_secs": round1(self.well_fed_secs),
+            "coins": self.coins,
         })
     }
 }
@@ -2263,5 +2306,41 @@ mod tests {
         assert_eq!(decoded.saturation, 0.0);
         assert_eq!(decoded.metabolism, Metabolism::default());
         assert_eq!(decoded.meals, 0);
+    }
+
+    #[test]
+    fn a_fresh_wallet_starts_with_the_documented_balance() {
+        assert_eq!(stats(100.0, 0.0).coins, STARTING_COINS);
+        assert_eq!(SurvivalStats::default().coins, STARTING_COINS);
+        assert_eq!(stats(100.0, 0.0).to_json(0)["coins"], STARTING_COINS);
+    }
+
+    #[test]
+    fn a_state_saved_before_the_economy_gets_a_full_purse_not_an_empty_one() {
+        // No `coins` key at all: the serde default is the starting balance, so
+        // upgrading an old save does not silently bankrupt the player.
+        let decoded: SurvivalStats = serde_json::from_str(r#"{"hunger":30}"#).unwrap();
+        assert_eq!(decoded.coins, STARTING_COINS);
+
+        // An explicit zero is a real balance and must be honoured.
+        let broke: SurvivalStats = serde_json::from_str(r#"{"coins":0}"#).unwrap();
+        assert_eq!(broke.coins, 0);
+    }
+
+    #[test]
+    fn the_wallet_spends_only_what_it_has_and_saturates_on_credit() {
+        let mut stats = stats(100.0, 0.0);
+        assert_eq!(stats.coins, STARTING_COINS);
+
+        assert!(stats.try_spend_coins(40));
+        assert_eq!(stats.coins, STARTING_COINS - 40);
+        // A debit the purse cannot cover changes nothing.
+        assert!(!stats.try_spend_coins(u32::MAX));
+        assert_eq!(stats.coins, STARTING_COINS - 40);
+
+        assert_eq!(stats.add_coins(10), 10);
+        stats.coins = u32::MAX - 1;
+        assert_eq!(stats.add_coins(100), 1, "credit saturates, never wraps");
+        assert_eq!(stats.coins, u32::MAX);
     }
 }

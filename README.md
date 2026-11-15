@@ -11,6 +11,8 @@ local HTTP API so an AI agent can drive it.
 * Custom keyframe animations: author clips in the rig editor, play them from the UI, the HTTP API or an MCP agent
 * Life signs: the mouth is driven by the typewriter (vowel / consonant / pause shapes), the eyes follow your cursor, and the head tilts a little when you hover
 * Talk to it without a terminal: `Alt+Space` (configurable via `hotkey` in `watcher_rules.json`) summons the command bar from any application
+* A **survival game** in a WebAssembly plugin: hunger and saturation, a 20-slot
+  bag, a four-phase fishing mini-game, and a coin economy with a shop
 * Works alongside your desktop: only the titlebar, panel and avatar catch clicks
 
 ---
@@ -198,8 +200,12 @@ plugins/
 │       ├── lib.rs       the ABI: alloc/dealloc + plugin_* exports, 4 host imports
 │       ├── model.rs     hunger, saturation, tiers, the food catalog (raw
 │       │                ingredients vs. cooked dishes), recipes and cravings
-│       ├── inventory.rs the item catalog (fish, bait, gear, material, junk) and
-│       │                the slot-limited, stack-aware bag
+│       ├── inventory.rs the item catalog (fish, bait, cooking ingredients,
+│       │                gear, material, junk) and the slot-limited,
+│       │                stack-aware bag
+│       ├── store.rs     the shop: the price list (bait, driftwood, and every
+│       │                cooking ingredient the recipes use), buy/sell pricing
+│       │                and the shelf categories
 │       ├── fishing.rs   the four-phase mini-game: hidden bite, reaction window,
 │       │                the triangle-wave reel, the catch table and the prose
 │       ├── plugin.rs    the tick loop, telemetry, meal announcements, craving
@@ -233,6 +239,53 @@ keeps running), every call is fuel-metered so a spinning guest cannot hang the
 ticker, and a `.wasm` that will not load is logged and skipped. `survival.enabled:
 false` keeps the plugin installed but idle — the bars freeze and the routes keep
 answering with `"enabled": false`.
+
+### The economy loop
+
+The survival plugin also runs a small shop, so the bag has somewhere to send its
+surplus. A session starts with **100 coins** (`STARTING_COINS`, on the same
+`SurvivalStats` the hunger bars live on, so it shows up in `GET /survival` and in
+the telemetry frames), `GET /store` lists the price list with the balance and the
+player's holdings, `POST /store/buy` spends coins to stock the bag and
+`POST /store/sell` hands gathered material back for coins. Every trade is
+**all-or-nothing** — the purse and the free space are checked before anything
+moves — and publishes a `store-transaction` event so the page sees the new
+balance without polling.
+
+* **`GET /store`** — catalog of 13 entries: two baits (`worm_bait` 4/1,
+  `glowing_lure` 24/10), the **eight cooking ingredients** every recipe uses
+  (`apple` 4/2, `egg` 3/1, `cheese` 5/2, `tomato` 3/1, `mushroom` 3/1,
+  `noodles` 4/1, `bread` 4/2, `honey` 8/3), two materials (`driftwood` 6/3,
+  `river_weed` 5/2) and the rod (75/30) — each with `buy_price`, `sell_price`,
+  `category` (`bait` / `ingredient` / `material` / `tool`), `owned` and
+  `stack_max`; plus `coins` and the inventory summary.
+* **`POST /store/buy`** — `{"item": "worm_bait", "count": 3}`. A refused buy is
+  **409** `insufficient_coins` (with `required` and `shortfall`) or **409**
+  `inventory_full` (with `room`), and costs nothing.
+* **`POST /store/sell`** — the mirror; selling more than the bag holds is **409**
+  `not_enough_items`, and an id the shop does not stock (a caught fish, a boot) is
+  **400**.
+
+The Survival card's fourth tab (*Store*) is the front end: it lists the shelves
+with both prices and how many the player already holds, and its **Buy** / **Sell**
+buttons are those two routes with a **Qty** box, so the loop can be played without
+a terminal.
+
+That closes the loop the rest of the feature already had: bait is spent on every
+cast, the driftwood and river weed the line drags up are worth coins, and the
+coins buy the bait — or the glowing lure — the next cast needs. `sell_price` is
+deliberately always below `buy_price`, so reselling is a loss and the shop is a
+sink rather than a coin printer.
+
+**Cooking runs through the same pantry.** A recipe is not a magic spell any
+more: `POST /survival/craft` spends its ingredients out of the bag, so an
+omelette costs two eggs and a cheese that had to be bought (11 coins) or
+gathered. `GET /recipes` reports the bag — `can_cook`, `missing`, and `held` per
+line — which is what the Cook row uses to grey itself out and to say what is
+short, and a cook refuses with **409** `missing_ingredients` (naming every
+shortfall) or the usual `too_full` / `still_digesting` without spending a thing.
+That makes the shopping trip part of the game rather than a side quest: catch a
+fish, sell the driftwood, buy the eggs.
 
 ---
 

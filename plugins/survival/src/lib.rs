@@ -59,6 +59,7 @@ pub mod inventory;
 pub mod model;
 pub mod plugin;
 pub mod routes;
+pub mod store;
 
 pub use plugin::Survival;
 

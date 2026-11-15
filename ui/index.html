@@ -310,6 +310,9 @@
       <span class="survival-tab-badge" id="survival-bag-count">—</span></button>
     <button class="survival-tab" type="button" role="tab" aria-selected="false"
             data-survival-tab="fishing" title="Cast, hook and reel">Fishing</button>
+    <button class="survival-tab" type="button" role="tab" aria-selected="false"
+            data-survival-tab="store" title="Buy and sell — coins, bait and materials (GET /store)">Store
+      <span class="survival-tab-badge coins" id="survival-coins">—</span></button>
   </nav>
   <div class="survival-body" data-survival-pane="status">
     <div class="survival-bar-row" title="Hunger only falls once saturation is empty">
@@ -407,6 +410,28 @@
     </div>
     <div class="fish-stats" id="fish-stats"></div>
     <div class="survival-note" id="fishing-note" aria-live="polite"></div>
+  </div>
+
+  <div class="survival-body hidden" data-survival-pane="store">
+    <div class="store-head">
+      <span class="store-wallet" id="store-wallet" title="Coins in the purse (GET /store)">—</span>
+      <span class="hd-spacer"></span>
+      <button class="mini-btn" id="btn-store-reload"
+              title="Re-read the price list (GET /store)">↻</button>
+    </div>
+    <div class="store-list" id="store-list" role="list" aria-label="Store catalog">
+      <div class="store-empty">Loading the price list…</div>
+    </div>
+    <div class="store-actions">
+      <label class="store-qty-label" for="store-count">Qty</label>
+      <input id="store-count" type="number" min="1" max="99" step="1" value="1"
+             title="How many to buy or sell" aria-label="How many">
+      <button class="control-btn primary" id="btn-store-buy" disabled
+              title="Buy the selected item (POST /store/buy)">Buy</button>
+      <button class="mini-btn" id="btn-store-sell" disabled
+              title="Sell the selected item (POST /store/sell)">Sell</button>
+    </div>
+    <div class="survival-note" id="store-note" aria-live="polite"></div>
   </div>
 </aside>
 

@@ -30,6 +30,9 @@ pub const ROUTES: &[(&str, &[&str])] = &[
     ("/fishing/cancel", &["POST"]),
     ("/foods", &["GET"]),
     ("/recipes", &["GET"]),
+    ("/store", &["GET"]),
+    ("/store/buy", &["POST"]),
+    ("/store/sell", &["POST"]),
 ];
 
 /// `[{"path": "/survival", "methods": ["GET", "POST"]}, …]`
@@ -76,6 +79,34 @@ fn parse_ingredients(value: &Value) -> Option<Vec<String>> {
         Value::String(id) => Some(vec![id.clone()]),
         _ => None,
     }
+}
+
+/// Read a trade body: `{"item": "<id>", "count": <number>}`.
+///
+/// `id` is a synonym for `item` (it is everywhere else in this API) and `count`
+/// defaults to `1`. A `count` that is not an integer in 1–[`inventory::MAX_ADD`]
+/// is a **400** rather than a silent clamp: a purchase is the one place where
+/// quietly changing the number spends the player's coins on something they did
+/// not ask for.
+fn parse_trade(body: &Value) -> Result<(String, u32), String> {
+    let item = body
+        .get("item")
+        .or_else(|| body.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "send `item` (an id from GET /store) and optionally `count`".to_string())?;
+    let count = match body.get("count") {
+        None | Some(Value::Null) => 1,
+        Some(value) => {
+            let parsed = value
+                .as_u64()
+                .filter(|count| (1..=u64::from(inventory::MAX_ADD)).contains(count))
+                .ok_or_else(|| {
+                    format!("`count` must be an integer from 1 to {}", inventory::MAX_ADD)
+                })?;
+            parsed as u32
+        }
+    };
+    Ok((item.to_string(), count))
 }
 
 /// Dispatch one proxied request.
@@ -172,8 +203,32 @@ pub fn handle(state: &mut Survival, request: &Value) -> Value {
                 Err(err) => failed(err.status_code(), err.to_json()),
             }
         }
-        ("GET", "/foods") => ok(model::food_catalog()),
-        ("GET", "/recipes") => ok(model::recipe_catalog()),
+        ("GET", "/foods") => {
+            // The recipe book rides along so a client needs one request — with
+            // the bag folded in, so `can_cook` is honest there too.
+            let mut body = model::food_catalog();
+            if let Some(object) = body.as_object_mut() {
+                object.insert("recipes".to_string(), state.recipes_json()["recipes"].clone());
+            }
+            ok(body)
+        }
+        ("GET", "/recipes") => ok(state.recipes_json()),
+        ("GET", "/store") => ok(state.store_json()),
+        ("POST", "/store/buy") | ("POST", "/store/sell") => {
+            let (item, count) = match parse_trade(&body) {
+                Ok(trade) => trade,
+                Err(err) => return failed(400, json!({ "ok": false, "error": err })),
+            };
+            let outcome = if path.ends_with("/buy") {
+                state.store_buy(&item, count)
+            } else {
+                state.store_sell(&item, count)
+            };
+            match outcome {
+                Ok(payload) => ok(payload),
+                Err(err) => failed(err.status_code(), err.to_json()),
+            }
+        }
         ("GET", "/inventory") => ok(state.inventory_json()),
         ("POST", "/inventory/add") | ("POST", "/inventory/remove") => {
             // `{"item": "minnow", "count": 3}`, with `id` accepted as a synonym
@@ -290,6 +345,16 @@ mod tests {
         crate::host::set_now_ms(crate::host::now_ms() + ms);
     }
 
+    /// Put `(id, count)` pairs in the bag — cooking draws from the inventory, so
+    /// a route test that expects a dish has to shop first.
+    fn stock(state: &mut Survival, items: &[(&str, u32)]) {
+        for (id, count) in items {
+            state
+                .inventory_add(id, *count)
+                .unwrap_or_else(|err| panic!("stock {id}: {err}"));
+        }
+    }
+
     #[test]
     fn the_route_table_is_what_the_host_will_serve() {
         let routes = routes_json();
@@ -315,7 +380,10 @@ mod tests {
                 "/fishing/reel",
                 "/fishing/cancel",
                 "/foods",
-                "/recipes"
+                "/recipes",
+                "/store",
+                "/store/buy",
+                "/store/sell"
             ]
         );
         assert_eq!(routes[0]["methods"], json!(["GET", "POST"]));
@@ -401,6 +469,7 @@ mod tests {
     #[test]
     fn crafting_by_recipe_id_and_by_ingredients_both_work() {
         let mut state = hungry_plugin();
+        stock(&mut state, &[("egg", 2), ("cheese", 1)]);
         let by_id = handle(
             &mut state,
             &json!({ "method": "POST", "path": "/survival/craft", "body": { "recipe": "omelette" } }),
@@ -408,9 +477,12 @@ mod tests {
         assert_eq!(by_id["status"], json!(200));
         assert_eq!(by_id["body"]["food"], "omelette");
         assert_eq!(by_id["body"]["kind"], "cooked");
+        // The pantry paid for it.
+        assert_eq!(by_id["body"]["consumed"].as_array().expect("consumed").len(), 2);
 
         // A different dish, offered as an object of counts this time.
         state.set_levels(Some(40.0), Some(0.0)).expect("override");
+        stock(&mut state, &[("noodles", 2), ("egg", 1), ("mushroom", 1)]);
         advance_clock(60_000);
         let by_counts = handle(
             &mut state,
@@ -422,6 +494,56 @@ mod tests {
         );
         assert_eq!(by_counts["status"], json!(200));
         assert_eq!(by_counts["body"]["food"], "ramen");
+    }
+
+    #[test]
+    fn cooking_without_the_ingredients_is_a_409_naming_what_is_short() {
+        let mut state = hungry_plugin();
+        stock(&mut state, &[("egg", 1)]);
+        let response = handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/survival/craft", "body": { "recipe": "omelette" } }),
+        );
+        assert_eq!(response["status"], json!(409));
+        assert_eq!(response["body"]["refusal"], "missing_ingredients");
+        assert_eq!(response["body"]["missing"][0]["item"], "egg");
+        assert_eq!(response["body"]["missing"][0]["short"], json!(1));
+        assert_eq!(response["body"]["missing"][1]["item"], "cheese");
+        // Nothing was spent.
+        assert_eq!(state.inventory().count("egg"), 1);
+    }
+
+    #[test]
+    fn the_recipe_book_reports_what_the_bag_can_cook() {
+        let mut state = hungry_plugin();
+        let before = handle(&mut state, &json!({ "method": "GET", "path": "/recipes" }));
+        assert_eq!(before["status"], json!(200));
+        assert!(before["body"]["recipes"]
+            .as_array()
+            .expect("recipes")
+            .iter()
+            .all(|recipe| recipe["can_cook"] == json!(false)));
+
+        stock(&mut state, &[("egg", 2), ("cheese", 1)]);
+        let after = handle(&mut state, &json!({ "method": "GET", "path": "/recipes" }));
+        let omelette = after["body"]["recipes"]
+            .as_array()
+            .expect("recipes")
+            .iter()
+            .find(|recipe| recipe["id"] == "omelette")
+            .expect("omelette");
+        assert_eq!(omelette["can_cook"], json!(true));
+        assert_eq!(omelette["ingredients"][0]["held"], json!(2));
+
+        // `GET /foods` carries the same enriched book, not the static one.
+        let foods = handle(&mut state, &json!({ "method": "GET", "path": "/foods" }));
+        let omelette = foods["body"]["recipes"]
+            .as_array()
+            .expect("recipes")
+            .iter()
+            .find(|recipe| recipe["id"] == "omelette")
+            .expect("omelette");
+        assert_eq!(omelette["can_cook"], json!(true));
     }
 
     #[test]
@@ -454,12 +576,19 @@ mod tests {
     #[test]
     fn a_craft_on_a_full_avatar_is_a_409() {
         let mut state = plugin();
+        // The pantry is stocked, so the *only* reason left to refuse is the full
+        // belly — which is the point of this test.
+        stock(&mut state, &[("noodles", 1), ("tomato", 2), ("cheese", 1)]);
         let response = handle(
             &mut state,
             &json!({ "method": "POST", "path": "/survival/craft", "body": { "recipe": "pasta" } }),
         );
         assert_eq!(response["status"], json!(409));
         assert_eq!(response["body"]["refusal"], "too_full");
+        // A refused cook spends nothing.
+        assert_eq!(state.inventory().count("noodles"), 1);
+        assert_eq!(state.inventory().count("cheese"), 1);
+        assert_eq!(state.inventory().count("tomato"), 2);
     }
 
     #[test]
@@ -651,5 +780,218 @@ mod tests {
             &json!({ "method": "GET", "path": "/fishing/nope" }),
         );
         assert_eq!(response["status"], json!(404));
+    }
+
+    /* -------------------------------------------------------------- *
+     * Store & economy
+     * -------------------------------------------------------------- */
+
+    /// A four-slot bag with every slot taken — the only honest way to make a
+    /// purchase fail on capacity.
+    fn full_bag() -> Survival {
+        let config = SurvivalConfig {
+            inventory: crate::inventory::InventoryConfig { slots: 4 },
+            ..SurvivalConfig::default()
+        };
+        let mut state = Survival::new(config);
+        // The starter gear claims three slots; a pair of boots claims the last.
+        state
+            .inventory_add("old_boot", 2)
+            .expect("fill the last slot");
+        assert!(state.inventory().is_full());
+        take_recorded();
+        state
+    }
+
+    #[test]
+    fn get_store_serves_the_catalog_wallet_and_holdings() {
+        let mut state = plugin();
+        let response = handle(&mut state, &json!({ "method": "GET", "path": "/store" }));
+        assert_eq!(response["status"], json!(200));
+        let body = &response["body"];
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["coins"], json!(100), "a fresh session starts with 100");
+        assert_eq!(body["starting_coins"], json!(100));
+        assert_eq!(
+            body["count"],
+            json!(crate::store::default_catalog().len()),
+            "count matches the served catalog"
+        );
+
+        let catalog = body["catalog"].as_array().expect("catalog");
+        assert_eq!(catalog.len(), body["count"].as_u64().unwrap() as usize);
+        let worm = catalog
+            .iter()
+            .find(|entry| entry["id"] == "worm_bait")
+            .expect("worm bait is stocked");
+        assert_eq!(worm["buy_price"], json!(4));
+        assert_eq!(worm["sell_price"], json!(1));
+        assert_eq!(worm["category"], json!("bait"));
+        assert_eq!(worm["owned"], json!(5), "the starter bag holds five");
+        assert_eq!(body["categories"].as_array().unwrap().len(), 4);
+        assert!(body["inventory"]["free"].is_number());
+    }
+
+    #[test]
+    fn buying_deducts_the_tab_and_fills_the_bag() {
+        let mut state = plugin();
+        let response = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/store/buy",
+                "body": { "item": "worm_bait", "count": 3 },
+            }),
+        );
+        assert_eq!(response["status"], json!(200));
+        let body = &response["body"];
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["action"], "buy");
+        assert_eq!(body["item"], "worm_bait");
+        assert_eq!(body["count"], json!(3));
+        assert_eq!(body["unit_price"], json!(4));
+        assert_eq!(body["total"], json!(12), "3 x 4 coins");
+        assert_eq!(body["coins"], json!(88), "100 - 12");
+        assert!(body["inventory"]["free"].is_number());
+
+        assert_eq!(state.coins(), 88);
+        assert_eq!(state.inventory().count("worm_bait"), 8, "5 starter + 3 bought");
+        let events = take_recorded().events;
+        assert!(
+            events
+                .iter()
+                .any(|(name, _)| name == crate::plugin::EVENT_STORE),
+            "a purchase publishes store-transaction"
+        );
+    }
+
+    #[test]
+    fn an_unaffordable_purchase_is_a_409_and_moves_nothing() {
+        let mut state = plugin();
+        // Two rods at 75 is 150 coins against a purse of 100.
+        let response = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/store/buy",
+                "body": { "item": "fishing_rod", "count": 2 },
+            }),
+        );
+        assert_eq!(response["status"], json!(409));
+        let body = &response["body"];
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["refusal"], "insufficient_coins");
+        assert_eq!(body["required"], json!(150));
+        assert_eq!(body["shortfall"], json!(50));
+        assert_eq!(state.coins(), 100, "a refused purchase is free");
+        assert_eq!(state.inventory().count("fishing_rod"), 1, "one starter rod");
+    }
+
+    #[test]
+    fn buying_into_a_full_bag_is_a_409_and_costs_nothing() {
+        let mut state = full_bag();
+        // River weed is not in the starter bag, so it needs a *slot* — and every
+        // slot is taken. (Bait would top up the existing stack instead, which is
+        // exactly the difference `room_for` exists to see.)
+        let response = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/store/buy",
+                "body": { "item": "river_weed", "count": 1 },
+            }),
+        );
+        assert_eq!(response["status"], json!(409));
+        assert_eq!(response["body"]["refusal"], "inventory_full");
+        assert_eq!(response["body"]["room"], json!(0));
+        assert_eq!(state.coins(), 100, "coins are only spent on a real purchase");
+        assert_eq!(state.inventory().count("river_weed"), 0, "nothing landed");
+    }
+
+    #[test]
+    fn selling_awards_coins_and_removes_the_goods() {
+        let mut state = plugin();
+        let response = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/store/sell",
+                "body": { "item": "worm_bait", "count": 3 },
+            }),
+        );
+        assert_eq!(response["status"], json!(200));
+        let body = &response["body"];
+        assert_eq!(body["action"], "sell");
+        assert_eq!(body["count"], json!(3));
+        assert_eq!(body["unit_price"], json!(1));
+        assert_eq!(body["total"], json!(3));
+        assert_eq!(body["coins"], json!(103), "100 + 3");
+        assert_eq!(state.coins(), 103);
+        assert_eq!(state.inventory().count("worm_bait"), 2);
+    }
+
+    #[test]
+    fn overselling_or_selling_what_the_store_does_not_buy_is_refused() {
+        let mut state = plugin();
+        let too_many = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/store/sell",
+                "body": { "item": "worm_bait", "count": 9 },
+            }),
+        );
+        assert_eq!(too_many["status"], json!(409));
+        assert_eq!(too_many["body"]["refusal"], "not_enough_items");
+        assert_eq!(too_many["body"]["held"], json!(5));
+        assert_eq!(state.coins(), 100, "no partial sale, no partial payment");
+
+        // A real item the shop does not stock: the swung boot has no price.
+        let unstocked = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/store/sell",
+                "body": { "item": "minnow", "count": 1 },
+            }),
+        );
+        assert_eq!(unstocked["status"], json!(400));
+
+        let unknown = handle(
+            &mut state,
+            &json!({
+                "method": "POST",
+                "path": "/store/buy",
+                "body": { "item": "diamond", "count": 1 },
+            }),
+        );
+        assert_eq!(unknown["status"], json!(400));
+        assert!(unknown["body"]["error"].as_str().unwrap_or("").contains("diamond"));
+    }
+
+    #[test]
+    fn a_trade_count_must_be_a_real_positive_integer() {
+        for bad in [json!(0), json!(100), json!("three"), json!(-1), json!(1.5)] {
+            let mut state = plugin();
+            let response = handle(
+                &mut state,
+                &json!({
+                    "method": "POST",
+                    "path": "/store/buy",
+                    "body": { "item": "worm_bait", "count": bad },
+                }),
+            );
+            assert_eq!(response["status"], json!(400), "count {bad} must be refused");
+        }
+
+        // A missing count is one unit, not zero.
+        let mut state = plugin();
+        let response = handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/store/sell", "body": { "item": "worm_bait" } }),
+        );
+        assert_eq!(response["status"], json!(200));
+        assert_eq!(response["body"]["count"], json!(1));
+        assert_eq!(state.coins(), 101);
     }
 }
