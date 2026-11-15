@@ -55,20 +55,26 @@ const FIELDS = [
   { tab: "survival", section: "survival", key: "start_hunger", label: "Start hunger", hint: "0–100", type: "number", min: 0, max: 100, step: 1 },
   { tab: "survival", section: "survival", key: "start_saturation", label: "Start saturation", hint: "0–100", type: "number", min: 0, max: 100, step: 1 },
 
-  { tab: "survival", section: "fishing", key: "enabled", label: "Fishing", type: "bool" },
-  { tab: "survival", section: "fishing", key: "hook_key", label: "Hook key", hint: "KeyboardEvent.code, e.g. Space", type: "text" },
-  { tab: "survival", section: "fishing", key: "reel_key", label: "Reel key", hint: "KeyboardEvent.code, e.g. Space", type: "text" },
-  { tab: "survival", section: "fishing", key: "mouse_button", label: "Mouse button", hint: "0 left · 1 middle · 2 right", type: "number", min: 0, max: 2, step: 1 },
-  { tab: "survival", section: "fishing", key: "difficulty", label: "Difficulty", hint: "0.5 forgiving – 2.0 brutal", type: "number", min: 0.5, max: 2, step: 0.05 },
-  { tab: "survival", section: "fishing", key: "min_wait_secs", label: "Shortest wait", hint: "seconds before a bite", type: "number", min: 1, max: 120, step: 1 },
-  { tab: "survival", section: "fishing", key: "max_wait_secs", label: "Longest wait", hint: "seconds before a bite", type: "number", min: 1, max: 120, step: 1 },
-  { tab: "survival", section: "fishing", key: "hook_window_ms", label: "Reaction window", hint: "ms to strike after the dip", type: "number", min: 250, max: 8000, step: 50 },
-  { tab: "survival", section: "fishing", key: "reel_period_ms", label: "Marker sweep", hint: "ms per full pass", type: "number", min: 300, max: 6000, step: 50 },
-  { tab: "survival", section: "fishing", key: "sweet_width", label: "Sweet spot width", hint: "fraction of the bar", type: "number", min: 0.04, max: 0.6, step: 0.01 },
-  { tab: "survival", section: "fishing", key: "require_rod", label: "A cast needs the rod", type: "bool" },
-  { tab: "survival", section: "fishing", key: "bait_required", label: "A cast spends bait", type: "bool" },
+  // The fishing and bag blocks live *inside* `survival`, so they address it as
+  // `survival.fishing.*` / `survival.inventory.*`. A bare `section: "fishing"`
+  // would read `config.fishing` (undefined, so every box renders blank and each
+  // bool reads as checked) and the save would post a `fishing` section the host
+  // has no owner for: "no plugin owns 'fishing'". `group` is only the card
+  // heading this field is drawn under.
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.enabled", label: "Fishing", type: "bool" },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.hook_key", label: "Hook key", hint: "KeyboardEvent.code, e.g. Space", type: "text" },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.reel_key", label: "Reel key", hint: "KeyboardEvent.code, e.g. Space", type: "text" },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.mouse_button", label: "Mouse button", hint: "0 left · 1 middle · 2 right", type: "number", min: 0, max: 2, step: 1 },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.difficulty", label: "Difficulty", hint: "0.5 forgiving – 2.0 brutal", type: "number", min: 0.5, max: 2, step: 0.05 },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.min_wait_secs", label: "Shortest wait", hint: "seconds before a bite", type: "number", min: 1, max: 120, step: 1 },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.max_wait_secs", label: "Longest wait", hint: "seconds before a bite", type: "number", min: 1, max: 120, step: 1 },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.hook_window_ms", label: "Reaction window", hint: "ms to strike after the dip", type: "number", min: 250, max: 8000, step: 50 },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.reel_period_ms", label: "Marker sweep", hint: "ms per full pass", type: "number", min: 300, max: 6000, step: 50 },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.sweet_width", label: "Sweet spot width", hint: "fraction of the bar", type: "number", min: 0.04, max: 0.6, step: 0.01 },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.require_rod", label: "A cast needs the rod", type: "bool" },
+  { tab: "survival", group: "fishing", section: "survival", key: "fishing.bait_required", label: "A cast spends bait", type: "bool" },
 
-  { tab: "survival", section: "inventory", key: "slots", label: "Bag slots", hint: "4–40", type: "number", min: 4, max: 40, step: 1 },
+  { tab: "survival", group: "bag", section: "survival", key: "inventory.slots", label: "Bag slots", hint: "4–40", type: "number", min: 4, max: 40, step: 1 },
 ];
 
 const settings = {
@@ -246,11 +252,14 @@ function buildForm() {
   panes.ai.appendChild(profiles);
 
   // Survival: metabolism first, then the fishing mini-game and the bag — each
-  // block is its own group so the pane reads as three short forms.
-  for (const [title, sections] of [
-    ["Metabolism", ["survival"]],
-    ["Fishing mini-game", ["fishing"]],
-    ["Bag", ["inventory"]],
+  // block is its own group so the pane reads as three short forms. The group is
+  // a `FIELDS` property, not the config section: `fishing`/`inventory` are
+  // nested inside `survival`, so every field's section is `survival` and only
+  // the card heading differs.
+  for (const [title, groupId] of [
+    ["Metabolism", "metabolism"],
+    ["Fishing mini-game", "fishing"],
+    ["Bag", "bag"],
   ]) {
     const group = document.createElement("div");
     group.className = "set-group";
@@ -258,7 +267,7 @@ function buildForm() {
     heading.textContent = title;
     group.appendChild(heading);
     for (const field of FIELDS.filter(
-      (f) => f.tab === "survival" && sections.includes(f.section),
+      (f) => f.tab === "survival" && (f.group || "metabolism") === groupId,
     )) {
       group.appendChild(fieldRow(field));
     }

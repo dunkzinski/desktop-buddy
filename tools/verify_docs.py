@@ -8,6 +8,7 @@ Checks:
   3. every event type emitted on the SSE bus is documented
   4. every command the UI actually invokes is registered
   5. no doc mentions a route/command/event that does not exist
+  6. every field in `ui/js/settings.js` addresses a section `POST /config` owns
 """
 import re
 import json
@@ -977,6 +978,34 @@ else:
                         f"watcher_rules.json: hermes_timeout_secs = {shipped_timeout}, "
                         f"but the code default is {expected_timeout}"
                     )
+
+# ---------- 6. the settings form's addresses ----------
+# `ui/js/settings.js` is one FIELDS spec whose `section.key` pair has to be an
+# address `POST /config` accepts: `tts`, `stt`, `vision`, `ai`, or a section a
+# plugin claims. A field pointed at a nested block (`section: "fishing"` for
+# `survival.fishing`) renders blank, reads every bool as checked, and posts a
+# patch the server refuses with "no plugin owns `fishing`" — that shipped once.
+settings_js = (ROOT / "ui/js/settings.js").read_text(encoding="utf-8")
+owned_sections = {"tts", "stt", "vision", "ai"}
+for guest_config in sorted((ROOT / "plugins").rglob("src/config.rs")):
+    claimed = re.search(
+        r'CONFIG_KEY: &str = "([^"]+)"', guest_config.read_text(encoding="utf-8")
+    )
+    if claimed:
+        owned_sections.add(claimed.group(1))
+fields = re.findall(
+    r'\{\s*tab: "([a-z]+)",\s*(?:group: "([a-z]+)",\s*)?section: "([a-z_]+)",\s*key: "([^"]+)"',
+    settings_js,
+)
+print(f"\nsettings form: {len(fields)} field(s), sections {sorted({f[2] for f in fields})}")
+if not fields:
+    problems.append("ui/js/settings.js: no FIELDS entries found")
+for _tab, _group, section, key in fields:
+    if section not in owned_sections:
+        problems.append(
+            f"ui/js/settings.js: `{section}.{key}` addresses a section POST /config does not "
+            f"own ({', '.join(sorted(owned_sections))})"
+        )
 
 print("\n" + "=" * 60)
 if problems:
