@@ -9,6 +9,8 @@ models/
     model.json
   nebulon-9/              shipped alien: procedural shapes, tagged face parts,
     model.json            four keyframe clips (wave/breathe/scan/alert)
+  emberwing/              shipped lantern moth: 22-bone shape rig, four
+    model.json            wings, ember eyespots, six keyframe clips
   demo-blob/              shipped example, PNG sprite parts
     model.json
     rig.json              <- written by the rig editor (optional override)
