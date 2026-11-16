@@ -12,6 +12,7 @@
 //!   clickable; the rest of the screen stays usable.
 
 pub mod api;
+pub mod discovery;
 pub mod models;
 pub mod platform;
 pub mod plugins;

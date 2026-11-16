@@ -79,7 +79,7 @@ ui/
     ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), text-driven lip sync (`mouthPoseFor`, `setMouthFrom`, `stepMouth`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
     ├── bridge.js       # Tauri IPC commands, event listeners (`avatar-state-changed`, `emote`, `speak`, `avatar-animate`, etc.), hit-region publishing (`wireRegions`, `setClickThrough`), state sync (`reportState`, `applyRemoteState`, `applyPartPatch`)
     ├── survival.js     # The **Survival** pop-out card and its four tabs: `setupSurvival` (hydrate from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follow the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events, 15 s survival poll floor), `renderSurvival` (tier badge, the two bars and the craving row, from any of the payload shapes), `feed` (the real `POST /survival/feed`), `setCraving` / `clearCraving`, `craft` + `syncCraftButton` (the recipe picker's `can_cook`/`missing`, so a cook the bag cannot pay for is not clickable), `showSurvivalTab` (status / bag / fishing / store), `renderInventory` + `addItem` + `useItem` + `sellPickedItem` (`GET /inventory`, `POST /inventory/add`, `POST /inventory/use`, plus a one-unit `POST /store/sell` straight from the bag at the slot's `sell_price`), `syncInventoryButtons` (Use for edibles, Sell for anything the counter prices), the shop (`renderStore` + `renderWallet` + `pickStoreItem` + `syncStoreButtons` + `trade` over `GET /store`, `POST /store/buy`, `POST /store/sell`), the fishing mini-game (`castLine` / `hookFish` / `reelFish` / `cancelFishing`, a 120 ms `GET /fishing` poll, `startMarker` animating off the plugin's sweep), `toggleSurvivalCard` / `survivalCardOpen`
-    ├── settings.js     # The **Settings** modal over `GET /config` / `POST /config`: `setupSettings` (build the form from one `FIELDS` spec, hydrate from the server, prime at startup), `renderSettings` (values, per-path ✓/✗, stray-key warnings), `collectPatch` (sends **only** what changed), `save` (partial `POST /config`, then reports applied vs `restart_required`), `toggleSettings` / `settingsOpen`
+    ├── settings.js     # The **Settings** modal over `GET /config` / `POST /config`: `setupSettings` (build the form from one `FIELDS` spec, hydrate from the server, prime at startup), `renderSettings` (values, per-path ✓/✗, stray-key warnings), `collectPatch` (sends **only** what changed, including `ai.create` / `ai.rename` / `ai.remove` and `discovery_ports`), the AI brain tab's own `renderProfileCards` / `refreshProfileOptions` / `addProfile` / `removeProfile` / `discoverModels` / `importModel` / `renderDiscovery`, `save` (partial `POST /config`, then reports applied vs `restart_required`), `toggleSettings` / `settingsOpen`
     └── main.js         # Entry point: DOM bindings, keyboard shortcuts, gaze targeting (`updateGaze`, `attachGazeTracking`), `window.__avatarDebug`, `requestAnimationFrame` main loop (`step`, `frame` — bubble re-anchor), the ask/task command bar (`openCommandBar`, `sendUserMessage`, quick-task chips, `resetSession`)
 ```
 
@@ -405,10 +405,11 @@ The local voice. One module, one worker thread, one config block.
 | `get_speech`, `history` | `GET /speech` (the stored bubble + `talking`) and `GET /history` (`crate::chat_history_json` — the same bounded conversation log the History drawer renders) |
 | `get_stt`, `set_stt` | `GET /stt` / `POST /stt` → `stt::status_json` / `stt::set_enabled` (status + live `idle`/`listening`/`transcribing` state) |
 | `ai_profiles`, `switch_ai_profile` | `GET /ai-profiles` / `POST /ai-profile` → `ai_status_json` / `do_set_ai_profile`, both on a `spawn_blocking` thread because the health probe is a blocking 800 ms HTTP GET; `event_name` maps the frame to `ai_profile` |
+| `discover_models` | `POST /ai-discover` → `discovery::discover`, on a `spawn_blocking` thread (each port is a blocking GET with a 1.5 s budget); an optional `{ports: […]}` body overrides the rules file, otherwise `settings::discovery_ports` supplies the list |
 | `get_config`, `set_config` | `GET /config` / `POST /config` → `settings::config_json` / `settings::apply_config` (the write runs on `spawn_blocking`), then the live side effects: `tts::set_enabled`, `stt::set_enabled`, `plugins::apply_survival_config`, and one `ai_profile` frame so the watcher re-reads the file |
 | `start` | bind, spawn thread, Tokio runtime, axum serve, graceful shutdown |
 | `bind_first_available` | port fallback `preferred..preferred+9` |
-| `router` | 39 core routes, then `crate::plugins::routes()` merged in (deduped by path) — **no plugin endpoint is named in this file** |
+| `router` | 40 core routes, then `crate::plugins::routes()` merged in (deduped by path) — **no plugin endpoint is named in this file** |
 | request bodies | `SetStateBody`, `MoveBody`, `ExpressionBody`, `ClickThroughBody`, `HitRegionsBody`, `ModelBody`, `RigBody`, `PoseBody`, `ImportBody`, `PartPatchBody`, `MouthBody`, `EmoteBody`, `SpeakBody` (incl. optional `details`), `ReplyBody`, `AlertBody`, `ClipboardBody`, `AnimateBody`, `TtsBody`, `SttBody` |
 | `ApiError` | `IntoResponse` → `{"ok":false,"error":…}` + status |
 | `context` | `GET /context` — OS probes (title, process, idle, `window_rect`, `visible_windows`, `foreground_hwnd`, `screen`), `avatar_state` snapshot and the `recent_events` history |
@@ -543,6 +544,28 @@ modal, and its entry appears in `GET /plugins`. Delete the `.wasm` to remove it.
 `tools/verify_docs.py` reads the route table out of the guest sources
 (`plugins/*/src/*.rs`, the `ROUTES` const) as well as `api.rs` and
 `src/plugins/**`, so the documented endpoints follow the plugin.
+
+### `src-tauri/src/discovery.rs`
+
+The blocking half of **Discover models** (`POST /ai-discover`). Nothing here
+writes anything: it probes, and the modal decides what to import.
+
+| Item | Responsibility |
+| --- | --- |
+| `DISCOVERY_TIMEOUT_MS`, `MAX_GGUF_DEPTH` | 1.5 s per request; the `.gguf` walk depth (3) |
+| `port_in_url` | the port a profile endpoint already names (`…:8001/v1` → 8001), so `discovery_ports` can include it |
+| `openai_rows`, `ollama_rows` | parse `{data:[…]}` / `{models:[…]}` (OpenAI, llama.cpp, vLLM) and Ollama's `{models:[…]}`; `multimodal` comes from `architecture.input_modalities` or a `clip` family |
+| `probe_port` | per port: `v1/models`, then the root-mounted `models`, then `api/tags` — one `reqwest::blocking` client with `no_proxy`, so a dead port is a fast `None` and a wrong-protocol port is one timeout |
+| `gguf_dirs`, `walk_gguf`, `gguf_models` | `.gguf` weights under `%LOCALAPPDATA%\hermes\models` (plus the `USERPROFILE` / `$HOME` fallbacks), reported with `path` and `size_bytes` so an unloaded model is still visible |
+| `discover` | the whole `POST /ai-discover` body: `{ok, summary, elapsed_ms, timeout_ms, ports:[{port, reachable, detail}], models:[…], gguf_dirs}` |
+
+Every model row is `{id, label, endpoint, port, source, owned_by, multimodal}`
+(`source` is `openai_compat`, `ollama` or `gguf`; a `.gguf` row also carries
+`path` / `size_bytes` and a `null` port). `endpoint` is always the URL a profile
+should store — `http://127.0.0.1:<port>/v1` — because that is the prefix the
+watcher's `chat/completions` call hangs off. Unit tests serve a one-shot
+`TcpListener` and pin the endpoint, the multimodal flag, a silent port and the
+port parser; no model server is needed.
 
 ### `src-tauri/src/models.rs` (1081 lines)
 
@@ -687,7 +710,7 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
 | `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), **audio-driven lip sync** (`setAudioEnvelope` / `clearAudioEnvelope` / `hasAudioEnvelope` — `updateSpeech` indexes the Piper RMS envelope by `performance.now() - envelopeAt` and falls back to the character table when the voice is muted, missing or done) on top of the **text-driven** mapping (`mouthPoseFor` vowel/consonant/punctuation table, `setMouthFrom`, `stepMouth` smoothing), the quick-reply box (`isReplyOpen`, `openReply`, `closeReply`, `toggleReply`), the **details drawer** (`detailsText`, `toggleDetails`, `detailsOpen`, `copyDetails` — which republishes the hit region so the expanded card stays clickable), the "Thinking…" card (`beginThinking`, `showThinking`, `endThinking`, plus the `THINKING_TIMEOUT_MS` 125 s safety net that clears a stuck card and puts the face back to `neutral`) and the command bar's anchor (`commandBarVisible`, `positionCommandBar`); the hold timer is suspended while the drawer is open, the box is open, the bubble is hovered or an input has focus |
 | `ui/js/bridge.js` | Tauri event listeners (`avatar-state-changed`, `emote`, `speak`, `part-patch`, …), `reportState`, `applyRemoteState` (ignores frames that would yank a dragged avatar and never adopts a bare `walking` without its segment), `applyPartPatch`, `applyWatcherStatus` (which also mirrors `quick_tasks` for the command bar), the **AI Brain** layer (`applyAiProfiles` — rebuilds the dropdown only when the profile set changes, so the 12 s health refresh cannot collapse an open select, `renderAiProfiles` for the badge/dot, `refreshAiProfiles`, `setAiProfile`, `aiHealthStatus`, `aiActiveLabel`), click-through (`setClickThrough`), import flow (`importFromDialog`, `importImageAs`, chooser) |
-| `ui/js/settings.js` | The **Settings** modal (`#settings-modal`, three tabs): a declarative `FIELDS` spec drives the whole form (label, dotted `section.key`, input type, Browse… `kind`), `renderSettings` paints the `GET /config` body including the per-path ✓/✗ marks and the *stray key* warnings, `collectPatch` diffs the form against the loaded body so a save sends only what changed, and `save` reports `applied` vs `restart_required` from `POST /config` |
+| `ui/js/settings.js` | The **Settings** modal (`#settings-modal`, three tabs): a declarative `FIELDS` spec drives the whole form (label, dotted `section.key`, input type, Browse… `kind`), `renderSettings` paints the `GET /config` body including the per-path ✓/✗ marks and the *stray key* warnings, `collectPatch` diffs the form against the loaded body so a save sends only what changed, and `save` reports `applied` vs `restart_required` from `POST /config`. The **AI brain** tab is not declarative: profiles are a list, so it keeps a working copy in `ai` (loaded entries plus unsaved drafts flagged `isNew`, a `removed` queue and the two dropdown selections) and repaints cards through `renderProfileCards` / `refreshProfileOptions`; `addProfile` / `removeProfile` (inline guards: last profile, active profile, vision profile) / `importModel` (from `discoverModels` → `POST /ai-discover`) all edit that copy, and `collectPatch` turns it into `ai.create` / `ai.profiles` / `ai.rename` / `ai.remove` |
 | `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar, `H` toggles the History drawer), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), **gaze targeting** (`attachGazeTracking` — page `mousemove` plus the global `cursor-pos` stream; `updateGaze` — `look_at` > focused command bar > perch > global cursor (4 s) > idle glances, plus the eased hover weight and the clamped head-bone yaw bias), `window.__avatarDebug`, the **AI Brain** select (`setAiProfile` + a toast, with `refreshAiProfiles` every 12 s beside the watcher poll), behaviour loop (`step`, `startWalk`, `wander` — held back while a bubble is up), `requestAnimationFrame` driver (`frame`: `step` → `render` → `positionBubble`), play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
 | `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions || `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions |
 | `ui/js/survival.js` | The **Survival** card (top-left pop-out, not a panel section) with four tabs. `setupSurvival` hydrates from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follows the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events with a 15 s survival poll as the floor, `renderSurvival` flattens every payload shape into the tier badge, the two bars and the craving row, `feed` is a real `POST /survival/feed`, `setCraving` / `clearCraving` drive `POST /survival`, `craft` is a real `POST /survival/craft` fed by the recipe picker, which comes from `GET /recipes` with the bag folded in (`can_cook`, `missing`, per-line `held`) so `syncCraftButton` can disable a cook that could not pay (a 409 `missing_ingredients` / refusal prints the API's own prose). `showSurvivalTab` switches status / bag / fishing / store; `renderInventory` draws one cell per slot from `GET /inventory`, `addItem` / `useItem` / `sellPickedItem` are real `POST /inventory/add`, `POST /inventory/use` and a one-unit `POST /store/sell` (the bag's Sell button, enabled for any slot `GET /inventory` gave a `sell_price`); the store pane draws one row per shelf entry from `GET /store` (`renderStore`, grouped by category, with the wallet and each entry's `owned` count), keeps Buy/Sell honest against the purse and the bag (`syncStoreButtons`) and trades for real through `trade` — a 409 `insufficient_coins` / `inventory_full` / `not_enough_items` prints the API's own prose; the fishing pane runs `castLine` / `hookFish` / `reelFish` / `cancelFishing` against the plugin, polls `GET /fishing` at 120 ms so the bobber beats the 1 s host tick, and animates the marker from the published sweep. `toggleSurvivalCard` / `survivalCardOpen` drive the card and Esc chain |
@@ -1234,10 +1257,22 @@ form now. **Settings ⚙** in the control panel opens a modal with three tabs �
   telling you whether that path exists right now. Speaking speed, the
   push-to-talk hotkey, VAD threshold, language and the screen-vision capture mode
   live here too.
-* **AI brain**: which `ai_profiles` entry answers desktop triggers, plus each
-  HTTP profile's endpoint, model id, `max_tokens` and timeout. Prompts are
-  deliberately *not* editable here — they are prose, and the modal would mangle
-  them; the file stays the place for those.
+* **AI brain**: two routing dropdowns — **Answers desktop triggers**
+  (`active_profile`) and **Vision / screen capture** (`vision.profile_name`) —
+  both rebuilt from the profile list whenever a card is added, renamed or
+  removed, so a new profile is selectable before it is saved. Below them:
+  **Discovery ports** (comma separated, saved as the top-level
+  `discovery_ports`) and **Discover models**, which probes each port for an
+  OpenAI `v1/models` listing, llama.cpp's root-mounted `models` listing and
+  Ollama's `api/tags` (plus the `.gguf` files under
+  `%LOCALAPPDATA%\hermes\models`) and lists every model it found with its
+  endpoint and whether it is already configured. **+ Import** turns a row into a
+  draft card pre-filled with the endpoint, model id, `timeout_secs: 120` and the
+  JSON-avatar system prompt. Each card edits the key, label, kind, endpoint (or
+  `cmd`), model, `max_tokens`, timeout and the **system prompt** textarea, and
+  **+ Add Profile** creates one from scratch. **Remove** is refused inline — and
+  again by the server — for the last profile, the active profile and the vision
+  profile, with a warning naming the dropdown to switch first.
 * **Survival**: the hunger system switch, tier notifications, both drain rates,
   the telemetry interval and the starting values. The section comes from the
   plugin itself (`PluginConfig::describe`/`validate`/`apply`) — the editor has no
@@ -1280,8 +1315,8 @@ The rules file is plain JSON and every key is optional, so an older file keeps
 working and a missing/broken one falls back to the built-in defaults
 (`README.md` shows the shipped file). On top of the interaction kinds, title
 keywords and cooldowns it now also carries `app_rules`, `alerts`,
-`quick_tasks`, the session/rotation keys, `hotkey`, `tts`, `stt` and the
-`vision` block:
+`quick_tasks`, the session/rotation keys, `hotkey`, `tts`, `stt`, the `vision`
+block and `discovery_ports`:
 
 ```json
 {
@@ -1328,10 +1363,18 @@ keywords and cooldowns it now also carries `app_rules`, `alerts`,
     "jpeg_quality": 85,
     "trigger_phrases": ["what's on my screen", "look at my screen"]
   },
-  "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q"
+  "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
+  "discovery_ports": [8001, 9931, 9932, 11434, 8080, 1234]
 }
 ```
 
+* **`discovery_ports`** — the ports **Discover models** probes on
+  `127.0.0.1`. Absent means the shipped defaults (`8001`, `9931`, `9932`,
+  `11434`, `8080`, `1234`); the modal also shows any port an `ai_profiles`
+  endpoint already names, so a hand-written profile is discoverable without
+  editing the list. The watcher never dials these — only the app's
+  `POST /ai-discover` does — so the key is tolerated by an older watcher and
+  a file without it loads on defaults.
 * **`app_rules`** — evaluated when the focused window *changes*. `process` is
   matched against `/context`'s `process_name` and `title_contains` against the
   window title, both case-insensitive substrings; a blank matcher is a wildcard,
@@ -1922,6 +1965,23 @@ the API can read and mute, not press the button. The panel uses
 `get_stt_status` / `ptt_start` / `ptt_stop` / `set_stt_enabled` and receives
 `stt-status` events.
 
+### `/ai-discover`
+
+```bash
+curl -s -X POST localhost:8765/ai-discover -H 'content-type: application/json' \
+     -d '{"ports": [8001, 11434]}'
+```
+
+Probes loopback for local model servers and lists what they serve — the
+**Discover models** button in the AI brain tab. With no `ports` array the
+configured `discovery_ports` are used. Each port is asked for an OpenAI
+`v1/models` listing, llama.cpp's root-mounted `models` listing and Ollama's
+`api/tags`, one blocking request at a time with a 1.5 s budget on a
+`spawn_blocking` thread; `.gguf` weights under `%LOCALAPPDATA%\hermes\models` are
+listed as well. The body is `{ok, summary, elapsed_ms, timeout_ms, ports,
+models, gguf_dirs}` — see `API.md` for the full shape. Discovery only *reports*:
+importing a model is the modal filling a draft card, and `POST /config` writes it.
+
 ### `/config`
 
 The Settings modal's backend: one read, one partial write, and the only place
@@ -1947,9 +2007,21 @@ paths) and `restart_required`.
 Live: `tts.enabled`, `stt.enabled`, **every block a plugin owns** (the editor
 asks `plugins::config_specs()` and each plugin applies its own section through
 `PluginConfig::apply`, reporting live vs restart) and everything under `ai` /
-`vision` (the `ai_profile` frame is what makes `char-rig-watcher.exe` re-read the
-file). A Piper/Whisper **path** or `stt.hotkey` is read once at startup, so it is
-reported under `restart_required` instead of being pretended live.
+`vision` / `discovery_ports` (the `ai_profile` frame is what makes
+`char-rig-watcher.exe` re-read the file). A Piper/Whisper **path** or
+`stt.hotkey` is read once at startup, so it is reported under
+`restart_required` instead of being pretended live.
+
+`ai` takes four verbs beyond `active_profile`: `create` (a whole entry, with
+`timeout_secs` defaulting to 120 and the JSON-avatar `system_prompt` filled in),
+`profiles` (per-entry edits, merged so `api_key` survives), `rename`
+(`active_profile` and `vision.profile_name` follow it) and `remove` — refused
+for the last profile, the active profile and the vision profile. They are all
+resolved against the map that *results* from the patch, so one save can switch
+to a profile it creates. `vision.profile_name` must resolve, or the save is a
+400 instead of a screenshot sent nowhere. `discovery_ports` is written with
+`replace_or_insert`, so a file that predates the key gains it without any other
+byte changing.
 
 ### `/survival`, `/survival/feed`, `/survival/craft`, `/inventory`, `/inventory/add`,
 `/inventory/remove`, `/inventory/use`, `/fishing`, `/fishing/cast`, `/fishing/hook`,

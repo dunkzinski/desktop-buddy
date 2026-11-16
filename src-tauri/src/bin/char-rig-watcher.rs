@@ -6513,6 +6513,24 @@ mod tests {
         }
     }"#;
 
+    /// `discovery_ports` is the Settings modal's probe list. The watcher never
+    /// dials those ports, so the key must be *tolerated* rather than required:
+    /// a rules file that predates it loads on defaults, and one that carries it
+    /// does not change dispatch.
+    #[test]
+    fn rules_tolerate_discovery_ports_with_and_without_the_key() {
+        let without = rules(PROFILE_RULES);
+        assert_eq!(without.active_profile, "lfm3-fast");
+        assert_eq!(without.ai_profiles.len(), 2);
+
+        let with = rules(&format!(
+            "{{\"discovery_ports\": [8001, 11434], \"active_profile\": \"lfm3-fast\", \"ai_profiles\": {{\"lfm3-fast\": {{\"kind\": \"openai_compat\", \"endpoint\": \"http://127.0.0.1:8080\", \"model\": \"m\"}}}}}}"
+        ));
+        assert_eq!(with.active_profile, "lfm3-fast");
+        assert_eq!(with.ai_profiles.len(), 1);
+        assert_eq!(with.ai_profiles["lfm3-fast"].model(), Some("m"));
+    }
+
     #[test]
     fn ai_profiles_parse_both_kinds_and_keep_the_legacy_runner() {
         let parsed = rules(PROFILE_RULES);

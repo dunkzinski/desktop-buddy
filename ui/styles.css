@@ -1223,3 +1223,80 @@ input[type="range"]::-webkit-slider-thumb {
 .settings-status.warn { color: #f0b040; }
 .settings-status.error { color: #ff6b75; }
 #btn-settings-save { flex: 0 0 auto; padding: 7px 18px; }
+
+/* ---------- AI brain tab: routing, discovery, profile cards ---------- */
+
+.set-group-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 8px;
+}
+.set-group-head h4 { margin-bottom: 0; }
+.set-row > select {
+  padding: 5px 8px; font-size: 11px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 8px; color: #e8e8ed; font-family: inherit; outline: none;
+}
+.set-row > select:focus { border-color: #4a90d9; }
+
+/* A textarea owns its row, so the label sits above it instead of beside. */
+.set-row-area { flex-direction: column; align-items: stretch; gap: 4px; }
+.set-row-area > label, .set-profile .set-row-area > label { flex: 0 0 auto; }
+.set-profile textarea {
+  width: 100%; box-sizing: border-box; padding: 6px 8px;
+  font-size: 10.5px; line-height: 1.45; resize: vertical;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 8px; color: #d8d8e4; font-family: inherit; outline: none;
+}
+.set-profile textarea:focus { border-color: #4a90d9; }
+
+.set-profile-new {
+  border-color: rgba(74, 144, 217, 0.45);
+  background: rgba(74, 144, 217, 0.07);
+}
+.set-profile-label {
+  flex: 1 1 auto; min-width: 0; padding: 3px 6px;
+  font-size: 11.5px; font-weight: 600;
+  background: transparent; border: 1px solid transparent;
+  border-radius: 7px; color: #e8e8f2; font-family: inherit; outline: none;
+}
+.set-profile-label:hover { border-color: rgba(255, 255, 255, 0.12); }
+.set-profile-label:focus { border-color: #4a90d9; background: rgba(255, 255, 255, 0.06); }
+.set-profile-remove { flex: 0 0 auto; }
+.set-profile-remove:hover { background: rgba(232, 17, 35, 0.25); border-color: #e81123; color: #ff8b94; }
+.set-profile-warn { margin-top: 6px; font-size: 10px; line-height: 1.4; color: #ffb0b6; }
+
+.set-discovery {
+  margin-top: 8px; padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+.set-discovery-ports { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.set-chip {
+  padding: 1px 7px; border-radius: 999px; font-size: 9.5px;
+  background: rgba(255, 255, 255, 0.06); color: #8a8a9e;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.set-chip.ok {
+  background: rgba(61, 220, 132, 0.12); color: #6ee0a0;
+  border-color: rgba(61, 220, 132, 0.28);
+}
+.set-discovery-list { display: flex; flex-direction: column; gap: 3px; max-height: 280px; overflow-y: auto; }
+.set-discovery-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px; border-radius: 8px;
+}
+.set-discovery-row:hover { background: rgba(255, 255, 255, 0.04); }
+/* The id and the meta line shrink; the button and the badge never do. */
+.set-discovery-row .mini-btn, .set-discovery-row .set-chip { flex: 0 0 auto; white-space: nowrap; }
+.set-discovery-row code {
+  flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 10.5px; color: #cfd8ff;
+}
+.set-discovery-meta {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 9.5px; color: #6e6e85;
+}

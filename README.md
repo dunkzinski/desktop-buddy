@@ -738,6 +738,7 @@ falls back to the built-in defaults shown here:
   "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
   "active_profile": "hermes",
+  "discovery_ports": [8001, 9931, 9932, 11434, 8080, 1234],
   "tts": {
     "enabled": true,
     "piper_exe_path": "C:\\hermes\\tools\\piper\\piper.exe",
@@ -837,6 +838,23 @@ curl -s -X POST localhost:8765/ai-profile \
 `active_health` is probed on demand (`GET /health`, then `/v1/models`, 800 ms
 cap) and reports `online`, `offline` (with the endpoint/error) or `cli` for the
 agent path.
+
+You do not have to hand-edit this block any more. **Settings ⚙ → AI brain**
+lists one card per profile with **+ Add Profile** and **Remove** (refused for
+the last profile, the active one and the vision one — switch that dropdown
+first), edits the label, kind, endpoint or `cmd`, model, `max_tokens`, timeout
+and the system prompt, and has a second dropdown for **Vision / screen
+capture** (`vision.profile_name`). **Discover models** probes the
+`discovery_ports` list on `127.0.0.1` for OpenAI `v1/models`, llama.cpp's
+root-mounted `models` and Ollama's `api/tags`, plus any `.gguf` weights under
+`%LOCALAPPDATA%\hermes\models`, and **+ Import** turns a hit into a pre-filled
+card (endpoint, model id, `timeout_secs: 120` and the JSON-avatar prompt) ready
+to save:
+
+```bash
+curl -s -X POST localhost:8765/ai-discover -H 'content-type: application/json' \
+     -d '{"ports": [8001, 11434]}'
+```
 
 The shipped `hermes_cmd` keeps one conversation across triggers and is
 **rotatable**: `hermes chat --continue {session} --create-if-missing -Q -q`.

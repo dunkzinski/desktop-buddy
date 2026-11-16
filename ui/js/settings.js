@@ -11,6 +11,11 @@
  * `src-tauri/src/settings.rs`); this module only builds the form, shows the
  * path ticks/crosses and reports what applied, what needs a restart, and what
  * the API refused.
+ *
+ * The AI brain tab is the exception to "one declarative spec": profiles are a
+ * *list* (add / remove / rename / import), so it keeps a working copy in `ai`
+ * and diffs it against the last `GET /config` body. `POST /config` speaks
+ * `ai.create` / `ai.profiles` / `ai.rename` / `ai.remove` for those.
  */
 
 import { call } from "./ipc.js";
@@ -24,6 +29,10 @@ const DEFAULT_BASE = "http://127.0.0.1:8765";
  * `section` + `key` (dotted) say where the value lives in `watcher_rules.json`;
  * `pick` turns on the Browse… button (the `kind` goes straight to
  * `pick_config_path`).
+ *
+ * `vision.profile_name` is deliberately *not* here: it lives in the AI brain tab
+ * next to `active_profile`, because both are "which brain" questions and the
+ * dropdowns have to be rebuilt whenever a profile is added, renamed or removed.
  */
 const FIELDS = [
   { tab: "voice", section: "tts", key: "enabled", label: "Speak replies out loud", type: "bool" },
@@ -43,7 +52,6 @@ const FIELDS = [
 
   { tab: "voice", section: "vision", key: "enabled", label: "Screen vision", type: "bool" },
   { tab: "voice", section: "vision", key: "capture_mode", label: "Capture", type: "select", options: [["active_window", "Focused window"], ["full_screen", "Whole screen"]] },
-  { tab: "voice", section: "vision", key: "profile_name", label: "Vision profile", type: "select-profiles" },
   { tab: "voice", section: "vision", key: "max_image_dim", label: "Longest image side", hint: "px", type: "number", min: 256, max: 4096, step: 64 },
   { tab: "voice", section: "vision", key: "jpeg_quality", label: "JPEG quality", type: "number", min: 1, max: 100, step: 1 },
 
@@ -77,6 +85,12 @@ const FIELDS = [
   { tab: "survival", group: "bag", section: "survival", key: "inventory.slots", label: "Bag slots", hint: "4–40", type: "number", min: 4, max: 40, step: 1 },
 ];
 
+/** Profile fields compared on save, per `kind`. */
+const PROFILE_FIELDS = {
+  openai_compat: ["label", "kind", "endpoint", "model", "max_tokens", "timeout_secs", "system_prompt"],
+  hermes_cli: ["label", "kind", "cmd", "timeout_secs"],
+};
+
 const settings = {
   base: DEFAULT_BASE,
   /** Last `GET /config` body — the baseline a save is diffed against. */
@@ -88,6 +102,23 @@ const settings = {
   ready: false,
   /** Set by `onSettingsSaved`; runs after a successful save. */
   onSaved: null,
+};
+
+/**
+ * The AI brain tab's working copy.
+ *
+ * `profiles` is what the cards show (loaded entries plus unsaved drafts, each
+ * flagged `isNew`); `removed` queues deletions; `selectedActive` /
+ * `selectedVision` are the dropdowns' intent, kept here so a rename can carry
+ * the selection along instead of silently falling back to the first profile.
+ */
+const ai = {
+  profiles: [],
+  removed: [],
+  ports: [],
+  discovered: null,
+  selectedActive: "",
+  selectedVision: "",
 };
 
 const el = (id) => document.getElementById(id);
@@ -123,6 +154,12 @@ function setStatus(text, kind) {
 
 /* ---------- the form ---------- */
 
+function heading(text) {
+  const node = document.createElement("h4");
+  node.textContent = text;
+  return node;
+}
+
 function fieldRow(field) {
   const row = document.createElement("div");
   row.className = `set-row${field.type === "bool" ? " set-row-check" : ""}`;
@@ -141,15 +178,13 @@ function fieldRow(field) {
   if (field.type === "bool") {
     input = document.createElement("input");
     input.type = "checkbox";
-  } else if (field.type === "select" || field.type === "select-profiles") {
+  } else if (field.type === "select") {
     input = document.createElement("select");
-    if (field.type === "select") {
-      for (const [value, text] of field.options) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = text;
-        input.appendChild(option);
-      }
+    for (const [value, text] of field.options) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      input.appendChild(option);
     }
   } else {
     input = document.createElement("input");
@@ -203,6 +238,22 @@ function fieldRow(field) {
   return row;
 }
 
+/** A labelled `.set-row` without an input, so a caller can add its own. */
+function bareRow(labelText, hint) {
+  const row = document.createElement("div");
+  row.className = "set-row";
+  const label = document.createElement("label");
+  label.textContent = labelText;
+  if (hint) {
+    const span = document.createElement("span");
+    span.className = "set-hint";
+    span.textContent = hint;
+    label.appendChild(span);
+  }
+  row.appendChild(label);
+  return row;
+}
+
 function buildForm() {
   const panes = {
     voice: el("settings-pane-voice"),
@@ -221,35 +272,92 @@ function buildForm() {
   ]) {
     const group = document.createElement("div");
     group.className = "set-group";
-    const heading = document.createElement("h4");
-    heading.textContent = title;
-    group.appendChild(heading);
+    group.appendChild(heading(title));
     for (const field of FIELDS.filter((f) => f.tab === "voice" && sections.includes(f.section))) {
       group.appendChild(fieldRow(field));
     }
     panes.voice.appendChild(group);
   }
 
-  // AI brain: the active profile plus one card per profile's parameters.
-  const aiGroup = document.createElement("div");
-  aiGroup.className = "set-group";
-  const aiHeading = document.createElement("h4");
-  aiHeading.textContent = "Active profile";
-  aiGroup.appendChild(aiHeading);
-  const activeRow = document.createElement("div");
-  activeRow.className = "set-row";
-  const activeLabel = document.createElement("label");
-  activeLabel.textContent = "Answers desktop triggers";
-  activeRow.appendChild(activeLabel);
+  /* AI brain, part 1 — routing. Both dropdowns are rebuilt from the working
+     copy whenever the profile list changes (see `refreshProfileOptions`). */
+  const routing = document.createElement("div");
+  routing.className = "set-group";
+  routing.appendChild(heading("Routing"));
+
+  const activeRow = bareRow("Answers desktop triggers");
   const activeSelect = document.createElement("select");
   activeSelect.id = "set-ai-active";
+  activeSelect.addEventListener("change", () => {
+    ai.selectedActive = activeSelect.value;
+  });
   activeRow.appendChild(activeSelect);
-  aiGroup.appendChild(activeRow);
-  panes.ai.appendChild(aiGroup);
+  routing.appendChild(activeRow);
 
+  const visionRow = bareRow("Vision / screen capture", "profile screenshots are sent to");
+  const visionSelect = document.createElement("select");
+  visionSelect.id = "set-ai-vision";
+  visionSelect.addEventListener("change", () => {
+    ai.selectedVision = visionSelect.value;
+  });
+  visionRow.appendChild(visionSelect);
+  routing.appendChild(visionRow);
+  panes.ai.appendChild(routing);
+
+  /* AI brain, part 2 — discovery. */
+  const discovery = document.createElement("div");
+  discovery.className = "set-group";
+  discovery.appendChild(heading("Model discovery"));
+
+  const portsRow = bareRow("Discovery ports", "comma separated · 127.0.0.1");
+  const portsInput = document.createElement("input");
+  portsInput.type = "text";
+  portsInput.id = "set-ai-ports";
+  portsInput.spellcheck = false;
+  portsInput.placeholder = "8001, 9931, 9932, 11434";
+  portsInput.title = "Ports probed by Discover models; saved as `discovery_ports`";
+  portsRow.appendChild(portsInput);
+  const discoverButton = document.createElement("button");
+  discoverButton.type = "button";
+  discoverButton.className = "mini-btn";
+  discoverButton.id = "btn-ai-discover";
+  discoverButton.textContent = "Discover models";
+  discoverButton.addEventListener("click", discoverModels);
+  portsRow.appendChild(discoverButton);
+  discovery.appendChild(portsRow);
+
+  const note = document.createElement("p");
+  note.className = "set-note";
+  note.id = "ai-discovery-note";
+  note.textContent =
+    "Probes each port for OpenAI /v1/models, llama.cpp /models and Ollama /api/tags, then lists local .gguf files.";
+  discovery.appendChild(note);
+
+  const results = document.createElement("div");
+  results.id = "ai-discovery";
+  results.className = "set-discovery hidden";
+  discovery.appendChild(results);
+  panes.ai.appendChild(discovery);
+
+  /* AI brain, part 3 — one card per profile. */
+  const profileGroup = document.createElement("div");
+  profileGroup.className = "set-group";
+  const profileHead = document.createElement("div");
+  profileHead.className = "set-group-head";
+  profileHead.appendChild(heading("AI profiles"));
+  const addButton = document.createElement("button");
+  addButton.type = "button";
+  addButton.className = "mini-btn";
+  addButton.id = "btn-ai-add";
+  addButton.textContent = "+ Add Profile";
+  addButton.title = "Add a new ai_profiles entry (saved with Save)";
+  addButton.addEventListener("click", () => addProfile());
+  profileHead.appendChild(addButton);
+  profileGroup.appendChild(profileHead);
   const profiles = document.createElement("div");
   profiles.id = "settings-profiles";
-  panes.ai.appendChild(profiles);
+  profileGroup.appendChild(profiles);
+  panes.ai.appendChild(profileGroup);
 
   // Survival: metabolism first, then the fishing mini-game and the bag — each
   // block is its own group so the pane reads as three short forms. The group is
@@ -263,9 +371,7 @@ function buildForm() {
   ]) {
     const group = document.createElement("div");
     group.className = "set-group";
-    const heading = document.createElement("h4");
-    heading.textContent = title;
-    group.appendChild(heading);
+    group.appendChild(heading(title));
     for (const field of FIELDS.filter(
       (f) => f.tab === "survival" && (f.group || "metabolism") === groupId,
     )) {
@@ -277,64 +383,457 @@ function buildForm() {
   return true;
 }
 
-/** One card per AI profile; only the numbers/endpoint are editable here. */
-function buildProfiles(list) {
+/* ---------- AI profile cards ---------- */
+
+/** The server's own copy of the JSON-avatar prompt, so it is never duplicated. */
+function defaultSystemPrompt() {
+  const config = (settings.loaded && settings.loaded.settings) || {};
+  return (config.ai && config.ai.default_system_prompt) || "";
+}
+
+/** Read every card's inputs back into `ai.profiles` (the DOM holds the value). */
+function syncCards() {
+  for (const card of document.querySelectorAll("#settings-profiles .set-profile")) {
+    const index = Number(card.dataset.index);
+    const profile = ai.profiles[index];
+    if (!profile) continue;
+    for (const input of card.querySelectorAll("[data-k]")) {
+      const key = input.dataset.k;
+      if (input.type === "number") {
+        profile[key] = input.value.trim() === "" ? null : Number(input.value);
+      } else {
+        profile[key] = input.value;
+      }
+    }
+  }
+}
+
+function profileInputRow(labelText, key, value, type, hint) {
+  const row = bareRow(labelText, hint);
+  const input = document.createElement("input");
+  input.type = type;
+  input.spellcheck = false;
+  input.dataset.k = key;
+  input.value = value == null ? "" : String(value);
+  if (type === "number") {
+    input.inputMode = "decimal";
+    input.min = "1";
+    input.max = key === "max_tokens" ? "1000000" : "3600";
+    input.step = "1";
+  }
+  if (key === "name" || key === "label") input.addEventListener("input", refreshProfileOptions);
+  row.appendChild(input);
+  return row;
+}
+
+function profileCard(profile, index) {
+  const card = document.createElement("div");
+  card.className = `set-profile${profile.isNew ? " set-profile-new" : ""}`;
+  card.dataset.index = String(index);
+
+  const head = document.createElement("div");
+  head.className = "set-profile-head";
+
+  const labelInput = document.createElement("input");
+  labelInput.type = "text";
+  labelInput.className = "set-profile-label";
+  labelInput.dataset.k = "label";
+  labelInput.spellcheck = false;
+  labelInput.placeholder = "Display name";
+  labelInput.title = "Shown on this card and in both dropdowns";
+  labelInput.value = profile.label || "";
+  labelInput.addEventListener("input", refreshProfileOptions);
+  head.appendChild(labelInput);
+
+  const kind = document.createElement("code");
+  kind.className = "set-profile-kind";
+  kind.textContent = profile.isNew ? "new" : profile.kind || "openai_compat";
+  head.appendChild(kind);
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "mini-btn set-profile-remove";
+  remove.textContent = "Remove";
+  remove.title = "Delete this profile from watcher_rules.json";
+  remove.addEventListener("click", () => removeProfile(index));
+  head.appendChild(remove);
+  card.appendChild(head);
+
+  card.appendChild(profileInputRow("Key", "name", profile.name, "text", "JSON key / id"));
+
+  const kindRow = bareRow("Kind");
+  const kindSelect = document.createElement("select");
+  kindSelect.dataset.k = "kind";
+  for (const [value, text] of [
+    ["openai_compat", "OpenAI-compatible server"],
+    ["hermes_cli", "Hermes CLI command"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    kindSelect.appendChild(option);
+  }
+  kindSelect.value = profile.kind || "openai_compat";
+  kindSelect.addEventListener("change", () => {
+    syncCards();
+    ai.profiles[index].kind = kindSelect.value;
+    renderProfileCards();
+    refreshProfileOptions();
+  });
+  kindRow.appendChild(kindSelect);
+  card.appendChild(kindRow);
+
+  if ((profile.kind || "openai_compat") === "hermes_cli") {
+    card.appendChild(profileInputRow("Command", "cmd", profile.cmd, "text", "e.g. hermes chat --continue {session} -Q -q"));
+  } else {
+    card.appendChild(profileInputRow("Endpoint", "endpoint", profile.endpoint, "text", "http://127.0.0.1:8001/v1"));
+    card.appendChild(profileInputRow("Model id", "model", profile.model, "text", "what the server calls it"));
+    card.appendChild(profileInputRow("Max tokens", "max_tokens", profile.max_tokens, "number", "optional"));
+  }
+  card.appendChild(profileInputRow("Timeout", "timeout_secs", profile.timeout_secs, "number", "seconds"));
+
+  if ((profile.kind || "openai_compat") !== "hermes_cli") {
+    const promptRow = document.createElement("div");
+    promptRow.className = "set-row set-row-area";
+    const promptLabel = document.createElement("label");
+    promptLabel.textContent = "System prompt";
+    const hint = document.createElement("span");
+    hint.className = "set-hint";
+    hint.textContent = "the JSON avatar contract is pre-filled";
+    promptLabel.appendChild(hint);
+    promptRow.appendChild(promptLabel);
+    const prompt = document.createElement("textarea");
+    prompt.rows = 4;
+    prompt.spellcheck = false;
+    prompt.dataset.k = "system_prompt";
+    prompt.value = profile.system_prompt || "";
+    promptRow.appendChild(prompt);
+    card.appendChild(promptRow);
+  }
+
+  const warn = document.createElement("p");
+  warn.className = "set-profile-warn hidden";
+  card.appendChild(warn);
+
+  return card;
+}
+
+/** Repaint every profile card from the working copy. */
+function renderProfileCards() {
   const host = el("settings-profiles");
   if (!host) return;
   host.innerHTML = "";
+  ai.profiles.forEach((profile, index) => host.appendChild(profileCard(profile, index)));
+}
 
-  for (const profile of list || []) {
-    const card = document.createElement("div");
-    card.className = "set-profile";
+function showWarn(index, text) {
+  const warn = document.querySelector(
+    `#settings-profiles .set-profile[data-index="${index}"] .set-profile-warn`,
+  );
+  if (!warn) return;
+  warn.textContent = text;
+  warn.classList.remove("hidden");
+}
 
-    const head = document.createElement("div");
-    head.className = "set-profile-head";
-    const name = document.createElement("strong");
-    name.textContent = profile.label || profile.name;
-    const kind = document.createElement("code");
-    kind.textContent = profile.kind;
-    head.appendChild(name);
-    head.appendChild(kind);
-    card.appendChild(head);
+/** Rebuild both dropdowns from the cards, keeping the intended selection. */
+function refreshProfileOptions() {
+  syncCards();
+  const active = el("set-ai-active");
+  const vision = el("set-ai-vision");
+  if (!active || !vision) return;
 
-    if (profile.kind === "openai_compat") {
-      for (const [key, label, type, extra] of [
-        ["endpoint", "Endpoint", "text", {}],
-        ["model", "Model id", "text", {}],
-        ["max_tokens", "Max tokens", "number", { min: 1, max: 1000000, step: 1 }],
-        ["timeout_secs", "Timeout", "number", { min: 1, max: 3600, step: 1 }],
-      ]) {
-        const row = document.createElement("div");
-        row.className = "set-row";
-        const fieldLabel = document.createElement("label");
-        fieldLabel.textContent = label;
-        row.appendChild(fieldLabel);
-        const input = document.createElement("input");
-        input.type = type;
-        input.spellcheck = false;
-        if (extra.min !== undefined) input.min = String(extra.min);
-        if (extra.max !== undefined) input.max = String(extra.max);
-        if (extra.step !== undefined) input.step = String(extra.step);
-        input.dataset.profile = profile.name;
-        input.dataset.profileKey = key;
-        // Fill here, not in `renderSettings`: these inputs are created *after*
-        // the FIELDS pass, so an unfilled box would look like a user edit and
-        // the next save would blank the endpoint.
-        const current = profile[key];
-        input.value = current == null ? "" : String(current);
-        row.appendChild(input);
-        settings.inputs.set(`ai_profiles.${profile.name}.${key}`, input);
-        card.appendChild(row);
-      }
-    } else {
-      const note = document.createElement("p");
-      note.className = "set-note";
-      note.textContent = `Runs a local command: ${profile.cmd || "(no cmd)"}`;
-      card.appendChild(note);
-    }
-
-    host.appendChild(card);
+  const names = ai.profiles.map((profile) => (profile.name || "").trim());
+  // A rename moves the selection with the profile instead of losing it: a name
+  // that vanished from the list is re-pointed at the same card's new key.
+  if (ai.selectedActive && !names.includes(ai.selectedActive)) {
+    ai.selectedActive = names[0] || "";
   }
+  if (ai.selectedVision && !names.includes(ai.selectedVision)) {
+    ai.selectedVision = names[0] || "";
+  }
+
+  for (const select of [active, vision]) select.innerHTML = "";
+  for (const profile of ai.profiles) {
+    const name = (profile.name || "").trim();
+    if (!name) continue;
+    for (const select of [active, vision]) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = (profile.label || "").trim() || name;
+      select.appendChild(option);
+    }
+  }
+  if (names.includes(ai.selectedActive)) active.value = ai.selectedActive;
+  if (names.includes(ai.selectedVision)) vision.value = ai.selectedVision;
+  ai.selectedActive = active.value || ai.selectedActive;
+  ai.selectedVision = vision.value || ai.selectedVision;
+}
+
+function addProfile() {
+  syncCards();
+  let n = ai.profiles.length + 1;
+  let name = `profile-${n}`;
+  while (ai.profiles.some((profile) => (profile.name || "").trim() === name)) {
+    name = `profile-${++n}`;
+  }
+  ai.profiles.push({
+    name,
+    label: "",
+    kind: "openai_compat",
+    endpoint: `http://127.0.0.1:${ai.ports[0] || 8001}/v1`,
+    model: "",
+    cmd: "",
+    max_tokens: null,
+    timeout_secs: 120,
+    system_prompt: defaultSystemPrompt(),
+    isNew: true,
+  });
+  renderProfileCards();
+  refreshProfileOptions();
+  const card = document.querySelector(
+    `#settings-profiles .set-profile[data-index="${ai.profiles.length - 1}"]`,
+  );
+  card?.scrollIntoView({ block: "nearest" });
+  card?.querySelector('[data-k="label"]')?.focus();
+}
+
+function removeProfile(index) {
+  syncCards();
+  const profile = ai.profiles[index];
+  if (!profile) return;
+  const name = (profile.name || "").trim();
+
+  // Guards first, and inline: the server refuses these too, but a modal that
+  // round-trips an error for a click it could have predicted is worse UX.
+  if (ai.profiles.length <= 1) {
+    showWarn(index, "This is the only AI profile — add another one before removing it.");
+    return;
+  }
+  if (name && name === ai.selectedActive) {
+    showWarn(
+      index,
+      "This profile answers desktop triggers. Switch “Answers desktop triggers” to another profile first.",
+    );
+    return;
+  }
+  if (name && name === ai.selectedVision) {
+    showWarn(
+      index,
+      "This profile is used for screen capture. Switch “Vision / screen capture” to another profile first.",
+    );
+    return;
+  }
+
+  if (!profile.isNew) ai.removed.push(profile.name);
+  ai.profiles.splice(index, 1);
+  renderProfileCards();
+  refreshProfileOptions();
+}
+
+/* ---------- model discovery ---------- */
+
+function parsePorts(text) {
+  const ports = [];
+  for (const part of String(text || "").split(/[,\s;]+/)) {
+    if (!part.trim()) continue;
+    const port = Number(part.trim());
+    if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+    if (!ports.includes(port)) ports.push(port);
+  }
+  return ports;
+}
+
+function portInUrl(url) {
+  const match = /^[a-z]+:\/\/([^/?#]*)/i.exec(String(url || ""));
+  if (!match) return 0;
+  const authority = match[1].split("@").pop();
+  const parts = authority.split(":");
+  if (parts.length < 2) return 0;
+  const port = Number(parts[parts.length - 1]);
+  return Number.isInteger(port) ? port : 0;
+}
+
+function slugify(text) {
+  const slug = String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 40);
+  return /^[a-z0-9]/.test(slug) ? slug : "";
+}
+
+function uniqueKey(base) {
+  const root = base || "model";
+  let name = root;
+  let n = 2;
+  while (ai.profiles.some((profile) => (profile.name || "").trim() === name)) {
+    name = `${root}-${n++}`;
+  }
+  return name;
+}
+
+/** The profile (if any) that already points at this discovered model. */
+function existingProfileFor(model) {
+  for (const profile of ai.profiles) {
+    if (profile.model !== model.id) continue;
+    if (!model.endpoint) return profile.name; // a .gguf has no endpoint to match
+    if (profile.endpoint === model.endpoint) return profile.name;
+    if (model.port && portInUrl(profile.endpoint) === Number(model.port)) return profile.name;
+  }
+  return "";
+}
+
+function clearDiscovery() {
+  const host = el("ai-discovery");
+  const note = el("ai-discovery-note");
+  if (host) {
+    host.innerHTML = "";
+    host.classList.add("hidden");
+  }
+  if (note) {
+    note.textContent =
+      "Probes each port for OpenAI /v1/models, llama.cpp /models and Ollama /api/tags, then lists local .gguf files.";
+  }
+}
+
+function renderDiscovery(body) {
+  const host = el("ai-discovery");
+  const note = el("ai-discovery-note");
+  if (!host) return;
+  host.innerHTML = "";
+
+  if (!body || body.ok === false) {
+    host.classList.add("hidden");
+    if (note) note.textContent = `Discovery failed: ${(body && body.reason) || "no response"}`;
+    return;
+  }
+  host.classList.remove("hidden");
+  if (note) {
+    note.textContent = `${body.summary} · ${body.elapsed_ms} ms (${body.timeout_ms} ms per port)`;
+  }
+
+  const ports = document.createElement("div");
+  ports.className = "set-discovery-ports";
+  for (const entry of body.ports || []) {
+    const chip = document.createElement("span");
+    chip.className = `set-chip${entry.reachable ? " ok" : ""}`;
+    chip.textContent = `:${entry.port} · ${entry.reachable ? entry.detail : "offline"}`;
+    chip.title = entry.detail || "";
+    ports.appendChild(chip);
+  }
+  host.appendChild(ports);
+
+  const models = body.models || [];
+  if (!models.length) {
+    const empty = document.createElement("p");
+    empty.className = "set-note";
+    empty.textContent =
+      "Nothing found: no model server answered and no local .gguf files were seen. Start a server, or check the ports.";
+    host.appendChild(empty);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "set-discovery-list";
+  models.forEach((model, index) => {
+    const row = document.createElement("div");
+    row.className = "set-discovery-row";
+
+    const id = document.createElement("code");
+    id.textContent = model.id;
+    id.title = model.id;
+    row.appendChild(id);
+
+    const meta = document.createElement("span");
+    meta.className = "set-discovery-meta";
+    const bits = [model.source];
+    if (model.endpoint) bits.push(model.endpoint);
+    if (model.multimodal) bits.push("vision");
+    if (model.path) bits.push(model.path);
+    meta.textContent = bits.join(" · ");
+    meta.title = meta.textContent;
+    row.appendChild(meta);
+
+    const owner = existingProfileFor(model);
+    if (owner) {
+      const badge = document.createElement("span");
+      badge.className = "set-chip ok";
+      badge.textContent = `in ${owner}`;
+      badge.title = "already configured as this profile";
+      row.appendChild(badge);
+    } else {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "mini-btn";
+      button.textContent = "+ Import";
+      button.title = "Add a pre-filled profile card (nothing is written until Save)";
+      button.addEventListener("click", () => importModel(index));
+      row.appendChild(button);
+    }
+    list.appendChild(row);
+  });
+  host.appendChild(list);
+}
+
+function importModel(index) {
+  const model = ((ai.discovered && ai.discovered.models) || [])[index];
+  if (!model) return;
+  syncCards();
+  ai.profiles.push({
+    name: uniqueKey(slugify(model.id)),
+    label: model.label || model.id,
+    kind: "openai_compat",
+    endpoint: model.endpoint || `http://127.0.0.1:${ai.ports[0] || 8001}/v1`,
+    model: model.id,
+    cmd: "",
+    max_tokens: null,
+    timeout_secs: 120,
+    system_prompt: defaultSystemPrompt(),
+    isNew: true,
+  });
+  renderProfileCards();
+  refreshProfileOptions();
+  renderDiscovery(ai.discovered); // flips this row to "in <name>"
+  const card = document.querySelector(
+    `#settings-profiles .set-profile[data-index="${ai.profiles.length - 1}"]`,
+  );
+  card?.scrollIntoView({ block: "nearest" });
+}
+
+async function discoverModels() {
+  const button = el("btn-ai-discover");
+  const note = el("ai-discovery-note");
+  const input = el("set-ai-ports");
+  const ports = parsePorts(input ? input.value : "");
+  if (!ports.length) {
+    if (note) note.textContent = "Add at least one port first (for example 8001, 11434).";
+    return;
+  }
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Probing…";
+  }
+  if (note) note.textContent = `probing ${ports.length} port(s) on 127.0.0.1…`;
+
+  try {
+    const response = await fetch(`${settings.base}/ai-discover`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ports }),
+    });
+    const body = await response.json().catch(() => ({}));
+    ai.discovered = body && typeof body === "object" ? body : { ok: false, reason: "empty reply" };
+  } catch (err) {
+    ai.discovered = { ok: false, reason: err.message };
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Discover models";
+    }
+  }
+  renderDiscovery(ai.discovered);
 }
 
 function markPath(key, exists) {
@@ -376,15 +875,6 @@ export function renderSettings(body) {
     const value = getPath(config[field.section], field.key);
     if (field.type === "bool") {
       input.checked = value !== false;
-    } else if (field.type === "select-profiles") {
-      input.innerHTML = "";
-      for (const profile of (config.ai && config.ai.profiles) || []) {
-        const option = document.createElement("option");
-        option.value = profile.name;
-        option.textContent = profile.label || profile.name;
-        input.appendChild(option);
-      }
-      input.value = value == null ? "" : String(value);
     } else {
       input.value = value == null ? "" : String(value);
       if (field.type === "text") {
@@ -395,19 +885,36 @@ export function renderSettings(body) {
     }
   }
 
-  // AI: the profile switcher and one card per profile.
-  const active = el("set-ai-active");
-  if (active) {
-    active.innerHTML = "";
-    for (const profile of (config.ai && config.ai.profiles) || []) {
-      const option = document.createElement("option");
-      option.value = profile.name;
-      option.textContent = profile.label || profile.name;
-      active.appendChild(option);
-    }
-    active.value = (config.ai && config.ai.active_profile) || "";
+  // AI: the two routing dropdowns, the discovery ports and one card per profile.
+  const profiles = (config.ai && config.ai.profiles) || [];
+  ai.profiles = profiles.map((profile) => ({
+    name: profile.name,
+    label: profile.label || profile.name,
+    kind: profile.kind || "openai_compat",
+    endpoint: profile.endpoint || "",
+    model: profile.model || "",
+    cmd: profile.cmd || "",
+    max_tokens: profile.max_tokens == null ? null : profile.max_tokens,
+    timeout_secs: profile.timeout_secs == null ? 120 : profile.timeout_secs,
+    system_prompt: profile.system_prompt || "",
+    isNew: false,
+  }));
+  ai.removed = [];
+  ai.ports = Array.isArray(config.discovery_ports) ? config.discovery_ports.slice() : [];
+  const active = (config.ai && config.ai.active_profile) || "";
+  ai.selectedActive = active || (ai.profiles[0] && ai.profiles[0].name) || "";
+  ai.selectedVision = (config.vision && config.vision.profile_name) || ai.selectedActive;
+
+  const portsInput = el("set-ai-ports");
+  if (portsInput) {
+    portsInput.value = ai.ports.join(", ");
+    portsInput.scrollLeft = 0;
   }
-  buildProfiles((config.ai && config.ai.profiles) || []);
+
+  renderProfileCards();
+  refreshProfileOptions();
+  if (ai.discovered) renderDiscovery(ai.discovered);
+  else clearDiscovery();
 
   for (const entry of body.paths || []) {
     markPath(entry.key, entry.exists === true);
@@ -445,7 +952,7 @@ function currentValue(field) {
   const input = settings.inputs.get(`${field.section}.${field.key}`);
   if (!input) return undefined;
   if (field.type === "bool") return input.checked;
-  if ((field.type === "select" || field.type === "select-profiles") && input.value === "") {
+  if (field.type === "select" && input.value === "") {
     return undefined; // no options loaded yet — leave the file alone
   }
   if (field.type === "number") {
@@ -468,6 +975,99 @@ function same(a, b) {
   return a === b;
 }
 
+function sameList(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((value, index) => Number(value) === Number(b[index]));
+}
+
+/** The `ai` half of a save: routing, creates, edits, renames and removals. */
+function collectAiPatch(patch, config) {
+  syncCards();
+  const loaded = (config.ai && config.ai.profiles) || [];
+  const before = new Map(loaded.map((profile) => [profile.name, profile]));
+
+  const activeSelect = el("set-ai-active");
+  const loadedActive = (config.ai && config.ai.active_profile) || "";
+  if (activeSelect && activeSelect.value && activeSelect.value !== loadedActive) {
+    patch.ai = patch.ai || {};
+    patch.ai.active_profile = activeSelect.value;
+  }
+
+  const visionSelect = el("set-ai-vision");
+  const loadedVision = (config.vision && config.vision.profile_name) || "";
+  if (visionSelect && visionSelect.value && visionSelect.value !== loadedVision) {
+    patch.vision = patch.vision || {};
+    patch.vision.profile_name = visionSelect.value;
+  }
+
+  const creates = [];
+  const edits = [];
+  const renames = [];
+
+  for (const profile of ai.profiles) {
+    const name = (profile.name || "").trim();
+    const kind = profile.kind || "openai_compat";
+
+    if (profile.isNew) {
+      const entry = { name, label: profile.label || "", kind, timeout_secs: 120 };
+      if (profile.timeout_secs != null) entry.timeout_secs = Number(profile.timeout_secs);
+      if (kind === "hermes_cli") {
+        entry.cmd = profile.cmd || "";
+      } else {
+        entry.endpoint = profile.endpoint || "";
+        entry.model = profile.model || "";
+        if (profile.max_tokens != null) entry.max_tokens = Number(profile.max_tokens);
+        if (profile.system_prompt) entry.system_prompt = profile.system_prompt;
+      }
+      creates.push(entry);
+      continue;
+    }
+
+    const was = before.get(profile.name);
+    if (!was) continue;
+    if (name && name !== profile.name) renames.push({ from: profile.name, to: name });
+
+    const entry = { name: profile.name };
+    let touched = false;
+    for (const key of PROFILE_FIELDS[kind] || PROFILE_FIELDS.openai_compat) {
+      const now = profile[key] === undefined ? null : profile[key];
+      const old = was[key] === undefined ? null : was[key];
+      if (same(old, now)) continue;
+      // An empty optional number is "leave it alone", not 0 — sending 0 would
+      // trip the server's range check and reject the whole save.
+      if (key === "max_tokens" && (now === null || now === "")) continue;
+      entry[key] = now;
+      touched = true;
+    }
+    if (touched) edits.push(entry);
+  }
+
+  if (creates.length) {
+    patch.ai = patch.ai || {};
+    patch.ai.create = creates;
+  }
+  if (edits.length) {
+    patch.ai = patch.ai || {};
+    patch.ai.profiles = edits;
+  }
+  if (renames.length) {
+    patch.ai = patch.ai || {};
+    patch.ai.rename = renames;
+  }
+  if (ai.removed.length) {
+    patch.ai = patch.ai || {};
+    patch.ai.remove = ai.removed.slice();
+  }
+
+  const portsInput = el("set-ai-ports");
+  if (portsInput) {
+    const ports = parsePorts(portsInput.value);
+    if (!sameList(config.discovery_ports || [], ports)) {
+      patch.discovery_ports = ports;
+    }
+  }
+}
+
 /** Only what the user actually changed, in the shape `POST /config` wants. */
 export function collectPatch() {
   const config = (settings.loaded && settings.loaded.settings) || {};
@@ -477,41 +1077,12 @@ export function collectPatch() {
     const next = currentValue(field);
     if (next === undefined) continue;
     const before = getPath(config[field.section], field.key);
-    const normalized = before == null ? before : before;
-    if (same(normalized, next)) continue;
+    if (same(before, next)) continue;
     if (!patch[field.section]) patch[field.section] = {};
     setPath(patch[field.section], field.key, next);
   }
 
-  // AI: active profile + the per-profile parameters.
-  const active = el("set-ai-active");
-  const wasActive = config.ai && config.ai.active_profile;
-  if (active && active.value && active.value !== wasActive) {
-    patch.ai = patch.ai || {};
-    patch.ai.active_profile = active.value;
-  }
-  const profiles = (config.ai && config.ai.profiles) || [];
-  for (const [mapKey, input] of settings.inputs) {
-    if (!mapKey.startsWith("ai_profiles.")) continue;
-    const [, name, key] = mapKey.split(".");
-    const before = profiles.find((p) => p.name === name);
-    if (!before) continue;
-    // An empty box is "leave it alone", not 0 — sending 0 would trip the
-    // server's range validation and reject the whole save.
-    if (input.type === "number" && input.value.trim() === "") continue;
-    const next = input.type === "number" ? Number(input.value) : input.value;
-    if (input.type === "number" && !Number.isFinite(next)) continue;
-    if (same(before[key], next)) continue;
-    patch.ai = patch.ai || {};
-    patch.ai.profiles = patch.ai.profiles || [];
-    let entry = patch.ai.profiles.find((p) => p.name === name);
-    if (!entry) {
-      entry = { name };
-      patch.ai.profiles.push(entry);
-    }
-    entry[key] = next;
-  }
-
+  collectAiPatch(patch, config);
   return patch;
 }
 
@@ -624,6 +1195,16 @@ export async function setupSettings() {
       warnings: settings.loaded ? settings.loaded.warnings : [],
       dirty: Object.keys(collectPatch()).length,
       patch: () => collectPatch(),
+      ai: () => ({
+        profiles: ai.profiles.map((profile) => ({ ...profile })),
+        removed: ai.removed.slice(),
+        ports: ai.ports.slice(),
+        active: ai.selectedActive,
+        vision: ai.selectedVision,
+        discovered: ai.discovered,
+      }),
+      discover: () => discoverModels(),
+      addProfile: () => addProfile(),
     });
     window.__avatarDebug.openSettings = () => toggleSettings(true);
   }
@@ -633,4 +1214,3 @@ export async function setupSettings() {
 export function onSettingsSaved(handler) {
   settings.onSaved = handler;
 }
-

@@ -396,6 +396,7 @@ fn router(api: ApiCtx) -> Router {
         .route("/stt", get(get_stt).post(set_stt))
         .route("/ai-profiles", get(ai_profiles))
         .route("/ai-profile", post(switch_ai_profile))
+        .route("/ai-discover", post(discover_models))
         .route("/config", get(get_config).post(set_config))
         .route("/shutdown", post(shutdown_app));
 
@@ -932,6 +933,50 @@ async fn switch_ai_profile(
         Ok(Ok(status)) => Ok(Json(status)),
         Ok(Err(err)) => Err(ApiError::bad_request(err)),
         Err(err) => Err(ApiError::bad_request(format!("the switch task failed: {err}"))),
+    }
+}
+
+/// `POST /ai-discover {"ports": [8001, …]}` — probe loopback for local model
+/// servers and report what they serve.
+///
+/// The body is optional: with no `ports` array the configured
+/// `discovery_ports` are used (so the button still works before a save). Each
+/// request has a 1.5 s budget and the whole probe runs on a blocking thread, so
+/// an offline port costs a spinner tick, never a stalled API worker.
+async fn discover_models(State(api): State<ApiCtx>, body: Option<Json<Value>>) -> Json<Value> {
+    let requested: Option<Vec<u16>> = body
+        .as_ref()
+        .and_then(|Json(value)| value.get("ports"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_u64)
+                .filter(|port| (1..=u16::MAX as u64).contains(port))
+                .map(|port| port as u16)
+                .collect()
+        });
+
+    let ports = match requested {
+        Some(ports) if !ports.is_empty() => ports,
+        _ => {
+            let document = api
+                .shared
+                .ai_rules_path()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .unwrap_or_else(|| json!({}));
+            crate::settings::discovery_ports(&document)
+        }
+    };
+
+    match tokio::task::spawn_blocking(move || crate::discovery::discover(&ports)).await {
+        Ok(body) => Json(body),
+        Err(err) => Json(json!({
+            "ok": false,
+            "reason": format!("the discovery task failed: {err}"),
+            "models": [],
+            "ports": [],
+        })),
     }
 }
 

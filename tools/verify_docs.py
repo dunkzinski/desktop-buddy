@@ -379,11 +379,33 @@ else:
                 "vision",
                 "active_profile",
                 "ai_profiles",
+                "discovery_ports",
                 "survival",
             }
             unknown = set(shipped) - known
             if unknown:
                 problems.append(f"watcher_rules.json: unknown keys {sorted(unknown)}")
+
+            # discovery_ports: the Settings modal's "Discover models" probe list.
+            # The app probes these on loopback, so a string or a 0 would only
+            # fail at the click — check the shape and the documentation here.
+            ports = shipped.get("discovery_ports")
+            if ports is not None:
+                if not isinstance(ports, list) or not ports:
+                    problems.append("watcher_rules.json: discovery_ports must be a non-empty array")
+                else:
+                    for index, port in enumerate(ports):
+                        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+                            problems.append(
+                                f"watcher_rules.json: discovery_ports[{index}] {port!r} is not a port"
+                            )
+                    if len(set(ports)) != len(ports):
+                        problems.append("watcher_rules.json: discovery_ports has duplicates")
+                if "`discovery_ports`" not in arch_md:
+                    problems.append(
+                        "ARCHITECTURE.md: watcher_rules.json carries `discovery_ports` but it is "
+                        "not documented"
+                    )
 
             # ai_profiles: tagged by `kind`, and every field the watcher reads
             # must be present for that kind (the serde enum is deny-nothing, so

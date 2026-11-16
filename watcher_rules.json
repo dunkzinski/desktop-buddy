@@ -102,6 +102,14 @@
       "check my screen"
     ]
   },
+  "discovery_ports": [
+    8001,
+    9931,
+    9932,
+    11434,
+    8080,
+    1234
+  ],
   "active_profile": "lfm3-fast",
   "ai_profiles": {
     "lfm3-fast": {

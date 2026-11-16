@@ -59,7 +59,107 @@ const VISION_KEYS: &[&str] = &[
     "trigger_phrases",
 ];
 /// Fields of one `ai_profiles` entry the modal may edit.
-const PROFILE_KEYS: &[&str] = &["max_tokens", "timeout_secs", "endpoint", "model"];
+///
+/// `api_key` is deliberately absent: it is supported by the loader but not shown
+/// in the modal, and a merge that never names it can never drop it.
+const PROFILE_KEYS: &[&str] = &[
+    "label",
+    "kind",
+    "endpoint",
+    "model",
+    "cmd",
+    "max_tokens",
+    "timeout_secs",
+    "system_prompt",
+];
+
+/// Fields a **new** `ai_profiles` entry may carry (`name` is the map key).
+const CREATE_KEYS: &[&str] = &[
+    "name",
+    "label",
+    "kind",
+    "endpoint",
+    "model",
+    "cmd",
+    "max_tokens",
+    "timeout_secs",
+    "system_prompt",
+];
+
+/// The system prompt a freshly added local model gets.
+///
+/// It is the JSON-avatar contract every working local profile in the shipped
+/// rules file uses, so a model imported from **Discover models** answers with
+/// `{"speech": …}` and can drive the face on the first trigger instead of
+/// chatting in prose. `GET /config` hands this same string to the modal, so
+/// there is exactly one copy of it.
+pub const DEFAULT_AVATAR_SYSTEM_PROMPT: &str = r#"You are a tiny, fast desktop avatar assistant. Do not output thinking tags. Respond ONLY with a valid JSON object using this exact schema: {"speech": "short reply under 180 chars", "expression": "neutral", "animate": "clip name"}. Valid expressions: neutral, happy, sad, surprised, thinking, angry. Act yourself: use "animate" with a clip name from the list in the context (for example wave), or "wave": true for the built-in wave. Add "escalate": true ONLY for multi-step or external-tool tasks (clipboard contents, network scan, files, terminal); answer everything else yourself."#;
+
+/// Ports the **Discover models** button probes when the rules file says nothing.
+pub const DEFAULT_DISCOVERY_PORTS: &[u16] = &[8001, 9931, 9932, 11434, 8080, 1234];
+
+/// Longest a profile key may be (it is a JSON object key, a label and a CLI
+/// argument all at once).
+const MAX_PROFILE_KEY: usize = 64;
+
+/// The ports to show in the modal: the configured list, plus any port an
+/// `ai_profiles` endpoint already names, deduplicated in order.
+///
+/// An absent key means "the shipped defaults"; an explicit empty array means
+/// "probe nothing" (the user's choice, not a missing setting).
+pub fn discovery_ports(document: &Value) -> Vec<u16> {
+    fn push(ports: &mut Vec<u16>, port: u16) {
+        if port > 0 && !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    let mut ports: Vec<u16> = Vec::new();
+    match document.get("discovery_ports").and_then(Value::as_array) {
+        Some(list) => {
+            for value in list {
+                if let Some(port) = value.as_u64() {
+                    if (1..=u16::MAX as u64).contains(&port) {
+                        push(&mut ports, port as u16);
+                    }
+                }
+            }
+        }
+        None => {
+            for port in DEFAULT_DISCOVERY_PORTS {
+                push(&mut ports, *port);
+            }
+        }
+    }
+    if let Some(map) = document.get("ai_profiles").and_then(Value::as_object) {
+        for entry in map.values() {
+            if let Some(port) = entry
+                .get("endpoint")
+                .and_then(Value::as_str)
+                .and_then(crate::discovery::port_in_url)
+            {
+                push(&mut ports, port);
+            }
+        }
+    }
+    ports
+}
+
+/// Is `name` usable as an `ai_profiles` key? Lowercase slug so the name can be
+/// typed on a command line and quoted in a trigger without surprises.
+fn slug_ok(name: &str) -> bool {
+    let mut chars = name.chars();
+    let starts_ok = matches!(chars.next(), Some(first) if first.is_ascii_lowercase() || first.is_ascii_digit());
+    starts_ok
+        && name.len() <= MAX_PROFILE_KEY
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+fn slug_error(name: &str) -> String {
+    format!(
+        "`{name}` is not a valid profile key — use lowercase letters, digits, `-` or `_` \
+         (for example `lfm3-fast`), at most {MAX_PROFILE_KEY} characters"
+    )
+}
 
 /// Everything a successful `POST /config` did.
 #[derive(Debug, Default, PartialEq)]
@@ -182,12 +282,14 @@ pub fn config_json(path: Option<&Path>) -> Value {
                         "max_tokens": entry.get("max_tokens").cloned().unwrap_or(Value::Null),
                         "timeout_secs": entry.get("timeout_secs").cloned().unwrap_or(Value::Null),
                         "cmd": entry.get("cmd").and_then(Value::as_str).unwrap_or(""),
+                        "system_prompt": entry.get("system_prompt").and_then(Value::as_str).unwrap_or(""),
                     })
                 })
                 .collect(),
         ),
         None => Value::Array(Vec::new()),
     };
+    let ports = discovery_ports(&document);
 
     let tts_value = serde_json::to_value(&tts).unwrap_or(Value::Null);
     let stt_value = serde_json::to_value(&stt).unwrap_or(Value::Null);
@@ -238,8 +340,13 @@ pub fn config_json(path: Option<&Path>) -> Value {
     }
     settings.insert(
         "ai".to_string(),
-        json!({ "active_profile": active, "profiles": profiles }),
+        json!({
+            "active_profile": active,
+            "profiles": profiles,
+            "default_system_prompt": DEFAULT_AVATAR_SYSTEM_PROMPT,
+        }),
     );
+    settings.insert("discovery_ports".to_string(), json!(ports));
 
     json!({
         "ok": true,
@@ -408,6 +515,24 @@ pub fn replace_value(text: &str, key: &str, rendered: &str) -> Result<String, St
     Ok(out)
 }
 
+/// Replace a member, or add it after the opening brace when the file predates
+/// the key (`discovery_ports` on an older rules file). Everything else stays
+/// byte-identical.
+fn replace_or_insert(text: &str, key: &str, rendered: &str, newline: &str) -> Result<String, String> {
+    if value_span(text, key).is_some() {
+        return replace_value(text, key, rendered);
+    }
+    let brace = text
+        .find('{')
+        .ok_or_else(|| "the rules file is not a JSON object".to_string())?;
+    let insertion = format!("{newline}  \"{key}\": {rendered},");
+    let mut out = String::with_capacity(text.len() + insertion.len());
+    out.push_str(&text[..=brace]);
+    out.push_str(&insertion);
+    out.push_str(&text[brace + 1..]);
+    Ok(out)
+}
+
 /// Indent every line but the first by `spaces` (the block sits at depth 1),
 /// using the file's own line ending — a CRLF rules file must not sprout LF
 /// lines just because one block was rewritten.
@@ -482,6 +607,10 @@ fn merge_known(
 
 fn number_in(value: &Value, section: &str, key: &str, lo: f64, hi: f64) -> Result<(), String> {
     let Some(found) = value.get(key) else { return Ok(()) };
+    // `null` is the loader's "use the default" for every optional number.
+    if found.is_null() {
+        return Ok(());
+    }
     let Some(number) = found.as_f64() else {
         return Err(format!("`{section}.{key}` must be a number"));
     };
@@ -491,7 +620,150 @@ fn number_in(value: &Value, section: &str, key: &str, lo: f64, hi: f64) -> Resul
     Ok(())
 }
 
-fn validate_vision(block: &Value) -> Result<(), String> {
+/// Default `timeout_secs` for a profile created from the modal.
+const DEFAULT_PROFILE_TIMEOUT_SECS: u64 = 120;
+
+/// Validate one `ai_profiles` entry the way the watcher's serde enum will read
+/// it, naming the offending field — "invalid type: null" is useless in a modal.
+fn validate_profile(name: &str, entry: &Value) -> Result<(), String> {
+    let kind = entry
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(kind.as_str(), "openai_compat" | "hermes_cli") {
+        return Err(format!(
+            "`ai_profiles.{name}.kind` must be \"openai_compat\" or \"hermes_cli\""
+        ));
+    }
+    for key in ["label", "endpoint", "model", "cmd", "system_prompt"] {
+        if let Some(value) = entry.get(key) {
+            if !value.is_string() {
+                return Err(format!("`ai_profiles.{name}.{key}` must be a string"));
+            }
+        }
+    }
+    match kind.as_str() {
+        "openai_compat" => {
+            for key in ["endpoint", "model"] {
+                let text = entry.get(key).and_then(Value::as_str).unwrap_or("").trim();
+                if text.is_empty() {
+                    return Err(format!(
+                        "`ai_profiles.{name}.{key}` cannot be empty for an openai_compat profile"
+                    ));
+                }
+            }
+            let endpoint = entry.get("endpoint").and_then(Value::as_str).unwrap_or("");
+            if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+                return Err(format!(
+                    "`ai_profiles.{name}.endpoint` must start with http:// or https:// \
+                     (for example http://127.0.0.1:8001/v1)"
+                ));
+            }
+        }
+        _ => {
+            let cmd = entry.get("cmd").and_then(Value::as_str).unwrap_or("").trim();
+            if cmd.is_empty() {
+                return Err(format!(
+                    "`ai_profiles.{name}.cmd` cannot be empty for a hermes_cli profile"
+                ));
+            }
+        }
+    }
+    number_in(entry, "ai_profiles", "max_tokens", 1.0, 1_000_000.0)?;
+    number_in(entry, "ai_profiles", "timeout_secs", 1.0, 3600.0)?;
+    Ok(())
+}
+
+/// Turn one `ai.create` entry into a complete `ai_profiles` value.
+///
+/// Defaults are what make a freshly imported model work on the first trigger:
+/// `timeout_secs: 120` and the JSON-avatar system prompt. The caller has already
+/// checked the name and that it is free.
+fn build_profile(name: &str, entry: &Map<String, Value>) -> Result<Value, String> {
+    let kind = entry
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("openai_compat")
+        .trim()
+        .to_ascii_lowercase();
+    let mut profile = Map::new();
+    profile.insert("kind".to_string(), json!(kind));
+    let label = entry
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .unwrap_or(name);
+    profile.insert("label".to_string(), json!(label));
+    let timeout = entry
+        .get("timeout_secs")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(|| json!(DEFAULT_PROFILE_TIMEOUT_SECS));
+    profile.insert("timeout_secs".to_string(), timeout);
+
+    match kind.as_str() {
+        "openai_compat" => {
+            let endpoint = entry
+                .get("endpoint")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            if endpoint.is_empty() {
+                return Err(format!(
+                    "`ai.create.{name}.endpoint` is required for an openai_compat profile \
+                     (for example http://127.0.0.1:8001/v1)"
+                ));
+            }
+            let model = entry
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            if model.is_empty() {
+                return Err(format!(
+                    "`ai.create.{name}.model` is required for an openai_compat profile"
+                ));
+            }
+            profile.insert("endpoint".to_string(), json!(endpoint));
+            profile.insert("model".to_string(), json!(model));
+            if let Some(max) = entry.get("max_tokens").filter(|value| !value.is_null()) {
+                profile.insert("max_tokens".to_string(), max.clone());
+            }
+            let prompt = entry
+                .get("system_prompt")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|prompt| !prompt.is_empty())
+                .unwrap_or(DEFAULT_AVATAR_SYSTEM_PROMPT);
+            profile.insert("system_prompt".to_string(), json!(prompt));
+        }
+        _ => {
+            let cmd = entry
+                .get("cmd")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            if cmd.is_empty() {
+                return Err(format!(
+                    "`ai.create.{name}.cmd` is required for a hermes_cli profile"
+                ));
+            }
+            profile.insert("cmd".to_string(), json!(cmd));
+        }
+    }
+
+    let value = Value::Object(profile);
+    validate_profile(name, &value)?;
+    Ok(value)
+}
+
+fn validate_vision(block: &Value, profiles: Option<&Map<String, Value>>) -> Result<(), String> {
     if let Some(value) = block.get("enabled") {
         if !value.is_boolean() {
             return Err("`vision.enabled` must be true or false".to_string());
@@ -499,7 +771,24 @@ fn validate_vision(block: &Value) -> Result<(), String> {
     }
     if let Some(value) = block.get("profile_name") {
         match value.as_str() {
-            Some(name) if !name.trim().is_empty() => {}
+            Some(name) if !name.trim().is_empty() => {
+                // A name that does not resolve would send every screenshot to
+                // nothing, so it is a refusal here rather than an apology bubble
+                // at the first "what is on my screen?".
+                if let Some(map) = profiles {
+                    if !map.contains_key(name.trim()) {
+                        let names: Vec<&str> = map.keys().map(String::as_str).collect();
+                        return Err(format!(
+                            "`vision.profile_name` {name:?} is not an ai_profiles entry (have: {})",
+                            if names.is_empty() {
+                                "(none configured)".to_string()
+                            } else {
+                                names.join(", ")
+                            }
+                        ));
+                    }
+                }
+            }
             _ => return Err("`vision.profile_name` must name an ai_profiles entry".to_string()),
         }
     }
@@ -671,11 +960,14 @@ pub fn apply_config(path: &Path, patch: &Value) -> Result<Applied, String> {
     // A block nothing claims is a typo, not a plugin that is not installed: say
     // which keys *are* owned so the caller can see the difference.
     for key in patch.keys() {
-        if matches!(key.as_str(), "tts" | "stt" | "vision" | "ai") {
+        if matches!(
+            key.as_str(),
+            "tts" | "stt" | "vision" | "ai" | "discovery_ports"
+        ) {
             continue;
         }
         if !specs.iter().any(|spec| spec.key() == key.as_str()) {
-            let mut known: Vec<&str> = vec!["tts", "stt", "vision", "ai"];
+            let mut known: Vec<&str> = vec!["tts", "stt", "vision", "ai", "discovery_ports"];
             known.extend(specs.iter().map(|spec| spec.key()));
             return Err(format!(
                 "no plugin owns `{key}` (known sections: {})",
@@ -684,43 +976,111 @@ pub fn apply_config(path: &Path, patch: &Value) -> Result<Applied, String> {
         }
     }
 
-    /* screen vision (the watcher owns it, and re-reads the file on a frame) */
-    if let Some(block_patch) = patch.get("vision") {
-        let merged = merge_known(document.get("vision"), block_patch, VISION_KEYS, "vision")?;
-        validate_vision(&merged)?;
-        let rendered = serde_json::to_string_pretty(&merged).map_err(|err| err.to_string())?;
-        next = replace_value(&next, "vision", &indented(&rendered, 2, newline))?;
-        for key in object_patch(block_patch, "vision")?.keys() {
-            applied.push(format!("vision.{key}"));
-        }
-        ai_changed = true; // same frame makes the watcher adopt it
-    }
+    /* AI profiles + screen vision.
+       The two blocks are resolved together because `active_profile` and
+       `vision.profile_name` must name an entry that exists *after* this patch's
+       creates, removals and renames. Validating them against the file on disk
+       would accept a switch to a profile the same save is deleting. */
+    let ai_patch = patch.get("ai");
+    let vision_patch = patch.get("vision");
+    let profiles_before = document
+        .get("ai_profiles")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut profiles_map = profiles_before.clone();
 
-    /* AI profiles */
-    if let Some(ai_patch) = patch.get("ai") {
+    let mut active = ai_patch
+        .and_then(|ai| ai.get("active_profile"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            document
+                .get("active_profile")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let active_before = active.clone();
+    let mut vision_name = vision_patch
+        .and_then(|vision| vision.get("profile_name"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            document
+                .get("vision")
+                .and_then(|vision| vision.get("profile_name"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let vision_before = vision_name.clone();
+
+    if let Some(ai_patch) = ai_patch {
         let ai = object_patch(ai_patch, "ai")?;
         for key in ai.keys() {
-            if key != "active_profile" && key != "profiles" {
-                return Err(format!("`ai.{key}` is not a setting this editor owns"));
+            if !matches!(
+                key.as_str(),
+                "active_profile" | "profiles" | "create" | "remove" | "rename"
+            ) {
+                return Err(format!(
+                    "`ai.{key}` is not a setting this editor owns \
+                     (try active_profile, profiles, create, remove, rename)"
+                ));
             }
         }
 
+        /* 1. removals — guarded. A dangling active/vision name would make the
+              watcher answer every trigger with an apology bubble, so the modal
+              and this check both refuse and name what to switch first. */
+        if let Some(removals) = ai.get("remove") {
+            let list = removals
+                .as_array()
+                .ok_or_else(|| "`ai.remove` must be an array of profile names".to_string())?;
+            for entry in list {
+                let name = entry
+                    .as_str()
+                    .ok_or_else(|| "`ai.remove` entries must be strings".to_string())?
+                    .trim()
+                    .to_string();
+                if !profiles_map.contains_key(&name) {
+                    return Err(format!("there is no ai_profiles entry named {name:?}"));
+                }
+                if profiles_map.len() <= 1 {
+                    return Err(format!(
+                        "cannot remove {name:?}: it is the last AI profile — add another one first"
+                    ));
+                }
+                if name == active {
+                    return Err(format!(
+                        "cannot remove {name:?}: it is the active profile (answers desktop \
+                         triggers) — switch to another profile first"
+                    ));
+                }
+                if name == vision_name {
+                    return Err(format!(
+                        "cannot remove {name:?}: it is the vision profile (screen capture) — \
+                         switch the vision profile first"
+                    ));
+                }
+                profiles_map.remove(&name);
+                applied.push(format!("ai.remove.{name}"));
+            }
+        }
+
+        /* 2. edits — one parameter per entry, merged into the stored object so
+              `api_key` and any key this editor does not show survive. */
         if let Some(profiles) = ai.get("profiles") {
             let entries = profiles
                 .as_array()
                 .ok_or_else(|| "`ai.profiles` must be an array of {name, ...}".to_string())?;
-            let mut map = document
-                .get("ai_profiles")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
             for entry in entries {
                 let name = entry
                     .get("name")
                     .and_then(Value::as_str)
                     .ok_or_else(|| "each `ai.profiles` entry needs a `name`".to_string())?
                     .to_string();
-                let target = map
+                let target = profiles_map
                     .get_mut(&name)
                     .ok_or_else(|| format!("there is no ai_profiles entry named {name:?}"))?;
                 for (key, value) in object_patch(entry, &format!("ai.profiles.{name}"))? {
@@ -729,50 +1089,193 @@ pub fn apply_config(path: &Path, patch: &Value) -> Result<Applied, String> {
                     }
                     if !PROFILE_KEYS.contains(&key.as_str()) {
                         return Err(format!(
-                            "`ai.profiles.{name}.{key}` is not editable here (try {}); edit the file for prompts",
+                            "`ai.profiles.{name}.{key}` is not editable here (try {})",
                             PROFILE_KEYS.join(", ")
                         ));
                     }
                     target[key.as_str()] = value.clone();
                     applied.push(format!("ai_profiles.{name}.{key}"));
                 }
-                if target.get("max_tokens").is_some() {
-                    number_in(target, "ai_profiles", "max_tokens", 1.0, 1_000_000.0)?;
-                }
-                if target.get("timeout_secs").is_some() {
-                    number_in(target, "ai_profiles", "timeout_secs", 1.0, 3600.0)?;
-                }
+                let edited = target.clone();
+                validate_profile(&name, &edited)?;
             }
-            let rendered = Value::Object(map);
-            let rendered = serde_json::to_string_pretty(&rendered).map_err(|err| err.to_string())?;
-            next = replace_value(&next, "ai_profiles", &indented(&rendered, 2, newline))?;
-            ai_changed = true;
         }
 
-        if let Some(name) = ai.get("active_profile") {
-            let name = name
-                .as_str()
-                .ok_or_else(|| "`ai.active_profile` must be a string".to_string())?;
-            let known = document
-                .get("ai_profiles")
-                .and_then(Value::as_object)
-                .map(|map| map.contains_key(name))
-                .unwrap_or(false);
-            if !known {
-                return Err(format!("there is no ai_profiles entry named {name:?}"));
+        /* 3. renames — the key is the id in the dropdowns and in `app_rules`, so
+              a rename has to carry both references along or leave them dangling. */
+        if let Some(renames) = ai.get("rename") {
+            let list = renames
+                .as_array()
+                .ok_or_else(|| "`ai.rename` must be an array of {from, to}".to_string())?;
+            for entry in list {
+                let from = entry
+                    .get("from")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "each `ai.rename` entry needs a `from`".to_string())?
+                    .trim()
+                    .to_string();
+                let to = entry
+                    .get("to")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "each `ai.rename` entry needs a `to`".to_string())?
+                    .trim()
+                    .to_string();
+                if !slug_ok(&to) {
+                    return Err(slug_error(&to));
+                }
+                let profile = profiles_map
+                    .remove(&from)
+                    .ok_or_else(|| format!("there is no ai_profiles entry named {from:?}"))?;
+                if profiles_map.contains_key(&to) {
+                    profiles_map.insert(from.clone(), profile); // put it back
+                    return Err(format!(
+                        "cannot rename {from:?} to {to:?}: that key is already used by another profile"
+                    ));
+                }
+                profiles_map.insert(to.clone(), profile);
+                applied.push(format!("ai.rename.{from}->{to}"));
+                if active == from {
+                    active = to.clone();
+                }
+                if vision_name == from {
+                    vision_name = to.clone();
+                }
             }
-            let rendered = serde_json::to_string(name).expect("string");
-            next = replace_value(&next, "active_profile", &rendered)?;
-            applied.push("ai.active_profile".to_string());
-            ai_changed = true;
         }
+
+        /* 4. creates — a whole entry, validated as the loader would read it. */
+        if let Some(creates) = ai.get("create") {
+            let list = creates
+                .as_array()
+                .ok_or_else(|| "`ai.create` must be an array of profiles".to_string())?;
+            for entry in list {
+                let object = object_patch(entry, "ai.create")?;
+                for key in object.keys() {
+                    if !CREATE_KEYS.contains(&key.as_str()) {
+                        return Err(format!(
+                            "`ai.create.{key}` is not a profile field (try {})",
+                            CREATE_KEYS.join(", ")
+                        ));
+                    }
+                }
+                let name = object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                if name.is_empty() {
+                    return Err("a new profile needs a `name` (its key in ai_profiles)".to_string());
+                }
+                if !slug_ok(name) {
+                    return Err(slug_error(name));
+                }
+                if profiles_map.contains_key(name) {
+                    return Err(format!(
+                        "there is already an ai_profiles entry named {name:?} — pick another \
+                         key, or edit that one instead"
+                    ));
+                }
+                let built = build_profile(name, object)?;
+                profiles_map.insert(name.to_string(), built);
+                applied.push(format!("ai.create.{name}"));
+            }
+        }
+
+        // Checked against the *resulting* map, so one save can switch to a
+        // profile it creates in the same patch.
+        if !active.is_empty() && !profiles_map.contains_key(&active) {
+            let names: Vec<&str> = profiles_map.keys().map(String::as_str).collect();
+            return Err(format!(
+                "there is no ai_profiles entry named {active:?} (have: {})",
+                if names.is_empty() {
+                    "(none configured)".to_string()
+                } else {
+                    names.join(", ")
+                }
+            ));
+        }
+    }
+
+    if profiles_map != profiles_before {
+        let rendered = serde_json::to_string_pretty(&Value::Object(profiles_map.clone()))
+            .map_err(|err| err.to_string())?;
+        // A legacy file that only has `hermes_cmd` gains the block rather than
+        // failing the create.
+        next = replace_or_insert(&next, "ai_profiles", &indented(&rendered, 2, newline), newline)?;
+        ai_changed = true;
+    }
+    // An explicit `ai.active_profile` always lands (and always tells the
+    // watcher), even when it names the profile that is already active — that is
+    // the contract `POST /ai-profile` has, and a save that repeats it is not an
+    // error.
+    let active_named = ai_patch
+        .and_then(|ai| ai.get("active_profile"))
+        .is_some();
+    if !active.is_empty() && (active != active_before || active_named) {
+        let rendered = serde_json::to_string(&active).expect("string");
+        next = replace_or_insert(&next, "active_profile", &rendered, newline)?;
+        applied.push("ai.active_profile".to_string());
+        ai_changed = true;
+    }
+
+    /* screen vision (the watcher owns it, and re-reads the file on a frame) */
+    if vision_patch.is_some() || vision_name != vision_before {
+        let block_patch = vision_patch.cloned().unwrap_or_else(|| json!({}));
+        let mut merged = merge_known(document.get("vision"), &block_patch, VISION_KEYS, "vision")?;
+        if vision_name != vision_before && !vision_name.is_empty() {
+            merged["profile_name"] = json!(vision_name);
+        }
+        validate_vision(&merged, Some(&profiles_map))?;
+        let rendered = serde_json::to_string_pretty(&merged).map_err(|err| err.to_string())?;
+        next = replace_or_insert(&next, "vision", &indented(&rendered, 2, newline), newline)?;
+        for key in object_patch(&block_patch, "vision")?.keys() {
+            applied.push(format!("vision.{key}"));
+        }
+        if vision_name != vision_before && vision_patch.is_none() {
+            applied.push("vision.profile_name".to_string());
+        }
+        ai_changed = true; // same frame makes the watcher adopt it
+    }
+
+    /* discovery ports: a flat array, so it can be inserted into a file that
+       predates it instead of only replaced. */
+    if let Some(ports_patch) = patch.get("discovery_ports") {
+        let list = ports_patch
+            .as_array()
+            .ok_or_else(|| "`discovery_ports` must be an array of port numbers".to_string())?;
+        let mut ports: Vec<u16> = Vec::new();
+        for value in list {
+            let port = value
+                .as_u64()
+                .filter(|port| (1..=u16::MAX as u64).contains(port))
+                .ok_or_else(|| {
+                    format!("`discovery_ports` entries must be port numbers (1-65535), got {value}")
+                })?;
+            if !ports.contains(&(port as u16)) {
+                ports.push(port as u16);
+            }
+        }
+        let rendered = serde_json::to_string_pretty(&ports).map_err(|err| err.to_string())?;
+        next = replace_or_insert(&next, "discovery_ports", &indented(&rendered, 2, newline), newline)?;
+        applied.push("discovery_ports".to_string());
     }
 
     /* never write something that does not parse / lost a key */
     let reparsed: Value = serde_json::from_str(&next)
         .map_err(|err| format!("the edited file would not parse ({err}); nothing was written"))?;
-    if reparsed.as_object().map(Map::len) != document.as_object().map(Map::len) {
-        return Err("the edit would change the file's top-level keys; nothing was written".to_string());
+    let before_keys: std::collections::BTreeSet<String> = document
+        .as_object()
+        .map(|map| map.keys().cloned().collect())
+        .unwrap_or_default();
+    let after_keys: std::collections::BTreeSet<String> = reparsed
+        .as_object()
+        .map(|map| map.keys().cloned().collect())
+        .unwrap_or_default();
+    let lost: Vec<&String> = before_keys.difference(&after_keys).collect();
+    if !lost.is_empty() {
+        return Err(format!(
+            "the edit would drop the top-level key(s) {lost:?}; nothing was written"
+        ));
     }
 
     let backup = path.with_extension("json.bak");
@@ -791,21 +1294,11 @@ pub fn apply_config(path: &Path, patch: &Value) -> Result<Applied, String> {
 
     log::info!("settings: wrote {} ({} field(s))", path.display(), applied.len());
 
-    let active_profile = patch
-        .get("ai")
-        .and_then(|ai| ai.get("active_profile"))
-        .and_then(Value::as_str)
-        .map(|name| name.to_string())
-        .or_else(|| {
-            if ai_changed {
-                reparsed
-                    .get("active_profile")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            } else {
-                None
-            }
-        });
+    let active_profile = if ai_changed && !active.is_empty() {
+        Some(active.clone())
+    } else {
+        None
+    };
 
     restart.sort();
     restart.dedup();
@@ -843,7 +1336,14 @@ mod tests {
   },
   "active_profile": "fast",
   "ai_profiles": {
-    "fast": { "kind": "openai_compat", "model": "small", "max_tokens": 100 }
+    "fast": {
+      "kind": "openai_compat",
+      "label": "Fast local",
+      "endpoint": "http://127.0.0.1:8001/v1",
+      "model": "small",
+      "max_tokens": 100,
+      "system_prompt": "Answer in one line."
+    }
   },
   "quick_tasks": [ { "label": "x", "prompt": "y" } ]
 }
@@ -1026,6 +1526,270 @@ mod tests {
         assert!(err.contains("no plugin owns `survival`"), "{err}");
         assert!(err.contains("tts"), "lists the known sections: {err}");
         assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Three profiles, a vision profile and an agent — the shape the removal
+    /// guards and renames need to be interesting.
+    const TWO: &str = r#"{
+  "hotkey": "Alt+Space",
+  "active_profile": "fast",
+  "vision": {
+    "enabled": true,
+    "profile_name": "eyes",
+    "capture_mode": "active_window",
+    "max_image_dim": 1024,
+    "jpeg_quality": 85,
+    "trigger_phrases": ["look at my screen"]
+  },
+  "ai_profiles": {
+    "fast": { "kind": "openai_compat", "label": "Fast", "endpoint": "http://127.0.0.1:8001/v1", "model": "small", "timeout_secs": 120 },
+    "eyes": { "kind": "openai_compat", "label": "Eyes", "endpoint": "http://127.0.0.1:9932/v1", "model": "vl", "timeout_secs": 120 },
+    "agent": { "kind": "hermes_cli", "label": "Agent", "cmd": "hermes chat -q", "timeout_secs": 120 }
+  }
+}
+"#;
+
+    fn write_two(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("watcher_rules.json");
+        std::fs::write(&path, TWO).expect("sample");
+        path
+    }
+
+    fn read(path: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("parse")
+    }
+
+    #[test]
+    fn a_created_profile_defaults_to_the_avatar_prompt_and_120_seconds() {
+        let dir = temp_dir("create");
+        let path = write_two(&dir);
+        apply_config(
+            &path,
+            &json!({ "ai": { "create": [ {
+                "name": "tiny",
+                "endpoint": "http://127.0.0.1:8080/v1",
+                "model": "tiny-1b",
+            } ] } }),
+        )
+        .expect("apply");
+
+        let doc = read(&path);
+        let created = &doc["ai_profiles"]["tiny"];
+        assert_eq!(created["kind"], json!("openai_compat"));
+        assert_eq!(created["label"], json!("tiny"), "a missing label falls back to the key");
+        assert_eq!(created["endpoint"], json!("http://127.0.0.1:8080/v1"));
+        assert_eq!(created["model"], json!("tiny-1b"));
+        assert_eq!(created["timeout_secs"], json!(120));
+        assert_eq!(created["system_prompt"], json!(DEFAULT_AVATAR_SYSTEM_PROMPT));
+        // The profiles that were already there are untouched.
+        assert_eq!(doc["ai_profiles"]["fast"]["model"], json!("small"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_created_profile_needs_a_valid_unique_key_and_its_kind_fields() {
+        let dir = temp_dir("create-guards");
+        let path = write_two(&dir);
+        let before = std::fs::read_to_string(&path).expect("read");
+
+        let dup = apply_config(
+            &path,
+            &json!({ "ai": { "create": [ { "name": "fast", "endpoint": "http://127.0.0.1:1/v1", "model": "m" } ] } }),
+        )
+        .expect_err("duplicate");
+        assert!(dup.contains("already an ai_profiles entry"), "{dup}");
+
+        let bad = apply_config(
+            &path,
+            &json!({ "ai": { "create": [ { "name": "Bad Key", "endpoint": "http://127.0.0.1:1/v1", "model": "m" } ] } }),
+        )
+        .expect_err("slug");
+        assert!(bad.contains("not a valid profile key"), "{bad}");
+
+        let no_endpoint = apply_config(
+            &path,
+            &json!({ "ai": { "create": [ { "name": "half", "model": "m" } ] } }),
+        )
+        .expect_err("endpoint");
+        assert!(no_endpoint.contains("endpoint"), "{no_endpoint}");
+
+        let no_cmd = apply_config(
+            &path,
+            &json!({ "ai": { "create": [ { "name": "cli", "kind": "hermes_cli" } ] } }),
+        )
+        .expect_err("cmd");
+        assert!(no_cmd.contains("cmd"), "{no_cmd}");
+
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), before, "nothing was written");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_last_profile_cannot_be_removed() {
+        let dir = temp_dir("last");
+        let path = write_sample(&dir);
+        let err = apply_config(&path, &json!({ "ai": { "remove": ["fast"] } })).expect_err("refuse");
+        assert!(err.contains("last AI profile"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_profile_in_use_cannot_be_removed_until_the_selection_moves() {
+        let dir = temp_dir("remove-guards");
+        let path = write_two(&dir);
+
+        let active = apply_config(&path, &json!({ "ai": { "remove": ["fast"] } })).expect_err("active");
+        assert!(active.contains("active profile"), "{active}");
+        assert!(active.contains("switch"), "tells the user what to do: {active}");
+
+        let vision = apply_config(&path, &json!({ "ai": { "remove": ["eyes"] } })).expect_err("vision");
+        assert!(vision.contains("vision profile"), "{vision}");
+
+        // Moving both selections in the same patch is enough to let them go.
+        apply_config(
+            &path,
+            &json!({
+                "ai": { "active_profile": "agent", "remove": ["fast"] },
+                "vision": { "profile_name": "eyes" }
+            }),
+        )
+        .expect("remove");
+        let doc = read(&path);
+        assert!(doc["ai_profiles"].get("fast").is_none());
+        assert_eq!(doc["active_profile"], json!("agent"));
+        assert_eq!(doc["vision"]["profile_name"], json!("eyes"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_carries_the_active_and_vision_names_with_it() {
+        let dir = temp_dir("rename");
+        let path = write_two(&dir);
+        apply_config(
+            &path,
+            &json!({ "ai": { "rename": [ { "from": "fast", "to": "quick" }, { "from": "eyes", "to": "sight" } ] } }),
+        )
+        .expect("rename");
+
+        let doc = read(&path);
+        assert!(doc["ai_profiles"].get("quick").is_some());
+        assert!(doc["ai_profiles"].get("fast").is_none());
+        assert_eq!(doc["active_profile"], json!("quick"));
+        assert_eq!(doc["vision"]["profile_name"], json!("sight"));
+        // The renamed entry kept its body.
+        assert_eq!(doc["ai_profiles"]["quick"]["model"], json!("small"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_onto_a_taken_key_is_refused() {
+        let dir = temp_dir("rename-guard");
+        let path = write_two(&dir);
+        let err = apply_config(
+            &path,
+            &json!({ "ai": { "rename": [ { "from": "fast", "to": "eyes" } ] } }),
+        )
+        .expect_err("refuse");
+        assert!(err.contains("already used"), "{err}");
+        assert_eq!(read(&path)["ai_profiles"]["fast"]["model"], json!("small"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vision_cannot_point_at_a_profile_that_does_not_exist() {
+        let dir = temp_dir("vision-name");
+        let path = write_two(&dir);
+        let err = apply_config(&path, &json!({ "vision": { "profile_name": "nope" } }))
+            .expect_err("refuse");
+        assert!(err.contains("vision.profile_name"), "{err}");
+        assert!(err.contains("fast"), "lists what does exist: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discovery_ports_are_inserted_into_a_file_that_predates_them() {
+        let dir = temp_dir("ports");
+        let path = write_sample(&dir);
+        assert!(read(&path).get("discovery_ports").is_none());
+
+        let applied = apply_config(&path, &json!({ "discovery_ports": [8001, 11434, 8001] }))
+            .expect("apply");
+        assert_eq!(applied.applied, vec!["discovery_ports".to_string()]);
+        let text = std::fs::read_to_string(&path).expect("read");
+        let doc: Value = serde_json::from_str(&text).expect("parse");
+        assert_eq!(doc["discovery_ports"], json!([8001, 11434]), "deduplicated, in order");
+        // The rest of the file is byte-identical.
+        assert!(text.contains(r#""hotkey": "Alt+Space""#));
+        assert!(text.contains(r#""active_profile": "fast""#));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bad_discovery_port_is_refused() {
+        let dir = temp_dir("ports-bad");
+        let path = write_sample(&dir);
+        let before = std::fs::read_to_string(&path).expect("read");
+        for bad in [json!([0]), json!([70000]), json!(["8001"])] {
+            let err = apply_config(&path, &json!({ "discovery_ports": bad })).expect_err("refuse");
+            assert!(err.contains("discovery_ports"), "{err}");
+        }
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_json_exposes_the_default_prompt_and_the_effective_ports() {
+        let dir = temp_dir("config-ai");
+        let path = write_two(&dir);
+        let body = config_json(Some(&path));
+        assert_eq!(
+            body["settings"]["ai"]["default_system_prompt"],
+            json!(DEFAULT_AVATAR_SYSTEM_PROMPT)
+        );
+        let ports: Vec<u64> = body["settings"]["discovery_ports"]
+            .as_array()
+            .expect("ports")
+            .iter()
+            .map(|value| value.as_u64().expect("number"))
+            .collect();
+        // The defaults, plus the ports the two endpoints already name.
+        assert!(ports.contains(&11434));
+        assert!(ports.contains(&9932));
+        let mut unique = ports.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), ports.len(), "no duplicates: {ports:?}");
+        // Every profile carries the prompt the modal edits.
+        let profiles = body["settings"]["ai"]["profiles"].as_array().expect("profiles");
+        assert!(profiles.iter().all(|profile| profile.get("system_prompt").is_some()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_legacy_file_gains_an_ai_profiles_block_from_a_create() {
+        let dir = temp_dir("legacy-create");
+        let path = dir.join("watcher_rules.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "hotkey": "Alt+Space",
+  "hermes_cmd": "hermes chat -q"
+}
+"#,
+        )
+        .expect("write");
+
+        apply_config(
+            &path,
+            &json!({ "ai": { "create": [ { "name": "tiny", "endpoint": "http://127.0.0.1:8080/v1", "model": "m" } ] } }),
+        )
+        .expect("apply");
+
+        let doc = read(&path);
+        assert_eq!(doc["ai_profiles"]["tiny"]["model"], json!("m"));
+        // The legacy runner is untouched, so the watcher still has an agent.
+        assert_eq!(doc["hermes_cmd"], json!("hermes chat -q"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
