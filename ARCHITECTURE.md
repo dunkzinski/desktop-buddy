@@ -2121,22 +2121,42 @@ the full JSON shapes.
 
 Every spontaneous event also carries `line` (the sentence the plugin would have
 spoken) and, where it has one, `expression`; `fishing-result` adds `species`,
-`rarity`, `blurb` on a catch. The watcher's AI brain is the primary voice for
-all of them:
+`rarity`, `value` (the shop's sell price) and `blurb` on a catch. Those
+`fishing-*` frames are the **page's** feed — `ui/js/survival.js` draws every
+phase from them — and only the end of a cast reaches the AI brain:
 
 * `survival-threshold` / `survival-meal` / `survival-craft` / `survival-craving`
   share **one** cooldown bucket (`survival`, 10 s by default) — a single feed can
   cross a tier and settle a craving inside one tick, and that is one reaction.
-* `fishing-bite`, `fish-hooked` and `fishing-result` get **per-kind** buckets, so
-  the catch that lands two seconds after its bite still gets a turn. A cast
-  (`fishing-started`) is deliberately *not* routed: a local model needs 10-30 s
-  per turn and the bite arrives 3-12 s after the cast, so a cast turn would still
-  be running when the interesting moment came.
+* **Fishing is terminal-outcome-only.** `fishing-started`, `fishing-bite` and
+  `fish-hooked` are not in any `handle_frame` arm, so casting, waiting, nibbling,
+  biting and reeling never reach a model: the rig handles those phases locally
+  and the single-flight latch stays free. A `fishing-result` is split into two
+  trigger types by its `caught` flag — `fish_caught` (the prize: `label`,
+  `species`, `rarity`, `value`, `blurb`, `catches`) and `fish_lost` (the `reason`
+  and the `escapes` count) — and both share one 2 s bucket, because two outcomes
+  seconds apart are one conversational beat. Routing the intermediates would keep
+  a 10-30 s turn permanently in flight on a local model and still narrate each
+  moment after it had passed.
 * All of them are `quiet_failure`: a failed dispatch never posts the generic
-  "Sorry, I hit a snag" bubble, it speaks the event's own `line`. A
-  `fishing-result` is the one routine kind that queues behind a running turn
-  (one slot, newest wins) instead of being dropped, because it always follows the
-  bite that started that turn.
+  "Sorry, I hit a snag" bubble, it speaks the event's own `line`. That line is
+  the **offline fallback** — a catch or a lost fish still gets a reaction when the
+  watcher/brain is unreachable, errors out or has no profile, and the AI path
+  never speaks twice.
+* `fish_caught` / `fish_lost` are the routine kinds that queue behind a running
+  turn instead of being dropped (one slot, newest wins). A slow local model is
+  usually still generating when the next cast finishes, so the newer outcome
+  replaces the older one (log line `coalesced the older pending … outcome`) and
+  an outcome that has waited longer than `FISHING_OUTCOME_MAX_AGE` (45 s) is
+  dropped rather than spoken late. With the single-flight latch that means at
+  most one fishing request is ever in flight and only the freshest outcome is
+  answered — no pile-up.
+* Body events get a timeout **floor**, `SURVIVAL_DISPATCH_TIMEOUT_SECS` (180 s).
+  A profile's own `timeout_secs` (60 s for the shipped fast profiles) is a fine
+  ceiling for a `user_reply`, but cutting a slow local generation off there fires
+  the offline fallback on a brain that was working. `dispatch_timeout_floor`
+  returns the floor for every `survival-*` frame and for both fishing outcomes,
+  and `None` (honour the profile) for everything else.
 
 ### `/shutdown`
 

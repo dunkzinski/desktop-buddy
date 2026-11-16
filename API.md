@@ -1422,6 +1422,7 @@ curl -s -X POST localhost:8765/fishing/reel
   "label": "Silver trout",
   "icon": "🎏",
   "junk": false,
+  "value": 6,
   "reason": null,
   "position": 0.52,
   "sweet": {"start": 0.41, "end": 0.63},
@@ -1437,9 +1438,13 @@ A miss (or letting the two-sweep deadline pass) answers the same shape with
 `cancelled` or `inventory_full`. That last one means the fish was landed but the
 bag had no room, so `caught` stays `false` and nothing is stored. Every outcome
 emits `fishing-result`, and a stored catch also emits `inventory-changed`. The
-frame (not just this reply) carries `species`, `rarity` (1-4), `blurb`,
-`expression` and `line`, which is what the watcher's AI brain reacts to; a miss
-carries `reason`, `expression` and `line` instead of the species block.
+frame (not just this reply) carries `species`, `rarity` (1-4), `value` (the
+shop's sell price, i.e. what `POST /store/sell` would pay) and `blurb`,
+`expression` and `line`; a miss carries `reason`, `expression` and `line`
+instead of the species block. Only this frame reaches the watcher's AI brain —
+the earlier `fishing-started` / `fishing-bite` / `fish-hooked` frames are the
+page's own, and the watcher turns this one into a `fish_caught` or `fish_lost`
+trigger (speaking `line` as its offline fallback).
 
 ### `POST /fishing/cancel`
 

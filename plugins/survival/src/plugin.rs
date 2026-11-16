@@ -1563,6 +1563,10 @@ impl Survival {
             "junk": junk,
             "species": definition.map(|entry| entry.kind.as_str()),
             "rarity": definition.map(|entry| entry.rarity),
+            // What the counter would pay for it: the only size/value signal in
+            // the model, and what the avatar's brain quotes when it inspects the
+            // catch. `None` only for an id that is not an item at all.
+            "value": store::sell_value(loot.item),
             "blurb": definition.map(|entry| entry.blurb),
             "expression": expression,
             "line": line,
@@ -2396,6 +2400,15 @@ mod tests {
         // The brain gets facts it can work with, not just an id.
         assert!(result.1["species"].is_string(), "{:?}", result.1);
         assert!(result.1["rarity"].is_number(), "{:?}", result.1);
+        // The prize's shop value rides along, so the avatar can inspect it.
+        let item = result.1["item"].as_str().expect("item id");
+        assert_eq!(
+            result.1["value"],
+            json!(crate::store::sell_value(item)),
+            "{:?}",
+            result.1
+        );
+        assert!(result.1["value"].is_number(), "{:?}", result.1);
         assert!(result.1["blurb"].is_string(), "{:?}", result.1);
         let line = result.1["line"].as_str().expect("a line");
         assert!(line.contains(result.1["label"].as_str().expect("label")), "{line}");

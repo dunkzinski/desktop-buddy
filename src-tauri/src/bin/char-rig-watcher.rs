@@ -69,14 +69,34 @@ const DEFAULT_ALERT_COOLDOWN_SECS: u64 = 60;
 const DEFAULT_SURVIVAL_COOLDOWN_SECS: u64 = 10;
 /// One cooldown bucket for every `survival-*` frame type.
 const SURVIVAL_COOLDOWN_KEY: &str = "survival";
-/// Fishing gets its **own** buckets, one per moment: a bite and the catch that
-/// follows it are 2-10 s apart, so a single bucket would swallow the payoff.
-/// The bite is throttled to one per cast, the reel loosely, and a result is
-/// nearly always worth a line. A *cast* is deliberately not routed at all — see
-/// [`fishing_trigger`].
-const FISHING_BITE_COOLDOWN_SECS: u64 = 6;
-const FISHING_HOOKED_COOLDOWN_SECS: u64 = 10;
+/// Fishing gets its **own** cooldown, on the terminal outcome only.
+///
+/// Only two fishing moments ever reach the AI brain: a landed fish and one that
+/// got away. The intermediate states (cast, wait, nibble, bite, hook, reel) are
+/// driven by the page and handled locally — see [`fishing_trigger`] for why
+/// every one of them is deliberately unrouted.
 const FISHING_RESULT_COOLDOWN_SECS: u64 = 2;
+/// Event type the watcher stamps on a **landed** cast, replacing the plugin's
+/// single `fishing-result` frame. The two terminal outcomes are separate
+/// triggers because they are separate reactions (inspect the prize vs. "aw,
+/// shucks") and because they share one coalescing slot per outcome kind.
+const FISH_CAUGHT_EVENT: &str = "fish_caught";
+/// Event type for a cast that ended with nothing in the net.
+const FISH_LOST_EVENT: &str = "fish_lost";
+/// Floor on the inference timeout for a **body event** (survival / fishing).
+///
+/// A local 7-30B model on CPU or a shared GPU routinely needs well over a
+/// profile's 60 s default to produce one short line. Timing out mid-generation
+/// looks like the brain is broken, so a survival turn gets at least this long
+/// regardless of the profile's `timeout_secs` — the next hunger crossing or
+/// fish is a *new* event, so waiting is always better than a false fallback.
+const SURVIVAL_DISPATCH_TIMEOUT_SECS: u64 = 180;
+/// How long a finished cast may wait in the pending slot before it is dropped.
+///
+/// A fish caught two minutes ago is no longer news, and a local turn can easily
+/// run that long. Coalescing already keeps only the latest outcome; this is the
+/// second half of the guard — a stale one is not spoken at all.
+const FISHING_OUTCOME_MAX_AGE: Duration = Duration::from_secs(45);
 /// How long a canned (plugin-authored) line stays in the bubble.
 const CANNED_LINE_DURATION_MS: u64 = 5000;
 const DEFAULT_IDLE_THRESHOLD_SECS: u64 = 900;
@@ -622,6 +642,14 @@ struct DispatchCtx<'a> {
     /// stays quiet about the generic snag bubble and speaks the plugin's own
     /// line instead (see [`FailureSpeech`]); a routine trigger keeps the bubble.
     failure_speech: FailureSpeech,
+    /// Lower bound on this turn's generation timeout, whatever the profile says.
+    ///
+    /// A body event (hunger, a meal, a craving, a landed fish) is generated
+    /// slowly on purpose — [`SURVIVAL_DISPATCH_TIMEOUT_SECS`] — so a profile's
+    /// 60 s default cannot cut a slow local model off mid-sentence and fire the
+    /// offline fallback on a working brain. `None` means "use the profile's own
+    /// timeout", which is what a `user_reply` or an `alert` gets.
+    timeout_floor: Option<Duration>,
 }
 
 /// A profile that can actually run a trigger.
@@ -804,9 +832,14 @@ You do not have tools: you see only the context you are given and you answer wit
     }
 
     /// One round-trip: POST the prompt, return the parsed reply.
-    async fn ask(&self, client: &reqwest::Client, prompt: &str) -> Result<AiReply, String> {
+    async fn ask(
+        &self,
+        client: &reqwest::Client,
+        prompt: &str,
+        timeout: Duration,
+    ) -> Result<AiReply, String> {
         let url = Self::chat_url(&self.endpoint);
-        let mut request = client.post(&url).json(&self.request_body(prompt)).timeout(self.timeout);
+        let mut request = client.post(&url).json(&self.request_body(prompt)).timeout(timeout);
         if let Some(key) = &self.api_key {
             request = request.header("authorization", format!("Bearer {key}"));
         }
@@ -851,10 +884,13 @@ impl InferenceBackend for OpenaiCompatBackend {
             // not stack another model call on a busy local server.
             let _flight = ctx.flight;
             let failure = ctx.failure_speech.clone();
+            // A body event gets the survivor's timeout floor: a slow local
+            // model must not be declared dead mid-generation.
+            let timeout = ctx.timeout_floor.map_or(self.timeout, |floor| self.timeout.max(floor));
             let (prompt, clips) = self
                 .augmented_prompt(ctx.client, ctx.api_url, ctx.prompt)
                 .await;
-            let reply = match self.ask(ctx.client, &prompt).await {
+            let reply = match self.ask(ctx.client, &prompt, timeout).await {
                 Ok(reply) => reply,
                 Err(err) => {
                     eprintln!("[watcher] ai profile {:?} failed: {err}", self.name);
@@ -925,11 +961,12 @@ impl InferenceBackend for HermesCliBackend {
         Box::pin(async move {
             // `spawn_hermes` owns the invite-a-model work *and* the fallback
             // bubble for a timeout / non-zero exit.
+            let timeout = ctx.timeout_floor.map_or(self.timeout, |floor| self.timeout.max(floor));
             let spawned = spawn_hermes(
                 &self.cmd,
                 ctx.prompt,
                 ctx.session,
-                self.timeout,
+                timeout,
                 ctx.client,
                 ctx.api_url,
                 ctx.flight,
@@ -1130,7 +1167,7 @@ fn human_wait(secs: u64) -> String {
 /// avatar's own body. Numbers are banned on purpose: the bubble is a card a few
 /// words wide, "hunger 31.4, saturation 9.8" reads as telemetry in a mouth that
 /// is supposed to be complaining, and the user can already see the bars.
-const SURVIVAL_DIRECTIVE: &str = "This is a survival event -- hunger, a meal, a cooked dish, a craving or a fishing moment. It is about the \
+const SURVIVAL_DIRECTIVE: &str = "This is a survival event -- hunger, a meal, a cooked dish, a craving, or a fish you just caught or lost. It is about the \
 \
 avatar's own body, not the user's work, so do not offer to help with anything on screen. From here, without \
 \
@@ -1142,9 +1179,7 @@ describe the JSON you were given. A meal or a dish the user just fed you earns a
 \
 food; a hunger crossing or a lapsed craving earns a brief complaint or a wistful line; a settled craving earns \
 \
-satisfaction. A fishing bite is a split-second moment: two or three words of excitement, nothing more. A landed \
-\
-fish is worth naming the species out loud, and a lost one is worth a short groan. Staying silent with no tool \
+satisfaction. A landed fish is worth naming the species out loud and inspecting the prize -- how it looks, how rare it is, what the shop would pay; a lost one is worth a short disappointed groan. You never narrate a cast, the waiting, the nibble or the reel, only how it ended. Staying silent with no tool \
 \
 calls is a fine answer when the event is not worth a line. ";
 
@@ -2135,16 +2170,17 @@ Treat it as their task: do what they asked with your tools, then report the outc
     }
 
     /// Is this one of the survival plugin's own events (hunger, meals, cravings,
-    /// fishing)?
+    /// a landed fish, a lost one)?
     ///
     /// The `survival-*` frames are the only triggers whose event type carries
-    /// that prefix (the plugin's periodic `survival` telemetry frame is never
-    /// routed at all), so the type is the marker — and it is also what the log
-    /// line prints.
+    /// that prefix, and fishing contributes exactly two types —
+    /// [`FISH_CAUGHT_EVENT`] / [`FISH_LOST_EVENT`] — which the watcher mints
+    /// itself from the plugin's single `fishing-result` frame. The type is both
+    /// the marker and what the log line prints.
     fn is_survival(&self) -> bool {
         self.event_type.starts_with("survival-")
-            || self.event_type.starts_with("fishing-")
-            || self.event_type == "fish-hooked"
+            || self.event_type == FISH_CAUGHT_EVENT
+            || self.event_type == FISH_LOST_EVENT
     }
 
     /// Concise context prompt for the `hermes_cli` backend.
@@ -2350,99 +2386,79 @@ fn survival_trigger(
     })
 }
 
-/// Route one fishing frame into a trigger.
+/// Route one **finished cast** into a trigger, and nothing else.
 ///
-/// The mini-game is a state machine the page drives, and every state it
-/// publishes is a moment the avatar can react to:
+/// The mini-game is a local state machine driven by the page (cast → wait →
+/// nibble → bite → hook → reel → result) and the rig reacts to every one of
+/// those phases on its own, without an LLM. Only the *terminal* outcome is
+/// forwarded to the AI brain, for two reasons:
 ///
-/// * `fishing-started` — **deliberately not routed.** A model turn costs 10-30 s
-///   on a local model and the bite lands 3-12 s after the cast, so a cast turn
-///   would still be running when the one moment that matters arrives — the model
-///   would narrate the wait and miss the fish. The page already shows the wait;
-///   the avatar speaks when something happens.
-/// * `fishing-bite` — something took the bait and the strike window is open. The
-///   one moment that wants a *fast* reaction.
-/// * `fish-hooked` — the fish is on and the reel bar is sweeping.
-/// * `fishing-result` — the cast ended: `caught` plus `item`/`label`/`species`/
-///   `rarity`/`blurb` on a catch, or `reason` (`missed_the_spot`, `spooked`,
-///   `timed_out`, `cancelled`, `inventory_full`) on a loss.
+/// * **Cost/latency.** A local model turn is 10-30 s (and more on slow
+///   hardware). The intermediate states fire seconds apart, so routing them
+///   would keep one turn permanently in flight, burn the single dispatch slot,
+///   and still narrate the moment after it had passed.
+/// * **Relevance.** "The line is in the water", "the bobber dipped" and "the
+///   reel is sweeping" are instructions to the player, not material for an
+///   in-character line. The payoff — what he caught, or the one that got away —
+///   is the only part worth speaking about.
 ///
-/// Each kind gets its **own** cooldown bucket. One shared bucket would swallow
-/// the catch that lands two seconds after its bite; per-kind buckets keep the
-/// bite and the payoff while still throttling a cast spam to one turn per
-/// [`FISHING_CAST_COOLDOWN_SECS`]. The dispatcher's single-flight latch is the
-/// second gate — a bite arriving mid-turn is dropped rather than queued.
+/// So `fishing-started`, `fishing-bite` and `fish-hooked` are deliberately
+/// **not routed** (they are in no `handle_frame` arm at all), and the one frame
+/// that is — `fishing-result` — is split into two trigger types by its `caught`
+/// flag:
+///
+/// * [`FISH_CAUGHT_EVENT`] (`fish_caught`) — carries the prize: `label`,
+///   `species`, `rarity`, `blurb`, the selling `value` when the plugin has one
+///   and the running `catches` count, so the avatar can inspect it and comment.
+/// * [`FISH_LOST_EVENT`] (`fish_lost`) — carries `reason` (`missed_the_spot`,
+///   `spooked`, `timed_out`, `cancelled`, `inventory_full`) so he can be
+///   disappointed about it.
+///
+/// Both share one cooldown bucket and one pending slot: the same fish cannot be
+/// caught twice, and two outcomes seconds apart are one conversational beat.
 fn fishing_trigger(
     rules: &Rules,
     shared: &mut Shared,
-    frame_type: &str,
     payload: &Value,
     now: Instant,
 ) -> Option<Trigger> {
     if !rules.survival.enabled {
         return None;
     }
-    let (key, cooldown, detail) = match frame_type {
-        "fishing-bite" => ("fishing:bite", FISHING_BITE_COOLDOWN_SECS, bite_detail(payload)?),
-        "fish-hooked" => ("fishing:hooked", FISHING_HOOKED_COOLDOWN_SECS, hooked_detail(payload)?),
-        "fishing-result" => (
-            "fishing:result",
-            FISHING_RESULT_COOLDOWN_SECS,
-            result_detail(payload)?,
-        ),
-        _ => return None,
-    };
-    if !shared.cooldowns.allow(key, now, Duration::from_secs(cooldown)) {
+    let caught = payload.get("caught").and_then(Value::as_bool).unwrap_or(false);
+    let event_type = if caught { FISH_CAUGHT_EVENT } else { FISH_LOST_EVENT };
+    let detail = result_detail(payload)?;
+    if !shared
+        .cooldowns
+        .allow("fishing:result", now, Duration::from_secs(FISHING_RESULT_COOLDOWN_SECS))
+    {
         return None;
     }
 
     Some(Trigger {
-        event_type: frame_type.to_string(),
+        event_type: event_type.to_string(),
         detail,
         window_title: shared.context.window_title.clone(),
         idle_secs: shared.context.idle_secs,
         // The plugin already wore this face on the event; keep it for the ack.
         animation: survival_expression(payload).map(str::to_string),
         quiet_failure: true,
-        // A catch/miss carries the plugin's line; a cast carries none (there is
-        // nothing to say about putting a line in the water).
+        // The outcome carries the plugin's own line, which is what the offline
+        // fallback speaks when the brain cannot be reached.
         fallback_line: text_field(payload, "line").map(str::to_string),
         fallback_expression: survival_expression(payload).map(str::to_string),
         ..Trigger::default()
     })
 }
 
-fn bite_detail(payload: &Value) -> Option<String> {
-    let window = payload.get("window_ms").and_then(Value::as_u64).unwrap_or(0);
-    let mut detail = String::from("something took the bait -- the strike window is open");
-    if window > 0 {
-        detail.push_str(&format!(" for {window} ms"));
-    }
-    if let Some(key) = text_field(payload, "hook_key") {
-        detail.push_str(&format!(", press {key} now"));
-    }
-    Some(detail)
-}
-
-fn hooked_detail(payload: &Value) -> Option<String> {
-    let period = payload
-        .get("reel")
-        .and_then(|reel| reel.get("period_ms"))
-        .and_then(Value::as_u64);
-    let mut detail = String::from("the fish is hooked and the reel is sweeping");
-    if let Some(period) = period {
-        detail.push_str(&format!(" (one sweep every {period} ms)"));
-    }
-    if let Some(key) = text_field(payload, "reel_key") {
-        detail.push_str(&format!("; press {key} in the sweet spot"));
-    }
-    Some(detail)
-}
-
 fn result_detail(payload: &Value) -> Option<String> {
     if !payload.get("caught").and_then(Value::as_bool).unwrap_or(false) {
         let reason = text_field(payload, "reason").unwrap_or("lost");
-        return Some(format!("the cast ended with nothing on the line ({reason})"));
+        let mut detail = format!("the fish got away -- the cast ended with nothing on the line ({reason})");
+        if let Some(escapes) = payload.get("escapes").and_then(Value::as_u64) {
+            detail.push_str(&format!("; {escapes} lost so far"));
+        }
+        return Some(detail);
     }
     let label = text_field(payload, "label").unwrap_or("a fish");
     let mut detail = format!("the avatar landed {label}");
@@ -2453,6 +2469,11 @@ fn result_detail(payload: &Value) -> Option<String> {
         }
         detail.push(')');
     }
+    // The sell price is the only size/value signal the model is trusted with;
+    // there is no weight in the model, so nothing is invented for it.
+    if let Some(value) = payload.get("value").and_then(Value::as_u64) {
+        detail.push_str(&format!(", worth {value} coins to the shop"));
+    }
     if let Some(blurb) = text_field(payload, "blurb") {
         detail.push_str(&format!(" -- {blurb}"));
     }
@@ -2462,12 +2483,12 @@ fn result_detail(payload: &Value) -> Option<String> {
     Some(detail)
 }
 
-/// Detail builder dispatch for the pure test (no cooldown, no `Shared`).
+/// Detail builder dispatch for the pure tests (no cooldown, no `Shared`).
 #[cfg(test)]
 fn fishing_detail_for(frame_type: &str, payload: &Value) -> Option<String> {
     match frame_type {
-        "fishing-bite" => bite_detail(payload),
-        "fish-hooked" => hooked_detail(payload),
+        // Only a finished cast is a fishing moment; the intermediate states are
+        // the page's own business.
         "fishing-result" => result_detail(payload),
         _ => None,
     }
@@ -2919,16 +2940,27 @@ enum Offer {
 ///
 /// While a dispatch is in flight the latch holds **at most one** pending
 /// trigger, and only for the kinds the user is actually waiting on
-/// (`user_reply`, `alert`): a reply or an alert that lands mid-turn must not be
-/// silently lost. A newer one replaces the older pending one — only the latest
-/// matters. Routine triggers (`interaction`, `window_title`, `idle_return`)
-/// are dropped so background noise never queues up behind a task.
+/// (`user_reply`, `alert`, `fish_caught`, `fish_lost`): a reply or an alert that
+/// lands mid-turn must not be silently lost, and a fish caught while the model
+/// is still talking about the last one must not start a second concurrent turn —
+/// a slow local model would then answer two stale outcomes in a row. A newer one
+/// replaces the older pending one (only the latest matters), and a fishing
+/// outcome that has waited longer than [`FISHING_OUTCOME_MAX_AGE`] is dropped
+/// rather than spoken late. Routine triggers (`interaction`, `window_title`,
+/// `idle_return`) are dropped so background noise never queues up behind a task.
 #[derive(Debug, Clone, Default)]
 struct SingleFlight {
     busy: Arc<AtomicBool>,
-    pending: Arc<Mutex<Option<Trigger>>>,
+    pending: Arc<Mutex<Option<Queued>>>,
     /// Woken when a flight ends so the dispatcher can drain `pending`.
     finished: Arc<Notify>,
+}
+
+/// One parked trigger plus when it was parked, so staleness can be judged.
+#[derive(Debug, Clone)]
+struct Queued {
+    trigger: Trigger,
+    at: Instant,
 }
 
 impl SingleFlight {
@@ -2954,7 +2986,7 @@ impl SingleFlight {
 
     /// The pending slot, recovering from a poisoned lock like the rest of the
     /// watcher (`Shared`/`SessionState` do the same).
-    fn lock_pending(&self) -> MutexGuard<'_, Option<Trigger>> {
+    fn lock_pending(&self) -> MutexGuard<'_, Option<Queued>> {
         self.pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2973,39 +3005,117 @@ impl SingleFlight {
             return Offer::Dropped;
         }
         // Replace, never stack: one slot means the newest trigger wins.
-        let replaced = { self.lock_pending().replace(trigger) };
+        let replaced = self.lock_pending().replace(Queued {
+            trigger,
+            at: Instant::now(),
+        });
         eprintln!("[watcher] queued pending trigger (1 slot)");
         if let Some(older) = replaced {
-            eprintln!(
-                "[watcher] replaced the older pending {} trigger (only the latest is kept)",
-                older.event_type
-            );
+            // Two outcomes of the same cast kind collapse into one turn: the
+            // user only needs a reaction to the fish in hand now.
+            if is_fishing_outcome(&older.trigger.event_type) {
+                eprintln!(
+                    "[watcher] coalesced the older pending {} outcome (only the latest is kept)",
+                    older.trigger.event_type
+                );
+            } else {
+                eprintln!(
+                    "[watcher] replaced the older pending {} trigger (only the latest is kept)",
+                    older.trigger.event_type
+                );
+            }
         }
         Offer::Queued
     }
 
     /// Take the queued trigger, if any. Called once a flight is over.
+    ///
+    /// A fishing outcome that has been waiting longer than
+    /// [`FISHING_OUTCOME_MAX_AGE`] is **dropped** instead of dispatched: a fish
+    /// landed two minutes ago is not a reaction anyone wants to hear, and the
+    /// model would spend another turn on it while the user is already casting
+    /// again.
     fn take_pending(&self) -> Option<Trigger> {
-        self.lock_pending().take()
+        let queued = self.lock_pending().take()?;
+        if is_fishing_outcome(&queued.trigger.event_type)
+            && queued.at.elapsed() > FISHING_OUTCOME_MAX_AGE
+        {
+            eprintln!(
+                "[watcher] dropped a stale {} outcome ({}s in the pending slot, max {})",
+                queued.trigger.event_type,
+                queued.at.elapsed().as_secs(),
+                FISHING_OUTCOME_MAX_AGE.as_secs()
+            );
+            return None;
+        }
+        Some(queued.trigger)
     }
 }
 
+/// Is this one of the two terminal fishing outcomes?
+fn is_fishing_outcome(event_type: &str) -> bool {
+    event_type == FISH_CAUGHT_EVENT || event_type == FISH_LOST_EVENT
+}
+
 /// Kinds that deserve the single pending slot: the user asked, a monitor
-/// reported something, or a cast *ended*.
+/// reported something, or a cast **ended**.
 ///
-/// `fishing-result` is here for a structural reason, not politeness: the result
-/// of a cast always lands inside the model turn that its own bite started (the
-/// bite window is ~1.4 s, a local model needs seconds to answer). Dropping it
-/// would mean the payoff — the fish, or the one that got away — is the one thing
-/// the avatar never talks about. One slot holds it, and a newer result replaces
-/// an older queued one, so a burst still collapses to a single turn.
+/// `fish_caught` / `fish_lost` are here because a terminal outcome is the only
+/// part of the mini-game worth a model turn, and dropping it would mean the
+/// payoff — the fish, or the one that got away — is the one thing the avatar
+/// never talks about. They still cannot pile up: the slot holds one trigger,
+/// a newer outcome replaces an older one (see [`SingleFlight::offer`]) and
+/// [`FISHING_OUTCOME_MAX_AGE`] discards one that waited too long, so a burst of
+/// catches during a slow local turn collapses to a single reaction.
 ///
 /// Everything else is ambient noise and is dropped.
 fn queues_while_busy(event_type: &str) -> bool {
-    matches!(
-        event_type,
-        "user_reply" | "alert" | "fishing-result"
-    )
+    matches!(event_type, "user_reply" | "alert") || is_fishing_outcome(event_type)
+}
+
+/// Collapse a burst of triggers that queued up behind one slow turn into the
+/// single one worth answering.
+///
+/// Priority: a `user_reply`/`alert` the user is waiting on always wins; among
+/// fishing outcomes only the newest survives; anything else is kept only if
+/// nothing more urgent is present. Every discard is logged, so a burst during a
+/// long local generation is visible in the console.
+///
+/// This is the channel-side half of the pile-up guard. The latch-side half is
+/// [`SingleFlight`]: it covers a spawned CLI child that outlives
+/// `handle_trigger`, and it ages an outcome out with
+/// [`FISHING_OUTCOME_MAX_AGE`].
+fn collapse_batch(batch: Vec<Trigger>) -> Trigger {
+    let mut urgent: Option<Trigger> = None;
+    let mut fishing: Option<Trigger> = None;
+    let mut other: Option<Trigger> = None;
+    let mut dropped = 0usize;
+    for trigger in batch {
+        if matches!(trigger.event_type.as_str(), "user_reply" | "alert") {
+            if urgent.is_some() {
+                dropped += 1;
+            }
+            urgent = Some(trigger);
+        } else if is_fishing_outcome(&trigger.event_type) {
+            if fishing.is_some() {
+                dropped += 1;
+            }
+            fishing = Some(trigger);
+        } else if other.is_none() {
+            other = Some(trigger);
+        } else {
+            dropped += 1;
+        }
+    }
+    if dropped > 0 {
+        eprintln!(
+            "[watcher] coalesced {dropped} buffered trigger(s) into one turn (only the newest outcome is kept)"
+        );
+    }
+    urgent
+        .or(fishing)
+        .or(other)
+        .expect("collapse_batch is never called with an empty batch")
 }
 
 /// Held for as long as one dispatch is in flight; dropping it releases the
@@ -3723,6 +3833,7 @@ async fn handle_trigger(
             session: &session_id,
             flight: guard,
             failure_speech: FailureSpeech::from_trigger(trigger),
+            timeout_floor: dispatch_timeout_floor(trigger),
         })
         .await;
     log_report(&report);
@@ -3759,12 +3870,30 @@ async fn handle_trigger(
             session: &session_id,
             flight: guard,
             failure_speech: FailureSpeech::from_trigger(trigger),
+            timeout_floor: dispatch_timeout_floor(trigger),
         })
         .await;
     log_report(&report);
     if report.kind == "hermes_cli" && report.failure.is_none() {
         count_turn(session);
     }
+}
+
+/// Lower bound on the generation timeout for this trigger, or `None` to honour
+/// the profile's own `timeout_secs`.
+///
+/// A **body event** — hunger, a meal, a cooked dish, a craving, a landed fish or
+/// one that got away — is one short in-character line, but on a slow local model
+/// it can take minutes to reach. Cutting that turn off at a profile default of
+/// 60 s fires the offline fallback on a brain that was working, which reads as
+/// "the AI is broken" and speaks a canned line over it. So those turns get
+/// [`SURVIVAL_DISPATCH_TIMEOUT_SECS`] as a floor; everything else (the user is
+/// waiting on it) keeps the profile's timeout, and a genuinely wedged child is
+/// still killed by it.
+fn dispatch_timeout_floor(trigger: &Trigger) -> Option<Duration> {
+    trigger
+        .is_survival()
+        .then(|| Duration::from_secs(SURVIVAL_DISPATCH_TIMEOUT_SECS))
 }
 
 /// One line per backend run, so the watcher console shows what answered.
@@ -3966,11 +4095,13 @@ async fn handle_frame(
             let mut guard = lock(shared);
             survival_trigger(rules, &mut guard, frame_type, &payload, Instant::now())
         }
-        // The fishing mini-game, one bucket per moment (bite, hook, result,
-        // cast) so the catch that lands seconds after its bite still fires.
-        "fishing-bite" | "fish-hooked" | "fishing-result" => {
+        // The fishing mini-game: **terminal outcomes only.** The cast, the
+        // waiting, the nibbles, the bite and the reel are driven and drawn by
+        // the page and never reach a model (see [`fishing_trigger`]); a
+        // `fishing-result` becomes `fish_caught` or `fish_lost`.
+        "fishing-result" => {
             let mut guard = lock(shared);
-            fishing_trigger(rules, &mut guard, frame_type, &payload, Instant::now())
+            fishing_trigger(rules, &mut guard, &payload, Instant::now())
         }
         _ => return,
     };
@@ -4096,6 +4227,22 @@ async fn dispatcher(
         tokio::select! {
             incoming = rx.recv() => {
                 let Some(trigger) = incoming else { break };
+                // An `openai_compat` turn is awaited *inline* below, so while a
+                // slow local model generates, the SSE handler keeps filling the
+                // channel rather than the latch. A fishing outcome therefore
+                // drains what queued up behind it and keeps only the freshest
+                // reaction — otherwise five casts during one two-minute turn
+                // would be five two-minute turns, narrating fish that were
+                // landed minutes ago. Any other kind is handled as before.
+                let trigger = if is_fishing_outcome(&trigger.event_type) {
+                    let mut batch = vec![trigger];
+                    while let Ok(next) = rx.try_recv() {
+                        batch.push(next);
+                    }
+                    collapse_batch(batch)
+                } else {
+                    trigger
+                };
                 // `offer` decides queue-vs-drop from the latch state; when it
                 // says `Immediate` nothing is running and we dispatch here.
                 if flight.offer(trigger.clone()) == Offer::Immediate {
@@ -4886,8 +5033,10 @@ mod tests {
             "interaction",
             "window_title",
             "idle_return",
-            // A bite mid-turn is stale by the time it could run; only the cast's
-            // *result* is worth the pending slot.
+            // The mini-game's intermediate states never reach the latch at all,
+            // and a stray one would still be dropped: only a finished cast is
+            // worth waiting for.
+            "fishing-started",
             "fishing-bite",
             "fish-hooked",
         ] {
@@ -4905,31 +5054,118 @@ mod tests {
     }
 
     #[test]
-    fn a_fishing_result_queues_behind_the_bite_it_followed() {
+    fn a_fishing_outcome_queues_once_and_coalesces_to_the_latest() {
         let flight = SingleFlight::default();
         let guard = flight.try_enter().expect("permit");
 
-        // The bite owns the turn; the catch that lands 1.4 s later must survive
-        // it, or the avatar never mentions what it actually caught.
-        let result = Trigger {
-            event_type: "fishing-result".to_string(),
+        // A slow local turn means the next cast can finish while the model is
+        // still talking about the last fish. The outcome waits, it does not
+        // start a second concurrent request.
+        let caught = Trigger {
+            event_type: "fish_caught".to_string(),
             detail: "the avatar landed Silver trout".to_string(),
             quiet_failure: true,
             fallback_line: Some("Caught a Silver trout!".to_string()),
             ..Trigger::default()
         };
-        assert_eq!(flight.offer(result.clone()), Offer::Queued);
+        assert_eq!(flight.offer(caught.clone()), Offer::Queued);
         assert_eq!(
             flight.take_pending().expect("queued").event_type,
-            "fishing-result"
+            "fish_caught"
         );
 
-        // And it still collapses: a second result replaces the first.
-        assert_eq!(flight.offer(result.clone()), Offer::Queued);
-        assert_eq!(flight.offer(result), Offer::Queued);
-        assert!(flight.take_pending().is_some());
-        assert!(flight.take_pending().is_none(), "one slot, one catch");
+        // And it still collapses: a second outcome replaces the first, whatever
+        // its kind, because only the freshest reaction is worth a turn.
+        assert_eq!(flight.offer(caught.clone()), Offer::Queued);
+        let lost = Trigger {
+            event_type: "fish_lost".to_string(),
+            detail: "the fish got away".to_string(),
+            ..Trigger::default()
+        };
+        assert_eq!(flight.offer(lost), Offer::Queued);
+        let pending = flight.take_pending().expect("one outcome survives");
+        assert_eq!(pending.event_type, "fish_lost", "the latest outcome wins");
+        assert!(flight.take_pending().is_none(), "one slot, one cast");
         drop(guard);
+    }
+
+    #[test]
+    fn a_stale_fishing_outcome_is_dropped_instead_of_spoken_late() {
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+
+        let caught = Trigger {
+            event_type: "fish_caught".to_string(),
+            detail: "the avatar landed Silver trout".to_string(),
+            ..Trigger::default()
+        };
+        assert_eq!(flight.offer(caught), Offer::Queued);
+        // Pretend the turn took far longer than an outcome stays interesting.
+        if let Some(queued) = flight.lock_pending().as_mut() {
+            queued.at = Instant::now()
+                - FISHING_OUTCOME_MAX_AGE
+                - Duration::from_secs(1);
+        }
+        assert!(
+            flight.take_pending().is_none(),
+            "an outcome older than FISHING_OUTCOME_MAX_AGE is not dispatched"
+        );
+        assert!(flight.lock_pending().is_none(), "the slot was emptied");
+
+        // A `user_reply` is never aged out — the user is still waiting on it.
+        let reply = trigger_of("user_reply");
+        assert_eq!(flight.offer(reply), Offer::Queued);
+        if let Some(queued) = flight.lock_pending().as_mut() {
+            queued.at = Instant::now() - Duration::from_secs(3600);
+        }
+        assert!(flight.take_pending().is_some(), "a question does not go stale");
+        drop(guard);
+    }
+
+    #[test]
+    fn a_burst_behind_one_slow_turn_collapses_to_the_newest_outcome() {
+        let trigger_of = |kind: &str| Trigger {
+            event_type: kind.to_string(),
+            detail: kind.to_string(),
+            ..Trigger::default()
+        };
+        // Three casts finished during one slow local turn: one reaction, to the
+        // last fish.
+        let batch = vec![
+            trigger_of("fish_caught"),
+            trigger_of("fish_lost"),
+            trigger_of("fish_caught"),
+        ];
+        assert_eq!(collapse_batch(batch).event_type, "fish_caught");
+
+        // A user reply outranks a fish — the user is waiting on it.
+        let batch = vec![trigger_of("fish_caught"), trigger_of("user_reply")];
+        assert_eq!(collapse_batch(batch).event_type, "user_reply");
+
+        // An outcome alone is untouched.
+        assert_eq!(
+            collapse_batch(vec![trigger_of("fish_lost")]).event_type,
+            "fish_lost"
+        );
+    }
+
+    #[test]
+    fn body_events_get_the_survival_timeout_floor_and_nothing_else_does() {
+        let floor = Duration::from_secs(SURVIVAL_DISPATCH_TIMEOUT_SECS);
+        for kind in ["survival-threshold", "survival-meal", "fish_caught", "fish_lost"] {
+            assert_eq!(
+                dispatch_timeout_floor(&trigger_of(kind)),
+                Some(floor),
+                "{kind} must not be cut off at a profile's 60 s default"
+            );
+        }
+        for kind in ["user_reply", "alert", "interaction", "window_title"] {
+            assert_eq!(
+                dispatch_timeout_floor(&trigger_of(kind)),
+                None,
+                "{kind} keeps the profile's own timeout"
+            );
+        }
     }
 
     #[test]
@@ -5706,27 +5942,7 @@ mod tests {
     }
 
     #[test]
-    fn fishing_details_name_the_species_the_miss_and_the_window() {
-        let bite = json!({
-            "phase": "biting",
-            "window_ms": 1400,
-            "hook_key": "Space",
-            "expression": "surprised",
-            "line": "Something's on the line — now!",
-        });
-        let detail = fishing_detail_for("fishing-bite", &bite).expect("bite detail");
-        assert!(detail.contains("strike window is open"), "{detail}");
-        assert!(detail.contains("1400 ms"), "{detail}");
-
-        let hooked = json!({
-            "phase": "reeling",
-            "reel": { "period_ms": 1500 },
-            "reel_key": "Space",
-        });
-        let detail = fishing_detail_for("fish-hooked", &hooked).expect("hooked detail");
-        assert!(detail.contains("reel is sweeping"), "{detail}");
-        assert!(detail.contains("1500 ms"), "{detail}");
-
+    fn only_a_finished_cast_has_fishing_details() {
         let caught = json!({
             "caught": true,
             "stored": true,
@@ -5734,6 +5950,7 @@ mod tests {
             "label": "Silver trout",
             "species": "fish",
             "rarity": 3,
+            "value": 6,
             "blurb": "Slippery and quick.",
             "catches": 2,
             "expression": "happy",
@@ -5742,25 +5959,34 @@ mod tests {
         let detail = fishing_detail_for("fishing-result", &caught).expect("catch detail");
         assert!(detail.contains("landed Silver trout"), "{detail}");
         assert!(detail.contains("fish, rarity 3 of 4"), "{detail}");
+        assert!(detail.contains("worth 6 coins"), "{detail}");
         assert!(detail.contains("Slippery and quick."), "{detail}");
         assert!(detail.contains("2 landed so far"), "{detail}");
 
         let missed = json!({
             "caught": false,
             "reason": "missed_the_spot",
+            "escapes": 3,
             "expression": "sad",
             "line": "It slipped the hook right at the end.",
         });
         let detail = fishing_detail_for("fishing-result", &missed).expect("miss detail");
-        assert!(detail.contains("nothing on the line"), "{detail}");
+        assert!(detail.contains("got away"), "{detail}");
         assert!(detail.contains("missed_the_spot"), "{detail}");
+        assert!(detail.contains("3 lost so far"), "{detail}");
 
-        // A telemetry-style or unknown frame is not a fishing moment.
+        // The intermediate states are not fishing moments at all any more.
+        for intermediate in ["fishing-started", "fishing-bite", "fish-hooked"] {
+            assert!(
+                fishing_detail_for(intermediate, &json!({ "window_ms": 1400 })).is_none(),
+                "{intermediate} must never build a prompt"
+            );
+        }
         assert!(fishing_detail_for("not-a-fishing-frame", &json!({})).is_none());
     }
 
     #[tokio::test]
-    async fn fishing_frames_get_one_turn_each_and_respect_their_buckets() {
+    async fn only_the_end_of_a_cast_becomes_a_model_turn() {
         let settings = Rules::default();
         let shared = Arc::new(Mutex::new(Shared::default()));
         let session = Arc::new(Mutex::new(SessionState::default()));
@@ -5771,34 +5997,39 @@ mod tests {
             data: json!({ "seq": 1, "type": kind, "payload": payload }).to_string(),
         };
 
-        let bite = json!({
-            "phase": "biting",
-            "window_ms": 1400,
-            "hook_key": "Space",
-            "expression": "surprised",
-            "line": "Something's on the line — now!",
-        });
-        handle_frame(&sse("fishing-bite", bite.clone()), &settings, &shared, &session, &ai, &tx).await;
-        let trigger = rx.try_recv().expect("a bite is a trigger");
-        assert_eq!(trigger.event_type, "fishing-bite");
-        assert!(trigger.is_survival(), "fishing rides the survival directive");
-        assert!(trigger.quiet_failure, "no generic snag bubble on a body event");
-        assert_eq!(
-            trigger.fallback_line.as_deref(),
-            Some("Something's on the line — now!")
-        );
-        assert_eq!(trigger.animation.as_deref(), Some("surprised"));
+        // Every intermediate frame the mini-game publishes is the page's own
+        // business: no prompt, no turn, no cooldown consumed.
+        for intermediate in [
+            (
+                "fishing-started",
+                json!({ "casts": 2, "min_wait_secs": 3, "max_wait_secs": 12 }),
+            ),
+            (
+                "fishing-bite",
+                json!({ "phase": "biting", "window_ms": 1400, "hook_key": "Space" }),
+            ),
+            (
+                "fish-hooked",
+                json!({ "phase": "reeling", "reel": { "period_ms": 1500 } }),
+            ),
+            ("not-a-fishing-frame", json!({ "phase": "nibbling" })),
+        ] {
+            handle_frame(&sse(intermediate.0, intermediate.1), &settings, &shared, &session, &ai, &tx)
+                .await;
+            assert!(
+                rx.try_recv().is_err(),
+                "{} must not reach the AI brain",
+                intermediate.0
+            );
+        }
 
-        // A second bite inside the bucket is noise, not another model turn.
-        handle_frame(&sse("fishing-bite", bite.clone()), &settings, &shared, &session, &ai, &tx).await;
-        assert!(rx.try_recv().is_err(), "one bite per cast bucket");
-
-        // The catch two seconds later still fires: its own bucket.
+        // A landed fish does, with the prize in the detail.
         let caught = json!({
             "caught": true,
             "label": "Silver trout",
             "species": "fish",
             "rarity": 3,
+            "value": 6,
             "blurb": "Slippery and quick.",
             "catches": 1,
             "expression": "happy",
@@ -5806,22 +6037,39 @@ mod tests {
         });
         handle_frame(&sse("fishing-result", caught), &settings, &shared, &session, &ai, &tx).await;
         let trigger = rx.try_recv().expect("the catch is a trigger");
-        assert_eq!(trigger.event_type, "fishing-result");
+        assert_eq!(trigger.event_type, "fish_caught");
+        assert!(trigger.is_survival(), "fishing rides the survival directive");
+        assert!(trigger.quiet_failure, "no generic snag bubble on a body event");
         assert!(trigger.detail.contains("landed Silver trout"), "{}", trigger.detail);
         assert!(trigger.brief().contains("survival event"), "the directive applies");
+        assert_eq!(
+            trigger.fallback_line.as_deref(),
+            Some("Caught a Silver trout! Come look at it."),
+            "the plugin's own line is the offline fallback"
+        );
+        assert_eq!(trigger.animation.as_deref(), Some("happy"));
 
-        // A cast is not a moment the avatar talks about: routing it would cost
-        // the model turn the bite needs.
-        handle_frame(
-            &sse("fishing-started", json!({ "casts": 2, "min_wait_secs": 3, "max_wait_secs": 12 })),
-            &settings,
-            &shared,
-            &session,
-            &ai,
-            &tx,
-        )
-        .await;
-        assert!(rx.try_recv().is_err(), "a cast earns no model turn");
+        // A fish that got away is its own trigger, with the reason and a sad face.
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        tokio::task::yield_now().await;
+        // The shared result bucket is 2 s; jump past it as the rig would.
+        {
+            let mut guard = lock(&shared);
+            guard.cooldowns = Cooldowns::default();
+        }
+        let missed = json!({
+            "caught": false,
+            "reason": "spooked",
+            "escapes": 2,
+            "expression": "sad",
+            "line": "It spooked and was gone.",
+        });
+        handle_frame(&sse("fishing-result", missed), &settings, &shared, &session, &ai, &tx).await;
+        let trigger = rx.try_recv().expect("a lost fish is a trigger");
+        assert_eq!(trigger.event_type, "fish_lost");
+        assert!(trigger.detail.contains("got away"), "{}", trigger.detail);
+        assert!(trigger.detail.contains("spooked"), "{}", trigger.detail);
+        assert_eq!(trigger.animation.as_deref(), Some("sad"));
     }
 
     #[test]
@@ -6620,6 +6868,7 @@ c"));
                 session: "char-rig-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
+                timeout_floor: None,
             })
             .await;
 
@@ -6705,6 +6954,7 @@ c"));
                 session: "char-rig-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
+                timeout_floor: None,
             })
             .await;
 
@@ -6831,6 +7081,7 @@ c"));
                 session: "char-rig-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
+                timeout_floor: None,
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -6890,6 +7141,7 @@ c"));
                 session: "char-rig-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
+                timeout_floor: None,
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -6934,6 +7186,7 @@ c"));
                 session: "char-rig-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
+                timeout_floor: None,
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -7081,6 +7334,7 @@ c"));
                 session: "char-rig-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
+                timeout_floor: None,
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -7175,6 +7429,7 @@ c"));
                 session: "char-rig-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
+                timeout_floor: None,
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))

@@ -618,6 +618,20 @@ rule matches:
 | `idle_return` | idle seconds drop back below `idle_threshold_secs` after having exceeded it | 300 s |
 | `user_reply` | the user types into the speech bubble's quick-reply box (or a client calls `POST /reply`) — **no cooldown**, the user spoke directly | — |
 | `alert` | `POST /alert` from an external monitor (Suricata, cron, a build script) | 60 s (`alerts.cooldown_secs`) |
+| `fish_caught` | a fishing cast **landed** a fish — carries the species, rarity, `value` (shop price) and the running catch count | 2 s (shared with `fish_lost`) |
+| `fish_lost` | a fishing cast ended with nothing on the line — `missed_the_spot`, `spooked`, `timed_out`, `cancelled` or `inventory_full` | 2 s (shared with `fish_caught`) |
+
+The mini-game's intermediate states — cast, waiting, nibbles, the bite, the
+hooked reel — never produce a trigger at all: the page and the rig handle them
+locally, so they cost no model turn. Only the end of a cast reaches the AI
+brain, as `fish_caught` or `fish_lost`, and both are `quiet_failure`: if the
+brain is unreachable, errors out or has no profile they speak the plugin's own
+`line` instead of the generic snag bubble. A body event (survival or fishing)
+also gets a generation-timeout floor of `180` s
+(`SURVIVAL_DISPATCH_TIMEOUT_SECS`) so a slow local model is not cut off
+mid-sentence, and while a turn is in flight only the newest fishing outcome is
+kept — one that waited longer than `FISHING_OUTCOME_MAX_AGE` (45 s) is dropped
+rather than spoken late.
 
 The first `/context` poll is only a baseline: the watcher never fires on the
 window it starts with. A trigger then does three things, in order:
@@ -637,13 +651,14 @@ Spawning is **single-flight** and headless, because a pile-up of `hermes`
 processes is the one failure mode that actually costs money:
 
 * While a dispatch is in flight (a `--hermes-cmd` child still running, or a
-  webhook POST still open), only one trigger may wait: a `user_reply` or an
-  `alert` is parked in a **one-slot pending queue** (log line
-  `[watcher] queued pending trigger (1 slot)`; a newer one replaces the older)
-  and runs the moment that turn ends. Routine `interaction`/`window_title`/
-  `idle_return` triggers are still **skipped** with a
+  webhook POST still open), only one trigger may wait: a `user_reply`, an
+  `alert`, a `fish_caught` or a `fish_lost` is parked in a **one-slot pending
+  queue** (log line `[watcher] queued pending trigger (1 slot)`; a newer one
+  replaces the older) and runs the moment that turn ends. Routine
+  `interaction`/`window_title`/`idle_return` triggers are still **skipped** with a
   `[watcher] debug: dispatch in flight …` line, so background noise never queues
-  up behind a task.
+  up behind a task — and neither do the fishing intermediates, which never
+  become triggers in the first place.
 * The child is spawned with `stdin` on `/dev/null`, so an interactive prompt
   reads EOF immediately instead of blocking on a keyboard nobody is typing on.
 * The prompt ends with a directive telling the agent this is a headless avatar
@@ -662,7 +677,10 @@ processes is the one failure mode that actually costs money:
   `hermes_timeout_secs` in `watcher_rules.json`); a child that outlives it is
   killed and reaped, which also releases the flight permit. The default is
   deliberately generous — a local model usually needs more than a minute to
-  finish its turn.
+  finish its turn. A **body event** (survival / fishing) additionally gets a
+  180 s floor (`SURVIVAL_DISPATCH_TIMEOUT_SECS`) over its profile's
+  `timeout_secs`: a slow local generation must not be mistaken for a dead brain
+  and answered with the canned fallback line.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
