@@ -455,7 +455,7 @@ A reply packs `(ptr as i64) << 32 | len`; `0` means "no result". The host copies
 the bytes out, calls `dealloc`, and parses. A reply with an `error` key is a log
 line, never a panic.
 
-The guest may call five host imports — that list *is* the plugin's capability
+The guest may call six host imports — that list *is* the plugin's capability
 surface:
 
 ```text
@@ -464,7 +464,21 @@ host_notify(text, expression)      -> spoken through do_speak
 host_now_ms()                      -> the clock (wasm32 has none)
 host_log(level, message)           -> the app log
 host_state_save(bytes)             -> writes this plugin's save file
+host_ai_attached()                 -> 1 when a watcher is on the event bus
 ```
+
+**One voice per moment.** Every spontaneous survival line — a tier crossing, a
+starvation reminder, a craving that began / lapsed / was satisfied, a meal
+notice, a bite, a catch — is published as an event that also carries the `line`
+the plugin would have spoken and the `expression` it was written for. The
+watcher routes that event to the model, so `host_ai_attached` is what decides who
+talks: with a watcher subscribed to `GET /events` the guest says nothing and the
+model answers (and the watcher speaks the payload's `line` itself when the model
+errors, times out or no profile is configured), while with nobody attached the
+guest speaks because it is then the only voice left. `config.notify` stays the
+plugin's own switch for those canned lines. This gate is what removed the
+double-fire where a hunger crossing produced the canned line *and* an AI answer
+to the same event.
 
 #### Persistence: the host owns the bytes
 
@@ -2104,6 +2118,25 @@ add, remove or use, with `source` `add` / `remove` / `use` / `bait` /
 bobber dipped), `fish-hooked` (the strike landed, the sweep parameters travel
 with it) and `fishing-result` (caught or lost, with the reason). See API.md for
 the full JSON shapes.
+
+Every spontaneous event also carries `line` (the sentence the plugin would have
+spoken) and, where it has one, `expression`; `fishing-result` adds `species`,
+`rarity`, `blurb` on a catch. The watcher's AI brain is the primary voice for
+all of them:
+
+* `survival-threshold` / `survival-meal` / `survival-craft` / `survival-craving`
+  share **one** cooldown bucket (`survival`, 10 s by default) — a single feed can
+  cross a tier and settle a craving inside one tick, and that is one reaction.
+* `fishing-bite`, `fish-hooked` and `fishing-result` get **per-kind** buckets, so
+  the catch that lands two seconds after its bite still gets a turn. A cast
+  (`fishing-started`) is deliberately *not* routed: a local model needs 10-30 s
+  per turn and the bite arrives 3-12 s after the cast, so a cast turn would still
+  be running when the interesting moment came.
+* All of them are `quiet_failure`: a failed dispatch never posts the generic
+  "Sorry, I hit a snag" bubble, it speaks the event's own `line`. A
+  `fishing-result` is the one routine kind that queues behind a running turn
+  (one slot, newest wins) instead of being dropped, because it always follows the
+  bite that started that turn.
 
 ### `/shutdown`
 

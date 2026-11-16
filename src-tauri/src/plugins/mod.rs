@@ -136,6 +136,19 @@ pub trait PluginHost: Send + Sync {
     /// [`crate::AVATAR_EXPRESSIONS`]; the host validates and drops bad ones.
     fn notify(&self, text: &str, expression: &str);
 
+    /// Is an AI brain attached to the event bus right now?
+    ///
+    /// A watcher subscribes to `GET /events`, so a live subscriber *is* the
+    /// evidence that something will route this plugin's events to a model. A
+    /// plugin uses it to decide whether its own canned dialogue is the fallback
+    /// or the only voice — never to guess, and never to block an action.
+    ///
+    /// Defaults to `false`: a test host (or a build with no watcher wired up)
+    /// gets the plugin's own voice, which is what every existing test asserts.
+    fn ai_attached(&self) -> bool {
+        false
+    }
+
     /// The `watcher_rules.json` this app was started with, for a plugin that
     /// owns a config block. `None` in a test or a stripped build.
     fn rules_path(&self) -> Option<std::path::PathBuf> {

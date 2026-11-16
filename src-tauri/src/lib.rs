@@ -2153,6 +2153,15 @@ impl plugins::PluginHost for AppHost {
         }
     }
 
+    fn ai_attached(&self) -> bool {
+        // The watcher is the only thing that subscribes to `GET /events` (the
+        // page rides Tauri events instead), so a live subscriber means a brain
+        // will see this plugin's frames. It does not promise the *model* is
+        // reachable — the watcher answers that by speaking the event's own
+        // `line` when the model fails.
+        self.ctx.events.receiver_count() > 0
+    }
+
     fn rules_path(&self) -> Option<std::path::PathBuf> {
         // A plugin that owns a config block reads it itself.
         self.ctx.ai_rules_path()

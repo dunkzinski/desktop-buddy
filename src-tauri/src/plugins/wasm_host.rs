@@ -32,6 +32,7 @@
 //! host_now_ms() -> i64
 //! host_log(level, msg_ptr, msg_len)
 //! host_state_save(ptr, len) -> i32   0 = written (the host owns the file)
+//! host_ai_attached() -> i32          1 = a watcher is on the event bus
 //! ```
 //!
 //! # Isolation
@@ -689,6 +690,18 @@ fn build_linker(engine: &Engine) -> Result<Linker<HostState>, String> {
     linker
         .func_wrap("env", "host_now_ms", || -> i64 { epoch_ms() as i64 })
         .map_err(|err| format!("could not define host_now_ms: {err}"))?;
+
+    // 1 when a watcher is attached to the event bus. The guest asks before it
+    // says a spontaneous line: with a brain attached that line belongs to the
+    // model, and saying it here too is the double-fire this import prevents.
+    linker
+        .func_wrap("env", "host_ai_attached", |caller: Caller<'_, HostState>| -> i32 {
+            let Some(host) = caller.data().host.clone() else {
+                return 0;
+            };
+            i32::from(host.ai_attached())
+        })
+        .map_err(|err| format!("could not define host_ai_attached: {err}"))?;
 
     // Persistence: the guest hands over a JSON snapshot and the host owns the
     // file. 0 = written, negative = refused (the guest keeps its dirty flag and

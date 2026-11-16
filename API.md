@@ -915,7 +915,9 @@ A refused meal returns **409** with `accepted: false` and `refusal` set to
 `too_full` (already satiated) or `still_digesting` (the meal cooldown has not
 elapsed; `cooldown_remaining_secs` says how long). An unknown id is a **400**
 that lists the valid ids. An accepted meal emits `survival-meal` and, when the
-tier changes, `survival-threshold`.
+tier changes, `survival-threshold`. Both carry `line` and `expression` — the
+sentence the plugin would have said and the face it was written for — so the
+watcher can speak it when no model answers.
 
 ### `POST /survival/craft`
 
@@ -1434,7 +1436,10 @@ A miss (or letting the two-sweep deadline pass) answers the same shape with
 `caught: false` and a `reason`: `missed_the_spot`, `timed_out`, `spooked`,
 `cancelled` or `inventory_full`. That last one means the fish was landed but the
 bag had no room, so `caught` stays `false` and nothing is stored. Every outcome
-emits `fishing-result`, and a stored catch also emits `inventory-changed`.
+emits `fishing-result`, and a stored catch also emits `inventory-changed`. The
+frame (not just this reply) carries `species`, `rarity` (1-4), `blurb`,
+`expression` and `line`, which is what the watcher's AI brain reacts to; a miss
+carries `reason`, `expression` and `line` instead of the species block.
 
 ### `POST /fishing/cancel`
 

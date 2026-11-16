@@ -13,6 +13,10 @@ local HTTP API so an AI agent can drive it.
 * Talk to it without a terminal: `Alt+Space` (configurable via `hotkey` in `watcher_rules.json`) summons the command bar from any application
 * A **survival game** in a WebAssembly plugin: hunger and saturation, a 20-slot
   bag, a four-phase fishing mini-game, and a coin economy with a shop
+* The **AI brain reacts to the avatar's body**: hunger crossings, cravings, meals,
+  bites and catches are routed to the agent, which answers in its own voice
+  (`avatar_speak` / `avatar_emote`); the plugin's authored line is only the
+  offline fallback, so a trigger never speaks twice
 * Works alongside your desktop: only the titlebar, panel and avatar catch clicks
 
 ---
@@ -212,15 +216,18 @@ plugins/
 │       │                the triangle-wave reel, the catch table and the prose
 │       ├── plugin.rs    the tick loop, telemetry, meal announcements, craving
 │       │                rolls, the bag/fishing actions and the spontaneous lines
-│       │                spoken via host_notify
+│       │                (spoken via host_notify only when no AI brain is
+│       │                attached; otherwise the line rides the event)
 │       ├── routes.rs    ROUTES = [("/survival", …), …] + the request dispatcher
 │       └── config.rs    the `survival` block of watcher_rules.json (metabolism,
 │                        cravings, fishing and inventory)
 └── survival.wasm        the built artifact — this is what the app loads
 ```
 
-The guest talks to the app through exactly five imports (`host_emit_event`,
-`host_notify`, `host_now_ms`, `host_log`, `host_state_save`) and exports
+The guest talks to the app through exactly six imports (`host_emit_event`,
+`host_notify`, `host_now_ms`, `host_log`, `host_state_save`, and
+`host_ai_attached` — which is how it knows to stay silent while a watcher's AI
+brain answers the same event) and exports
 JSON-over-memory functions: `plugin_init`, `plugin_tick`, `plugin_status`,
 `plugin_routes`, `plugin_http`, and the config hooks. The host
 (`src-tauri/src/plugins/wasm_host.rs`) turns `plugin_routes` into axum routes

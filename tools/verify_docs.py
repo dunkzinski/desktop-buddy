@@ -311,6 +311,20 @@ else:
         if missing:
             problems.append(f"{doc_name}: watcher trigger types not documented: {sorted(missing)}")
 
+    # Frame types the watcher routes out of `handle_frame` build their
+    # `event_type` from the frame itself, so the regex above cannot see them.
+    # ARCHITECTURE.md owns the event catalogue: every routed frame type has to be
+    # named there, or a new plugin event lands undocumented.
+    routed = set(
+        re.findall(r'"((?:survival|fishing)-[a-z_]+|fish-hooked)"', watcher_rs)
+    )
+    print(f"watcher routed frame types: {', '.join(sorted(routed))}")
+    missing = {t for t in routed if f"`{t}`" not in arch_md}
+    if missing:
+        problems.append(
+            f"ARCHITECTURE.md: routed watcher frame types not documented: {sorted(missing)}"
+        )
+
     # shipped rules file must agree with the built-in defaults
     if not rules_path.exists():
         problems.append("watcher_rules.json is missing")

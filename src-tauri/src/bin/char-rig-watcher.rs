@@ -62,6 +62,23 @@ const DEFAULT_CONTEXT_INTERVAL_SECS: u64 = 20;
 const DEFAULT_INTERACTION_COOLDOWN_SECS: u64 = 15;
 const DEFAULT_CONTEXT_COOLDOWN_SECS: u64 = 300;
 const DEFAULT_ALERT_COOLDOWN_SECS: u64 = 60;
+/// Short on purpose: the survival plugin's events are the avatar's own body, and
+/// a feed or a cook landing a moment after a hunger crossing is a real second
+/// event. Ten seconds is enough to swallow the burst a single `POST /feed`
+/// produces (a threshold and a `craving-satisfied` in the same tick).
+const DEFAULT_SURVIVAL_COOLDOWN_SECS: u64 = 10;
+/// One cooldown bucket for every `survival-*` frame type.
+const SURVIVAL_COOLDOWN_KEY: &str = "survival";
+/// Fishing gets its **own** buckets, one per moment: a bite and the catch that
+/// follows it are 2-10 s apart, so a single bucket would swallow the payoff.
+/// The bite is throttled to one per cast, the reel loosely, and a result is
+/// nearly always worth a line. A *cast* is deliberately not routed at all — see
+/// [`fishing_trigger`].
+const FISHING_BITE_COOLDOWN_SECS: u64 = 6;
+const FISHING_HOOKED_COOLDOWN_SECS: u64 = 10;
+const FISHING_RESULT_COOLDOWN_SECS: u64 = 2;
+/// How long a canned (plugin-authored) line stays in the bubble.
+const CANNED_LINE_DURATION_MS: u64 = 5000;
 const DEFAULT_IDLE_THRESHOLD_SECS: u64 = 900;
 const DEFAULT_ACK_EMOTE: &str = "thinking";
 const ACK_EMOTE_DURATION_MS: u64 = 4000;
@@ -601,6 +618,10 @@ struct DispatchCtx<'a> {
     prompt: &'a str,
     session: &'a str,
     flight: FlightGuard,
+    /// What to say if this dispatch never produces an answer. A survival turn
+    /// stays quiet about the generic snag bubble and speaks the plugin's own
+    /// line instead (see [`FailureSpeech`]); a routine trigger keeps the bubble.
+    failure_speech: FailureSpeech,
 }
 
 /// A profile that can actually run a trigger.
@@ -736,6 +757,20 @@ You do not have tools: you see only the context you are given and you answer wit
             Err(err) => eprintln!("[watcher] openai prompt could not refresh /context: {err}"),
         }
 
+        // The avatar's own appetite lives in the survival plugin, not in
+        // `/context`: without this a model asked about being hungry has no idea
+        // whether it is starving or stuffed. A build without the plugin answers
+        // 404 and simply gets no appetite line.
+        match fetch_survival(client, api_url).await {
+            Ok(body) => {
+                if let Some(line) = appetite_line(&body) {
+                    prompt.push_str("\n\n");
+                    prompt.push_str(&line);
+                }
+            }
+            Err(err) => eprintln!("[watcher] openai prompt could not read /survival: {err}"),
+        }
+
         match fetch_animations(client, api_url).await {
             Ok(list) => {
                 clips = list;
@@ -815,6 +850,7 @@ impl InferenceBackend for OpenaiCompatBackend {
             // Hold the permit for the whole round-trip: a second trigger must
             // not stack another model call on a busy local server.
             let _flight = ctx.flight;
+            let failure = ctx.failure_speech.clone();
             let (prompt, clips) = self
                 .augmented_prompt(ctx.client, ctx.api_url, ctx.prompt)
                 .await;
@@ -822,7 +858,9 @@ impl InferenceBackend for OpenaiCompatBackend {
                 Ok(reply) => reply,
                 Err(err) => {
                     eprintln!("[watcher] ai profile {:?} failed: {err}", self.name);
-                    post_fallback_speech(ctx.client, ctx.api_url).await;
+                    // The model is unreachable or errored: this is exactly the
+                    // case a survival event's own line exists for.
+                    failure.deliver(ctx.client, ctx.api_url, RunOutcome::Failed).await;
                     return DispatchReport {
                         backend: self.name.clone(),
                         kind: "openai_compat",
@@ -895,6 +933,7 @@ impl InferenceBackend for HermesCliBackend {
                 ctx.client,
                 ctx.api_url,
                 ctx.flight,
+                ctx.failure_speech,
             )
             .await;
             DispatchReport {
@@ -1021,6 +1060,93 @@ async fn fetch_animations(client: &reqwest::Client, api_url: &str) -> Result<Vec
         .unwrap_or_default())
 }
 
+
+/// `GET /survival` → the survival plugin's status body.
+///
+/// The route belongs to the plugin, so a build without it answers 404. That is
+/// not a dispatch failure: the prompt just goes out without the appetite line.
+async fn fetch_survival(client: &reqwest::Client, api_url: &str) -> Result<Value, String> {
+    let url = format!("{api_url}/survival");
+    let response = client
+        .get(&url)
+        .timeout(CONTEXT_TIMEOUT)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("{url} answered {}", response.status()));
+    }
+    response.json().await.map_err(|err| err.to_string())
+}
+
+/// One prompt line for the avatar's appetite, from a `GET /survival` body.
+///
+/// Pure so the shape is testable: `None` when the body is not a survival status
+/// (no `hunger`), which is what an older avatar build or a proxy page looks
+/// like. The line is what lets a no-tools model answer "are you hungry?" with
+/// the truth instead of a guess.
+fn appetite_line(body: &Value) -> Option<String> {
+    let hunger = number_field(body, "hunger")?;
+    let mut line = format!("The avatar's appetite: hunger {hunger:.0}/100");
+    if let Some(tier) = text_field(body, "label").or_else(|| text_field(body, "tier")) {
+        line.push_str(&format!(" ({tier})"));
+    }
+    if let Some(saturation) = number_field(body, "saturation") {
+        line.push_str(&format!(", saturation {saturation:.0}"));
+    }
+    if let Some(secs) = body.get("seconds_to_starving").and_then(Value::as_u64) {
+        line.push_str(&format!(", starving in {}", human_wait(secs)));
+    }
+    if let Some(craving) = body.get("craving").filter(|value| value.is_object()) {
+        if let Some(label) = text_field(craving, "label") {
+            line.push_str(&format!("; craving {label}"));
+            if let Some(remaining) = craving.get("remaining_secs").and_then(Value::as_u64) {
+                line.push_str(&format!(" ({} left)", human_wait(remaining)));
+            }
+        }
+    }
+    if let Some(coins) = body.get("coins").and_then(Value::as_u64) {
+        line.push_str(&format!("; {coins} coin(s)"));
+    }
+    line.push('.');
+    Some(line)
+}
+
+/// `"42s"` / `"7 min"` — a countdown the model can repeat without arithmetic.
+fn human_wait(secs: u64) -> String {
+    if secs < 90 {
+        format!("{secs}s")
+    } else {
+        format!("{} min", secs.div_ceil(60))
+    }
+}
+
+/// Appended to a survival event's prompt, on **both** backends (it lives in
+/// [`Trigger::brief`], which [`Trigger::prompt`] builds on).
+///
+/// The survival plugin has already spoken its own line and worn its own
+/// expression, so the model is not being asked to report a status update — it is
+/// being asked for one in-character reaction to something happening inside the
+/// avatar's own body. Numbers are banned on purpose: the bubble is a card a few
+/// words wide, "hunger 31.4, saturation 9.8" reads as telemetry in a mouth that
+/// is supposed to be complaining, and the user can already see the bars.
+const SURVIVAL_DIRECTIVE: &str = "This is a survival event -- hunger, a meal, a cooked dish, a craving or a fishing moment. It is about the \
+\
+avatar's own body, not the user's work, so do not offer to help with anything on screen. From here, without \
+\
+waiting for input: react in character with ONE short line (under 120 characters) and, at most, one matching \
+\
+expression or animation. Never quote the numbers, the bars, percentages or the event's field names, and never \
+\
+describe the JSON you were given. A meal or a dish the user just fed you earns a thank-you or a comment on the \
+\
+food; a hunger crossing or a lapsed craving earns a brief complaint or a wistful line; a settled craving earns \
+\
+satisfaction. A fishing bite is a split-second moment: two or three words of excitement, nothing more. A landed \
+\
+fish is worth naming the species out loud, and a lost one is worth a short groan. Staying silent with no tool \
+\
+calls is a fine answer when the event is not worth a line. ";
 
 /// Appended to every `--hermes-cmd` prompt.
 ///
@@ -1368,6 +1494,33 @@ impl Default for AlertRules {
     }
 }
 
+/// Rule for the `survival-*` frames the survival plugin pushes.
+///
+/// One block, one cooldown bucket: a hunger crossing, a meal, a cooked dish and
+/// a craving are all the avatar's own body talking, and two of them landing in
+/// the same second (a feed that both crosses a tier and settles a craving) must
+/// not cost two model turns. `cooldown_secs` is the budget for all of them.
+///
+/// The same `survival` object in the rules file also carries the plugin's own
+/// settings (`metabolism`, `start_hunger`, `cravings`, …). Those belong to the
+/// plugin, which reads the file itself; serde ignores them here.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+struct SurvivalRules {
+    /// Set false to let the survival plugin's frames pass without a model turn.
+    enabled: bool,
+    cooldown_secs: u64,
+}
+
+impl Default for SurvivalRules {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_secs: DEFAULT_SURVIVAL_COOLDOWN_SECS,
+        }
+    }
+}
+
 /// One quick-task chip, mirrored into `GET /watcher` for the command bar.
 ///
 /// The watcher never sends these itself — the desktop app reads them out of the
@@ -1532,6 +1685,9 @@ struct Rules {
     /// Local screen vision (`vision` block): capture settings + trigger phrases.
     #[serde(default)]
     vision: VisionRules,
+    /// Cooldown / switch for the survival plugin's `survival-*` frames.
+    #[serde(default)]
+    survival: SurvivalRules,
 }
 
 impl Rules {
@@ -1862,6 +2018,17 @@ struct Trigger {
     include_screen: bool,
     /// The foreground window rect at trigger time (the vision crop).
     window_rect: Option<Rect>,
+    /// `true` for a survival frame. The turn is the avatar's own body talking,
+    /// so a backend failure must never post the generic "Sorry, I hit a snag"
+    /// bubble, and the prompt carries the [`SURVIVAL_DIRECTIVE`].
+    quiet_failure: bool,
+    /// The line the plugin authored for this moment (`payload.line`), spoken
+    /// verbatim when the model cannot answer — the hardcoded fallback voice,
+    /// sourced from the plugin instead of from the watcher. `None` for a moment
+    /// the plugin never speaks for (a cast, a window-title trigger).
+    fallback_line: Option<String>,
+    /// The expression that line was written for (`payload.expression`).
+    fallback_expression: Option<String>,
 }
 
 impl Trigger {
@@ -1958,7 +2125,26 @@ Treat it as their task: do what they asked with your tools, then report the outc
             prompt.push_str(&format!(" Context: {hint}"));
         }
         prompt.push_str(" Decide whether to react (speak, emote, move) or ignore it. ");
+        // The generic question above is wrong for a body event: there is
+        // nothing to "decide" about being hungry. Say what kind of turn this
+        // is instead, and keep it to one line.
+        if self.is_survival() {
+            prompt.push_str(SURVIVAL_DIRECTIVE);
+        }
         prompt
+    }
+
+    /// Is this one of the survival plugin's own events (hunger, meals, cravings,
+    /// fishing)?
+    ///
+    /// The `survival-*` frames are the only triggers whose event type carries
+    /// that prefix (the plugin's periodic `survival` telemetry frame is never
+    /// routed at all), so the type is the marker — and it is also what the log
+    /// line prints.
+    fn is_survival(&self) -> bool {
+        self.event_type.starts_with("survival-")
+            || self.event_type.starts_with("fishing-")
+            || self.event_type == "fish-hooked"
     }
 
     /// Concise context prompt for the `hermes_cli` backend.
@@ -2112,6 +2298,392 @@ say what happened and why it matters in one or two sentences."
         )),
         ..Trigger::default()
     })
+}
+
+/// Route one survival-plugin frame into a trigger, honouring rules + cooldown.
+///
+/// The plugin emits four kinds of body event and one telemetry frame:
+///
+/// * `survival-threshold` — hunger crossed a tier, or a starving avatar is
+///   reminding the user (the `source` says which; `manual` comes from `POST
+///   /survival` and carries no `label`/`expression`).
+/// * `survival-meal` — a feed attempt, accepted or refused.
+/// * `survival-craft` — a cooked dish: the meal payload plus `recipe`,
+///   `recipe_label`, `blurb`, `kind`, `comfort_secs`, `consumed`, `cooked_with`.
+/// * `survival-craving` — `began` / `lapsed` / `satisfied`.
+///
+/// They share **one** cooldown bucket: two of them in the same second (a feed
+/// that both crosses a tier and settles a craving) are one moment, and the
+/// avatar has one body to talk about. `survival` itself — the periodic telemetry
+/// frame with a whole `stats` blob — is not routed at all; `GET /survival`
+/// already hands that to the model as the appetite line.
+fn survival_trigger(
+    rules: &Rules,
+    shared: &mut Shared,
+    frame_type: &str,
+    payload: &Value,
+    now: Instant,
+) -> Option<Trigger> {
+    if !rules.survival.enabled {
+        return None;
+    }
+    let detail = survival_detail(frame_type, payload)?;
+    let cooldown = Duration::from_secs(rules.survival.cooldown_secs);
+    if !shared.cooldowns.allow(SURVIVAL_COOLDOWN_KEY, now, cooldown) {
+        return None;
+    }
+
+    Some(Trigger {
+        event_type: frame_type.to_string(),
+        detail,
+        window_title: shared.context.window_title.clone(),
+        idle_secs: shared.context.idle_secs,
+        // The plugin already picked the face for this moment (sad for a lapsed
+        // craving, happy for a good meal). Use it as the immediate ack instead
+        // of `--ack-emote`, which is a generic "something happened" face and
+        // reads as a non sequitur on a body event.
+        animation: survival_expression(payload).map(str::to_string),
+        quiet_failure: true,
+        fallback_line: text_field(payload, "line").map(str::to_string),
+        fallback_expression: survival_expression(payload).map(str::to_string),
+        ..Trigger::default()
+    })
+}
+
+/// Route one fishing frame into a trigger.
+///
+/// The mini-game is a state machine the page drives, and every state it
+/// publishes is a moment the avatar can react to:
+///
+/// * `fishing-started` — **deliberately not routed.** A model turn costs 10-30 s
+///   on a local model and the bite lands 3-12 s after the cast, so a cast turn
+///   would still be running when the one moment that matters arrives — the model
+///   would narrate the wait and miss the fish. The page already shows the wait;
+///   the avatar speaks when something happens.
+/// * `fishing-bite` — something took the bait and the strike window is open. The
+///   one moment that wants a *fast* reaction.
+/// * `fish-hooked` — the fish is on and the reel bar is sweeping.
+/// * `fishing-result` — the cast ended: `caught` plus `item`/`label`/`species`/
+///   `rarity`/`blurb` on a catch, or `reason` (`missed_the_spot`, `spooked`,
+///   `timed_out`, `cancelled`, `inventory_full`) on a loss.
+///
+/// Each kind gets its **own** cooldown bucket. One shared bucket would swallow
+/// the catch that lands two seconds after its bite; per-kind buckets keep the
+/// bite and the payoff while still throttling a cast spam to one turn per
+/// [`FISHING_CAST_COOLDOWN_SECS`]. The dispatcher's single-flight latch is the
+/// second gate — a bite arriving mid-turn is dropped rather than queued.
+fn fishing_trigger(
+    rules: &Rules,
+    shared: &mut Shared,
+    frame_type: &str,
+    payload: &Value,
+    now: Instant,
+) -> Option<Trigger> {
+    if !rules.survival.enabled {
+        return None;
+    }
+    let (key, cooldown, detail) = match frame_type {
+        "fishing-bite" => ("fishing:bite", FISHING_BITE_COOLDOWN_SECS, bite_detail(payload)?),
+        "fish-hooked" => ("fishing:hooked", FISHING_HOOKED_COOLDOWN_SECS, hooked_detail(payload)?),
+        "fishing-result" => (
+            "fishing:result",
+            FISHING_RESULT_COOLDOWN_SECS,
+            result_detail(payload)?,
+        ),
+        _ => return None,
+    };
+    if !shared.cooldowns.allow(key, now, Duration::from_secs(cooldown)) {
+        return None;
+    }
+
+    Some(Trigger {
+        event_type: frame_type.to_string(),
+        detail,
+        window_title: shared.context.window_title.clone(),
+        idle_secs: shared.context.idle_secs,
+        // The plugin already wore this face on the event; keep it for the ack.
+        animation: survival_expression(payload).map(str::to_string),
+        quiet_failure: true,
+        // A catch/miss carries the plugin's line; a cast carries none (there is
+        // nothing to say about putting a line in the water).
+        fallback_line: text_field(payload, "line").map(str::to_string),
+        fallback_expression: survival_expression(payload).map(str::to_string),
+        ..Trigger::default()
+    })
+}
+
+fn bite_detail(payload: &Value) -> Option<String> {
+    let window = payload.get("window_ms").and_then(Value::as_u64).unwrap_or(0);
+    let mut detail = String::from("something took the bait -- the strike window is open");
+    if window > 0 {
+        detail.push_str(&format!(" for {window} ms"));
+    }
+    if let Some(key) = text_field(payload, "hook_key") {
+        detail.push_str(&format!(", press {key} now"));
+    }
+    Some(detail)
+}
+
+fn hooked_detail(payload: &Value) -> Option<String> {
+    let period = payload
+        .get("reel")
+        .and_then(|reel| reel.get("period_ms"))
+        .and_then(Value::as_u64);
+    let mut detail = String::from("the fish is hooked and the reel is sweeping");
+    if let Some(period) = period {
+        detail.push_str(&format!(" (one sweep every {period} ms)"));
+    }
+    if let Some(key) = text_field(payload, "reel_key") {
+        detail.push_str(&format!("; press {key} in the sweet spot"));
+    }
+    Some(detail)
+}
+
+fn result_detail(payload: &Value) -> Option<String> {
+    if !payload.get("caught").and_then(Value::as_bool).unwrap_or(false) {
+        let reason = text_field(payload, "reason").unwrap_or("lost");
+        return Some(format!("the cast ended with nothing on the line ({reason})"));
+    }
+    let label = text_field(payload, "label").unwrap_or("a fish");
+    let mut detail = format!("the avatar landed {label}");
+    if let Some(species) = text_field(payload, "species") {
+        detail.push_str(&format!(" ({species}"));
+        if let Some(rarity) = payload.get("rarity").and_then(Value::as_u64) {
+            detail.push_str(&format!(", rarity {rarity} of 4"));
+        }
+        detail.push(')');
+    }
+    if let Some(blurb) = text_field(payload, "blurb") {
+        detail.push_str(&format!(" -- {blurb}"));
+    }
+    if let Some(catches) = payload.get("catches").and_then(Value::as_u64) {
+        detail.push_str(&format!("; {catches} landed so far"));
+    }
+    Some(detail)
+}
+
+/// Detail builder dispatch for the pure test (no cooldown, no `Shared`).
+#[cfg(test)]
+fn fishing_detail_for(frame_type: &str, payload: &Value) -> Option<String> {
+    match frame_type {
+        "fishing-bite" => bite_detail(payload),
+        "fish-hooked" => hooked_detail(payload),
+        "fishing-result" => result_detail(payload),
+        _ => None,
+    }
+}
+
+/// The plain-words description of one survival payload.
+///
+/// Returns `None` for a frame with nothing to say (the telemetry frame, an
+/// unknown subtype, a payload the plugin changed the shape of), which keeps the
+/// watcher quiet rather than letting it invent a sentence.
+fn survival_detail(frame_type: &str, payload: &Value) -> Option<String> {
+    match frame_type {
+        "survival-threshold" => threshold_detail(payload),
+        "survival-meal" => meal_detail(payload),
+        "survival-craft" => craft_detail(payload),
+        "survival-craving" => craving_detail(payload),
+        _ => None,
+    }
+}
+
+fn threshold_detail(payload: &Value) -> Option<String> {
+    let to = text_field(payload, "to")?;
+    let from = text_field(payload, "from").unwrap_or(to);
+    let source = text_field(payload, "source").unwrap_or("metabolism");
+    let mut detail = if from == to {
+        // The starvation reminder repeats the same tier on purpose.
+        format!("the avatar is still {to}")
+    } else {
+        format!("the avatar's hunger moved from {from} to {to}")
+    };
+    if let Some(label) = text_field(payload, "label") {
+        detail.push_str(&format!(" ({label})"));
+    }
+    let mut facts = Vec::new();
+    if let Some(hunger) = number_field(payload, "hunger") {
+        facts.push(format!("hunger {hunger:.1}"));
+    }
+    if let Some(saturation) = number_field(payload, "saturation") {
+        facts.push(format!("saturation {saturation:.1}"));
+    }
+    facts.push(format!("source: {source}"));
+    detail.push_str(&format!(" -- {}", facts.join(", ")));
+    Some(detail)
+}
+
+fn meal_detail(payload: &Value) -> Option<String> {
+    let label = text_field(payload, "label")
+        .or_else(|| text_field(payload, "food"))
+        .unwrap_or("something");
+    if !payload.get("accepted").and_then(Value::as_bool).unwrap_or(false) {
+        // A refused meal is still worth a line: the avatar asked and the body
+        // said no (`too_full`, `still_digesting`, …).
+        let refusal = text_field(payload, "refusal").unwrap_or("refused");
+        let mut detail = format!("the avatar tried to eat {label} and the meal was refused ({refusal}");
+        let cooldown = payload
+            .get("cooldown_remaining_secs")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if cooldown > 0 {
+            detail.push_str(&format!(", {cooldown}s of cooldown left"));
+        }
+        detail.push(')');
+        return Some(detail);
+    }
+
+    let shift = appetite_shift(payload);
+    let mut detail = if shift.is_empty() {
+        format!("the avatar ate {label}")
+    } else {
+        format!("the avatar ate {label}: {shift}")
+    };
+    if let Some(craving) = text_field(payload, "craving_satisfied") {
+        detail.push_str(&format!("; that settled the craving for {craving}"));
+    }
+    if let Some(effects) = effects_summary(payload) {
+        detail.push_str(&format!(" ({effects})"));
+    }
+    Some(detail)
+}
+
+fn craft_detail(payload: &Value) -> Option<String> {
+    // A craft payload is a meal payload plus the recipe, so the eaten facts come
+    // first and the kitchen detail follows: \"the avatar ate Spanish Omelette:
+    // … -- cooked Spanish Omelette (…); used 3 x Egg\".
+    let mut detail = meal_detail(payload)?;
+    if let Some(recipe) = text_field(payload, "recipe_label").or_else(|| text_field(payload, "recipe")) {
+        detail.push_str(&format!("; cooked {recipe}"));
+    }
+    if let Some(blurb) = text_field(payload, "blurb") {
+        detail.push_str(&format!(" ({blurb})"));
+    }
+    if let (Some(kind), Some(comfort)) = (
+        text_field(payload, "kind"),
+        payload.get("comfort_secs").and_then(Value::as_u64),
+    ) {
+        if comfort > 0 {
+            detail.push_str(&format!(", {kind}, {comfort}s of comfort"));
+        }
+    }
+    if let Some(items) = ingredient_summary(payload) {
+        detail.push_str(&format!("; used {items}"));
+    }
+    Some(detail)
+}
+
+fn craving_detail(payload: &Value) -> Option<String> {
+    let state = text_field(payload, "state")?;
+    let label = text_field(payload, "label").unwrap_or("something");
+    let kind = text_field(payload, "kind").unwrap_or("food");
+    match state {
+        "began" => {
+            let mut detail = format!("the avatar started craving {label} ({kind})");
+            if let Some(secs) = payload.get("duration_secs").and_then(Value::as_u64) {
+                if secs > 0 {
+                    detail.push_str(&format!(" for the next {secs}s"));
+                }
+            }
+            if let Some(tier) = text_field(payload, "tier") {
+                detail.push_str(&format!(", while {tier}"));
+            }
+            Some(detail)
+        }
+        // A lapse is the plugin's own mourning line (`host_notify` speaks it as
+        // the timer expires), so waking the model for it would put a second
+        // bubble about the same craving next to the plugin's.
+        "lapsed" => None,
+        "satisfied" => {
+            let food = text_field(payload, "food").unwrap_or(label);
+            Some(format!("the craving for {label} was satisfied by {food}"))
+        }
+        _ => None,
+    }
+}
+
+/// The hunger/saturation/tier movement a meal produced, as one clause.
+fn appetite_shift(payload: &Value) -> String {
+    let mut parts = Vec::new();
+    if let (Some(before), Some(after)) = (
+        number_field(payload, "hunger_before"),
+        number_field(payload, "hunger_after"),
+    ) {
+        parts.push(format!("hunger {before:.1} -> {after:.1}"));
+    }
+    if let (Some(before), Some(after)) = (
+        number_field(payload, "saturation_before"),
+        number_field(payload, "saturation_after"),
+    ) {
+        parts.push(format!("saturation {before:.1} -> {after:.1}"));
+    }
+    match (
+        text_field(payload, "tier_before"),
+        text_field(payload, "tier_after"),
+    ) {
+        (Some(before), Some(after)) if before == after => parts.push(format!("tier {after}")),
+        (Some(before), Some(after)) => parts.push(format!("tier {before} -> {after}")),
+        _ => {}
+    }
+    parts.join(", ")
+}
+
+/// The `effects` array a cooked dish or a fancy food carries, by kind.
+fn effects_summary(payload: &Value) -> Option<String> {
+    let kinds: Vec<&str> = payload
+        .get("effects")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|effect| effect.get("kind").and_then(Value::as_str))
+        .filter(|kind| !kind.is_empty())
+        .collect();
+    (!kinds.is_empty()).then(|| format!("effects: {}", kinds.join(", ")))
+}
+
+/// `consumed` — what the recipe actually took out of the bag.
+fn ingredient_summary(payload: &Value) -> Option<String> {
+    let items: Vec<String> = payload
+        .get("consumed")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|entry| {
+            let label = entry.get("label").and_then(Value::as_str)?;
+            let count = entry.get("count").and_then(Value::as_u64).unwrap_or(0);
+            Some(format!("{count} x {label}"))
+        })
+        .collect();
+    (!items.is_empty()).then(|| items.join(", "))
+}
+
+/// The expression the plugin chose for this moment, if it named one.
+///
+/// `threshold` and `craving` frames carry a top-level `expression`; a meal
+/// carries it per effect, and a plain meal has none.
+fn survival_expression(payload: &Value) -> Option<&str> {
+    text_field(payload, "expression").or_else(|| {
+        payload
+            .get("effects")
+            .and_then(Value::as_array)
+            .and_then(|effects| {
+                effects
+                    .iter()
+                    .find_map(|effect| effect.get("expression").and_then(Value::as_str))
+            })
+    })
+}
+
+/// One trimmed, non-empty string field out of a payload.
+fn text_field<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// One number field out of a payload (the plugin rounds the bars to 1 dp).
+fn number_field(payload: &Value, key: &str) -> Option<f64> {
+    payload.get(key).and_then(Value::as_f64)
 }
 
 /// Evaluate one `/context` poll: title rules (keyword + per-app) + idle-return.
@@ -2418,10 +2990,22 @@ impl SingleFlight {
     }
 }
 
-/// Kinds that deserve the single pending slot: the user asked, or a monitor
-/// reported something. Everything else is ambient noise and is dropped.
+/// Kinds that deserve the single pending slot: the user asked, a monitor
+/// reported something, or a cast *ended*.
+///
+/// `fishing-result` is here for a structural reason, not politeness: the result
+/// of a cast always lands inside the model turn that its own bite started (the
+/// bite window is ~1.4 s, a local model needs seconds to answer). Dropping it
+/// would mean the payoff — the fish, or the one that got away — is the one thing
+/// the avatar never talks about. One slot holds it, and a newer result replaces
+/// an older queued one, so a burst still collapses to a single turn.
+///
+/// Everything else is ambient noise and is dropped.
 fn queues_while_busy(event_type: &str) -> bool {
-    matches!(event_type, "user_reply" | "alert")
+    matches!(
+        event_type,
+        "user_reply" | "alert" | "fishing-result"
+    )
 }
 
 /// Held for as long as one dispatch is in flight; dropping it releases the
@@ -2460,6 +3044,10 @@ enum RunOutcome {
     WaitFailed,
     /// `Command::spawn` failed — wrong path, not executable, permission.
     SpawnFailed,
+    /// The trigger could not be dispatched at all: no `ai_profiles` entry (or
+    /// the profile could not be built). The brain is not attached in any useful
+    /// sense, so a survival turn falls back to its own line.
+    NoProfile,
 }
 
 impl RunOutcome {
@@ -2476,6 +3064,7 @@ impl RunOutcome {
             RunOutcome::TimedOut => "timeout",
             RunOutcome::WaitFailed => "wait failed",
             RunOutcome::SpawnFailed => "spawn failed",
+            RunOutcome::NoProfile => "no ai profile",
         }
     }
 }
@@ -2532,6 +3121,88 @@ async fn deliver_fallback(client: &reqwest::Client, api_url: &str, outcome: RunO
     post_fallback_speech(client, api_url).await;
 }
 
+/// Speak a line the *plugin* authored, with the expression it was written for.
+///
+/// This is the fallback voice for a survival turn: the text comes from the event,
+/// so the user hears the same sentence the plugin would have said offline, not a
+/// generic apology. The expression is validated like everywhere else, and the
+/// bubble is held for [`CANNED_LINE_DURATION_MS`].
+async fn post_line(
+    client: &reqwest::Client,
+    api_url: &str,
+    text: &str,
+    expression: Option<&str>,
+) {
+    let mut body = json!({ "text": text, "duration_ms": CANNED_LINE_DURATION_MS });
+    if let Some(expression) = expression.filter(|value| !value.trim().is_empty()) {
+        body["expression"] = json!(expression);
+    }
+    let url = format!("{api_url}/speak");
+    match client.post(&url).json(&body).timeout(CONTEXT_TIMEOUT).send().await {
+        Ok(response) if !response.status().is_success() => {
+            eprintln!("[watcher] fallback line rejected with {}", response.status())
+        }
+        Ok(_) => {}
+        Err(err) => eprintln!("[watcher] fallback line failed: {err}"),
+    }
+}
+
+/// What to say when a dispatch never produces an answer.
+///
+/// Two mutually exclusive voices, decided by the trigger:
+///
+/// * a routine trigger gets the generic "Sorry, I hit a snag or timed out."
+///   bubble, exactly as before;
+/// * a survival turn (`quiet_failure`) never gets that bubble — it speaks the
+///   **plugin's own line** for the event, which is the hardcoded fallback the
+///   avatar would have used had no brain been attached. No line in the payload
+///   (a cast, a telemetry frame) means silence, which is the right amount.
+///
+/// Owned and `Clone` so it can move into the spawned CLI task.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct FailureSpeech {
+    quiet: bool,
+    line: Option<String>,
+    expression: Option<String>,
+}
+
+impl FailureSpeech {
+    fn from_trigger(trigger: &Trigger) -> Self {
+        Self {
+            quiet: trigger.quiet_failure,
+            line: trigger.fallback_line.clone(),
+            expression: trigger.fallback_expression.clone(),
+        }
+    }
+
+    /// Is there anything to say for this outcome?
+    fn speaks_for(&self, outcome: RunOutcome) -> bool {
+        if !outcome.is_failure() {
+            return false;
+        }
+        !self.quiet || self.line.is_some()
+    }
+
+    /// Post the one fallback this dispatch owns.
+    async fn deliver(&self, client: &reqwest::Client, api_url: &str, outcome: RunOutcome) {
+        if !self.speaks_for(outcome) {
+            return;
+        }
+        if !self.quiet {
+            deliver_fallback(client, api_url, outcome).await;
+            return;
+        }
+        let Some(line) = self.line.as_deref().filter(|line| !line.trim().is_empty()) else {
+            return;
+        };
+        eprintln!(
+            "[watcher] dispatch ended with {}; speaking the event's own line",
+            outcome.label()
+        );
+        post_line(client, api_url, line, self.expression.as_deref()).await;
+    }
+}
+
 /// Spawn the configured command, wait for it under a timeout, and log the exit.
 ///
 /// * `session` is substituted into `{session}` in the command template.
@@ -2556,11 +3227,12 @@ async fn spawn_hermes(
     client: &reqwest::Client,
     api_url: &str,
     flight: FlightGuard,
+    failure: FailureSpeech,
 ) -> bool {
     let mut argv = command_argv(command, prompt, session);
     if argv.is_empty() {
         eprintln!("[watcher] --hermes-cmd is empty; nothing spawned");
-        deliver_fallback(client, api_url, RunOutcome::SpawnFailed).await;
+        failure.deliver(client, api_url, RunOutcome::SpawnFailed).await;
         return false;
     }
     let program = argv.remove(0);
@@ -2582,6 +3254,7 @@ async fn spawn_hermes(
             );
             let client = client.clone();
             let api_url = api_url.to_string();
+            let failure = failure.clone();
             tokio::spawn(async move {
                 let _flight = flight; // released when this task ends
                 let waited = tokio::time::timeout(timeout, child.wait()).await;
@@ -2615,13 +3288,13 @@ async fn spawn_hermes(
                 };
                 // Before the guard drops, so the fallback bubble lands before a
                 // queued trigger is dispatched.
-                deliver_fallback(&client, &api_url, outcome).await;
+                failure.deliver(&client, &api_url, outcome).await;
             });
             true
         }
         Err(err) => {
             eprintln!("[watcher] cannot spawn {program:?}: {err}");
-            deliver_fallback(client, api_url, RunOutcome::SpawnFailed).await;
+            failure.deliver(client, api_url, RunOutcome::SpawnFailed).await;
             false
         }
     }
@@ -3007,6 +3680,11 @@ async fn handle_trigger(
     let Some((profile_name, profile)) = ai.snapshot(trigger.profile.as_deref()) else {
         drop(guard);
         eprintln!("[watcher] no AI profile configured; payload was {payload}");
+        // No brain to answer, so a survival turn falls back to the plugin's own
+        // line instead of saying nothing at all.
+        FailureSpeech::from_trigger(trigger)
+            .deliver(client, &config.api_url, RunOutcome::NoProfile)
+            .await;
         return;
     };
 
@@ -3044,6 +3722,7 @@ async fn handle_trigger(
             prompt: &prompt,
             session: &session_id,
             flight: guard,
+            failure_speech: FailureSpeech::from_trigger(trigger),
         })
         .await;
     log_report(&report);
@@ -3079,6 +3758,7 @@ async fn handle_trigger(
             prompt: &cli_prompt,
             session: &session_id,
             flight: guard,
+            failure_speech: FailureSpeech::from_trigger(trigger),
         })
         .await;
     log_report(&report);
@@ -3277,6 +3957,20 @@ async fn handle_frame(
         "alert" => {
             let mut guard = lock(shared);
             alert_trigger(rules, &mut guard, &payload, Instant::now())
+        }
+        // The survival plugin's body events, all through one cooldown bucket.
+        // Its periodic `survival` telemetry frame is deliberately *not* here:
+        // it fires every `telemetry_secs` with a whole stats blob, and the
+        // appetite line in the prompt already covers it (see [`appetite_line`]).
+        "survival-threshold" | "survival-meal" | "survival-craft" | "survival-craving" => {
+            let mut guard = lock(shared);
+            survival_trigger(rules, &mut guard, frame_type, &payload, Instant::now())
+        }
+        // The fishing mini-game, one bucket per moment (bite, hook, result,
+        // cast) so the catch that lands seconds after its bite still fires.
+        "fishing-bite" | "fish-hooked" | "fishing-result" => {
+            let mut guard = lock(shared);
+            fishing_trigger(rules, &mut guard, frame_type, &payload, Instant::now())
         }
         _ => return,
     };
@@ -4188,7 +4882,15 @@ mod tests {
     fn routine_triggers_are_dropped_while_busy_instead_of_queuing() {
         let flight = SingleFlight::default();
         let guard = flight.try_enter().expect("permit");
-        for routine in ["interaction", "window_title", "idle_return"] {
+        for routine in [
+            "interaction",
+            "window_title",
+            "idle_return",
+            // A bite mid-turn is stale by the time it could run; only the cast's
+            // *result* is worth the pending slot.
+            "fishing-bite",
+            "fish-hooked",
+        ] {
             assert_eq!(
                 flight.offer(trigger_of(routine)),
                 Offer::Dropped,
@@ -4199,6 +4901,34 @@ mod tests {
             flight.take_pending().is_none(),
             "background noise left the pending slot empty"
         );
+        drop(guard);
+    }
+
+    #[test]
+    fn a_fishing_result_queues_behind_the_bite_it_followed() {
+        let flight = SingleFlight::default();
+        let guard = flight.try_enter().expect("permit");
+
+        // The bite owns the turn; the catch that lands 1.4 s later must survive
+        // it, or the avatar never mentions what it actually caught.
+        let result = Trigger {
+            event_type: "fishing-result".to_string(),
+            detail: "the avatar landed Silver trout".to_string(),
+            quiet_failure: true,
+            fallback_line: Some("Caught a Silver trout!".to_string()),
+            ..Trigger::default()
+        };
+        assert_eq!(flight.offer(result.clone()), Offer::Queued);
+        assert_eq!(
+            flight.take_pending().expect("queued").event_type,
+            "fishing-result"
+        );
+
+        // And it still collapses: a second result replaces the first.
+        assert_eq!(flight.offer(result.clone()), Offer::Queued);
+        assert_eq!(flight.offer(result), Offer::Queued);
+        assert!(flight.take_pending().is_some());
+        assert!(flight.take_pending().is_none(), "one slot, one catch");
         drop(guard);
     }
 
@@ -4709,6 +5439,443 @@ mod tests {
     }
 
     #[test]
+    fn survival_details_read_the_plugin_payloads() {
+        let threshold = json!({
+            "from": "peckish",
+            "to": "hungry",
+            "hunger": 39.4,
+            "saturation": 12.0,
+            "label": "Hungry",
+            "expression": "thinking",
+            "source": "metabolism",
+        });
+        let detail = survival_detail("survival-threshold", &threshold).expect("threshold detail");
+        assert!(detail.contains("from peckish to hungry"), "{detail}");
+        assert!(detail.contains("hunger 39.4"), "{detail}");
+        assert!(detail.contains("source: metabolism"), "{detail}");
+
+        // The starvation reminder repeats the same tier on purpose.
+        let reminder = json!({
+            "from": "starving",
+            "to": "starving",
+            "hunger": 3.0,
+            "saturation": 0.0,
+            "label": "Starving",
+            "expression": "sad",
+            "source": "starvation-reminder",
+        });
+        assert!(
+            survival_detail("survival-threshold", &reminder)
+                .expect("reminder detail")
+                .contains("still starving"),
+            "a reminder must not read like a crossing"
+        );
+
+        // `manual` (POST /survival) omits label and expression but still carries
+        // the bars, so the detail still works.
+        let manual = json!({
+            "from": "hungry",
+            "to": "satiated",
+            "hunger": 100.0,
+            "saturation": 100.0,
+            "source": "manual",
+        });
+        let detail = survival_detail("survival-threshold", &manual).expect("manual detail");
+        assert!(detail.contains("source: manual"), "{detail}");
+
+        let meal = json!({
+            "ok": true,
+            "accepted": true,
+            "food": "pizza",
+            "label": "Pizza",
+            "hunger_before": 30.0,
+            "hunger_after": 66.0,
+            "saturation_before": 0.0,
+            "saturation_after": 18.0,
+            "tier_before": "hungry",
+            "tier_after": "peckish",
+            "effects": [
+                { "kind": "spicy", "duration_secs": 120, "magnitude": 0.5, "expression": "surprised" }
+            ],
+            "refusal": null,
+            "cooldown_remaining_secs": 0,
+            "craving_satisfied": null,
+        });
+        let detail = survival_detail("survival-meal", &meal).expect("meal detail");
+        assert!(detail.contains("ate Pizza"), "{detail}");
+        assert!(detail.contains("hunger 30.0 -> 66.0"), "{detail}");
+        assert!(detail.contains("tier hungry -> peckish"), "{detail}");
+        assert!(detail.contains("effects: spicy"), "{detail}");
+        assert_eq!(survival_expression(&meal), Some("surprised"));
+
+        let refused = json!({
+            "ok": true,
+            "accepted": false,
+            "food": "cake",
+            "label": "Cake",
+            "refusal": "too_full",
+            "cooldown_remaining_secs": 42,
+        });
+        let detail = survival_detail("survival-meal", &refused).expect("refused detail");
+        assert!(detail.contains("refused (too_full"), "{detail}");
+        assert!(detail.contains("42s of cooldown left"), "{detail}");
+
+        let craft = json!({
+            "ok": true,
+            "accepted": true,
+            "food": "omelette",
+            "label": "Spanish Omelette",
+            "hunger_before": 20.0,
+            "hunger_after": 74.0,
+            "saturation_before": 0.0,
+            "saturation_after": 26.0,
+            "tier_before": "hungry",
+            "tier_after": "peckish",
+            "effects": [],
+            "recipe": "omelette",
+            "recipe_label": "Spanish Omelette",
+            "blurb": "Eggs, potatoes, patience.",
+            "kind": "cooked",
+            "comfort_secs": 90,
+            "consumed": [ { "item": "egg", "label": "Egg", "count": 3, "remaining": 0 } ],
+            "cooked_with": [ { "food": "egg", "count": 3 } ],
+        });
+        let detail = survival_detail("survival-craft", &craft).expect("craft detail");
+        assert!(detail.contains("cooked Spanish Omelette"), "{detail}");
+        assert!(detail.contains("Eggs, potatoes, patience."), "{detail}");
+        assert!(detail.contains("3 x Egg"), "{detail}");
+        assert!(detail.contains("90s of comfort"), "{detail}");
+
+        let began = json!({
+            "state": "began",
+            "kind": "food",
+            "target": "pizza",
+            "label": "Pizza",
+            "duration_secs": 600,
+            "remaining_secs": 600,
+            "hunger": 40.0,
+            "saturation": 5.0,
+            "tier": "hungry",
+            "expression": "thinking",
+            "source": "spontaneous",
+        });
+        let detail = survival_detail("survival-craving", &began).expect("began detail");
+        assert!(detail.contains("started craving Pizza (food)"), "{detail}");
+        assert!(detail.contains("600s"), "{detail}");
+        assert!(detail.contains("while hungry"), "{detail}");
+
+        // A lapse is already spoken by the plugin, so it earns no model turn.
+        let lapsed = json!({ "state": "lapsed", "kind": "group", "label": "Dessert", "expression": "sad" });
+        assert!(survival_detail("survival-craving", &lapsed).is_none());
+
+        let satisfied = json!({ "state": "satisfied", "label": "Pizza", "food": "pizza", "expression": "happy" });
+        let detail = survival_detail("survival-craving", &satisfied).expect("satisfied detail");
+        assert!(detail.contains("satisfied by pizza"), "{detail}");
+
+        // The telemetry frame and an unknown subtype say nothing at all.
+        assert!(survival_detail(
+            "survival",
+            &json!({ "stats": { "hunger": 10.0 }, "source": "telemetry", "frame": 3 })
+        )
+        .is_none());
+        assert!(survival_detail("survival-craving", &json!({ "state": "unknown" })).is_none());
+    }
+
+    #[test]
+    fn survival_rules_can_silence_the_plugin_and_share_the_block() {
+        let quiet = rules(r#"{"survival": { "enabled": false }}"#);
+        let mut blank = shared();
+        assert!(survival_trigger(
+            &quiet,
+            &mut blank,
+            "survival-threshold",
+            &json!({ "from": "peckish", "to": "hungry" }),
+            Instant::now()
+        )
+        .is_none());
+
+        // The same object carries the plugin's own settings; serde ignores the
+        // keys that are not the watcher's, and `enabled` means the same thing to
+        // both sides.
+        let verbose = rules(
+            r#"{"survival": { "enabled": true, "cooldown_secs": 3, "metabolism": { "hunger_per_min": 6.0 } }}"#,
+        );
+        assert!(verbose.survival.enabled);
+        assert_eq!(verbose.survival.cooldown_secs, 3);
+        assert_eq!(Rules::default().survival.cooldown_secs, DEFAULT_SURVIVAL_COOLDOWN_SECS);
+    }
+
+    #[tokio::test]
+    async fn handle_frame_routes_the_survival_events_through_one_cooldown() {
+        let settings = Rules::default();
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let session = Arc::new(Mutex::new(SessionState::default()));
+        let ai = AiShared::default();
+        let (tx, mut rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
+
+        let sse = |kind: &str, payload: Value| SseFrame {
+            event: kind.to_string(),
+            data: json!({ "seq": 1, "type": kind, "payload": payload }).to_string(),
+        };
+
+        let threshold = sse(
+            "survival-threshold",
+            json!({
+                "from": "peckish",
+                "to": "hungry",
+                "hunger": 39.4,
+                "saturation": 12.0,
+                "label": "Hungry",
+                "expression": "thinking",
+                "source": "metabolism",
+            }),
+        );
+        handle_frame(&threshold, &settings, &shared, &session, &ai, &tx).await;
+        let trigger = rx.try_recv().expect("a threshold frame is a trigger");
+        assert_eq!(trigger.event_type, "survival-threshold");
+        assert!(trigger.is_survival());
+        assert!(
+            trigger.quiet_failure,
+            "a body event must never post the failure bubble"
+        );
+        assert_eq!(
+            trigger.animation.as_deref(),
+            Some("thinking"),
+            "the plugin's own expression is the ack"
+        );
+        // Both prompts carry the directive: the brief for a no-tools model and
+        // the CLI prompt (which builds on the brief).
+        assert!(trigger.brief().contains("survival event"));
+        assert!(trigger.prompt().contains(SURVIVAL_DIRECTIVE));
+
+        // A meal in the same cooldown window is swallowed: one body, one turn.
+        let meal = sse(
+            "survival-meal",
+            json!({ "accepted": true, "food": "pizza", "label": "Pizza", "tier_after": "peckish" }),
+        );
+        handle_frame(&meal, &settings, &shared, &session, &ai, &tx).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "all survival frames share one cooldown bucket"
+        );
+
+        // Telemetry and the plugin's other events stay quiet.
+        for frame in [
+            sse(
+                "survival",
+                json!({ "stats": { "hunger": 10.0 }, "source": "telemetry", "frame": 3 }),
+            ),
+            sse("inventory-changed", json!({ "item": "egg", "delta": 1 })),
+        ] {
+            handle_frame(&frame, &settings, &shared, &session, &ai, &tx).await;
+        }
+        assert!(rx.try_recv().is_err(), "telemetry is not a trigger");
+    }
+
+    #[test]
+    fn the_appetite_line_reads_the_survival_status() {
+        let body = json!({
+            "hunger": 62.4,
+            "saturation": 18.0,
+            "tier": "peckish",
+            "label": "Peckish",
+            "expression": "neutral",
+            "seconds_to_starving": 1800,
+            "craving": {
+                "kind": "food",
+                "target": "pizza",
+                "label": "Pizza",
+                "duration_secs": 600,
+                "remaining_secs": 240,
+            },
+            "coins": 12,
+        });
+        let line = appetite_line(&body).expect("a survival body has an appetite line");
+        assert!(line.contains("hunger 62/100 (Peckish)"), "{line}");
+        assert!(line.contains("saturation 18"), "{line}");
+        assert!(line.contains("starving in 30 min"), "{line}");
+        assert!(line.contains("craving Pizza (4 min left)"), "{line}");
+        assert!(line.contains("12 coin(s)"), "{line}");
+
+        // A settled avatar mentions no craving, and a body without the bars is
+        // not a survival status at all.
+        let stuffed = json!({ "hunger": 100.0, "label": "Satiated", "saturation": 100.0, "craving": null });
+        let line = appetite_line(&stuffed).expect("stuffed line");
+        assert!(!line.contains("craving"), "{line}");
+        assert!(appetite_line(&json!({ "stats": {}, "ok": true })).is_none());
+    }
+
+    #[test]
+    fn fishing_details_name_the_species_the_miss_and_the_window() {
+        let bite = json!({
+            "phase": "biting",
+            "window_ms": 1400,
+            "hook_key": "Space",
+            "expression": "surprised",
+            "line": "Something's on the line — now!",
+        });
+        let detail = fishing_detail_for("fishing-bite", &bite).expect("bite detail");
+        assert!(detail.contains("strike window is open"), "{detail}");
+        assert!(detail.contains("1400 ms"), "{detail}");
+
+        let hooked = json!({
+            "phase": "reeling",
+            "reel": { "period_ms": 1500 },
+            "reel_key": "Space",
+        });
+        let detail = fishing_detail_for("fish-hooked", &hooked).expect("hooked detail");
+        assert!(detail.contains("reel is sweeping"), "{detail}");
+        assert!(detail.contains("1500 ms"), "{detail}");
+
+        let caught = json!({
+            "caught": true,
+            "stored": true,
+            "item": "silver_trout",
+            "label": "Silver trout",
+            "species": "fish",
+            "rarity": 3,
+            "blurb": "Slippery and quick.",
+            "catches": 2,
+            "expression": "happy",
+            "line": "Caught a Silver trout! Come look at it.",
+        });
+        let detail = fishing_detail_for("fishing-result", &caught).expect("catch detail");
+        assert!(detail.contains("landed Silver trout"), "{detail}");
+        assert!(detail.contains("fish, rarity 3 of 4"), "{detail}");
+        assert!(detail.contains("Slippery and quick."), "{detail}");
+        assert!(detail.contains("2 landed so far"), "{detail}");
+
+        let missed = json!({
+            "caught": false,
+            "reason": "missed_the_spot",
+            "expression": "sad",
+            "line": "It slipped the hook right at the end.",
+        });
+        let detail = fishing_detail_for("fishing-result", &missed).expect("miss detail");
+        assert!(detail.contains("nothing on the line"), "{detail}");
+        assert!(detail.contains("missed_the_spot"), "{detail}");
+
+        // A telemetry-style or unknown frame is not a fishing moment.
+        assert!(fishing_detail_for("not-a-fishing-frame", &json!({})).is_none());
+    }
+
+    #[tokio::test]
+    async fn fishing_frames_get_one_turn_each_and_respect_their_buckets() {
+        let settings = Rules::default();
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let session = Arc::new(Mutex::new(SessionState::default()));
+        let ai = AiShared::default();
+        let (tx, mut rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
+        let sse = |kind: &str, payload: Value| SseFrame {
+            event: kind.to_string(),
+            data: json!({ "seq": 1, "type": kind, "payload": payload }).to_string(),
+        };
+
+        let bite = json!({
+            "phase": "biting",
+            "window_ms": 1400,
+            "hook_key": "Space",
+            "expression": "surprised",
+            "line": "Something's on the line — now!",
+        });
+        handle_frame(&sse("fishing-bite", bite.clone()), &settings, &shared, &session, &ai, &tx).await;
+        let trigger = rx.try_recv().expect("a bite is a trigger");
+        assert_eq!(trigger.event_type, "fishing-bite");
+        assert!(trigger.is_survival(), "fishing rides the survival directive");
+        assert!(trigger.quiet_failure, "no generic snag bubble on a body event");
+        assert_eq!(
+            trigger.fallback_line.as_deref(),
+            Some("Something's on the line — now!")
+        );
+        assert_eq!(trigger.animation.as_deref(), Some("surprised"));
+
+        // A second bite inside the bucket is noise, not another model turn.
+        handle_frame(&sse("fishing-bite", bite.clone()), &settings, &shared, &session, &ai, &tx).await;
+        assert!(rx.try_recv().is_err(), "one bite per cast bucket");
+
+        // The catch two seconds later still fires: its own bucket.
+        let caught = json!({
+            "caught": true,
+            "label": "Silver trout",
+            "species": "fish",
+            "rarity": 3,
+            "blurb": "Slippery and quick.",
+            "catches": 1,
+            "expression": "happy",
+            "line": "Caught a Silver trout! Come look at it.",
+        });
+        handle_frame(&sse("fishing-result", caught), &settings, &shared, &session, &ai, &tx).await;
+        let trigger = rx.try_recv().expect("the catch is a trigger");
+        assert_eq!(trigger.event_type, "fishing-result");
+        assert!(trigger.detail.contains("landed Silver trout"), "{}", trigger.detail);
+        assert!(trigger.brief().contains("survival event"), "the directive applies");
+
+        // A cast is not a moment the avatar talks about: routing it would cost
+        // the model turn the bite needs.
+        handle_frame(
+            &sse("fishing-started", json!({ "casts": 2, "min_wait_secs": 3, "max_wait_secs": 12 })),
+            &settings,
+            &shared,
+            &session,
+            &ai,
+            &tx,
+        )
+        .await;
+        assert!(rx.try_recv().is_err(), "a cast earns no model turn");
+    }
+
+    #[test]
+    fn a_quiet_turn_only_speaks_when_it_has_a_line() {
+        // A survival turn with no authored line says nothing at all: better an
+        // empty beat than a generic apology on top of the avatar's own mood.
+        let silent = FailureSpeech {
+            quiet: true,
+            ..FailureSpeech::default()
+        };
+        assert!(!silent.speaks_for(RunOutcome::TimedOut));
+        assert!(!silent.speaks_for(RunOutcome::Failed));
+
+        // A routine trigger keeps the generic bubble.
+        let loud = FailureSpeech::default();
+        assert!(loud.speaks_for(RunOutcome::TimedOut));
+        assert!(!loud.speaks_for(RunOutcome::Succeeded));
+
+        // A survival turn with a line speaks on any failure, including no profile.
+        let canned = FailureSpeech {
+            quiet: true,
+            line: Some("I'm getting hungry. Feed me?".to_string()),
+            expression: Some("thinking".to_string()),
+        };
+        assert!(canned.speaks_for(RunOutcome::NoProfile));
+    }
+
+    #[tokio::test]
+    async fn a_failed_survival_dispatch_speaks_the_plugins_own_line() {
+        let (api_url, request) = capture_one_request();
+        let client = build_client();
+        let failure = FailureSpeech {
+            quiet: true,
+            line: Some("I'm getting hungry. Feed me?".to_string()),
+            expression: Some("thinking".to_string()),
+        };
+        failure
+            .deliver(&client, &api_url, RunOutcome::TimedOut)
+            .await;
+        let request = captured(request).await;
+
+        assert!(request.starts_with("POST /speak "), "wrong route: {request}");
+        assert!(
+            request.contains("I'm getting hungry. Feed me?"),
+            "the plugin's line, not the watcher's apology: {request}"
+        );
+        assert!(request.contains("\"expression\":\"thinking\""), "{request}");
+        assert!(
+            !request.contains(FALLBACK_SPEECH_TEXT),
+            "the generic snag bubble must never double up: {request}"
+        );
+    }
+
+    #[test]
     fn headless_directive_teaches_the_deferred_tool_search() {
         let prompt = Trigger::default().prompt();
 
@@ -5057,6 +6224,7 @@ mod tests {
             &client,
             &api_url,
             guard,
+            FailureSpeech::default(),
         )
         .await;
         assert!(spawned, "the child process started");
@@ -5351,6 +6519,10 @@ c"));
     const CLIPS_BODY: &str =
         r#"{"ok":true,"animations":[{"name":"wave","duration_ms":900,"loop":false,"keyframes":3},{"name":"dance","duration_ms":1900,"loop":true,"keyframes":5}]}"#;
 
+    /// `GET /survival` body for the fake server: the plugin's own status, which
+    /// the no-tools backend inlines as the appetite line.
+    const SURVIVAL_BODY: &str = r#"{"ok":true,"hunger":62.4,"saturation":18.0,"tier":"peckish","label":"Peckish","expression":"neutral","seconds_to_starving":1800,"craving":{"kind":"food","target":"pizza","label":"Pizza","remaining_secs":240},"coins":12}"#;
+
     /// Read one whole HTTP request (headers + `content-length` body).
     fn read_request(socket: &mut std::net::TcpStream) -> String {
         use std::io::Read;
@@ -5416,9 +6588,12 @@ c"));
         let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"Build failed in main.rs\",\"expression\":\"surprised\",\"perch_edge\":\"right\",\"window_process\":\"code\",\"details\":\"error[E0308]\"}"}}]}"#;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        // GET /context, chat completion, then /perch, /emote, /speak
-        // GET /context, GET /animations, chat, then /perch, /emote, /speak
-        let server = serve(listener, vec!["{}", CLIPS_BODY, chat, "{}", "{}", "{}"]);
+        // GET /context, GET /survival, GET /animations, chat, then /perch,
+        // /emote, /speak.
+        let server = serve(
+            listener,
+            vec!["{}", SURVIVAL_BODY, CLIPS_BODY, chat, "{}", "{}", "{}"],
+        );
 
         let parsed = rules(PROFILE_RULES);
         let backend = OpenaiCompatBackend::from_profile(
@@ -5444,6 +6619,7 @@ c"));
                 prompt: "[char-rig user_reply] build broke",
                 session: "char-rig-test",
                 flight: guard,
+                failure_speech: FailureSpeech::default(),
             })
             .await;
 
@@ -5460,43 +6636,50 @@ c"));
 
         assert_eq!(
             requests.len(),
-            6,
-            "context + animations + chat + three avatar actions: {requests:#?}"
+            7,
+            "context + survival + animations + chat + three avatar actions: {requests:#?}"
         );
         assert!(requests[0].starts_with("GET /context "), "{}", requests[0]);
-        assert!(requests[1].starts_with("GET /animations "), "{}", requests[1]);
-        assert!(requests[2].starts_with("POST /v1/chat/completions "), "{}", requests[2]);
+        assert!(requests[1].starts_with("GET /survival "), "{}", requests[1]);
+        assert!(requests[2].starts_with("GET /animations "), "{}", requests[2]);
+        assert!(requests[3].starts_with("POST /v1/chat/completions "), "{}", requests[3]);
         assert!(
-            requests[2].to_ascii_lowercase().contains("authorization: bearer secret"),
+            requests[3].to_ascii_lowercase().contains("authorization: bearer secret"),
             "the api_key is sent: {}",
-            requests[2]
+            requests[3]
         );
         assert!(
-            requests[2].contains("Live avatar context:"),
+            requests[3].contains("Live avatar context:"),
             "the model sees the refreshed /context: {}",
-            requests[2]
+            requests[3]
         );
         assert!(
-            requests[2].contains("Animation clips on this rig: wave, dance"),
-            "the model is told which clips exist: {}",
-            requests[2]
+            requests[3].contains("The avatar's appetite: hunger 62/100 (Peckish)"),
+            "the model sees the survival appetite: {}",
+            requests[3]
         );
-        assert!(requests[3].starts_with("POST /perch "), "{}", requests[3]);
-        assert!(requests[3].contains("\"edge\":\"right\""), "{}", requests[3]);
-        assert!(requests[3].contains("\"window_process\":\"code\""), "{}", requests[3]);
-        assert!(requests[4].starts_with("POST /emote "), "{}", requests[4]);
-        assert!(requests[4].contains("\"expression\":\"surprised\""), "{}", requests[4]);
-        assert!(requests[5].starts_with("POST /speak "), "{}", requests[5]);
-        assert!(requests[5].contains("Build failed in main.rs"), "{}", requests[5]);
-        assert!(requests[5].contains("error[E0308]"), "the details block is forwarded: {}", requests[5]);
+        assert!(
+            requests[3].contains("Animation clips on this rig: wave, dance"),
+            "the model is told which clips exist: {}",
+            requests[3]
+        );
+        assert!(requests[4].starts_with("POST /perch "), "{}", requests[4]);
+        assert!(requests[4].contains("\"edge\":\"right\""), "{}", requests[4]);
+        assert!(requests[4].contains("\"window_process\":\"code\""), "{}", requests[4]);
+        assert!(requests[5].starts_with("POST /emote "), "{}", requests[5]);
+        assert!(requests[5].contains("\"expression\":\"surprised\""), "{}", requests[5]);
+        assert!(requests[6].starts_with("POST /speak "), "{}", requests[6]);
+        assert!(requests[6].contains("Build failed in main.rs"), "{}", requests[6]);
+        assert!(requests[6].contains("error[E0308]"), "the details block is forwarded: {}", requests[6]);
     }
 
     #[tokio::test]
     async fn a_dead_openai_endpoint_posts_the_sad_bubble() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        // The context + animations reads succeed; only the fallback `/speak` follows.
-        let server = serve(listener, vec!["{}", CLIPS_BODY, "{}"]);
+        // The context + survival + animations reads succeed; only the fallback
+        // `/speak` follows.
+        let server = serve(listener, vec!["{}", SURVIVAL_BODY, CLIPS_BODY, "{}"]);
 
         let parsed = rules(PROFILE_RULES);
         let backend = OpenaiCompatBackend {
@@ -5521,6 +6704,7 @@ c"));
                 prompt: "anything",
                 session: "char-rig-test",
                 flight: guard,
+                failure_speech: FailureSpeech::default(),
             })
             .await;
 
@@ -5533,14 +6717,14 @@ c"));
         assert!(!flight.is_busy());
         assert_eq!(
             requests.len(),
-            3,
-            "context + animations + only the fallback bubble: {requests:#?}"
+            4,
+            "context + survival + animations + only the fallback bubble: {requests:#?}"
         );
         assert!(requests[0].starts_with("GET /context "), "{}", requests[0]);
-        assert!(requests[1].starts_with("GET /animations "), "{}", requests[1]);
-        assert!(requests[2].starts_with("POST /speak "), "{}", requests[2]);
-        assert!(requests[2].contains(FALLBACK_SPEECH_TEXT), "{}", requests[2]);
-        assert!(requests[2].contains("\"expression\":\"sad\""), "{}", requests[2]);
+        assert!(requests[2].starts_with("GET /animations "), "{}", requests[2]);
+        assert!(requests[3].starts_with("POST /speak "), "{}", requests[3]);
+        assert!(requests[3].contains(FALLBACK_SPEECH_TEXT), "{}", requests[3]);
+        assert!(requests[3].contains("\"expression\":\"sad\""), "{}", requests[3]);
     }
 
     #[test]
@@ -5610,11 +6794,13 @@ c"));
         let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"It is a cargo command\"}"}}]}"#;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        // GET /context, GET /animations, GET /clipboard, chat, then the speak action.
+        // GET /context, GET /survival, GET /animations, GET /clipboard, chat, then
+        // the speak action.
         let server = serve(
             listener,
             vec![
                 r#"{"window_title":"char-rig","process_name":"Code.exe","idle_secs":12}"#,
+                SURVIVAL_BODY,
                 CLIPS_BODY,
                 r#"{"ok":true,"text":"cargo test --lib","truncated":false}"#,
                 chat,
@@ -5644,6 +6830,7 @@ c"));
                 prompt: "what is on my clipboard?",
                 session: "char-rig-test",
                 flight: guard,
+                failure_speech: FailureSpeech::default(),
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -5653,18 +6840,22 @@ c"));
         assert!(report.failure.is_none(), "{report:?}");
         assert_eq!(
             requests.len(),
-            5,
-            "context + animations + clipboard + chat + speak: {requests:#?}"
+            6,
+            "context + survival + animations + clipboard + chat + speak: {requests:#?}"
         );
         assert!(requests[0].starts_with("GET /context "), "{}", requests[0]);
-        assert!(requests[1].starts_with("GET /animations "), "{}", requests[1]);
-        assert!(requests[2].starts_with("GET /clipboard "), "{}", requests[2]);
-        let body = &requests[3];
+        assert!(requests[2].starts_with("GET /animations "), "{}", requests[2]);
+        assert!(requests[3].starts_with("GET /clipboard "), "{}", requests[3]);
+        let body = &requests[4];
         assert!(body.contains("Live avatar context:"), "{body}");
         assert!(body.contains("Code.exe"), "the process reaches the model: {body}");
         assert!(body.contains("idle 12s"), "{body}");
         assert!(body.contains("cargo test --lib"), "the clipboard is inlined: {body}");
-        assert!(requests[4].starts_with("POST /speak "), "{}", requests[4]);
+        assert!(
+            body.contains("The avatar's appetite: hunger 62/100 (Peckish)"),
+            "the appetite line is inlined too: {body}"
+        );
+        assert!(requests[5].starts_with("POST /speak "), "{}", requests[5]);
     }
 
     #[tokio::test]
@@ -5672,8 +6863,9 @@ c"));
         let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"ok\"}"}}]}"#;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        // Context + animations + chat + speak only: no GET /clipboard may appear.
-        let server = serve(listener, vec!["{}", CLIPS_BODY, chat, "{}"]);
+        // Context + survival + animations + chat + speak only: no GET /clipboard
+        // may appear.
+        let server = serve(listener, vec!["{}", SURVIVAL_BODY, CLIPS_BODY, chat, "{}"]);
 
         let parsed = rules(PROFILE_RULES);
         let backend = OpenaiCompatBackend {
@@ -5697,13 +6889,14 @@ c"));
                 prompt: "build failed in main.rs",
                 session: "char-rig-test",
                 flight: guard,
+                failure_speech: FailureSpeech::default(),
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
             .await
             .expect("join");
 
-        assert_eq!(requests.len(), 4, "no clipboard read: {requests:#?}");
+        assert_eq!(requests.len(), 5, "no clipboard read: {requests:#?}");
         assert!(
             !requests.iter().any(|request| request.starts_with("GET /clipboard ")),
             "the clipboard is private until the user asks: {requests:#?}"
@@ -5715,7 +6908,7 @@ c"));
         let chat = r#"{"choices":[{"message":{"content":"{\"speech\":\"On it\",\"escalate\":true}"}}]}"#;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        let server = serve(listener, vec!["{}", CLIPS_BODY, chat, "{}"]);
+        let server = serve(listener, vec!["{}", SURVIVAL_BODY, CLIPS_BODY, chat, "{}"]);
 
         let parsed = rules(PROFILE_RULES);
         let backend = OpenaiCompatBackend {
@@ -5740,6 +6933,7 @@ c"));
                 prompt: "summarise this repo",
                 session: "char-rig-test",
                 flight: guard,
+                failure_speech: FailureSpeech::default(),
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -5750,8 +6944,8 @@ c"));
         assert!(report.failure.is_none());
         assert_eq!(
             requests.len(),
-            4,
-            "context + animations + chat + the short ack bubble: {requests:#?}"
+            5,
+            "context + survival + animations + chat + the short ack bubble: {requests:#?}"
         );
 
         // The hand-off target is a real CLI backend built from the profile.
@@ -5856,7 +7050,12 @@ c"));
     ) -> (DispatchReport, Vec<String>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        let mut bodies = vec![(200u16, "{}"), (200u16, CLIPS_BODY), (200u16, chat)];
+        let mut bodies = vec![
+            (200u16, "{}"),
+            (200u16, SURVIVAL_BODY),
+            (200u16, CLIPS_BODY),
+            (200u16, chat),
+        ];
         bodies.extend(responses);
         let server = serve_responses(listener, bodies);
 
@@ -5881,6 +7080,7 @@ c"));
                 prompt,
                 session: "char-rig-test",
                 flight: guard,
+                failure_speech: FailureSpeech::default(),
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -5905,9 +7105,9 @@ c"));
             expression: None,
             details: None,
         }]);
-        assert_eq!(requests.len(), 5, "context, animations, chat, wave, speak: {requests:#?}");
-        assert!(requests[3].starts_with("POST /wave "), "{}", requests[3]);
-        assert!(requests[4].starts_with("POST /speak "), "{}", requests[4]);
+        assert_eq!(requests.len(), 6, "context, animations, chat, wave, speak: {requests:#?}");
+        assert!(requests[4].starts_with("POST /wave "), "{}", requests[4]);
+        assert!(requests[5].starts_with("POST /speak "), "{}", requests[5]);
         assert!(
             !requests.iter().any(|request| request.starts_with("POST /animate ")),
             "the built-in wave is not an animate call: {requests:#?}"
@@ -5925,11 +7125,11 @@ c"));
         .await;
 
         assert!(report.failure.is_none(), "{report:?}");
-        assert_eq!(requests.len(), 5, "{requests:#?}");
-        assert!(requests[3].starts_with("POST /animate "), "{}", requests[3]);
-        assert!(requests[3].contains("\"name\":\"dance\""), "{}", requests[3]);
-        assert!(requests[3].contains("\"loop\":false"), "{}", requests[3]);
-        assert!(requests[4].starts_with("POST /speak "), "{}", requests[4]);
+        assert_eq!(requests.len(), 6, "{requests:#?}");
+        assert!(requests[4].starts_with("POST /animate "), "{}", requests[4]);
+        assert!(requests[4].contains("\"name\":\"dance\""), "{}", requests[4]);
+        assert!(requests[4].contains("\"loop\":false"), "{}", requests[4]);
+        assert!(requests[5].starts_with("POST /speak "), "{}", requests[5]);
     }
 
     #[tokio::test]
@@ -5944,6 +7144,7 @@ c"));
             listener,
             vec![
                 (200u16, "{}"),
+                (200u16, SURVIVAL_BODY),
                 (200u16, CLIPS_BODY),
                 (200u16, chat),
                 (400u16, r#"{"ok":false,"error":"unknown clip"}"#),
@@ -5973,6 +7174,7 @@ c"));
                 prompt: "wave at me",
                 session: "char-rig-test",
                 flight: guard,
+                failure_speech: FailureSpeech::default(),
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -5980,15 +7182,15 @@ c"));
             .expect("join");
 
         assert!(report.failure.is_none(), "a rejected clip is not a failed dispatch: {report:?}");
-        assert_eq!(requests.len(), 6, "{requests:#?}");
-        assert!(requests[3].starts_with("POST /animate "), "{}", requests[3]);
+        assert_eq!(requests.len(), 7, "{requests:#?}");
+        assert!(requests[4].starts_with("POST /animate "), "{}", requests[4]);
         assert!(
-            requests[4].starts_with("POST /wave "),
+            requests[5].starts_with("POST /wave "),
             "the rejected clip degrades to the built-in wave: {:#?}",
             requests
         );
         assert!(
-            requests[5].starts_with("POST /speak "),
+            requests[6].starts_with("POST /speak "),
             "a rejected clip must never swallow the bubble: {:#?}",
             requests
         );

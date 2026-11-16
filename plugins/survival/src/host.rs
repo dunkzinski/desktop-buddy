@@ -24,6 +24,7 @@ mod imp {
         pub fn host_now_ms() -> i64;
         pub fn host_log(level: u32, msg_ptr: u32, msg_len: u32);
         pub fn host_state_save(ptr: u32, len: u32) -> i32;
+        pub fn host_ai_attached() -> i32;
     }
 }
 
@@ -61,6 +62,25 @@ pub fn notify(text: &str, expression: &str) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         tests::record_notify(text, expression);
+    }
+}
+
+/// Is an AI brain (the watcher) attached to the event bus right now?
+///
+/// Every spontaneous line this plugin says is *also* published as an event that
+/// carries the same `line`, and the watcher routes that event to the model. When
+/// a brain is attached, speaking here as well would be two voices for one
+/// trigger — so the plugin stays quiet and lets the brain answer (the watcher
+/// speaks the payload's `line` itself if the model errors or times out). With no
+/// brain attached this is the only voice left, so it must speak.
+pub fn ai_attached() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        imp::host_ai_attached() != 0
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        tests::ai_attached()
     }
 }
 
@@ -130,6 +150,10 @@ mod tests {
         /// Every `host_state_save` payload, in order — what the host would have
         /// written to disk.
         pub states: Vec<Vec<u8>>,
+        /// What `host_ai_attached` answers. Defaults to `false`: with no watcher
+        /// every existing "it said something" assertion still holds, and a test
+        /// opts into the brain-attached path explicitly.
+        pub ai: bool,
     }
 
     // **Thread-local on purpose.** `#[test]` functions run in parallel threads,
@@ -179,6 +203,7 @@ mod tests {
             out.logs = std::mem::take(&mut recorder.logs);
             out.states = std::mem::take(&mut recorder.states);
             out.clock = recorder.clock;
+            out.ai = recorder.ai;
         });
         out
     }
@@ -187,9 +212,25 @@ mod tests {
     pub fn set_now_ms(value: u64) {
         with(|recorder| recorder.clock = value);
     }
+
+    /// Test helper: attach (or detach) a simulated AI brain.
+    ///
+    /// Thread-local like everything else here, so one test's brain never leaks
+    /// into another's assertions.
+    pub fn set_ai_attached(value: bool) {
+        with(|recorder| recorder.ai = value);
+    }
+
+    pub fn ai_attached() -> bool {
+        let mut value = false;
+        with(|recorder| value = recorder.ai);
+        value
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use tests::take as take_recorded;
 #[cfg(not(target_arch = "wasm32"))]
 pub use tests::set_now_ms;
+#[cfg(not(target_arch = "wasm32"))]
+pub use tests::set_ai_attached;

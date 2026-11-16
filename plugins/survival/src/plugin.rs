@@ -466,6 +466,15 @@ impl Survival {
         if outcome.worsened() {
             self.last_tier = outcome.tier_after;
             self.starving_secs = 0.0;
+            let tier = outcome.tier_after;
+            // Dropping into `hungry` or `starving` earns a real complaint
+            // rather than the terse status line: this is the avatar
+            // volunteering information, not answering a question.
+            let line = if tier.is_critical() {
+                tier.complaint()
+            } else {
+                tier.notice()
+            };
             host::emit(
                 EVENT_THRESHOLD,
                 &json!({
@@ -475,21 +484,13 @@ impl Survival {
                     "saturation": payload["saturation"],
                     "label": outcome.tier_after.label(),
                     "expression": outcome.tier_after.expression(),
+                    // The authored line rides along so the watcher can speak it
+                    // when the model is unavailable (see `say`).
+                    "line": line,
                     "source": "metabolism",
                 }),
             );
-            if self.config.notify {
-                let tier = outcome.tier_after;
-                // Dropping into `hungry` or `starving` earns a real complaint
-                // rather than the terse status line: this is the avatar
-                // volunteering information, not answering a question.
-                let line = if tier.is_critical() {
-                    tier.complaint()
-                } else {
-                    tier.notice()
-                };
-                host::notify(line, tier.expression());
-            }
+            self.say(line, tier.expression());
         } else if outcome.tier_after == HungerTier::Starving {
             self.starving_secs += dt_secs;
             if self.starving_secs >= STARVATION_REPEAT_SECS {
@@ -503,15 +504,14 @@ impl Survival {
                         "saturation": payload["saturation"],
                         "label": "Starving",
                         "expression": HungerTier::Starving.expression(),
+                        "line": HungerTier::Starving.complaint(),
                         "source": "starvation-reminder",
                     }),
                 );
-                if self.config.notify {
-                    host::notify(
-                        HungerTier::Starving.complaint(),
-                        HungerTier::Starving.expression(),
-                    );
-                }
+                self.say(
+                    HungerTier::Starving.complaint(),
+                    HungerTier::Starving.expression(),
+                );
             }
         }
 
@@ -550,6 +550,7 @@ impl Survival {
             if craving.is_expired(now_ms) {
                 self.stats.clear_craving();
                 self.dirty = true;
+                let line = model::craving_lapsed_notice(&craving);
                 host::emit(
                     EVENT_CRAVING,
                     &json!({
@@ -560,12 +561,11 @@ impl Survival {
                         "hunger": payload["hunger"],
                         "saturation": payload["saturation"],
                         "expression": "sad",
+                        "line": line,
                         "source": "ttl",
                     }),
                 );
-                if self.config.notify {
-                    host::notify(&model::craving_lapsed_notice(&craving), "sad");
-                }
+                self.say(&line, "sad");
             }
         }
 
@@ -620,6 +620,7 @@ impl Survival {
         self.craving_elapsed = 0.0;
         let variant = self.rng.next_u64();
         self.dirty = true;
+        let line = model::craving_notice(&craving, variant);
         host::emit(
             EVENT_CRAVING,
             &json!({
@@ -633,18 +634,37 @@ impl Survival {
                 "saturation": payload["saturation"],
                 "tier": payload["tier"],
                 "expression": "thinking",
+                "line": line,
                 "source": "spontaneous",
             }),
         );
-        if self.config.notify {
-            host::notify(&model::craving_notice(&craving, variant), "thinking");
+        self.say(&line, "thinking");
+    }
+
+    /// Speak a spontaneous line — unless an AI brain is attached.
+    ///
+    /// Every one of these moments is *also* an event, and each of those payloads
+    /// now carries the same `line` plus the expression it was meant for. A
+    /// connected watcher routes the event to the model, which answers in its own
+    /// voice (and speaks the payload's `line` itself if the model errors, times
+    /// out, or is not configured). So speaking here as well would be two voices
+    /// for one trigger — the double-fire this gate exists to prevent. With no
+    /// brain attached (`host::ai_attached()` false) this is the only voice left,
+    /// so it must speak.
+    ///
+    /// `config.notify` stays the plugin's own switch for these canned lines; the
+    /// watcher's fallback is the watcher's decision.
+    fn say(&self, text: &str, expression: &str) {
+        if !self.config.notify || host::ai_attached() {
+            return;
         }
+        host::notify(text, expression);
     }
 
     /// Emit the meal event and speak the right line for it. A settled craving
     /// wins over the generic tier notice so only one sentence is queued.
     fn finish_meal(&mut self, outcome: &EatOutcome) -> Value {
-        let payload = outcome.to_json();
+        let mut payload = outcome.to_json();
         host::emit(EVENT_MEAL, &payload);
         if !outcome.accepted {
             return payload;
@@ -658,31 +678,35 @@ impl Survival {
             .unwrap_or_else(|| outcome.tier_after.expression())
             .to_string();
 
-        match &outcome.craving_satisfied {
-            Some(craving) => {
-                host::emit(
-                    EVENT_CRAVING,
-                    &json!({
-                        "state": "satisfied",
-                        "kind": craving.kind.as_str(),
-                        "target": craving.target,
-                        "label": craving.label(),
-                        "food": outcome.food,
-                        "hunger": payload["hunger_after"],
-                        "saturation": payload["saturation_after"],
-                        "expression": expression,
-                        "source": "meal",
-                    }),
-                );
-                if self.config.notify {
-                    host::notify(
-                        &model::craving_satisfied_notice(&craving.label()),
-                        &expression,
-                    );
-                }
-            }
-            None => host::notify(outcome.tier_after.notice(), &expression),
+        // A settled craving wins over the generic tier line, so only one
+        // sentence is ever queued for a meal.
+        let line = match &outcome.craving_satisfied {
+            Some(craving) => model::craving_satisfied_notice(&craving.label()),
+            None => outcome.tier_after.notice().to_string(),
+        };
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("line".to_string(), json!(line));
+            object.insert("expression".to_string(), json!(expression));
         }
+
+        if let Some(craving) = &outcome.craving_satisfied {
+            host::emit(
+                EVENT_CRAVING,
+                &json!({
+                    "state": "satisfied",
+                    "kind": craving.kind.as_str(),
+                    "target": craving.target,
+                    "label": craving.label(),
+                    "food": outcome.food,
+                    "hunger": payload["hunger_after"],
+                    "saturation": payload["saturation_after"],
+                    "expression": expression,
+                    "line": line,
+                    "source": "meal",
+                }),
+            );
+        }
+        self.say(&line, &expression);
         self.craving_elapsed = 0.0;
         payload
     }
@@ -1334,11 +1358,10 @@ impl Survival {
                         "hook_key": session["hook_key"],
                         "mouse_button": session["mouse_button"],
                         "expression": "surprised",
+                        "line": BITE_NOTICE,
                     }),
                 );
-                if self.config.notify {
-                    host::notify(BITE_NOTICE, "surprised");
-                }
+                self.say(BITE_NOTICE, "surprised");
                 true
             }
             FishingPhase::Biting if now_ms > self.fishing.bite_deadline_ms() => {
@@ -1516,6 +1539,21 @@ impl Survival {
             self.emit_inventory(loot.item, 1, "fishing");
         }
         let variant = self.rng.next_u64();
+        // The authored line, the expression and the species facts all ride on
+        // the event: the watcher's brain reacts to them and speaks `line` itself
+        // if the model is unavailable.
+        let line = if stored {
+            fishing::catch_notice(label, junk, variant)
+        } else {
+            EscapeReason::InventoryFull.notice(variant).to_string()
+        };
+        let expression = if !stored {
+            EscapeReason::InventoryFull.expression()
+        } else if junk {
+            "neutral"
+        } else {
+            "happy"
+        };
         let payload = json!({
             "caught": stored,
             "stored": stored,
@@ -1523,6 +1561,11 @@ impl Survival {
             "label": label,
             "icon": definition.map(|entry| entry.icon).unwrap_or("•"),
             "junk": junk,
+            "species": definition.map(|entry| entry.kind.as_str()),
+            "rarity": definition.map(|entry| entry.rarity),
+            "blurb": definition.map(|entry| entry.blurb),
+            "expression": expression,
+            "line": line,
             "reason": if stored { Value::Null } else { json!(EscapeReason::InventoryFull.as_str()) },
             "position": position,
             "sweet": { "start": spec.sweet_start, "end": spec.sweet_end() },
@@ -1532,17 +1575,7 @@ impl Survival {
             "inventory": self.inventory.summary_json(),
         });
         host::emit(EVENT_FISHING_RESULT, &payload);
-        if self.config.notify {
-            if stored {
-                let expression = if junk { "neutral" } else { "happy" };
-                host::notify(&fishing::catch_notice(label, junk, variant), expression);
-            } else {
-                host::notify(
-                    EscapeReason::InventoryFull.notice(variant),
-                    EscapeReason::InventoryFull.expression(),
-                );
-            }
-        }
+        self.say(&line, expression);
         Ok(payload)
     }
 
@@ -1554,6 +1587,7 @@ impl Survival {
     ) -> Result<Value, FeedError> {
         self.fishing.record(false);
         let variant = self.rng.next_u64();
+        let line = reason.notice(variant);
         let payload = json!({
             "caught": false,
             "stored": false,
@@ -1562,15 +1596,14 @@ impl Survival {
             "reason": reason.as_str(),
             "position": position,
             "expression": reason.expression(),
+            "line": line,
             "casts": self.fishing.casts,
             "catches": self.fishing.catches,
             "escapes": self.fishing.escapes,
             "inventory": self.inventory.summary_json(),
         });
         host::emit(EVENT_FISHING_RESULT, &payload);
-        if self.config.notify {
-            host::notify(reason.notice(variant), reason.expression());
-        }
+        self.say(line, reason.expression());
         Ok(payload)
     }
 
@@ -2026,6 +2059,47 @@ mod tests {
     }
 
     #[test]
+    fn an_attached_brain_owns_the_voice_and_the_line_rides_the_event() {
+        crate::host::set_ai_attached(true);
+        // 51.0 -> hungry after a minute of drain (1.5/min).
+        let mut state = plugin(51.0, 0.0);
+        state.tick(60.0).expect("tick");
+        assert_eq!(state.stats().tier(), HungerTier::Hungry);
+        let recorded = take_recorded();
+        crate::host::set_ai_attached(false);
+
+        let threshold = recorded
+            .events
+            .iter()
+            .find(|(name, payload)| name == EVENT_THRESHOLD && payload["to"] == "hungry")
+            .expect("a threshold event");
+        assert_eq!(
+            threshold.1["line"],
+            HungerTier::Hungry.complaint(),
+            "the event carries the line the brain may fall back to"
+        );
+        assert_eq!(threshold.1["expression"], "thinking");
+        assert!(
+            recorded.notifies.is_empty(),
+            "a brain is attached, so the plugin must not speak: {:?}",
+            recorded.notifies
+        );
+
+        // No brain attached: the same crossing is spoken again.
+        let mut state = plugin(51.0, 0.0);
+        state.tick(60.0).expect("tick");
+        let recorded = take_recorded();
+        assert!(
+            recorded
+                .notifies
+                .iter()
+                .any(|(text, _)| text == HungerTier::Hungry.complaint()),
+            "without a brain the plugin is the only voice: {:?}",
+            recorded.notifies
+        );
+    }
+
+    #[test]
     fn an_unknown_craving_target_is_refused() {
         let mut state = plugin(40.0, 0.0);
         let err = state.set_craving(&json!("pizza")).expect_err("unknown");
@@ -2295,6 +2369,41 @@ mod tests {
         assert_eq!(result.1["caught"], json!(true));
         assert!(result.1["item"].is_string());
         assert!(recorded.notifies.iter().any(|(text, _)| !text.is_empty()));
+    }
+
+    #[test]
+    fn a_landed_fish_carries_its_species_and_line() {
+        crate::host::set_ai_attached(true);
+        let mut state = angler();
+        state.cast().expect("cast");
+        wait_for_the_bite(&mut state);
+        state.hook().expect("hook");
+        let reel = state.fishing().reel().copied().expect("reel");
+        let centre = reel.sweet_start + reel.sweet_width / 2.0;
+        crate::host::set_now_ms(reel.started_ms + elapsed_for(centre, reel.period_ms));
+        take_recorded();
+        let payload = state.reel().expect("reel");
+        let recorded = take_recorded();
+        crate::host::set_ai_attached(false);
+
+        assert_eq!(payload["caught"], json!(true));
+        let result = recorded
+            .events
+            .iter()
+            .find(|(name, _)| name == EVENT_FISHING_RESULT)
+            .expect("result event");
+        assert_eq!(result.1["caught"], json!(true));
+        // The brain gets facts it can work with, not just an id.
+        assert!(result.1["species"].is_string(), "{:?}", result.1);
+        assert!(result.1["rarity"].is_number(), "{:?}", result.1);
+        assert!(result.1["blurb"].is_string(), "{:?}", result.1);
+        let line = result.1["line"].as_str().expect("a line");
+        assert!(line.contains(result.1["label"].as_str().expect("label")), "{line}");
+        assert!(
+            recorded.notifies.is_empty(),
+            "an attached brain owns the catch: {:?}",
+            recorded.notifies
+        );
     }
 
     #[test]
