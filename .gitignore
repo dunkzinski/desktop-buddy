@@ -24,3 +24,11 @@ plugins/*.state.json.tmp
 # source. `git add -f` one to ship a creature line on purpose.
 models/digi-*/
 models/digi-*/*.tmp
+
+# Runtime state: the app rewrites these at every model switch / settings save,
+# so they are machine-local, not source.
+models/.state.json
+watcher_rules.json.bak
+# Python bytecode from the model build scripts
+__pycache__/
+*.pyc
