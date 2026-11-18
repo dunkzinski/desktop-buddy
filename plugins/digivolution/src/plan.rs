@@ -202,6 +202,16 @@ pub struct Plan {
     /// Rotation (radians) added to every shoulder/hip bind angle.
     pub arm_stance: f64,
     pub leg_stance: f64,
+    /// Ratio between the arm's two segments: `>1` is a long upper arm and a
+    /// stubby forearm, `<1` the opposite. Total reach is unchanged, so the limb
+    /// reads as a different *joint* rather than as a longer arm.
+    pub arm_segment: f64,
+    /// The same for thigh vs shin: `>1` is a crouched, heavy-haunched stance.
+    pub leg_segment: f64,
+    /// Stretch on the muzzle/jaw/beak along the face's forward axis. `1.0`
+    /// leaves the skull as its plan drew it; the form may lengthen it into a
+    /// snout or blunt it into a pug face without changing `head_w`/`head_h`.
+    pub snout: f64,
     /// The form's secondary silhouette furniture.
     pub accessory: Accessory,
     // Details that only some plans carry.
@@ -259,6 +269,9 @@ const fn base() -> Plan {
         tail_arc: 0.0,
         arm_stance: 0.0,
         leg_stance: 0.0,
+        arm_segment: 1.0,
+        leg_segment: 1.0,
+        snout: 1.0,
         accessory: Accessory::None,
         dorsal_fin: false,
         gills: false,
@@ -563,6 +576,8 @@ fn beast_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — lupine: swept leaf ears, a neck ruff, longer legs, higher tail.
         1 => Plan {
+            arm_segment: 0.9,
+            leg_segment: 1.08,
             ears: EarKind::Long,
             ear_scale: 1.12,
             ear_angle: -0.14,
@@ -578,6 +593,9 @@ fn beast_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — ursine: heavy trunk, short legs, tiny ears, buzz-cut horns.
         2 => Plan {
+            arm_segment: 1.12,
+            leg_segment: 0.88,
+            snout: 0.85,
             ear_scale: 0.7,
             crest_scale: 0.68,
             head_w: p.head_w * 1.1,
@@ -591,6 +609,8 @@ fn beast_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — sabre: narrow skull, a fan of spikes, a whip tail, shoulder spurs.
         _ => Plan {
+            leg_segment: 0.95,
+            snout: 1.3,
             crest: CrestKind::Spikes,
             crest_scale: 1.28,
             crest_spread: -0.1,
@@ -613,6 +633,8 @@ fn drake_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — wyrm: a longer neck, paired horns and a dorsal ridge down the back.
         1 => Plan {
+            leg_segment: 1.05,
+            snout: 1.15,
             crest: CrestKind::Horns,
             crest_scale: 1.12,
             crest_spread: 0.12,
@@ -627,6 +649,8 @@ fn drake_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — wyvern: broad chest, heavy jaw, wide spike crest, hip fins.
         2 => Plan {
+            arm_segment: 1.1,
+            snout: 1.2,
             crest_scale: 1.35,
             crest_spread: -0.14,
             neck: 4.0,
@@ -641,6 +665,7 @@ fn drake_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — serpentine: a low narrow trunk, a long bladed tail, a long neck.
         _ => Plan {
+            snout: 1.3,
             crest_scale: 0.8,
             neck: 20.0,
             torso_w: p.torso_w * 0.86,
@@ -659,6 +684,7 @@ fn cyborg_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — sensor unit: a tall mast, wide receivers, a second antenna pair.
         1 => Plan {
+            arm_segment: 0.9,
             crest: CrestKind::Antenna,
             crest_scale: 1.2,
             crest_spread: -0.12,
@@ -671,6 +697,7 @@ fn cyborg_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — siege: wider shoulders, a longer blade, spurs, a squatter stance.
         2 => Plan {
+            arm_segment: 1.15,
             crest_scale: 1.25,
             torso_w: p.torso_w * 1.14,
             torso_h: p.torso_h * 1.02,
@@ -682,6 +709,8 @@ fn cyborg_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — scout: leggier, narrower, a short blade and small receivers.
         _ => Plan {
+            leg_segment: 1.12,
+            snout: 1.2,
             crest_scale: 0.8,
             ear_scale: 0.8,
             head_w: p.head_w * 0.94,
@@ -700,6 +729,7 @@ fn holy_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — seraph: a tall blade of light, a jaw frill, a higher brow.
         1 => Plan {
+            leg_segment: 1.1,
             crest: CrestKind::Blade,
             crest_scale: 1.3,
             crest_spread: -0.08,
@@ -711,6 +741,7 @@ fn holy_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — cherub: a rounder, wider body on shorter legs, a throat ring.
         2 => Plan {
+            arm_segment: 0.9,
             torso_w: p.torso_w * 1.1,
             torso_h: p.torso_h * 0.95,
             head_w: p.head_w * 1.1,
@@ -723,6 +754,9 @@ fn holy_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — oracle: a tall narrow skull on a long neck, an upright stance.
         _ => Plan {
+            arm_segment: 1.12,
+            leg_segment: 1.05,
+            snout: 1.1,
             crest: CrestKind::Blade,
             crest_scale: 0.9,
             neck: 16.0,
@@ -742,6 +776,8 @@ fn aqua_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — eel: a long body, a huge fan tail, hip fins, a taller head fin.
         1 => Plan {
+            snout: 1.2,
+            leg_segment: 1.1,
             crest_scale: 1.2,
             head_w: p.head_w * 1.1,
             head_h: p.head_h * 0.8,
@@ -755,6 +791,8 @@ fn aqua_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — ray: a wide flat body, oversized head, pectoral spurs.
         2 => Plan {
+            snout: 0.85,
+            arm_segment: 1.15,
             crest_scale: 0.85,
             head_w: p.head_w * 1.18,
             torso_w: p.torso_w * 1.16,
@@ -768,6 +806,7 @@ fn aqua_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — pike: a narrow head and body, a jaw frill, sharper fins.
         _ => Plan {
+            snout: 1.35,
             crest_scale: 0.8,
             head_w: p.head_w * 0.96,
             head_h: p.head_h * 0.9,
@@ -787,6 +826,7 @@ fn cervid_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — elk: a broader trunk, a longer neck, a neck ruff, big antlers.
         1 => Plan {
+            snout: 1.12,
             crest_scale: 1.3,
             crest_spread: 0.1,
             neck: 24.0,
@@ -799,6 +839,7 @@ fn cervid_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — gazelle: slimmer and taller, with smaller ears and antlers.
         2 => Plan {
+            leg_segment: 1.12,
             crest_scale: 0.8,
             torso_w: p.torso_w * 0.88,
             leg_len: p.leg_len * 1.12,
@@ -810,6 +851,8 @@ fn cervid_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — moose: a heavy head with a dewlap, a stockier frame.
         _ => Plan {
+            snout: 1.3,
+            arm_segment: 1.1,
             crest_scale: 1.2,
             torso_w: p.torso_w * 1.12,
             torso_h: p.torso_h * 1.04,
@@ -830,6 +873,8 @@ fn machine_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — turret: a squat wide chassis with heavy arms and a long mast.
         1 => Plan {
+            arm_segment: 1.15,
+            leg_segment: 0.92,
             crest_scale: 1.25,
             torso_w: p.torso_w * 1.1,
             torso_h: p.torso_h * 0.9,
@@ -841,6 +886,7 @@ fn machine_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — tracker: a taller chassis, wide receivers, a second sensor pair.
         2 => Plan {
+            arm_segment: 0.9,
             crest_scale: 0.8,
             ear_scale: 1.3,
             torso_w: p.torso_w * 0.94,
@@ -851,6 +897,7 @@ fn machine_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — crawler: narrow and long, short arms, a sensor collar.
         _ => Plan {
+            snout: 1.15,
             torso_w: p.torso_w * 0.9,
             torso_h: p.torso_h * 1.08,
             arm_len: p.arm_len * 0.85,
@@ -867,6 +914,7 @@ fn alien_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — grey: a huge cranium on a slim body, longer tendrils, a jaw frill.
         1 => Plan {
+            snout: 0.85,
             head_w: p.head_w * 1.15,
             head_h: p.head_h * 1.14,
             torso_w: p.torso_w * 0.86,
@@ -878,6 +926,7 @@ fn alien_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — hulk: a broad body under a spined crown, short thick tendrils.
         2 => Plan {
+            arm_segment: 0.9,
             crest: CrestKind::Spikes,
             crest_scale: 1.2,
             crest_spread: 0.14,
@@ -892,6 +941,7 @@ fn alien_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — watcher: an even wider skull, longer eye stalks, swept hip fins.
         _ => Plan {
+            snout: 1.1,
             head_w: p.head_w * 1.15,
             torso_w: p.torso_w * 0.92,
             torso_h: p.torso_h * 1.1,
@@ -909,8 +959,11 @@ fn alien_form(p: Plan, form: u8) -> Plan {
 fn avian_form(p: Plan, form: u8) -> Plan {
     match form {
         0 => p,
-        // 1 — raptor: a lean frame on long legs, a tall comb, a jaw frill.
+        // 1 — raptor: a lean frame on long legs, a broad wing, a tall comb.
         1 => Plan {
+            snout: 1.2,
+            leg_segment: 1.1,
+            arm_segment: 1.15,
             crest_scale: 1.2,
             crest_spread: -0.1,
             head_w: p.head_w * 0.94,
@@ -923,6 +976,7 @@ fn avian_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — owl: a wide round skull with ear tufts, a short neck, a small comb.
         2 => Plan {
+            snout: 0.8,
             ears: EarKind::Pointed,
             ear_scale: 0.9,
             ear_angle: 0.16,
@@ -936,6 +990,8 @@ fn avian_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — crane: a long neck and legs, a big comb, long tail plumes.
         _ => Plan {
+            snout: 1.3,
+            leg_segment: 1.15,
             crest_scale: 1.35,
             neck: 24.0,
             torso_w: p.torso_w * 0.88,
@@ -955,6 +1011,7 @@ fn insect_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — beetle: a wide domed shell, a short crest, a dorsal ridge.
         1 => Plan {
+            arm_segment: 0.9,
             crest_scale: 0.8,
             head_w: p.head_w * 1.06,
             torso_w: p.torso_w * 1.1,
@@ -965,8 +1022,10 @@ fn insect_form(p: Plan, form: u8) -> Plan {
             accessory: Accessory::Ridge,
             ..p
         },
-        // 2 — mantis: long raptor arms, a tall frame, shoulder spurs.
+        // 2 — mantis: long raptor arms, long mandibles, shoulder spurs.
         2 => Plan {
+            arm_segment: 1.2,
+            snout: 1.15,
             crest_scale: 1.25,
             torso_w: p.torso_w * 0.88,
             torso_h: p.torso_h * 1.08,
@@ -979,6 +1038,7 @@ fn insect_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — wasp: a narrow thorax and a long bladed abdomen.
         _ => Plan {
+            leg_segment: 1.1,
             crest_scale: 0.9,
             ear_scale: 0.8,
             torso_w: p.torso_w * 0.94,
@@ -998,6 +1058,7 @@ fn serpent_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — cobra: a wide skull, a tall head fin, and a hood frill.
         1 => Plan {
+            snout: 1.15,
             crest_scale: 1.35,
             crest_spread: 0.1,
             head_w: p.head_w * 1.12,
@@ -1009,6 +1070,8 @@ fn serpent_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — python: a heavy body with a low head and a dorsal ridge.
         2 => Plan {
+            snout: 1.1,
+            arm_segment: 1.1,
             crest_scale: 0.8,
             head_w: p.head_w * 1.06,
             torso_w: p.torso_w * 1.1,
@@ -1020,6 +1083,7 @@ fn serpent_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — viper: a narrow raised head over a coiled, bladed tail.
         _ => Plan {
+            snout: 1.3,
             crest_scale: 1.1,
             head_w: p.head_w * 0.96,
             head_h: p.head_h * 0.94,
@@ -1039,6 +1103,7 @@ fn golem_form(p: Plan, form: u8) -> Plan {
         0 => p,
         // 1 — colossus: the widest shoulders, a tall spike crown, shoulder spurs.
         1 => Plan {
+            arm_segment: 1.12,
             crest_scale: 1.3,
             crest_spread: 0.12,
             torso_w: p.torso_w * 1.16,
@@ -1052,6 +1117,7 @@ fn golem_form(p: Plan, form: u8) -> Plan {
         },
         // 2 — sentry: an upright column of stone with a short crown and a collar.
         2 => Plan {
+            leg_segment: 1.1,
             crest_scale: 0.7,
             torso_w: p.torso_w * 0.9,
             torso_h: p.torso_h * 1.06,
@@ -1062,6 +1128,8 @@ fn golem_form(p: Plan, form: u8) -> Plan {
         },
         // 3 — boulder: a squat boulder of a body, huge arms, a back ridge.
         _ => Plan {
+            arm_segment: 1.2,
+            snout: 0.9,
             crest_scale: 1.0,
             torso_w: p.torso_w * 1.2,
             torso_h: p.torso_h * 0.94,
@@ -1255,7 +1323,7 @@ mod tests {
     fn silhouette(p: &Plan) -> String {
         format!(
             "{:?}/{:?}/{:?}/{:?}/{:?}/{:?}/{:?}/w{}/a{:?}/\
-             {:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}/{:.2},{:.2},{:.2},{:.2}",
+             {:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}/{:.2},{:.2},{:.2},{:.2}/{:.2},{:.2},{:.2}",
             p.head,
             p.ears,
             p.crest,
@@ -1278,6 +1346,9 @@ mod tests {
             p.crest_spread,
             p.tail_arc,
             p.leg_stance,
+            p.arm_segment,
+            p.leg_segment,
+            p.snout,
         )
     }
 
@@ -1320,6 +1391,56 @@ mod tests {
                 seen.push((shape, archetype.as_str()));
             }
         }
+    }
+
+    #[test]
+    fn every_archetype_reshapes_a_limb_ratio_and_a_skull() {
+        // A knob that is never set is a knob that does not exist: each
+        // archetype's four forms must actually move the arm/leg segment split
+        // and the muzzle, not only the trunk proportions.
+        for archetype in Archetype::ALL {
+            let forms: Vec<Plan> = (0..FORM_COUNT)
+                .map(|form| plan_for(archetype, Attribute::default(), form * BUILD_COUNT))
+                .collect();
+            let splits: std::collections::BTreeSet<String> = forms
+                .iter()
+                .map(|p| format!("{:.2}/{:.2}", p.arm_segment, p.leg_segment))
+                .collect();
+            assert!(
+                splits.len() >= 2,
+                "{}: all four forms share one limb-segment split",
+                archetype.as_str()
+            );
+            assert!(
+                forms.iter().any(|p| (p.arm_segment - 1.0).abs() > 1e-9),
+                "{}: no form changes the arm's segment ratio",
+                archetype.as_str()
+            );
+            // A hoverer and a coiled serpent have no leg bones to split, so
+            // asking them for a thigh/shin ratio would force an inert value.
+            if !matches!(forms[0].legs, LegKind::Hover | LegKind::Coiled) {
+                assert!(
+                    forms.iter().any(|p| (p.leg_segment - 1.0).abs() > 1e-9),
+                    "{}: no form changes the leg's segment ratio",
+                    archetype.as_str()
+                );
+            }
+        }
+        // The muzzle is only meaningful on a face that has one.
+        let snouted = Archetype::ALL
+            .iter()
+            .filter(|archetype| {
+                (0..FORM_COUNT).any(|form| {
+                    let p = plan_for(**archetype, Attribute::default(), form * BUILD_COUNT);
+                    (p.snout - 1.0).abs() > 1e-9
+                })
+            })
+            .count();
+        assert_eq!(
+            snouted,
+            Archetype::ALL.len(),
+            "every archetype has a face to lengthen or blunt"
+        );
     }
 
     #[test]
@@ -1373,6 +1494,9 @@ mod tests {
                         ("tail_arc", p.tail_arc, -0.25, 0.25),
                         ("arm_stance", p.arm_stance, -0.15, 0.15),
                         ("leg_stance", p.leg_stance, -0.15, 0.15),
+                        ("arm_segment", p.arm_segment, 0.8, 1.25),
+                        ("leg_segment", p.leg_segment, 0.8, 1.25),
+                        ("snout", p.snout, 0.75, 1.4),
                     ] {
                         assert!(
                             (lo..=hi).contains(&factor),

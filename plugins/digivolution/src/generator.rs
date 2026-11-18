@@ -530,10 +530,14 @@ impl Dims {
             torso_h: (78.0 + 6.0 * t) * plan.torso_h * wobble(rng),
             head_w: (66.0 + 3.0 * t) * plan.head_w * wobble(rng),
             head_h: (58.0 + 3.0 * t) * plan.head_h * wobble(rng),
-            upper_arm: (34.0 + 3.0 * t) * plan.arm_len * wobble(rng),
-            forearm: (28.0 + 3.0 * t) * plan.arm_len * wobble(rng),
-            thigh: (36.0 + 6.0 * t) * plan.leg_len * wobble(rng),
-            shin: (32.0 + 5.0 * t) * plan.leg_len * wobble(rng),
+            // The form's `*_segment` multiplies one bone and divides the other,
+            // so the limb keeps its reach and changes where it bends: a heavy
+            // upper arm over a stubby forearm reads as a different joint, not as
+            // a shorter arm.
+            upper_arm: (34.0 + 3.0 * t) * plan.arm_len * plan.arm_segment * wobble(rng),
+            forearm: (28.0 + 3.0 * t) * plan.arm_len / plan.arm_segment * wobble(rng),
+            thigh: (36.0 + 6.0 * t) * plan.leg_len * plan.leg_segment * wobble(rng),
+            shin: (32.0 + 5.0 * t) * plan.leg_len / plan.leg_segment * wobble(rng),
             tail: (46.0 + 5.0 * t) * plan.tail_scale * wobble(rng),
             wing: (56.0 + 9.0 * t) * wobble(rng),
         }
@@ -1819,7 +1823,40 @@ fn head_parts(pal: &Palette, dims: Dims, features: Features, plan: Plan) -> Vec<
             ));
         }
     }
+    // The form's own skull shape: the muzzle group stretches along the face's
+    // forward axis, so a long-jawed variant and a pug-faced one are the same
+    // archetype with different bones, not different colours. Eyes, brows and
+    // the split mouth are deliberately left alone (they sit on the skull, and
+    // the mouth halves must stay at ±7 px for the expression contract).
+    stretch_snout(&mut parts, plan.snout);
     parts
+}
+
+/// The parts that count as "the muzzle": stretched by `plan.snout` along the
+/// head's forward axis, which is `+y` in the bone's local frame.
+const SNOUT_PARTS: [&str; 9] = [
+    "muzzle",
+    "jaw",
+    "nose",
+    "beak_upper",
+    "beak_lower",
+    "nostril_l",
+    "nostril_r",
+    "fang_l",
+    "fang_r",
+];
+
+fn stretch_snout(parts: &mut [Part], factor: f64) {
+    if (factor - 1.0).abs() < 1e-9 {
+        return;
+    }
+    for part in parts
+        .iter_mut()
+        .filter(|part| SNOUT_PARTS.contains(&part.id.as_str()))
+    {
+        part.size[0] = round4(part.size[0] * factor);
+        part.offset[1] = round4(part.offset[1] * factor);
+    }
 }
 
 /// The folded wing a winged plan wears before it can fly.
@@ -2182,11 +2219,14 @@ fn push_ear(
                 1,
                 None,
             ),
+            // The tip rides the *ellipse's* far edge, not the bone's `length`:
+            // the ear ellipse is centred on the joint, so `length - 4` left the
+            // droop hanging ~30 px past the artwork (a floating dot).
             Part::ellipse(
                 "ear_tip",
                 &pal.body_dark,
                 [round4(20.0), 14.0],
-                [round4(length - 4.0), round4(-4.0)],
+                [round4((46.0 + w * 0.34) * 0.5 - 2.0), round4(-4.0)],
                 2,
                 None,
             ),

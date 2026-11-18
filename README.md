@@ -317,11 +317,12 @@ three colours:
 …and then the seed picks one of **twelve variants**: one of the archetype's four
 *forms* (its own structural silhouettes), one of three builds (lean / canonical /
 broad) and one of four markings (none / spots / stripes / patches). A form moves
-the things that read at a glance — ear and crest scale and sweep, limb ratios,
-arm and leg stance, tail length and arc — and hangs one accessory on the body
-(a mane, a dorsal ridge, shoulder spurs, hip fins, a jaw frill, a second sensor
-pair, a throat collar or tail blades). That is **1,728 silhouettes** before the
-palette is touched at all.
+the things that read at a glance — ear and crest scale and sweep, overall limb
+length *and* where each limb bends (upper arm vs forearm, thigh vs shin), arm and
+leg stance, muzzle length, tail length and arc — and hangs one accessory on the
+body (a mane, a dorsal ridge, shoulder spurs, hip fins, a jaw frill, a second
+sensor pair, a throat collar or tail blades). That is **1,728 silhouettes**
+before the palette is touched at all.
 
 Each archetype's four forms live in **its own table** in `src/plan.rs`
 (`beast_form`, `drake_form`, …). They are not a shared template with per-body

@@ -600,10 +600,12 @@ independent choices, so the corpus is large without any of it being hand-drawn:
    three *builds* (lean, canonical, broad) and one of four markings (none /
    spots / stripes / patches).
 
-A form carries its own ear/crest scale and sweep, limb ratios, arm and leg
-stance, tail length and arc, and one accessory drawn as parts (mane, dorsal
-ridge, shoulder spurs, hip fins, jaw frill, second sensor pair, throat collar,
-tail blades). 12 archetypes × 4 forms × 3 builds × 4 markings × 3 attributes is
+A form carries its own ear/crest scale and sweep, overall limb length and the
+segment split inside each limb (`arm_segment`/`leg_segment`, a multiply/divide
+pair that keeps the reach and moves the joint), arm and leg stance, muzzle
+stretch (`snout`), tail length and arc, and one accessory drawn as parts (mane,
+dorsal ridge, shoulder spurs, hip fins, jaw frill, second sensor pair, throat
+collar, tail blades). 12 archetypes × 4 forms × 3 builds × 4 markings × 3 attributes is
 1,728 silhouettes before a palette is chosen, and the palette follows the
 attribute as a tint (a fraction, never a replacement).
 
