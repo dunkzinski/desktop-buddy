@@ -314,14 +314,25 @@ three colours:
 | `Data` | crystal growths, circuit traces, a visor band, floating bits | crystalline, plated, digital |
 | `Virus` | back spines, fangs, toxic drips, clawed hands | fanged, spiked, toxic |
 
-…and then the seed picks one of three builds (lean / canonical / broad) with its
-own marking, so 12 archetypes × 3 attributes × 3 builds is **108 silhouettes**
-before the palette is touched at all.
+…and then the seed picks one of **twelve variants**: one of the archetype's four
+*forms* (its own structural silhouettes), one of three builds (lean / canonical /
+broad) and one of four markings (none / spots / stripes / patches). A form moves
+the things that read at a glance — ear and crest scale and sweep, limb ratios,
+arm and leg stance, tail length and arc — and hangs one accessory on the body
+(a mane, a dorsal ridge, shoulder spurs, hip fins, a jaw frill, a second sensor
+pair, a throat collar or tail blades). That is **1,728 silhouettes** before the
+palette is touched at all.
+
+Each archetype's four forms live in **its own table** in `src/plan.rs`
+(`beast_form`, `drake_form`, …). They are not a shared template with per-body
+numbers: a form only ever returns the plan it was handed, so one archetype's
+mutations cannot reach another's and the twelve body plans stay twelve.
 
 **Stage one is already the creature.** The archetype's signature — crest, ears,
 gills, treads, coil, wing buds — is present from `Fresh`, scaled small, instead
-of waiting for In-Training; the attribute's marker (halo, visor, fangs) is
-there too. A hatchling is a bird or a bug or a rock, not a blob that becomes one.
+of waiting for In-Training; the attribute's marker (halo, visor, fangs) and the
+form's accessory are there too. A hatchling is a bird or a bug or a rock, not a
+blob that becomes one.
 
 Every one is still a pure function of `(seed, archetype, tier, attribute)`, still
 under the 100-part budget (decoration is trimmed before any limb), still mirrored

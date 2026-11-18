@@ -21,9 +21,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::rng::{mix_seed, Rng};
 use crate::attribute::Attribute;
-use crate::plan::{self, ArmKind, CrestKind, EarKind, HeadKind, LegKind, Plan, TailKind, TorsoKind};
+use crate::plan::{
+    self, Accessory, ArmKind, CrestKind, EarKind, HeadKind, LegKind, Plan, TailKind, TorsoKind,
+};
+use crate::rng::{mix_seed, Rng};
 use crate::skeleton::{
     hierarchy_is_sound, left_id, min_world_y, mirror_chain, round4, Anim, Bone, BoneDelta, Clip,
     Keyframe, Part, MAX_PARTS, MONITOR_BUDGET_Y, ROOT_SCALE,
@@ -248,13 +250,17 @@ impl Spec {
         }
     }
 
-    /// The seeded build, spread over the seed so neighbouring seeds are not all
-    /// the same build.
+    /// The seeded variant: one of `plan::VARIANT_COUNT` numbers, packing an
+    /// archetype-specific **form** (a structural silhouette) and a **build**
+    /// (proportions + marking).
     pub fn variant(&self) -> u8 {
-        // Mix first: shifting only high bits made every small seed (0, 1, 2, …)
-        // land on the same build, which is the one thing a variant must not do.
-        let mixed = self.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        ((mixed >> 33) % 3) as u8
+        // Mix, then draw from an actual SplitMix64 stream: seeds 0, 1, 2 all
+        // landing on one body is the bug this is here to fix, and `% 12` makes
+        // it easier to hit than `% 3` did. One more avalanche step (rather than
+        // a bare modulo of the mixed word) keeps small seeds — the ones people
+        // type — spread across the forms instead of clustering on one.
+        let mut rng = Rng::new(mix_seed(self.seed, &[0x5EED]));
+        rng.below(u32::from(plan::VARIANT_COUNT)) as u8
     }
 
     /// `digi-drake-champion-virus-1f3a9c02` — stable, lowercase, filesystem-safe.
@@ -528,7 +534,7 @@ impl Dims {
             forearm: (28.0 + 3.0 * t) * plan.arm_len * wobble(rng),
             thigh: (36.0 + 6.0 * t) * plan.leg_len * wobble(rng),
             shin: (32.0 + 5.0 * t) * plan.leg_len * wobble(rng),
-            tail: (46.0 + 5.0 * t) * wobble(rng),
+            tail: (46.0 + 5.0 * t) * plan.tail_scale * wobble(rng),
             wing: (56.0 + 9.0 * t) * wobble(rng),
         }
     }
@@ -640,6 +646,10 @@ pub fn generate(spec: &Spec) -> Manifest {
     let pal = palette_for(spec.archetype, spec.attribute, spec.tier, &mut rng);
     let dims = Dims::for_tier(spec.tier, plan, &mut rng);
     let features = Features::for_spec(spec, plan);
+    // The form's secondary geometry. It is authored as parts (not a bone), so it
+    // costs no joint, appears at every tier from `Fresh`, and grows with the
+    // tier because every size below is a fraction of the tier-scaled `Dims`.
+    let (accessory_bone, accessory) = accessory_parts(&pal, dims, plan);
 
     let mut bones: Vec<Bone> = Vec::new();
 
@@ -704,6 +714,9 @@ pub fn generate(spec: &Spec) -> Manifest {
             3,
             None,
         ));
+    }
+    if accessory_bone == "pelvis" {
+        pelvis.parts.extend(accessory.iter().cloned());
     }
     pelvis.anim = Anim::sway(0.01, 0.0);
     bones.push(pelvis);
@@ -914,6 +927,9 @@ pub fn generate(spec: &Spec) -> Manifest {
         }
     }
     torso.parts.extend(aspect_torso_parts(&pal, dims, plan, features));
+    if accessory_bone == "torso" {
+        torso.parts.extend(accessory.iter().cloned());
+    }
     if plan.spots && features.armor {
         for index in 0..3 {
             torso.parts.push(Part::circle(
@@ -973,6 +989,9 @@ pub fn generate(spec: &Spec) -> Manifest {
     head.anim = Anim::sway(0.012, 0.9);
     head.parts = head_parts(&pal, dims, features, plan);
     head.parts.extend(aspect_head_parts(&pal, dims, plan, features));
+    if accessory_bone == "head" {
+        head.parts.extend(accessory.iter().cloned());
+    }
     if features.halo {
         head.parts.insert(
             0,
@@ -1005,15 +1024,22 @@ pub fn generate(spec: &Spec) -> Manifest {
 
     let mark = bones.len();
     push_arm(&mut bones, &pal, dims, features, plan, &mut rng);
+    apply_stance(&mut bones, mark, plan.arm_stance);
     mirror_chain(&mut bones, mark);
 
     let mark = bones.len();
     push_leg(&mut bones, &pal, dims, features, plan, &mut rng);
+    apply_stance(&mut bones, mark, plan.leg_stance);
     mirror_chain(&mut bones, mark);
 
     if features.horn {
         let mark = bones.len();
         push_crest(&mut bones, &pal, dims, features, plan, &mut rng);
+        // The form's crest scale and spread are applied to the finished chain in
+        // one place, so tine bones keep hanging off their parent
+        // (`scale_parts` grows the artwork around the joint it was authored
+        // from).
+        scale_crest(&mut bones[mark..], plan.crest_scale, plan.crest_spread);
         mirror_chain(&mut bones, mark);
     }
 
@@ -1061,22 +1087,318 @@ pub fn generate(spec: &Spec) -> Manifest {
     manifest
 }
 
+/// Grow a bone's artwork about the joint it was authored from. Used for the
+/// per-form accessory geometry (ears, crests): the offset is the piece's centre
+/// in the bone's local frame, so scaling both keeps the shape hinged where it
+/// was drawn.
+fn scale_parts(parts: &mut [Part], scale: f64) {
+    if (scale - 1.0).abs() < 1e-9 {
+        return;
+    }
+    for part in parts {
+        part.size[0] = round4(part.size[0] * scale);
+        part.size[1] = round4(part.size[1] * scale);
+        part.offset[0] = round4(part.offset[0] * scale);
+        part.offset[1] = round4(part.offset[1] * scale);
+    }
+}
+
+/// Scale a whole crest chain and swing its root by `spread`.
+///
+/// The root's attachment point is left where the body plan put it (a horn grows
+/// out of the skull, it does not slide toward the skull's centre); the child
+/// tines scale with their parent, including the position they hang from.
+fn scale_crest(chain: &mut [Bone], scale: f64, spread: f64) {
+    for (index, bone) in chain.iter_mut().enumerate() {
+        if index == 0 {
+            bone.rotation = round4(bone.rotation + spread);
+        } else {
+            bone.pos[0] = round4(bone.pos[0] * scale);
+            bone.pos[1] = round4(bone.pos[1] * scale);
+        }
+        bone.length = round4(bone.length * scale);
+        scale_parts(&mut bone.parts, scale);
+    }
+}
+
+/// Nudge every chain root in `bones[from..]` — a bone hanging off the trunk or
+/// the pelvis — by `stance`, which is how a form sets its posture. Children are
+/// untouched: they are posed relative to their parent, so their world pose
+/// follows automatically (and stays mirrored).
+fn apply_stance(bones: &mut [Bone], from: usize, stance: f64) {
+    if stance == 0.0 {
+        return;
+    }
+    for bone in &mut bones[from..] {
+        if matches!(bone.parent.as_deref(), Some("torso") | Some("pelvis")) {
+            bone.rotation = round4(bone.rotation + stance);
+        }
+    }
+}
+
+/// The form's secondary silhouette geometry, hung on the bone that owns the
+/// region: `("pelvis" | "torso" | "head" | "tail", parts)`.
+///
+/// Every size is a fraction of the tier-scaled `Dims`, so the accessory is there
+/// on a `Fresh` hatchling (small) and grows with every stage — the form is part
+/// of the creature's identity from stage one, not a Champion-only flourish.
+/// `TailBlades` is drawn by `push_tail` and returns no parts here.
+fn accessory_parts(pal: &Palette, dims: Dims, plan: Plan) -> (&'static str, Vec<Part>) {
+    let w = dims.torso_w;
+    let h = dims.torso_h;
+    let hw = dims.head_w;
+    let hh = dims.head_h;
+    match plan.accessory {
+        Accessory::None => ("torso", Vec::new()),
+
+        // A layered ruff from the shoulders up to the jaw hinge.
+        Accessory::Mane => (
+            "torso",
+            vec![
+                Part::ellipse(
+                    "mane",
+                    &pal.body_dark,
+                    [round4(w * 0.92), round4(h * 0.3)],
+                    [0.0, round4(-h * 0.5)],
+                    6,
+                    None,
+                ),
+                Part::ellipse(
+                    "mane_mid",
+                    &pal.accent,
+                    [round4(w * 0.72), round4(h * 0.22)],
+                    [0.0, round4(-h * 0.64)],
+                    6,
+                    None,
+                ),
+                Part::ellipse(
+                    "mane_tip",
+                    &pal.body,
+                    [round4(w * 0.48), round4(h * 0.16)],
+                    [0.0, round4(-h * 0.78)],
+                    6,
+                    None,
+                ),
+            ],
+        ),
+
+        // Three plates marching down the spine — the whole back line changes.
+        Accessory::Ridge => (
+            "torso",
+            vec![
+                Part::ellipse(
+                    "ridge",
+                    &pal.accent,
+                    [round4(w * 0.18), round4(h * 0.36)],
+                    [0.0, round4(-h * 0.6)],
+                    6,
+                    None,
+                ),
+                Part::ellipse(
+                    "ridge_mid",
+                    &pal.accent,
+                    [round4(w * 0.15), round4(h * 0.3)],
+                    [0.0, round4(-h * 0.82)],
+                    6,
+                    None,
+                ),
+                Part::ellipse(
+                    "ridge_tip",
+                    &pal.accent,
+                    [round4(w * 0.12), round4(h * 0.24)],
+                    [0.0, round4(-h * 0.98)],
+                    6,
+                    None,
+                ),
+            ],
+        ),
+
+        // Angled spurs off the top of each shoulder.
+        Accessory::Spurs => (
+            "torso",
+            vec![
+                Part::ellipse(
+                    "spur_l",
+                    &pal.accent,
+                    [round4(w * 0.34), round4(h * 0.1)],
+                    [round4(-w * 0.44), round4(-h * 0.34)],
+                    6,
+                    None,
+                )
+                .turned(round4(-0.5)),
+                Part::ellipse(
+                    "spur_r",
+                    &pal.accent,
+                    [round4(w * 0.34), round4(h * 0.1)],
+                    [round4(w * 0.44), round4(-h * 0.34)],
+                    6,
+                    None,
+                )
+                .turned(round4(0.5)),
+            ],
+        ),
+
+        // Swept fins from the hips: the lower silhouette widens.
+        Accessory::HipFins => (
+            "pelvis",
+            vec![
+                Part::ellipse(
+                    "hipfin_l",
+                    &pal.accent,
+                    [round4(w * 0.52), round4(h * 0.16)],
+                    [round4(-w * 0.46), round4(h * 0.06)],
+                    3,
+                    None,
+                )
+                .turned(round4(-0.34)),
+                Part::ellipse(
+                    "hipfin_r",
+                    &pal.accent,
+                    [round4(w * 0.52), round4(h * 0.16)],
+                    [round4(w * 0.46), round4(h * 0.06)],
+                    3,
+                    None,
+                )
+                .turned(round4(0.34)),
+            ],
+        ),
+
+        // A fan along the jaw: gills, a hood, a dewlap.
+        Accessory::Frill => (
+            "head",
+            vec![
+                Part::ellipse(
+                    "frill_l",
+                    &pal.accent,
+                    [round4(hw * 0.32), round4(hh * 0.16)],
+                    [round4(-hw * 0.36), round4(hh * 0.28)],
+                    4,
+                    None,
+                )
+                .turned(round4(-0.42)),
+                Part::ellipse(
+                    "frill_r",
+                    &pal.accent,
+                    [round4(hw * 0.32), round4(hh * 0.16)],
+                    [round4(hw * 0.36), round4(hh * 0.28)],
+                    4,
+                    None,
+                )
+                .turned(round4(0.42)),
+                Part::ellipse(
+                    "frill_mid",
+                    &pal.body_dark,
+                    [round4(hw * 0.26), round4(hh * 0.12)],
+                    [0.0, round4(hh * 0.34)],
+                    4,
+                    None,
+                ),
+            ],
+        ),
+
+        // A second, shorter sensor pair beside the crest.
+        Accessory::Antennae => (
+            "head",
+            vec![
+                Part::ellipse(
+                    "ant2_l",
+                    &pal.metal,
+                    [round4(hw * 0.5), 6.0],
+                    [round4(-hw * 0.36), round4(-hh * 0.66)],
+                    Z_HEIGHT,
+                    None,
+                )
+                .turned(round4(-0.7)),
+                Part::ellipse(
+                    "ant2_r",
+                    &pal.metal,
+                    [round4(hw * 0.5), 6.0],
+                    [round4(hw * 0.36), round4(-hh * 0.66)],
+                    Z_HEIGHT,
+                    None,
+                )
+                .turned(round4(0.7)),
+                Part::circle(
+                    "ant2_tip",
+                    &pal.glow,
+                    6.0,
+                    [0.0, round4(-hh * 0.8)],
+                    Z_HEIGHT,
+                    None,
+                ),
+            ],
+        ),
+
+        // A ring around the throat.
+        Accessory::Collar => (
+            "torso",
+            vec![
+                Part::ellipse(
+                    "collar_ring",
+                    &pal.metal,
+                    [round4(w * 0.58), 12.0],
+                    [0.0, round4(-h * 0.44)],
+                    6,
+                    None,
+                ),
+                Part::ellipse(
+                    "collar_in",
+                    &pal.body_dark,
+                    [round4(w * 0.44), 6.0],
+                    [0.0, round4(-h * 0.44)],
+                    6,
+                    None,
+                ),
+            ],
+        ),
+
+        // Drawn per tail segment in `push_tail`.
+        Accessory::TailBlades => ("tail", Vec::new()),
+    }
+}
+
 /// Parts that carry no silhouette. When a rich plan (a Mega machine under a rich
 /// attribute) runs into the 100-part budget, these go first — the creature must
 /// lose decoration, never a limb.
-const DECORATION: [&str; 12] = [
+///
+/// Order is the removal order: markings and tiny trim first, the form's
+/// accessory last (it is the silhouette, but it is also the only thing left once
+/// the rest is gone, and a rig over the cap is worse than a bare one).
+const DECORATION: [&str; 34] = [
     "spot",
     "stripe",
+    "patch",
+    "patch_l",
+    "patch_r",
+    "seam",
+    "barrel_ring",
+    "halo_in",
+    "drip_l",
+    "drip_r",
     "circuit_l",
     "circuit_r",
     "crystal_core",
     "spine_mid",
     "feather_more",
-    "halo_in",
-    "drip_l",
-    "drip_r",
-    "seam",
-    "barrel_ring",
+    "mane_tip",
+    "ridge_tip",
+    "frill_mid",
+    "ant2_tip",
+    "mane_mid",
+    "ridge_mid",
+    "spur_l",
+    "spur_r",
+    "hipfin_l",
+    "hipfin_r",
+    "frill_l",
+    "frill_r",
+    "ant2_l",
+    "ant2_r",
+    "collar_in",
+    "collar_ring",
+    "tail_blade",
+    "mane",
+    "ridge",
 ];
 
 fn trim_details(manifest: &mut Manifest) {
@@ -1648,6 +1970,28 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
                 ));
             }
         }
+        3 => {
+            // Patches: two shoulder blotches and one belly, so it reads as a
+            // pattern rather than as a stripe with an offset.
+            for (id, sign) in [("patch_l", -1.0), ("patch_r", 1.0)] {
+                parts.push(Part::ellipse(
+                    id,
+                    &pal.accent,
+                    [round4(w * 0.3), round4(h * 0.24)],
+                    [round4(sign * w * 0.4), round4(-h * 0.3)],
+                    5,
+                    None,
+                ));
+            }
+            parts.push(Part::ellipse(
+                "patch",
+                &pal.glow,
+                [round4(w * 0.5), round4(h * 0.3)],
+                [0.0, round4(h * 0.2)],
+                4,
+                None,
+            ));
+        }
         _ => {}
     }
     parts
@@ -1815,8 +2159,8 @@ fn push_ear(
         [round4(w * 0.3), round4(-h * 0.22)],
         Z_HORN - 1,
     )
-    .rotated(round4(angle))
-    .length(round4(length))
+    .rotated(round4(angle + plan.ear_angle))
+    .length(round4(length * plan.ear_scale))
     .anim(Anim::sway(0.03, 0.4))
     .with_parts(parts);
     if features.ear_tip && plan.ears == EarKind::Long {
@@ -1848,6 +2192,7 @@ fn push_ear(
             ),
         ]);
     }
+    scale_parts(&mut bone.parts, plan.ear_scale);
     bones.push(bone);
 }
 
@@ -2085,7 +2430,7 @@ fn push_tail(
         let last = index + 1 == segments;
         let (pos, rotation) = if index == 0 {
             // Up and back (≈186–197°) from the top of the rump.
-            ([0.0, -4.0], round4(rng.range(3.24, 3.44)))
+            ([0.0, -4.0], round4(rng.range(3.24, 3.44) + plan.tail_arc))
         } else {
             (
                 [round4(previous - girth * 0.35), 0.0],
@@ -2224,6 +2569,21 @@ fn push_tail(
                 1,
                 None,
             ));
+        }
+
+        if plan.accessory == Accessory::TailBlades {
+            // The blade rides every segment, so a longer tail grows more of it.
+            parts.push(
+                Part::ellipse(
+                    "tail_blade",
+                    &pal.accent,
+                    [round4(length * 0.6), round4(girth * 0.8)],
+                    [round4(length * 0.55), round4(-girth * 0.7)],
+                    2,
+                    None,
+                )
+                .turned(-0.5),
+            );
         }
 
         bone = bone.with_parts(parts);

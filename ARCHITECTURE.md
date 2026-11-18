@@ -576,7 +576,7 @@ touched `mod.rs` (three generic capabilities), `wasm_host.rs` (their imports) an
 | `src/rng.rs` | SplitMix64. No dependency, no `getrandom`: `(seed, archetype, tier, attribute)` reproduces the same creature — same bones, same colours — on every machine |
 | `src/skeleton.rs` | the `char-rig/model@1` types, the two mirroring formulas (`atan2(sin θ, −cos θ)` for a chain root, `−θ` for a descendant), `computeWorld`, and the painted-bounds pass |
 | `src/attribute.rs` | `Vaccine` / `Data` / `Virus`: wire spelling, the bond-driven branch shift, and the one-line flavour the UI shows |
-| `src/plan.rs` | The twelve body plans, then the attribute's mutations, then the seeded build: head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers |
+| `src/plan.rs` | The twelve body plans, each with its own four-form table (`beast_form`, `drake_form`, …), then the attribute's mutations, then the seeded build: head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers, posture and accessory geometry |
 | `src/generator.rs` | `generate(Spec) -> Manifest`: centerline → tail → right chains → mirror → archetype parts → attribute parts → clips → monitor guard → detail trim, plus `validate` |
 | `src/evolution.rs` | stage/XP/bond/attribute state, the three-branch table, and the transitions both ways (generate → host write → host activate; `dedigivolve` regenerates the parent from its recorded seed **and attribute**) |
 | `src/host.rs` | typed wrappers over the host imports (`write_model`, `activate_model`, `animate`, `emit`, `notify`, `log`, `save_state`, `now_ms`); the one place the guest talks to the app |
@@ -594,11 +594,27 @@ independent choices, so the corpus is large without any of it being hand-drawn:
 2. **The attribute** (`Element::of(attribute)`) reshapes that plan: Vaccine
    grows wings, a halo and feather vanes; Data grows crystals, circuit traces
    and a visor band; Virus grows spines, fangs and claws. Structural, not a tint.
-3. **The seed** (`Spec::variant`) picks one of three builds — lean, canonical,
-   broad — with its own marking (none / spots / stripes).
+3. **The seed** (`Spec::variant`, twelve values) picks one of four *forms* — the
+   archetype's own structural silhouettes (a Beast is classic, lupine, ursine or
+   sabre; a Drake is spiked, a wyrm, a wyvern or serpentine; and so on) — one of
+   three *builds* (lean, canonical, broad) and one of four markings (none /
+   spots / stripes / patches).
 
-12 × 3 × 3 is 108 silhouettes before a palette is chosen, and the palette
-follows the attribute as a tint (a fraction, never a replacement).
+A form carries its own ear/crest scale and sweep, limb ratios, arm and leg
+stance, tail length and arc, and one accessory drawn as parts (mane, dorsal
+ridge, shoulder spurs, hip fins, jaw frill, second sensor pair, throat collar,
+tail blades). 12 archetypes × 4 forms × 3 builds × 4 markings × 3 attributes is
+1,728 silhouettes before a palette is chosen, and the palette follows the
+attribute as a tint (a fraction, never a replacement).
+
+**The forms are per-archetype functions, not a template.** `plan_for` composes
+`plan(archetype)` → `<archetype>_form(plan, form)` → `with_element` →
+`with_build`, and each of the twelve form tables in `src/plan.rs` returns the
+plan it was handed with only that archetype's numbers changed. Nothing is shared
+between two archetypes' forms, so a Beast's mane can never appear on a Drake by
+accident, and `plan.rs`'s own tests assert both that each archetype has four
+distinct forms and that the twelve archetypes stay distinct *at every form
+index*.
 
 **Generation, not authoring.** Each stage is built from tier-scaled dimensions:
 bone count, limb segments (forearm / shin / hand / foot), wings (and a second
@@ -611,8 +627,10 @@ Coordinates are authored in local pixels with the root at `scale: 0.55`, and
 `enforce_monitor_budget` verifies `min_world_y >= -170` over every painted corner
 — the format's top-clip budget — shifting the pelvis down if a hand-tuned number
 ever exceeded it. `trim_details` then drops decoration (`spot`, `stripe`,
-`circuit_*`, `crystal_core`, …) in a fixed order until the rig fits four parts
-under the cap, so a rich plan loses decoration, never a limb.
+`patch_*`, `circuit_*`, `crystal_core`, the form's accessory last, …) in a fixed
+order until the rig fits four parts under the cap, so a rich plan loses
+decoration, never a limb. Forms add parts, never bones: the joint count is
+unchanged, so the mirroring rules and the 40-bone ceiling hold by construction.
 
 **Names carry the rig.** A model id is
 `digi-<archetype>-<stage>-<attribute>-<seed>`; the attribute is part of the name

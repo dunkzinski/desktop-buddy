@@ -479,7 +479,9 @@ fn the_attribute_shows_up_in_the_parts_not_only_the_colour() {
 #[test]
 fn different_seeds_build_different_individuals() {
     // Beyond archetype and attribute: within one plan, the seed still decides
-    // the build (lean / canonical / broad) and the markings.
+    // the form (which of the archetype's four silhouettes), the build
+    // (lean / canonical / broad) and the marking (none / spots / stripes /
+    // patches).
     for archetype in Archetype::ALL {
         let mut signatures = HashSet::new();
         let mut variants = HashSet::new();
@@ -495,8 +497,149 @@ fn different_seeds_build_different_individuals() {
             archetype.as_str()
         );
         assert!(
-            variants.len() >= 2,
-            "{}: every seed landed on the same build",
+            variants.len() >= 3,
+            "{}: every seed landed on the same variant",
+            archetype.as_str()
+        );
+    }
+}
+
+/// The sorted, de-duplicated part ids of a rig. Two rigs with the same set grew
+/// the same furniture, whatever their colours.
+fn part_ids(manifest: &Manifest) -> String {
+    let mut ids: Vec<&str> = manifest
+        .bones
+        .iter()
+        .flat_map(|bone| bone.parts.iter().map(|part| part.id.as_str()))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.join(",")
+}
+
+/// The bind pose: every bone's rotation, which is where a form's posture and
+/// stance live. Palette-blind on purpose.
+fn bind_pose(manifest: &Manifest) -> String {
+    let mut pose: Vec<String> = manifest
+        .bones
+        .iter()
+        .map(|bone| format!("{}@{:.3}", bone.id, bone.rotation))
+        .collect();
+    pose.sort();
+    pose.join(",")
+}
+
+/// The part ids a form's accessory contributes (one per accessory kind: the
+/// first id of each set).
+const FORM_PARTS: [&str; 8] = [
+    "mane",
+    "ridge",
+    "spur_l",
+    "hipfin_l",
+    "frill_l",
+    "ant2_l",
+    "collar_ring",
+    "tail_blade",
+];
+
+fn form_parts(manifest: &Manifest) -> Vec<&'static str> {
+    FORM_PARTS
+        .iter()
+        .copied()
+        .filter(|id| {
+            manifest
+                .bones
+                .iter()
+                .any(|bone| bone.parts.iter().any(|part| part.id == *id))
+        })
+        .collect()
+}
+
+#[test]
+fn one_archetype_builds_many_silhouettes() {
+    // The point of the form layer: twelve seeds of one archetype are not one
+    // creature with twelve palettes. Several different *part sets* (the form's
+    // accessory and the marking) and twelve different *bind poses* (the form's
+    // stances, plus the seeded jitter).
+    for archetype in Archetype::ALL {
+        let mut sets = HashSet::new();
+        let mut poses = HashSet::new();
+        for seed in 0..12u64 {
+            let manifest = generate(&Spec::with_attribute(
+                seed,
+                archetype,
+                Tier::Champion,
+                Attribute::Virus,
+            ));
+            validate(&manifest).unwrap_or_else(|err| {
+                panic!("{} seed {seed}: {err}", archetype.as_str())
+            });
+            sets.insert(part_ids(&manifest));
+            poses.insert(bind_pose(&manifest));
+        }
+        assert!(
+            sets.len() >= 5,
+            "{}: twelve seeds grew only {} distinct part sets",
+            archetype.as_str(),
+            sets.len()
+        );
+        assert_eq!(
+            poses.len(),
+            12,
+            "{}: two seeds share a bind pose",
+            archetype.as_str()
+        );
+    }
+}
+
+#[test]
+fn the_form_is_visible_from_fresh() {
+    // Stage-one identity: whatever the form hangs on the body (mane, ridge,
+    // spurs, fins, frill, sensor pair, collar, tail blades) is already there on
+    // a `Fresh` hatchling — it is scaled down by the tier, never withheld until
+    // In-Training or Champion.
+    for archetype in Archetype::ALL {
+        let mut fresh_sets = HashSet::new();
+        for seed in 0..12u64 {
+            let fresh = generate(&Spec::with_attribute(
+                seed,
+                archetype,
+                Tier::Fresh,
+                Attribute::Virus,
+            ));
+            let champion = generate(&Spec::with_attribute(
+                seed,
+                archetype,
+                Tier::Champion,
+                Attribute::Virus,
+            ));
+            assert_eq!(
+                form_parts(&fresh),
+                form_parts(&champion),
+                "{} seed {seed}: the form changed between Fresh and Champion",
+                archetype.as_str()
+            );
+            fresh_sets.insert(part_ids(&fresh));
+        }
+        assert!(
+            fresh_sets.len() >= 5,
+            "{}: only {} distinct Fresh hatchlings in twelve seeds",
+            archetype.as_str(),
+            fresh_sets.len()
+        );
+    }
+}
+
+#[test]
+fn the_same_archetype_at_fresh_is_still_its_own_creature() {
+    // Fresh is where sameness used to hide. Every archetype must still read as
+    // itself at stage one, accessory and all.
+    let mut shapes = HashSet::new();
+    for archetype in Archetype::ALL {
+        let fresh = generate(&Spec::with_attribute(7, archetype, Tier::Fresh, Attribute::Virus));
+        assert!(
+            shapes.insert(part_ids(&fresh)),
+            "{} shares its Fresh part set with another archetype",
             archetype.as_str()
         );
     }
