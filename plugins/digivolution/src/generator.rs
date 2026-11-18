@@ -53,10 +53,18 @@ pub enum Archetype {
     Machine,
     /// Alien: huge bulbous head, tentacles, floating mantle.
     Alien,
+    /// Bird: beaked, combed, folded wings.
+    Avian,
+    /// Insect: domed shell, antennae, thin limbs.
+    Insect,
+    /// Serpent: long jaw, no legs, a coiled base.
+    Serpent,
+    /// Golem: carved stone, blunt fists, heavy stance.
+    Golem,
 }
 
 impl Archetype {
-    pub const ALL: [Archetype; 8] = [
+    pub const ALL: [Archetype; 12] = [
         Archetype::Beast,
         Archetype::Drake,
         Archetype::Cyborg,
@@ -65,6 +73,10 @@ impl Archetype {
         Archetype::Cervid,
         Archetype::Machine,
         Archetype::Alien,
+        Archetype::Avian,
+        Archetype::Insect,
+        Archetype::Serpent,
+        Archetype::Golem,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -77,6 +89,10 @@ impl Archetype {
             Archetype::Cervid => "cervid",
             Archetype::Machine => "machine",
             Archetype::Alien => "alien",
+            Archetype::Avian => "avian",
+            Archetype::Insect => "insect",
+            Archetype::Serpent => "serpent",
+            Archetype::Golem => "golem",
         }
     }
 
@@ -90,6 +106,10 @@ impl Archetype {
             "cervid" | "deer" => Some(Archetype::Cervid),
             "machine" | "robot" => Some(Archetype::Machine),
             "alien" => Some(Archetype::Alien),
+            "avian" | "bird" => Some(Archetype::Avian),
+            "insect" | "bug" => Some(Archetype::Insect),
+            "serpent" | "snake" => Some(Archetype::Serpent),
+            "golem" | "rock" => Some(Archetype::Golem),
             _ => None,
         }
     }
@@ -363,6 +383,42 @@ fn base_palette(archetype: Archetype) -> Palette {
             pupil: "#16220f".into(),
             metal: "#9d8f6a".into(),
         },
+        Archetype::Avian => Palette {
+            body: "#d8a13f".into(),
+            body_dark: "#8a5f1f".into(),
+            accent: "#ff6b57".into(),
+            glow: "#ffe6a8".into(),
+            eye: "#fffdf2".into(),
+            pupil: "#2a1a08".into(),
+            metal: "#b8b2a4".into(),
+        },
+        Archetype::Insect => Palette {
+            body: "#6f7a2e".into(),
+            body_dark: "#39421a".into(),
+            accent: "#f2c14e".into(),
+            glow: "#d7f76b".into(),
+            eye: "#f7ffdf".into(),
+            pupil: "#141a07".into(),
+            metal: "#9aa06f".into(),
+        },
+        Archetype::Serpent => Palette {
+            body: "#4a7d5a".into(),
+            body_dark: "#24402f".into(),
+            accent: "#e0e04a".into(),
+            glow: "#b7ff9c".into(),
+            eye: "#f6ffe9".into(),
+            pupil: "#0e1a12".into(),
+            metal: "#8e9c8f".into(),
+        },
+        Archetype::Golem => Palette {
+            body: "#8b8175".into(),
+            body_dark: "#4d463d".into(),
+            accent: "#d9a441".into(),
+            glow: "#ffd98a".into(),
+            eye: "#ffe9b0".into(),
+            pupil: "#241f18".into(),
+            metal: "#b3aa9c".into(),
+        },
     }
 }
 
@@ -520,7 +576,10 @@ impl Features {
             hand: t >= 2,
             shin: t >= 1,
             foot: t >= 2,
-            horn: plan.crest != CrestKind::None && t >= 1,
+            // The crest is the archetype's signature, so it exists from Fresh —
+            // small, and growing with every stage. Hiding it until In-Training
+            // is what made every hatchling look like the same blob.
+            horn: plan.crest != CrestKind::None,
             horns_tip: t >= 2,
             wings: plan.wings && t >= 3,
             wing_tip: t >= 4,
@@ -535,8 +594,8 @@ impl Features {
             crown: t >= 5,
             halo: spec.archetype == Archetype::Holy && t >= 4,
             aura: plan.visor && t >= 2,
-            crest_branch: t >= 2,
-            crest_extra: t >= 4,
+            crest_branch: t >= 1,
+            crest_extra: t >= 3,
             arm_third: t >= 2,
             ear_tip: t >= 3,
             tail_web: t >= 2,
@@ -606,6 +665,22 @@ pub fn generate(spec: &Spec) -> Manifest {
             None,
         ),
     ];
+    if plan.legs == LegKind::Coiled {
+        // Three stacked rings: a coiled serpent holding itself up.
+        for (index, ring) in [(0, 0.9), (1, 0.74), (2, 0.58)].iter() {
+            pelvis.parts.push(Part::ellipse(
+                if *index == 0 { "coil" } else { "coil_more" },
+                if *index % 2 == 0 { &pal.body_dark } else { &pal.body },
+                [
+                    round4(dims.torso_w * ring),
+                    round4(dims.torso_w * ring * 0.42),
+                ],
+                [0.0, round4(dims.torso_h * (0.22 + *index as f64 * 0.16))],
+                2 + *index as i32,
+                None,
+            ));
+        }
+    }
     if plan.legs == LegKind::Hover {
         // No legs: a hovering ring instead, and the body sits above it.
         pelvis.parts.push(Part::ellipse(
@@ -945,6 +1020,13 @@ pub fn generate(spec: &Spec) -> Manifest {
         let mark = bones.len();
         push_wing(&mut bones, &pal, dims, features, plan, &mut rng);
         mirror_chain(&mut bones, mark);
+    } else if plan.wings {
+        // A hatchling's wings are folded buds: without them a Fresh Drake is
+        // indistinguishable from a Fresh Beast, which is exactly the sameness
+        // the archetypes exist to break.
+        let mark = bones.len();
+        push_wing_bud(&mut bones, &pal, dims, plan);
+        mirror_chain(&mut bones, mark);
     }
 
     let mut manifest = Manifest {
@@ -1071,6 +1153,25 @@ fn head_parts(pal: &Palette, dims: Dims, features: Features, plan: Plan) -> Vec<
                 &pal.body_dark,
                 [round4(w * 0.78), round4(h * 0.42)],
                 [0.0, round4(-h * 0.42)],
+                1,
+                None,
+            ));
+        }
+        HeadKind::Beak => {
+            // A small round skull with the beak doing the work.
+            parts.push(Part::ellipse(
+                "skull",
+                &pal.body,
+                [round4(w * 0.9), round4(h * 0.92)],
+                [0.0, 0.0],
+                0,
+                None,
+            ));
+            parts.push(Part::ellipse(
+                "brow_plume",
+                &pal.body_dark,
+                [round4(w * 0.82), round4(h * 0.26)],
+                [0.0, round4(-h * 0.28)],
                 1,
                 None,
             ));
@@ -1219,6 +1320,41 @@ fn head_parts(pal: &Palette, dims: Dims, features: Features, plan: Plan) -> Vec<
                 ));
             }
         }
+        HeadKind::Beak => {
+            // Two mandibles: the taper is what makes a beak read as a beak.
+            parts.push(
+                Part::ellipse(
+                    "beak_upper",
+                    &pal.accent,
+                    [round4(w * 0.62), round4(h * 0.26)],
+                    [0.0, round4(h * 0.38)],
+                    3,
+                    None,
+                )
+                .turned(round4(0.12)),
+            );
+            parts.push(
+                Part::ellipse(
+                    "beak_lower",
+                    &pal.accent,
+                    [round4(w * 0.5), round4(h * 0.16)],
+                    [0.0, round4(h * 0.52)],
+                    3,
+                    None,
+                )
+                .turned(round4(-0.1)),
+            );
+            for (id, sign) in [("nostril_l", -1.0), ("nostril_r", 1.0)] {
+                parts.push(Part::circle(
+                    id,
+                    &pal.pupil,
+                    round4(w * 0.04),
+                    [round4(sign * w * 0.1), round4(h * 0.28)],
+                    4,
+                    None,
+                ));
+            }
+        }
         HeadKind::Boxy => {
             parts.push(Part::ellipse(
                 "muzzle",
@@ -1359,6 +1495,50 @@ fn head_parts(pal: &Palette, dims: Dims, features: Features, plan: Plan) -> Vec<
     parts
 }
 
+/// The folded wing a winged plan wears before it can fly.
+fn push_wing_bud(bones: &mut Vec<Bone>, pal: &Palette, dims: Dims, plan: Plan) {
+    let span = dims.wing * 0.34;
+    bones.push(
+        Bone::new(
+            "wing_r",
+            Some("torso"),
+            [round4(dims.torso_w * 0.4), round4(-dims.torso_h * 0.42)],
+            Z_WING,
+        )
+        .rotated(round4(-0.35))
+        .length(round4(span))
+        .anim(Anim::sway(0.02, 0.0))
+        .with_parts(vec![
+            Part::ellipse(
+                "wing_bud",
+                &pal.body_dark,
+                [round4(span * 1.3), round4(span * 0.9)],
+                [round4(span * 0.3), 0.0],
+                0,
+                None,
+            ),
+            Part::ellipse(
+                "wing_bud_tip",
+                &pal.accent,
+                [round4(span * 0.7), round4(span * 0.4)],
+                [round4(span * 0.9), 0.0],
+                1,
+                None,
+            ),
+        ]),
+    );
+    if plan.feathers {
+        bones.last_mut().unwrap().parts.push(Part::ellipse(
+            "bud_feather",
+            &pal.glow,
+            [round4(span * 0.8), 6.0],
+            [round4(span * 0.5), 0.0],
+            2,
+            None,
+        ));
+    }
+}
+
 /// What the **attribute** puts on the trunk: crystals, circuit traces, spines,
 /// markings. Shared by every plan, so a Virus deer and a Virus robot are both
 /// unmistakably viral while staying a deer and a robot.
@@ -1368,7 +1548,7 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
     let t = features.tier_index;
     let mut parts = Vec::new();
 
-    if plan.crystals && t >= 2 {
+    if plan.crystals {
         // Crystal growths break the body's ellipse contour — that is the point.
         for (id, sign) in [("crystal_l", -1.0), ("crystal_r", 1.0)] {
             parts.push(
@@ -1383,7 +1563,7 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
                 .turned(round4(sign * 0.7)),
             );
         }
-        if t >= 4 {
+        if t >= 3 {
             parts.push(Part::ellipse(
                 "crystal_core",
                 &pal.glow,
@@ -1406,7 +1586,7 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
             ));
         }
     }
-    if plan.back_spikes && t >= 2 {
+    if plan.back_spikes && t >= 1 {
         for (id, sign) in [("spine_l", -1.0), ("spine_r", 1.0)] {
             parts.push(
                 Part::ellipse(
@@ -1420,7 +1600,7 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
                 .turned(round4(sign * -0.8)),
             );
         }
-        if t >= 4 {
+        if t >= 3 {
             parts.push(
                 Part::ellipse(
                     "spine_mid",
@@ -1475,7 +1655,7 @@ fn aspect_head_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features) 
     let t = features.tier_index;
     let mut parts = Vec::new();
 
-    if plan.halo_ring && t >= 1 {
+    if plan.halo_ring {
         parts.push(Part::ellipse(
             "halo",
             &pal.glow,
@@ -1493,7 +1673,7 @@ fn aspect_head_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features) 
             None,
         ));
     }
-    if plan.fangs && t >= 1 {
+    if plan.fangs {
         for (id, sign) in [("tooth_l", -1.0), ("tooth_r", 1.0)] {
             parts.push(Part::ellipse(
                 id,
@@ -1678,11 +1858,12 @@ fn push_crest(
     let w = dims.head_w;
     let h = dims.head_h;
     let base = [round4(w * 0.26), round4(-h * 0.3)];
+    let t = features.tier_index;
     match plan.crest {
         CrestKind::None => {}
         CrestKind::Horns => {
             let angle = round4(rng.range(-1.15, -0.85));
-            let length = round4(28.0 + w * 0.12);
+            let length = round4((28.0 + w * 0.12) * (0.62 + t as f64 * 0.09));
             let mut parts = vec![Part::capsule("horn", &pal.accent, [length, 13.0], [0.0, 0.0], 0)];
             if features.horns_tip {
                 parts.push(Part::circle(
@@ -1829,6 +2010,30 @@ fn push_crest(
                 Bone::new("crest_r", Some("head"), base, Z_HORN)
                     .rotated(round4(-1.2))
                     .length(length)
+                    .with_parts(parts),
+            );
+        }
+        CrestKind::Comb => {
+            let length = round4(24.0 + w * 0.22);
+            let mut parts = Vec::new();
+            for (index, tilt) in [-0.5, -0.12, 0.26].iter().enumerate() {
+                parts.push(
+                    Part::ellipse(
+                        if index == 1 { "comb" } else { "comb_more" },
+                        &pal.accent,
+                        [round4(length), round4(9.0)],
+                        [round4(index as f64 * 4.0), round4(index as f64 * 3.0)],
+                        0,
+                        None,
+                    )
+                    .turned(round4(*tilt)),
+                );
+            }
+            bones.push(
+                Bone::new("comb_r", Some("head"), base, Z_HORN)
+                    .rotated(round4(-1.5))
+                    .length(length)
+                    .anim(Anim::sway(0.03, 0.3))
                     .with_parts(parts),
             );
         }
@@ -2085,6 +2290,48 @@ fn push_arm(
                 pos = [round4(lengths[index] - girths[index] * 0.4), 0.0];
             }
         }
+        ArmKind::Wing => {
+            // A folded wing worn as an arm: shoulder, panel, feather tips.
+            let span = round4(dims.upper_arm * 1.5);
+            let mut parts = vec![
+                Part::ellipse(
+                    "wing_shoulder",
+                    &pal.body_dark,
+                    [round4(dims.torso_w * 0.26), round4(dims.torso_w * 0.24)],
+                    [0.0, 0.0],
+                    0,
+                    None,
+                ),
+                Part::ellipse(
+                    "arm_wing",
+                    &pal.body,
+                    [round4(span * 1.1), round4(span * 0.5)],
+                    [round4(span * 0.5), 0.0],
+                    1,
+                    None,
+                ),
+            ];
+            for (index, tilt) in [-0.3, 0.05, 0.4].iter().enumerate() {
+                parts.push(
+                    Part::ellipse(
+                        if index == 0 { "wing_feather" } else { "wing_feather_more" },
+                        &pal.accent,
+                        [round4(span * 0.7), round4(span * 0.2)],
+                        [round4(span * 0.9), round4(*tilt * span * 0.28)],
+                        2,
+                        None,
+                    )
+                    .turned(round4(*tilt)),
+                );
+            }
+            bones.push(
+                Bone::new("arm_r", Some("torso"), shoulder, Z_ARM)
+                    .rotated(round4(rng.range(1.05, 1.25)))
+                    .length(span)
+                    .anim(Anim::walk(0.3, 0.0))
+                    .with_parts(parts),
+            );
+        }
         ArmKind::Flipper => {
             let len = round4(dims.upper_arm * 0.9);
             let mut parts = vec![
@@ -2326,9 +2573,11 @@ fn push_leg(
                     None,
                 ),
                 // Rollers along the bottom edge: the reason it reads as a tread.
-                Part::circle("roller_a", &pal.metal, 14.0, [round4(-dims.thigh * 0.6), round4(dims.shin * 0.85)], 1, None),
-                Part::circle("roller_b", &pal.metal, 14.0, [0.0, round4(dims.shin * 0.85)], 1, None),
-                Part::circle("roller_c", &pal.metal, 14.0, [round4(dims.thigh * 0.6), round4(dims.shin * 0.85)], 1, None),
+                // Small and dark: full-size pale circles read as beads strung
+                // along the bottom rather than as a tread.
+                Part::circle("roller_a", &pal.body_dark, 9.0, [round4(-dims.thigh * 0.6), round4(dims.shin * 0.85)], 1, None),
+                Part::circle("roller_b", &pal.metal, 9.0, [0.0, round4(dims.shin * 0.85)], 1, None),
+                Part::circle("roller_c", &pal.body_dark, 9.0, [round4(dims.thigh * 0.6), round4(dims.shin * 0.85)], 1, None),
             ];
             if features.armor {
                 parts.push(Part::ellipse(
@@ -2377,6 +2626,84 @@ fn push_leg(
                     );
                 }
             }
+        }
+        LegKind::Insectoid => {
+            // Two thin pairs: the second pair is a separate bone so it can step
+            // out of phase, which is what sells "insect" in motion.
+            for (pair, (id, hip_x, angle)) in [
+                ("", dims.torso_w * 0.26, 1.45),
+                ("hind_", dims.torso_w * 0.16, 1.7),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let length = if pair == 0 { dims.thigh } else { dims.thigh * 0.84 };
+                bones.push(
+                    Bone::new(
+                        &format!("{id}leg_r"),
+                        Some("pelvis"),
+                        [round4(hip_x), 6.0],
+                        Z_LEG,
+                    )
+                    .rotated(round4(angle))
+                    .length(round4(length))
+                    .anim(Anim::walk(0.2 + pair as f64 * 0.12, pair as f64 * std::f64::consts::PI))
+                    .with_parts(vec![
+                        Part::capsule(
+                            "insect_leg",
+                            &pal.body_dark,
+                            [round4(length), 8.0],
+                            [0.0, 0.0],
+                            0,
+                        ),
+                        Part::ellipse(
+                            "insect_joint",
+                            &pal.accent,
+                            [9.0, 9.0],
+                            [round4(length - 4.0), 0.0],
+                            1,
+                            None,
+                        ),
+                    ]),
+                );
+            }
+        }
+        LegKind::Stonework => {
+            let length = round4(dims.thigh * 1.1);
+            bones.push(
+                Bone::new(
+                    "leg_r",
+                    Some("pelvis"),
+                    [round4(dims.torso_w * 0.3), 6.0],
+                    Z_LEG,
+                )
+                .rotated(round4(rng.range(1.4, 1.5)))
+                .length(length)
+                .anim(Anim::walk(0.18, std::f64::consts::PI))
+                .with_parts(vec![
+                    Part::capsule("stone_leg", &pal.body, [length, 26.0], [0.0, 0.0], 0),
+                    Part::ellipse(
+                        "stone_foot",
+                        &pal.body_dark,
+                        [round4(length * 0.6), 20.0],
+                        [round4(length - 4.0), 0.0],
+                        1,
+                        None,
+                    ),
+                    Part::ellipse(
+                        "stone_crack",
+                        &pal.accent,
+                        [round4(length * 0.4), 3.0],
+                        [round4(length * 0.4), 0.0],
+                        2,
+                        None,
+                    ),
+                ]),
+            );
+        }
+        LegKind::Coiled => {
+            // A serpent has no legs: the coil is drawn on the pelvis instead, so
+            // the chain here stays empty on purpose.
         }
         LegKind::Finned => {
             let hip = [round4(dims.torso_w * 0.3), 6.0];

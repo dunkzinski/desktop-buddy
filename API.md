@@ -1729,7 +1729,8 @@ Starts a new creature, installs its `Fresh` rig **and switches the avatar to it*
 (the `POST /model` path), then plays the `digivolve` clip:
 `{"seed": 1234, "archetype": "cyborg", "attribute": "Virus"}`. `archetype` is
 one of `beast`, `drake`, `cyborg`, `holy`, `aqua`, `cervid`, `machine`,
-`alien` (aliases: `fish`, `deer`, `robot`, `angel`, `dragon`, `android`);
+`alien`, `avian`, `insect`, `serpent`, `golem` (aliases: `fish`, `deer`,
+`robot`, `angel`, `dragon`, `android`, `bird`, `bug`, `snake`, `rock`);
 anything else is a **400**. Missing
 fields keep the current creature's values (and a missing `seed` uses the clock).
 

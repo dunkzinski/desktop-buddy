@@ -286,7 +286,7 @@ only the centerline and the `*_r` chains are authored, and the `*_l` twins are
 computed with `atan2(sin θ, −cos θ)` (chain roots) and `−θ` (descendants).
 
 Colour is the *last* thing that varies. Each archetype is a **body plan**
-(`src/plan.rs`), not a palette: eight silhouettes that differ in trunk, head,
+(`src/plan.rs`), not a palette: twelve silhouettes that differ in trunk, head,
 crest, limbs and tail before a single colour is chosen.
 
 | archetype | reads as | plan |
@@ -299,6 +299,10 @@ crest, limbs and tail before a single colour is chosen.
 | `cervid` | deer | long neck, long ears, branching antlers, slim legs on hooves, stub tail |
 | `machine` | robot | boxy visor head, whip antenna, slab torso with vents, treads |
 | `alien` | alien | bulbous cranium, stalk eyes, floating mantle, tentacle arms and tail |
+| `avian` | bird | beaked skull, feather comb, folded wings worn as arms, fan tail |
+| `insect` | bug | domed shell, antennae, two thin leg pairs, stub abdomen |
+| `serpent` | snake | long jaw, no legs at all — a stacked coil — and a tentacle tail |
+| `golem` | rock creature | carved slab torso, blunt stone fists, cracked stone legs |
 
 On top of the plan, the **attribute** reshapes the body — that is why the three
 branches off any stage are three different creatures rather than one creature in
@@ -311,8 +315,13 @@ three colours:
 | `Virus` | back spines, fangs, toxic drips, clawed hands | fanged, spiked, toxic |
 
 …and then the seed picks one of three builds (lean / canonical / broad) with its
-own marking, so 8 archetypes × 3 attributes × 3 builds is 72 silhouettes before
-the palette is touched at all. Every one is still a pure function of
+own marking, so 12 archetypes × 3 attributes × 3 builds is **108 silhouettes**
+before the palette is touched at all.
+
+**Stage one is already the creature.** The archetype's signature — crest, ears,
+gills, treads, coil, wing buds — is present from `Fresh`, scaled small, instead
+of waiting for In-Training; the attribute's marker (halo, visor, fangs) is
+there too. A hatchling is a bird or a bug or a rock, not a blob that becomes one. Every one is still a pure function of
 `(seed, archetype, tier, attribute)`, still under the 100-part budget (decoration
 is trimmed before any limb), still mirrored exactly, and still inside the
 monitor's top clip budget — variety changes the shape, never the rules.

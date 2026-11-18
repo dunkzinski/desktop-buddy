@@ -24,6 +24,8 @@ pub enum HeadKind {
     Bulbous,
     /// Flat wide skull with a visor band and a chin plate — mechanical.
     Boxy,
+    /// A long tapered beak over a small round skull — avian.
+    Beak,
 }
 
 /// What sits either side of the skull.
@@ -59,6 +61,8 @@ pub enum CrestKind {
     Spikes,
     /// A tall centre fin.
     Fin,
+    /// A fan of long feathers over the brow.
+    Comb,
     None,
 }
 
@@ -75,6 +79,8 @@ pub enum ArmKind {
     Tentacle,
     /// Heavy barrel on a piston — mechanical.
     Cannon,
+    /// A feathered wing folded against the flank — avian.
+    Wing,
 }
 
 /// Support.
@@ -90,6 +96,12 @@ pub enum LegKind {
     Treads,
     /// Nothing at all: the body floats on a skirt.
     Hover,
+    /// Two thin pairs of legs — insect.
+    Insectoid,
+    /// A heavy stone leg ending in a blunt foot — golem.
+    Stonework,
+    /// No legs, a coiled serpent base — serpent.
+    Coiled,
 }
 
 /// What trails behind.
@@ -351,6 +363,80 @@ pub fn plan(archetype: Archetype) -> Plan {
             leg_len: 0.66,
             visor: true,
             engine: true,
+            ..base()
+        },
+
+        // Bird: beaked, combed, folded wings, feathered tail.
+        Archetype::Avian => Plan {
+            head: HeadKind::Beak,
+            ears: EarKind::None,
+            crest: CrestKind::Comb,
+            arms: ArmKind::Wing,
+            legs: LegKind::Hoofed,
+            tail: TailKind::Fan,
+            torso: TorsoKind::Round,
+            torso_w: 0.9,
+            torso_h: 1.0,
+            head_w: 0.86,
+            head_h: 0.86,
+            arm_len: 1.1,
+            leg_len: 1.12,
+            neck: 14.0,
+            feathers: true,
+            ..base()
+        },
+
+        // Insect: domed shell, antennae, thin limbs, stub abdomen.
+        Archetype::Insect => Plan {
+            head: HeadKind::Dome,
+            ears: EarKind::Antenna,
+            crest: CrestKind::Antenna,
+            arms: ArmKind::Claw,
+            legs: LegKind::Insectoid,
+            tail: TailKind::Stub,
+            torso: TorsoKind::Barrel,
+            torso_w: 0.86,
+            torso_h: 1.02,
+            head_w: 0.94,
+            head_h: 0.92,
+            arm_len: 0.86,
+            leg_len: 0.72,
+            ..base()
+        },
+
+        // Serpent: long jaw, no limbs, a coiled base, a very long tail.
+        Archetype::Serpent => Plan {
+            head: HeadKind::Muzzle,
+            ears: EarKind::None,
+            crest: CrestKind::Fin,
+            arms: ArmKind::Flipper,
+            legs: LegKind::Coiled,
+            tail: TailKind::Tentacle,
+            torso: TorsoKind::Round,
+            torso_w: 0.84,
+            torso_h: 1.16,
+            head_w: 1.04,
+            head_h: 0.84,
+            arm_len: 0.7,
+            ..base()
+        },
+
+        // Golem: carved stone, blunt fists, heavy stance.
+        Archetype::Golem => Plan {
+            head: HeadKind::Boxy,
+            ears: EarKind::None,
+            crest: CrestKind::Spikes,
+            arms: ArmKind::Hand,
+            legs: LegKind::Stonework,
+            tail: TailKind::Stub,
+            torso: TorsoKind::Slab,
+            armor: true,
+            torso_w: 1.22,
+            torso_h: 1.04,
+            head_w: 1.08,
+            head_h: 0.9,
+            arm_len: 1.14,
+            leg_len: 0.86,
             ..base()
         },
 
