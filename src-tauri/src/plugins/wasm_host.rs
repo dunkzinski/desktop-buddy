@@ -749,6 +749,85 @@ fn build_linker(engine: &Engine) -> Result<Linker<HostState>, String> {
         )
         .map_err(|err| format!("could not define host_log: {err}"))?;
 
+    // Publishing a rig: the guest hands over a slug and a manifest, the host
+    // validates with the app's loader and writes `models/<slug>/model.json`.
+    // 0 = installed, negative = refused (the reason is logged here, because a
+    // guest can only see a status code).
+    linker
+        .func_wrap(
+            "env",
+            "host_model_write",
+            |mut caller: Caller<'_, HostState>, sptr: u32, slen: u32, jptr: u32, jlen: u32| -> i32 {
+                let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+                    return -1;
+                };
+                let slug = read_string(memory.data(&caller), sptr, slen);
+                let bytes = read_bytes(memory.data(&caller), jptr, jlen);
+                let id = caller.data().id.clone();
+                let Some(host) = caller.data().host.clone() else {
+                    return -1;
+                };
+                let manifest: Value = match serde_json::from_slice(&bytes) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        log::warn!("wasm [{id}]: model_write got invalid JSON: {err}");
+                        return -2;
+                    }
+                };
+                match host.write_model(&slug, &manifest) {
+                    Ok(()) => 0,
+                    Err(err) => {
+                        log::warn!("wasm [{id}]: model_write({slug}) refused: {err}");
+                        -3
+                    }
+                }
+            },
+        )
+        .map_err(|err| format!("could not define host_model_write: {err}"))?;
+
+    // Hot-swap the avatar — the same code path as `POST /model`.
+    linker
+        .func_wrap(
+            "env",
+            "host_model_activate",
+            |mut caller: Caller<'_, HostState>, ptr: u32, len: u32| -> i32 {
+                let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+                    return -1;
+                };
+                let slug = read_string(memory.data(&caller), ptr, len);
+                let id = caller.data().id.clone();
+                let Some(host) = caller.data().host.clone() else {
+                    return -1;
+                };
+                match host.activate_model(&slug) {
+                    Ok(()) => 0,
+                    Err(err) => {
+                        log::warn!("wasm [{id}]: model_activate({slug}) failed: {err}");
+                        -2
+                    }
+                }
+            },
+        )
+        .map_err(|err| format!("could not define host_model_activate: {err}"))?;
+
+    // Play a clip by name — `POST /animate` without the HTTP round trip.
+    linker
+        .func_wrap(
+            "env",
+            "host_animate",
+            |mut caller: Caller<'_, HostState>, ptr: u32, len: u32| -> i32 {
+                let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+                    return -1;
+                };
+                let clip = read_string(memory.data(&caller), ptr, len);
+                let Some(host) = caller.data().host.clone() else {
+                    return -1;
+                };
+                i32::from(!host.animate(&clip))
+            },
+        )
+        .map_err(|err| format!("could not define host_animate: {err}"))?;
+
     Ok(linker)
 }
 
@@ -999,5 +1078,89 @@ mod tests {
         let routes: Vec<&str> = plugin.routes().iter().map(|route| route.path).collect();
         assert!(routes.contains(&"/survival"), "{routes:?}");
         assert!(routes.contains(&"/foods"), "{routes:?}");
+    }
+
+    /// A host that records the three model capabilities instead of touching the
+    /// disk — enough to drive a guest's `init` in a unit test.
+    #[derive(Default)]
+    struct ModelRecorder {
+        written: Mutex<Vec<(String, Value)>>,
+        activated: Mutex<Vec<String>>,
+        played: Mutex<Vec<String>>,
+    }
+
+    impl PluginHost for ModelRecorder {
+        fn emit(&self, _event: &str, _payload: Value) {}
+        fn notify(&self, _text: &str, _expression: &str) {}
+        fn write_model(&self, slug: &str, manifest: &Value) -> Result<(), String> {
+            self.written
+                .lock()
+                .expect("written")
+                .push((slug.to_string(), manifest.clone()));
+            Ok(())
+        }
+        fn activate_model(&self, slug: &str) -> Result<(), String> {
+            self.activated.lock().expect("activated").push(slug.to_string());
+            Ok(())
+        }
+        fn animate(&self, clip: &str) -> bool {
+            self.played.lock().expect("played").push(clip.to_string());
+            true
+        }
+    }
+
+    /// The digivolution guest: a plugin that owns no config block, generates
+    /// its own rigs, and declares the two endpoints the feature is built on.
+    #[test]
+    fn the_digivolution_plugin_loads_and_serves_its_routes() {
+        let Some(dir) = plugins_dir() else { return };
+        let path = dir.join("digivolution.wasm");
+        if !path.is_file() {
+            eprintln!("skipping: {} has not been built yet", path.display());
+            return;
+        }
+        // Load a **copy** in a scratch directory: `plugin_init` flushes its save
+        // with the real `host_state_save`, and the file lands beside the `.wasm`
+        // — a unit test must not write into the repo's `plugins/`.
+        let scratch = std::env::temp_dir().join(format!(
+            "char-rig-digivolution-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+        let copy = scratch.join("digivolution.wasm");
+        std::fs::copy(&path, &copy).expect("copy the plugin");
+        let mut plugin = WasmPlugin::load(&copy).expect("load");
+        let _ = std::fs::remove_file(scratch.join("digivolution.state.json"));
+        assert_eq!(plugin.id(), "digivolution");
+        assert!(
+            plugin.config().is_none(),
+            "it owns no watcher_rules.json block"
+        );
+
+        // `init` generates the Fresh stage and asks the host to publish it.
+        let recorder = Arc::new(ModelRecorder::default());
+        plugin.init(recorder.clone()).expect("init");
+        {
+            let written = recorder.written.lock().expect("written");
+            assert_eq!(written.len(), 1, "one fresh rig is installed");
+            assert!(written[0].0.starts_with("digi-"));
+            assert_eq!(written[0].1["format"], json!("char-rig/model@1"));
+            assert!(written[0].1["bones"].as_array().expect("bones").len() >= 8);
+        }
+        assert!(
+            recorder.activated.lock().expect("activated").is_empty(),
+            "installing must not steal the user's avatar"
+        );
+
+        let status = plugin.status();
+        assert!(status.get("wasm_error").is_none(), "{status}");
+        assert_eq!(status["stage"], json!("Fresh"));
+        assert!(status["rig"]["parts"].as_u64().unwrap_or(0) < 100);
+
+        let routes: Vec<&str> = plugin.routes().iter().map(|route| route.path).collect();
+        assert!(routes.contains(&"/digimon/status"), "{routes:?}");
+        assert!(routes.contains(&"/digivolve"), "{routes:?}");
+
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 }

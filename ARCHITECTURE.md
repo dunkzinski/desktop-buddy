@@ -79,6 +79,13 @@ ui/
     ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), text-driven lip sync (`mouthPoseFor`, `setMouthFrom`, `stepMouth`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
     ├── bridge.js       # Tauri IPC commands, event listeners (`avatar-state-changed`, `emote`, `speak`, `avatar-animate`, etc.), hit-region publishing (`wireRegions`, `setClickThrough`), state sync (`reportState`, `applyRemoteState`, `applyPartPatch`)
     ├── survival.js     # The **Survival** pop-out card and its four tabs: `setupSurvival` (hydrate from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follow the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events, 15 s survival poll floor), `renderSurvival` (tier badge, the two bars and the craving row, from any of the payload shapes), `feed` (the real `POST /survival/feed`), `setCraving` / `clearCraving`, `craft` + `syncCraftButton` (the recipe picker's `can_cook`/`missing`, so a cook the bag cannot pay for is not clickable), `showSurvivalTab` (status / bag / fishing / store), `renderInventory` + `addItem` + `useItem` + `sellPickedItem` (`GET /inventory`, `POST /inventory/add`, `POST /inventory/use`, plus a one-unit `POST /store/sell` straight from the bag at the slot's `sell_price`), `syncInventoryButtons` (Use for edibles, Sell for anything the counter prices), the shop (`renderStore` + `renderWallet` + `pickStoreItem` + `syncStoreButtons` + `trade` over `GET /store`, `POST /store/buy`, `POST /store/sell`), the fishing mini-game (`castLine` / `hookFish` / `reelFish` / `cancelFishing`, a 120 ms `GET /fishing` poll, `startMarker` animating off the plugin's sweep), `toggleSurvivalCard` / `survivalCardOpen`
+    ├── digivolve.js    # The **Digivolution** pop-out card: `setupDigivolve` (hydrate from
+    │                  # `GET /digimon/status`, follow the `digimon` event, 10 s poll), `renderDigimon`
+    │                  # (stage badge, XP/bond bars, attribute chip, the live rig's bones/parts/top),
+    │                  # `renderBranches` + `pickEvolveBranch` (the three branches, from the plugin's own
+    │                  # table), `evolve` (the real `POST /digivolve` — the plugin writes the model and the
+    │                  # host swaps the avatar, so nothing here touches the rig), `nudge` (`POST /digimon/xp`),
+    │                  # `reset` (`POST /digimon/reset`), `toggleDigivolveCard` / `digivolveCardOpen`
     ├── settings.js     # The **Settings** modal over `GET /config` / `POST /config`: `setupSettings` (build the form from one `FIELDS` spec, hydrate from the server, prime at startup), `renderSettings` (values, per-path ✓/✗, stray-key warnings), `collectPatch` (sends **only** what changed, including `ai.create` / `ai.rename` / `ai.remove` and `discovery_ports`), the AI brain tab's own `renderProfileCards` / `refreshProfileOptions` / `addProfile` / `removeProfile` / `discoverModels` / `importModel` / `renderDiscovery`, `save` (partial `POST /config`, then reports applied vs `restart_required`), `toggleSettings` / `settingsOpen`
     └── main.js         # Entry point: DOM bindings, keyboard shortcuts, gaze targeting (`updateGaze`, `attachGazeTracking`), `window.__avatarDebug`, `requestAnimationFrame` main loop (`step`, `frame` — bubble re-anchor), the ask/task command bar (`openCommandBar`, `sendUserMessage`, quick-task chips, `resetSession`)
 ```
@@ -430,7 +437,7 @@ and the app still starts (with no plugins) and still serves `/plugins`.
 
 | file | responsibility |
 | --- | --- |
-| `mod.rs` | the feature-blind host: `Plugin` (`init` / `tick` / `shutdown` + optional `status` / `routes` / `config`), `PluginHost` (`emit`, `notify`, `now_ms`, `rules_path`), `PluginRoute` (a path + an axum `MethodRouter`), `PluginConfig` (`key`, `describe`, `validate`, `apply`, `warnings`), the failure-tolerant registry, and the process-wide `install` / `routes` / `config_specs` / `stop` |
+| `mod.rs` | the feature-blind host: `Plugin` (`init` / `tick` / `shutdown` + optional `status` / `routes` / `config`), `PluginHost` (`emit`, `notify`, `now_ms`, `rules_path`, `write_model`, `activate_model`, `animate`), `PluginRoute` (a path + an axum `MethodRouter`), `PluginConfig` (`key`, `describe`, `validate`, `apply`, `warnings`), the failure-tolerant registry, and the process-wide `install` / `routes` / `config_specs` / `stop` |
 | `wasm_host.rs` | the WebAssembly runtime: scans the plugin directory, compiles each file to a `wasmtime::Module`, instantiates it in **its own `Store`** with a fuel budget, defines the host imports, and wraps the instance in a `WasmPlugin` that implements `Plugin` |
 | `manifest.rs` | how the app finds plugins — `wasm_host::load_all(&mut registry)`. It names nothing, so there is nothing to edit when a plugin is added or removed |
 
@@ -456,7 +463,7 @@ A reply packs `(ptr as i64) << 32 | len`; `0` means "no result". The host copies
 the bytes out, calls `dealloc`, and parses. A reply with an `error` key is a log
 line, never a panic.
 
-The guest may call six host imports — that list *is* the plugin's capability
+The guest may call nine host imports — that list *is* the plugin's capability
 surface:
 
 ```text
@@ -466,7 +473,23 @@ host_now_ms()                      -> the clock (wasm32 has none)
 host_log(level, message)           -> the app log
 host_state_save(bytes)             -> writes this plugin's save file
 host_ai_attached()                 -> 1 when a watcher is on the event bus
+host_model_write(slug, manifest)   -> validate + write models/<slug>/model.json
+host_model_activate(slug)          -> the POST /model code path (hot swap)
+host_animate(clip)                 -> the POST /animate code path
 ```
+
+**Publishing a rig is a host capability, not a guest one.** A guest has no
+filesystem, so a plugin that generates models (see the digivolution plugin
+below) hands the manifest over instead of writing it:
+`PluginHost::write_model` runs `models::validate_rig` and then
+`models::install_generated_model`, which writes `models/<slug>/model.json`
+through a temp file, *loads it back* with the app's loader, and deletes it again
+if it does not read. The slug is restricted to `[a-z0-9-]`, so a manifest can
+never escape the models root. `activate_model` is `ModelCtx::load` plus the
+`model-changed` frame — literally what `POST /model` does — and `animate` is
+`find_animation` plus `do_animate`, what `POST /animate` does. The host stays
+feature-blind: it knows "install a rig", "activate a rig" and "play a clip",
+never "digivolve".
 
 **One voice per moment.** Every spontaneous survival line — a tier crossing, a
 starvation reminder, a craving that began / lapsed / was satisfied, a meal
@@ -540,6 +563,59 @@ cp target/wasm32-unknown-unknown/release/char_rig_survival_plugin.wasm ../surviv
 Then restart `avatar-desktop.exe` — no Rust build of the app, no feature flag.
 The plugin's routes appear in the API, its config block appears in the settings
 modal, and its entry appears in `GET /plugins`. Delete the `.wasm` to remove it.
+
+#### The digivolution plugin (`plugins/digivolution/`)
+
+A second guest, and the proof that the host stayed feature-blind: adding it
+touched `mod.rs` (three generic capabilities), `wasm_host.rs` (their imports) and
+`models.rs` (one write helper) — no route, no type, no branch named
+"digivolution" anywhere in the app.
+
+| file | responsibility |
+| --- | --- |
+| `src/rng.rs` | SplitMix64. No dependency, no `getrandom`: `(seed, archetype, tier)` reproduces the same creature on every machine |
+| `src/skeleton.rs` | the `char-rig/model@1` types, the two mirroring formulas (`atan2(sin θ, −cos θ)` for a chain root, `−θ` for a descendant), `computeWorld`, and the painted-bounds pass |
+| `src/plan.rs` | The eight body plans: head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers |
+| `src/generator.rs` | `generate(Spec) -> Manifest`: centerline → tail → right chains → mirror → clips → monitor guard, plus `validate` |
+| `src/evolution.rs` | stage/XP/bond/attribute state, the three-branch table, and the transitions both ways (generate → host write → host activate; `dedigivolve` regenerates the parent from its recorded seed) |
+| `src/plugin.rs` | live state: passive XP, the one-shot "ready" notice, the 30 s save, `GET /digimon/status`'s body |
+| `src/routes.rs` | the `ROUTES` table + dispatcher |
+| `tests/generator_tests.rs` | every tier × archetype × seed: schema, parents, cycles, limits, FK symmetry, monitor bounds, face tags, z-stack |
+
+**Generation, not authoring.** Each stage is built from tier-scaled dimensions:
+bone count, limb segments (forearm / shin / hand / foot), horns, wings (and a
+second wing segment), armour plates, tail segments, eyespots, halo and aura
+appear as the tier rises, while the part count stays under the 100-part budget
+(`MAX_PARTS`). Coordinates are authored in local pixels with the root at
+`scale: 0.55`, and `enforce_monitor_budget` verifies `min_world_y >= -170` over
+every painted corner — the format's top-clip budget — shifting the pelvis down
+if a hand-tuned number ever exceeded it.
+
+**Mirroring is arithmetic, never hand-typed.** Only the centerline
+(`root`, `pelvis`, `torso`, `neck`, `head`, `tail`) and the right-side chains
+(`arm_r`, `leg_r`, `horn_r`, `wing_r`) are authored; `mirror_chain` produces the
+`*_l` twins, remaps each descendant's parent to the **left** twin, and negates
+part offsets/rotations because a mirrored bone's local frame has the opposite
+handedness. The clips then key `+a` on `_l` and `−a` on `_r`.
+
+**Routes** (declared in `routes.rs`, served through the plugin proxy):
+
+| route | what it does |
+| --- | --- |
+| `GET /digimon/status` | stage, XP, bond, attribute, the live rig's `bones`/`parts`/`min_world_y`/`symmetry_error`, the three branches and the transition history |
+| `POST /digivolve` | `{branch?, force?}` → generate the next stage, `host_model_write`, `host_model_activate` (the `POST /model` path), `host_animate("digivolve")`, then one `digimon` event |
+| `POST /dedigivolve` | `{steps?}` → regenerate the **parent** stage from the history entry's seed/attribute (deterministic, so the exact earlier rig comes back), write it, activate it, play the clip, emit `dedigivolved`; `409` at Fresh |
+| `POST /digimon/xp` | `{xp, bond}` — grant growth directly |
+| `POST /digimon/reset` | `{seed?, archetype?, attribute?}` — a new creature plus its `Fresh` rig |
+
+State lives in `plugins/digivolution.state.json` through `host_state_save`. The
+current stage's rig is (re-)published at every `init` — `installed` is a
+per-process hint, never a saved claim, because the guest cannot stat a file and
+a deleted `models/` folder must not leave the plugin pointing at nothing — but
+it is **never activated**, because taking over the user's avatar on startup is
+not a plugin's call. An explicit `POST /digimon/reset` *does* activate: the user
+asked for a new creature, so leaving the old body up until the first evolution
+would look like nothing happened.
 
 `tools/verify_docs.py` reads the route table out of the guest sources
 (`plugins/*/src/*.rs`, the `ROUTES` const) as well as `api.rs` and
@@ -714,6 +790,7 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar, `H` toggles the History drawer), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), **gaze targeting** (`attachGazeTracking` — page `mousemove` plus the global `cursor-pos` stream; `updateGaze` — `look_at` > focused command bar > perch > global cursor (4 s) > idle glances, plus the eased hover weight and the clamped head-bone yaw bias), `window.__avatarDebug`, the **AI Brain** select (`setAiProfile` + a toast, with `refreshAiProfiles` every 12 s beside the watcher poll), behaviour loop (`step`, `startWalk`, `wander` — held back while a bubble is up), `requestAnimationFrame` driver (`frame`: `step` → `render` → `positionBubble`), play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
 | `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions || `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions |
 | `ui/js/survival.js` | The **Survival** card (top-left pop-out, not a panel section) with four tabs. `setupSurvival` hydrates from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follows the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events with a 15 s survival poll as the floor, `renderSurvival` flattens every payload shape into the tier badge, the two bars and the craving row, `feed` is a real `POST /survival/feed`, `setCraving` / `clearCraving` drive `POST /survival`, `craft` is a real `POST /survival/craft` fed by the recipe picker, which comes from `GET /recipes` with the bag folded in (`can_cook`, `missing`, per-line `held`) so `syncCraftButton` can disable a cook that could not pay (a 409 `missing_ingredients` / refusal prints the API's own prose). `showSurvivalTab` switches status / bag / fishing / store; `renderInventory` draws one cell per slot from `GET /inventory`, `addItem` / `useItem` / `sellPickedItem` are real `POST /inventory/add`, `POST /inventory/use` and a one-unit `POST /store/sell` (the bag's Sell button, enabled for any slot `GET /inventory` gave a `sell_price`); the store pane draws one row per shelf entry from `GET /store` (`renderStore`, grouped by category, with the wallet and each entry's `owned` count), keeps Buy/Sell honest against the purse and the bag (`syncStoreButtons`) and trades for real through `trade` — a 409 `insufficient_coins` / `inventory_full` / `not_enough_items` prints the API's own prose; the fishing pane runs `castLine` / `hookFish` / `reelFish` / `cancelFishing` against the plugin, polls `GET /fishing` at 120 ms so the bobber beats the 1 s host tick, and animates the marker from the published sweep. `toggleSurvivalCard` / `survivalCardOpen` drive the card and Esc chain |
+| `ui/js/digivolve.js` | The **Digivolution** card (a second top-left pop-out, beside Survival). `setupDigivolve` resolves the API base, hydrates from `GET /digimon/status`, follows the plugin's `digimon` event (`ready` / `digivolved` / `reset`) and keeps a 10 s poll as the floor so a stopped plugin shows as `offline` instead of freezing the card. `renderDigimon` paints the stage badge (green when evolvable, gold at Mega), the XP and bond bars, the archetype/attribute/seed chips and the live rig's `bones` / `parts` / `min_world_y`, `renderBranches` draws one row per offered branch (`pickEvolveBranch` selects it) and `syncEvolveButton` disables Evolve with the exact XP shortfall (and `syncBackButton` labels **◀ Back** with the stage it returns to — a real `POST /dedigivolve`) — the button is a real `POST /digivolve`, whose reply (`from → stage`, bones, parts, `model_path`) lands in the card's note while the host hot-swaps the avatar; `nudge` is `POST /digimon/xp` and `reset` is `POST /digimon/reset` (archetype + optional seed). `toggleDigivolveCard` / `digivolveCardOpen` drive the card and the Esc chain. A 404 on the status route renders the card as offline with the build step |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
 `ipc, state → rig → animator → {renderer, speech, editor, bridge}; editor → bridge; all → main`.

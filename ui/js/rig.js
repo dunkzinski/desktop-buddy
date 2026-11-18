@@ -413,16 +413,19 @@ export function wireRegions() {
   // click-through, so it is published only while visible.
   const historyDrawer = document.getElementById("history-drawer");
   if (historyDrawer && !historyDrawer.classList.contains("hidden")) push(historyDrawer);
-  // The survival card is another floating card: its pickers, Feed/Crave/Craft
-  // buttons and ✕ must accept clicks over the click-through desktop, so its
-  // box goes in only while it is open.
   // The settings modal is a full-screen sheet: while it is up it must take
   // every click (it is the only thing on screen), so its box is published in
   // place of nothing.
   const settingsModal = document.getElementById("settings-modal");
   if (settingsModal && !settingsModal.classList.contains("hidden")) push(settingsModal);
-  const survivalCard = document.getElementById("survival-card");
-  if (survivalCard && !survivalCard.classList.contains("hidden")) push(survivalCard);
+  // The pop-out cards are floating cards too: their pickers and buttons must
+  // accept clicks over the click-through desktop, so each box goes in only
+  // while that card is open. Forgetting this makes the card *look* live while
+  // every click falls through to whatever is behind it.
+  for (const id of ["survival-card", "digivolve-card"]) {
+    const card = document.getElementById(id);
+    if (card && !card.classList.contains("hidden")) push(card);
+  }
   // The speech bubble hosts the quick-reply box: while it is on screen its box
   // must accept clicks, or the user could see the input but not type in it.
   const bubble = document.getElementById("speech");

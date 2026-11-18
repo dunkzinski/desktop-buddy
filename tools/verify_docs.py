@@ -131,6 +131,20 @@ if unknown:
 else:
     print(f"\nUI invokes {len(ui_calls)} commands, all registered.")
 
+# ---------- 4b. every pop-out card is a click target ----------
+# A floating card that is not in `rig.js::wireRegions` looks alive and swallows
+# nothing: the overlay stays click-through over it and every click lands on the
+# desktop behind. The digivolution card shipped exactly that bug once.
+card_ids = set(re.findall(r'<aside id="([a-z0-9-]+-card)"', (ROOT / "ui/index.html").read_text(encoding="utf-8")))
+rig_js = (ROOT / "ui/js/rig.js").read_text(encoding="utf-8")
+missing_regions = sorted(card_id for card_id in card_ids if f'"{card_id}"' not in rig_js)
+print(f"pop-out cards: {sorted(card_ids)}")
+if missing_regions:
+    problems.append(
+        f"ui/js/rig.js: pop-out card(s) without a hit region: {missing_regions} "
+        "(the card would be visible but click-through)"
+    )
+
 # ---------- 5. /context JSON keys ----------
 ctx_block = re.search(r"async fn context.*?\n\}", api_rs, re.S).group(0)
 ctx_keys = set(re.findall(r'"([a-z_]+)":', ctx_block))

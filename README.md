@@ -221,13 +221,28 @@ plugins/
 │       ├── routes.rs    ROUTES = [("/survival", …), …] + the request dispatcher
 │       └── config.rs    the `survival` block of watcher_rules.json (metabolism,
 │                        cravings, fishing and inventory)
-└── survival.wasm        the built artifact — this is what the app loads
+├── survival.wasm        the built artifact — this is what the app loads
+│
+├── digivolution/        procedural growth: generates its own rigs per stage
+│   ├── Cargo.toml       same shape (own workspace, cdylib + rlib)
+│   └── src/
+│       ├── lib.rs       the ABI (5 exports + config stubs; no config block)
+│       ├── rng.rs       SplitMix64 — deterministic, dependency-free
+│       ├── skeleton.rs  the model@1 types, the two mirroring formulas, FK + bounds
+│       ├── generator.rs seed × archetype × tier -> a complete manifest
+│       ├── evolution.rs stage/XP/bond/attribute state and the branch table
+│       ├── plugin.rs    live state: XP drift, the "ready" notice, the save
+│       └── routes.rs    ROUTES = [("/digimon/status", …), …] + dispatcher
+├── digivolution.wasm    the built artifact
+└── digivolution.state.json   its save (gitignored)
 ```
 
-The guest talks to the app through exactly six imports (`host_emit_event`,
+The guest talks to the app through exactly nine imports (`host_emit_event`,
 `host_notify`, `host_now_ms`, `host_log`, `host_state_save`, and
 `host_ai_attached` — which is how it knows to stay silent while a watcher's AI
-brain answers the same event) and exports
+brain answers the same event — plus `host_model_write`, `host_model_activate`
+and `host_animate`, which let a guest publish a generated rig and hot-swap onto
+it without ever touching the filesystem) and exports
 JSON-over-memory functions: `plugin_init`, `plugin_tick`, `plugin_status`,
 `plugin_routes`, `plugin_http`, and the config hooks. The host
 (`src-tauri/src/plugins/wasm_host.rs`) turns `plugin_routes` into axum routes
@@ -257,6 +272,54 @@ keeps running), every call is fuel-metered so a spinning guest cannot hang the
 ticker, and a `.wasm` that will not load is logged and skipped. `survival.enabled:
 false` keeps the plugin installed but idle — the bars freeze and the routes keep
 answering with `"enabled": false`.
+
+### Digivolution: a creature that grows
+
+`plugins/digivolution` is a second guest with a different job: instead of
+tracking bars it **writes new characters**. One creature is a seed, a stage, XP,
+a bond and an attribute (`Vaccine` / `Data` / `Virus`). Each of the six stages
+(`Fresh → In-Training → Rookie → Champion → Ultimate → Mega`) is a complete
+`char-rig/model@1` rig the plugin generates itself — no sprites, no textures, no
+network — with tier-scaled bone counts, wings, crests, armour and palettes, three
+procedural clips (`breathe`, `wave`, `digivolve`) and exact left/right symmetry:
+only the centerline and the `*_r` chains are authored, and the `*_l` twins are
+computed with `atan2(sin θ, −cos θ)` (chain roots) and `−θ` (descendants).
+
+Colour is the *last* thing that varies. Each archetype is a **body plan**
+(`src/plan.rs`), not a palette: eight silhouettes that differ in trunk, head,
+crest, limbs and tail before a single colour is chosen.
+
+| archetype | reads as | plan |
+| --- | --- | --- |
+| `beast` | round biped | round head, pointed ears, horns, claws, blobby finned tail |
+| `drake` | dragon | long snout with fangs, ribbed barrel, spiked crest, wings |
+| `cyborg` | half-machine | flat skull, antennae, cannon arm, cable tail, treads |
+| `holy` | angel | tall domed head, disc ears, halo, robe skirt, feathered wings |
+| `aqua` | fish | wide low skull, oversized eyes, gill fans, dorsal fin, flippers, fan tail |
+| `cervid` | deer | long neck, long ears, branching antlers, slim legs on hooves, stub tail |
+| `machine` | robot | boxy visor head, whip antenna, slab torso with vents, treads |
+| `alien` | alien | bulbous cranium, stalk eyes, floating mantle, tentacle arms and tail |
+
+Every plan is still a pure function of `(seed, archetype, tier)`, still under the
+100-part budget, still mirrored exactly, and still inside the monitor's top clip
+budget — a body plan changes the shape, never the rules.
+
+```bash
+curl -s localhost:8765/digimon/status        # stage, XP, bond, branches, rig stats
+curl -s -X POST localhost:8765/digivolve \
+  -H 'content-type: application/json' -d '{"force": true}'
+```
+
+`POST /digivolve` generates the next stage, has the **host** validate and write
+`models/<slug>/model.json` (a guest cannot touch the filesystem — and the host
+re-loads the file before keeping it), hot-swaps the avatar through the same code
+path as `POST /model`, and plays the new rig's `digivolve` clip. `POST
+/dedigivolve` walks the same path **backwards**: every history entry remembers
+the parent's seed, and generation is deterministic, so a rewind brings back the
+exact earlier creature (XP is kept, so it can grow straight back). The
+**Digivolve** card in the control panel does all of it by hand. Growth state
+persists in `plugins/digivolution.state.json`, so a restart resumes the same
+line; `POST /digimon/xp` and `POST /digimon/reset` drive it by hand.
 
 ### The economy loop
 

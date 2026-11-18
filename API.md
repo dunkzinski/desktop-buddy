@@ -1551,6 +1551,175 @@ trigger (speaking `line` as its offline fallback).
 Gives up on the current cast and reports it as a `fishing-result` with
 `reason: "cancelled"`. Nothing to cancel is a **409**.
 
+## Digivolution (the `digivolution` plugin)
+
+The `digivolution` guest owns one procedurally generated creature: a seed, a
+stage, XP, bond and an attribute. Every stage is a complete `char-rig/model@1`
+rig it **generates itself** (no sprites, no AI, no network) and writes into
+`models/<slug>/model.json` through a host import, which validates it with the
+app's own loader before anything lands on disk. `/digivolve` then hot-swaps the
+avatar onto the new rig — the same code path `POST /model` takes — and plays the
+`digivolve` clip.
+
+Stages are ordered `Fresh → In-Training → Rookie → Champion → Ultimate → Mega`.
+Each transition has three branches (one per attribute: `Vaccine`, `Data`,
+`Virus`), and the bond/XP state only *seeds* them, so the same creature always
+offers the same three options. State is persisted as
+`plugins/digivolution.state.json`, so a restart resumes the same line.
+
+### `GET /digimon/status`
+
+Everything the growth system knows, plus the measurements of the live rig.
+
+```bash
+curl -s localhost:8765/digimon/status
+```
+
+```json
+{
+  "ok": true,
+  "creature": { "seed": 1585367844, "archetype": "drake", "seed_hex": "000000005e7d6e64" },
+  "stage": "Rookie",
+  "tier_index": 2,
+  "xp": 64,
+  "xp_required": 180,
+  "xp_to_next": 116,
+  "bond": 0.52,
+  "attribute": "Virus",
+  "slug": "digi-drake-rookie-1f3a9c02",
+  "generation": 2,
+  "installed": true,
+  "can_evolve": false,
+  "final_stage": false,
+  "last_evolved_ms": 1732000123456,
+  "rig": { "bones": 19, "parts": 46, "clips": 3, "min_world_y": -86.4, "symmetry_error": 0.0 },
+  "branches": [
+    { "stage": "Champion", "attribute": "Virus", "label": "Drake Champion",
+      "slug": "digi-drake-champion-9b21c4d0", "seed": 11166978496, "xp_required": 180 }
+  ],
+  "history": [ { "from": "In-Training", "to": "Rookie", "slug": "digi-drake-rookie-1f3a9c02", "at_ms": 1732000123456 } ],
+  "last_error": null
+}
+```
+
+`rig.min_world_y` is the highest pixel the current stage paints (world space,
+root at `scale: 0.55`); the generator keeps it at or below `-170` so the
+artwork never clips the top of the monitor. `rig.symmetry_error` is the worst
+left/right disagreement in the skeleton — `0.0` means the mirrored chains are
+exact. `installed` says the stage's rig has been published by **this** run (the
+plugin re-writes it at startup rather than trusting a saved claim).
+
+### `POST /digivolve`
+
+Advances one stage. Body is optional:
+
+| field | meaning |
+| --- | --- |
+| `branch` | index into `status.branches` (default `0`) |
+| `force` | `true` skips the XP gate (demo/verification; the default honours it) |
+
+```bash
+curl -s -X POST localhost:8765/digivolve -H 'content-type: application/json' \
+  -d '{"branch": 1, "force": true}'
+```
+
+```json
+{
+  "ok": true,
+  "from": "Fresh",
+  "stage": "In-Training",
+  "slug": "digi-drake-in-training-3c0f22aa",
+  "label": "Drake In-Training",
+  "attribute": "Data",
+  "animation": "digivolve",
+  "bones": 13,
+  "parts": 31,
+  "min_world_y": -74.2,
+  "model_path": "models/digi-drake-in-training-3c0f22aa/model.json",
+  "status": { "stage": "In-Training" }
+}
+```
+
+An insufficient XP is a **409** (`"not ready: 20 xp of 90 …"`); `Mega` is the
+last stage and also a **409**. The reply carries the full post-transition status
+so one request repaints a client.
+
+### `POST /dedigivolve`
+
+Goes **back** one stage (or several). Body is optional:
+
+| field | meaning |
+| --- | --- |
+| `steps` | how many stages to rewind (default `1`, clamped to the recorded history) |
+
+```bash
+curl -s -X POST localhost:8765/dedigivolve -H 'content-type: application/json' -d '{"steps": 1}'
+```
+
+```json
+{
+  "ok": true,
+  "direction": "out",
+  "steps": 1,
+  "from": "In-Training",
+  "stage": "Fresh",
+  "slug": "digi-beast-fresh-5eed1234",
+  "label": "Beast Fresh",
+  "attribute": "Data",
+  "animation": "digivolve",
+  "bones": 9,
+  "parts": 27,
+  "min_world_y": -49.8,
+  "model_path": "models/digi-beast-fresh-5eed1234/model.json",
+  "status": { "stage": "Fresh" }
+}
+```
+
+Because generation is deterministic and each history entry records the
+**parent's** seed and attribute, a rewind regenerates the *exact* creature the
+line had before — same bones, colours and clips — then writes it and hot-swaps
+the avatar through the same `POST /model` path as evolution. XP is kept (a
+creature has still grown), so it can evolve straight back. At `Fresh` — or with
+no history — the answer is a **409**; `steps: 0` is a **400**.
+
+A history entry written *before* rewind existed has no parent seed, and that seed
+is one-way mixed into the child's, so it cannot be recovered: rewinding such a
+step is refused with a **409** naming the step, rather than silently landing on
+a different creature. Evolving once records it, and the rewind works from then
+on.
+
+### Growth fields on `GET /digimon/status`
+
+`GET /digimon/status` also carries `can_dedigivolve` (is there a parent stage),
+`rewind_depth` (how many stages of history exist) and `previous_stage` (the
+stage a single-step rewind returns to), which is what the card's **◀ Back**
+button reads.
+
+A successful transition emits one `digimon` event with `event: "digivolved"`,
+`from`, `stage`, `slug`, `attribute`, `bones`, `parts` and a `line` — the
+watcher turns it into a trigger, and with no brain attached the plugin speaks
+the line itself. Growing past the threshold emits the same event with
+`event: "ready"` exactly once per stage.
+
+### `POST /digimon/xp`
+
+Grants growth directly — `{"xp": 40, "bond": 0.2}` (either field alone works).
+`bond` is clamped to `-1..1` around the current value. Empty body is a **400**.
+
+### `POST /digimon/reset`
+
+Starts a new creature, installs its `Fresh` rig **and switches the avatar to it**
+(the `POST /model` path), then plays the `digivolve` clip:
+`{"seed": 1234, "archetype": "cyborg", "attribute": "Virus"}`. `archetype` is
+one of `beast`, `drake`, `cyborg`, `holy`, `aqua`, `cervid`, `machine`,
+`alien` (aliases: `fish`, `deer`, `robot`, `angel`, `dragon`, `android`);
+anything else is a **400**. Missing
+fields keep the current creature's values (and a missing `seed` uses the clock).
+
+Unlike the install that happens at plugin start-up — which deliberately leaves
+the user's avatar alone — this one is an explicit request for a new creature, so
+the body on screen changes immediately.
+
 ### `GET /plugins`
 
 The plugin registry: every registered plugin, its lifecycle state, tick and

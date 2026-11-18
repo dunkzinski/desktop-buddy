@@ -76,6 +76,8 @@
       <button class="control-btn" id="btn-history" title="Conversation history (H)" aria-pressed="false">History</button>
       <button class="control-btn" id="btn-survival" title="Hunger, saturation and food — pops out as a card (Esc closes)"
               aria-pressed="false">Survival</button>
+      <button class="control-btn" id="btn-digivolve" title="Stage, growth and evolution branches — pops out as a card (Esc closes)"
+              aria-pressed="false">Digivolve</button>
       <button class="control-btn" id="btn-settings" title="Settings: paths, AI profiles and survival (Esc closes)"
               aria-pressed="false">Settings ⚙</button>
       <button class="control-btn" id="btn-ask" title="Ask or task the avatar (Enter)">Ask…</button>
@@ -434,6 +436,62 @@
               title="Sell the selected item (POST /store/sell)">Sell</button>
     </div>
     <div class="survival-note" id="store-note" aria-live="polite"></div>
+  </div>
+</aside>
+
+<aside id="digivolve-card" class="hidden" role="dialog" aria-label="Digivolution" aria-hidden="true">
+  <header>
+    <h3>Digivolution</h3>
+    <span class="digi-stage off" id="digi-stage" title="evolution stage">—</span>
+    <span class="hd-spacer"></span>
+    <button class="mini-btn" id="btn-digi-reload" title="Re-read GET /digimon/status">↻</button>
+    <button class="mini-btn" id="btn-digi-close" title="Close (Esc)" aria-label="Close">✕</button>
+  </header>
+  <div class="survival-body">
+    <div class="digi-line" id="digi-line">—</div>
+
+    <div class="survival-bar-row" title="Growth toward the next stage — earned by simply existing">
+      <span class="survival-bar-name">XP</span>
+      <div class="survival-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+           aria-label="Experience toward the next stage">
+        <div class="survival-bar-fill xp" id="digi-xp-bar"></div>
+      </div>
+      <span class="survival-bar-value" id="digi-xp">—</span>
+    </div>
+    <div class="survival-bar-row" title="Bond steers which attribute the branches lean toward">
+      <span class="survival-bar-name">Bond</span>
+      <div class="survival-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+           aria-label="Bond">
+        <div class="survival-bar-fill bond" id="digi-bond-bar"></div>
+      </div>
+      <span class="survival-bar-value" id="digi-bond">—</span>
+    </div>
+    <div class="digi-meta" id="digi-meta"></div>
+
+    <div class="digi-branches-label">Evolve into</div>
+    <div class="digi-branches" id="digi-branches" role="radiogroup"
+         aria-label="Evolution branches"></div>
+    <div class="digi-actions">
+      <button class="mini-btn" id="btn-digi-back" disabled
+              title="Return to the previous stage (POST /dedigivolve)">◀ Back</button>
+      <button class="control-btn primary" id="btn-digivolve-go" disabled
+              title="Generate the next stage, write its model folder and hot-swap the avatar">Evolve</button>
+    </div>
+
+    <div class="digi-nudge">
+      <span class="digi-nudge-label" title="POST /digimon/xp — the growth API, by hand">Nudge</span>
+      <button class="mini-btn" id="btn-digi-xp" title="Grant 60 XP (POST /digimon/xp)">+60 XP</button>
+      <button class="mini-btn" id="btn-digi-bond" title="Grant 0.1 bond (POST /digimon/xp)">+bond</button>
+    </div>
+    <div class="digi-reset">
+      <select id="digi-archetype" title="Archetype for the new creature (POST /digimon/reset)"
+              aria-label="Archetype"></select>
+      <input id="digi-seed" type="number" min="0" step="1" placeholder="seed (random)"
+             title="Deterministic seed; leave empty for a clock seed" aria-label="Seed">
+      <button class="mini-btn" id="btn-digi-reset"
+              title="Hatch a new creature: install its Fresh rig and switch the avatar to it (POST /digimon/reset)">New</button>
+    </div>
+    <div class="survival-note" id="digivolve-note" aria-live="polite"></div>
   </div>
 </aside>
 

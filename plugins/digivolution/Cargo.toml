@@ -1,0 +1,29 @@
+[package]
+name = "char-rig-digivolution-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "Procedural Digivolution & Growth plugin for char-rig: generates, mutates and evolves creature rigs"
+publish = false
+
+# Its own workspace on purpose: the app crate must not depend on this one. It is
+# built separately (`scripts/build-plugin.sh`) and the host loads the .wasm at
+# runtime.
+[workspace]
+
+[lib]
+# `cdylib` is the .wasm artifact; `rlib` keeps `cargo test` working natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# `float_roundtrip` makes serde_json's parser correctly rounded, so a manifest
+# read back from disk is bit-identical to the one that was written — which the
+# generator tests assert.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

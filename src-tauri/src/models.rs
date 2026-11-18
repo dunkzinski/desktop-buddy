@@ -647,6 +647,54 @@ pub fn clear_rig(root: &Path, name: &str) -> Result<bool, String> {
     }
 }
 
+/// Install a **generated** manifest as `models/<slug>/model.json`.
+///
+/// This is the write half of the digivolution plugin's `host_model_write`
+/// import. The host owns the filesystem — a wasm guest cannot — and it
+/// validates with the app's own loader, so a rig the app would reject never
+/// lands on disk. The file is written through a temp file and then *loaded*;
+/// a model that cannot be read back is removed again and the error returned.
+pub fn install_generated_model(root: &Path, slug: &str, manifest: &Value) -> Result<String, String> {
+    let valid_slug = !slug.is_empty()
+        && slug.len() <= 64
+        && !slug.starts_with('-')
+        && !slug.ends_with('-')
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !valid_slug {
+        return Err(format!("{slug:?} is not a valid model slug"));
+    }
+
+    // Structural validation first — nothing is created for a broken rig.
+    validate_rig(manifest)?;
+
+    let dir = root.join(slug);
+    fs::create_dir_all(&dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
+
+    let mut rig = manifest.clone();
+    if let Some(object) = rig.as_object_mut() {
+        object.insert("format".to_string(), json!(FORMAT_TAG));
+        object.insert("name".to_string(), json!(slug));
+    }
+    let path = dir.join("model.json");
+    let text = format!("{rig:#}\n");
+    let tmp = dir.join("model.json.tmp");
+    fs::write(&tmp, text).map_err(|err| format!("cannot write {}: {err}", tmp.display()))?;
+    fs::rename(&tmp, &path).map_err(|err| {
+        let _ = fs::remove_file(&tmp);
+        format!("cannot replace {}: {err}", path.display())
+    })?;
+
+    // Prove the app can read it back (this also validates `animations`).
+    if let Err(err) = load_model(root, slug) {
+        let _ = fs::remove_file(&path);
+        return Err(format!("the generated rig does not load: {err}"));
+    }
+    log::info!("installed generated model {slug:?} -> {}", path.display());
+    Ok(path.display().to_string())
+}
+
 /* ------------------------------------------------------------------ *
  * import
  * ------------------------------------------------------------------ */
@@ -1279,5 +1327,49 @@ mod tests {
         );
 
         fs::remove_dir_all(&scratch).ok();
+    }
+
+    /// The digivolution plugin's write path: a generated manifest is validated,
+    /// written as `models/<slug>/model.json`, and loads back clean.
+    #[test]
+    fn a_generated_manifest_installs_and_loads_back() {
+        let root = scratch_dir("generated");
+        let rig = json!({
+            "format": FORMAT_TAG,
+            "name": "ignored-by-the-host",
+            "bones": [
+                { "id": "root", "parent": Value::Null, "pos": [0, 0], "scale": 0.55, "parts": [] },
+                {
+                    "id": "torso",
+                    "parent": "root",
+                    "pos": [0, -50],
+                    "parts": [{
+                        "id": "chest", "shape": "ellipse", "color": "#445566",
+                        "size": [80, 90], "pivot": [0, 0], "offset": [0, 0], "z": 0
+                    }]
+                }
+            ],
+            "animations": { "breathe": clip(1200, json!([{ "t": 0.0, "bones": {} }])) }
+        });
+
+        let path = install_generated_model(&root, "digi-test-fresh-00000001", &rig)
+            .expect("install");
+        assert!(Path::new(&path).is_file());
+        let loaded = load_model(&root, "digi-test-fresh-00000001").expect("loads back");
+        assert_eq!(loaded.rig["bones"].as_array().expect("bones").len(), 2);
+        // The host owns the identity: the folder name wins over the guest's.
+        assert_eq!(loaded.rig["name"], json!("digi-test-fresh-00000001"));
+
+        // A slug that could escape the models root is refused before writing.
+        for bad in ["../escape", "UpperCase", "", "a b", "-lead"] {
+            assert!(install_generated_model(&root, bad, &rig).is_err(), "{bad:?}");
+        }
+        // A structurally broken rig is refused, and leaves nothing behind.
+        let broken = json!({ "bones": [{ "id": "a", "parent": "ghost", "parts": [] }] });
+        let err = install_generated_model(&root, "digi-broken", &broken).expect_err("must fail");
+        assert!(err.contains("ghost"), "{err}");
+        assert!(!root.join("digi-broken").join("model.json").exists());
+
+        fs::remove_dir_all(&root).ok();
     }
 }

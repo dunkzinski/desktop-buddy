@@ -734,7 +734,8 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* ---------- survival card (pop-out, not in the sidebar) ---------- */
 
-#survival-card {
+#survival-card,
+#digivolve-card {
   position: fixed; top: 14px; left: 18px; width: 272px;
   background: rgba(12, 12, 18, 0.94);
   backdrop-filter: blur(20px);
@@ -744,15 +745,23 @@ input[type="range"]::-webkit-slider-thumb {
   z-index: 940;
   overflow: hidden;
 }
-#survival-card header {
+/* Side by side rather than stacked: the two cards never cover each other. */
+#digivolve-card {
+  left: 300px; width: 292px; z-index: 941;
+}
+
+#survival-card header,
+#digivolve-card header {
   display: flex; align-items: center; gap: 8px;
   padding: 9px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
-#survival-card h3 {
+#survival-card h3,
+#digivolve-card h3 {
   font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
   text-transform: uppercase; color: #b9b9cc;
 }
-#survival-card .mini-btn { font-size: 10.5px; padding: 4px 8px; }
+#survival-card .mini-btn,
+#digivolve-card .mini-btn { font-size: 10.5px; padding: 4px 8px; }
 .survival-body { padding: 10px 12px 12px; }
 .survival-tier {
   flex: 0 0 auto;
@@ -794,6 +803,106 @@ input[type="range"]::-webkit-slider-thumb {
 .feed-btn { flex: 0 0 auto; padding: 6px 14px; }
 #btn-crave { flex: 0 0 auto; font-size: 10px; padding: 6px 9px; }
 #btn-crave:disabled { opacity: 0.45; cursor: default; }
+
+
+/* ---------- digivolution card ---------- */
+
+.digi-stage {
+  flex: 0 0 auto;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06); color: #a8a8bb;
+}
+.digi-stage.ready {
+  color: #3ddc84; border-color: rgba(61, 220, 132, 0.45);
+  background: rgba(61, 220, 132, 0.16);
+}
+.digi-stage.max { color: #ffd86b; border-color: rgba(255, 216, 107, 0.45); background: rgba(255, 216, 107, 0.14); }
+.digi-stage.off { color: #6e6e85; }
+
+.digi-line {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 9px; font-size: 10px; color: #8f8fa6;
+}
+.digi-chip {
+  padding: 1px 7px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.04em;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06); color: #b9b9cc;
+  text-transform: capitalize;
+}
+.digi-chip.attr.vaccine { color: #7ab6f0; border-color: rgba(122, 182, 240, 0.42); background: rgba(74, 144, 217, 0.16); }
+.digi-chip.attr.data    { color: #3ddc84; border-color: rgba(61, 220, 132, 0.38); background: rgba(61, 220, 132, 0.13); }
+.digi-chip.attr.virus   { color: #ff6b75; border-color: rgba(232, 17, 35, 0.42); background: rgba(232, 17, 35, 0.16); }
+.digi-seed {
+  margin-left: auto; font-size: 9.5px; color: #5f5f76;
+  font-variant-numeric: tabular-nums;
+}
+
+.survival-bar-fill.xp { background: linear-gradient(90deg, #3570bd, #57c7e0); }
+.survival-bar-fill.xp.full { background: linear-gradient(90deg, #2fae6c, #3ddc84); }
+.survival-bar-fill.bond { background: linear-gradient(90deg, #7a4fd0, #c07ae0); }
+
+.digi-meta {
+  margin: 7px 0 2px; font-size: 9.5px; color: #6e6e85;
+  letter-spacing: 0.02em;
+}
+
+.digi-branches-label {
+  margin: 11px 0 5px; font-size: 9.5px; font-weight: 600;
+  letter-spacing: 0.07em; text-transform: uppercase; color: #6e6e85;
+}
+.digi-branches { display: flex; flex-direction: column; gap: 5px; }
+.digi-branch {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 8px; text-align: left;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 9px; color: #b9b9cc; cursor: pointer;
+  font: inherit; font-size: 10.5px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.digi-branch:hover { background: rgba(255, 255, 255, 0.08); }
+.digi-branch.picked {
+  background: rgba(74, 144, 217, 0.22);
+  border-color: rgba(122, 182, 240, 0.45);
+  color: #cfe2f6;
+}
+.digi-branch-name { font-weight: 600; }
+.digi-branch-detail {
+  margin-left: auto; font-size: 9px; color: #5f5f76;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 118px;
+}
+.digi-branch.picked .digi-branch-detail { color: #8a9db3; }
+.digi-empty {
+  padding: 8px 2px; font-size: 10px; color: #6e6e85; line-height: 1.45;
+}
+
+.digi-actions { display: flex; gap: 7px; margin-top: 9px; }
+.digi-actions .control-btn { flex: 1 1 auto; }
+#btn-digi-back { flex: 0 0 auto; font-size: 10px; padding: 6px 9px; }
+#btn-digi-back:disabled { opacity: 0.45; cursor: default; }
+.digi-actions .control-btn:disabled { opacity: 0.45; cursor: default; }
+
+.digi-nudge, .digi-reset {
+  display: flex; align-items: center; gap: 6px; margin-top: 9px;
+}
+.digi-nudge-label {
+  flex: 0 0 auto; font-size: 9.5px; color: #6e6e85;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.digi-nudge .mini-btn { flex: 1 1 auto; }
+#digi-archetype { flex: 0 0 74px; width: 74px; }
+#digi-seed { flex: 1 1 auto; min-width: 0; }
+#btn-digi-reset { flex: 0 0 auto; }
+
+#digivolve-card .survival-note {
+  margin-top: 9px; min-height: 12px; font-size: 9.5px; line-height: 1.4;
+  color: #8f8fa6; word-break: break-word;
+}
+#digivolve-card .survival-note.error { color: #ff6b75; }
 
 /* ---------- craving row ---------- */
 

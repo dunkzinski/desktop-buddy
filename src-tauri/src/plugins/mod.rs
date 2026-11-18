@@ -159,6 +159,29 @@ pub trait PluginHost: Send + Sync {
     fn now_ms(&self) -> u64 {
         epoch_ms()
     }
+
+    /// Install a generated `char-rig/model@1` manifest as
+    /// `models/<slug>/model.json`, validating it with the app's own loader.
+    ///
+    /// A guest has no filesystem, so "publish a rig" has to be a host
+    /// capability like [`PluginHost::emit`] or `host_state_save` — and the host
+    /// validating before writing is what makes "a plugin cannot install a rig
+    /// the app would reject" true by construction. Defaults to refusing, which
+    /// is the honest answer for a test host or a stripped build.
+    fn write_model(&self, _slug: &str, _manifest: &Value) -> Result<(), String> {
+        Err("this host does not install generated models".to_string())
+    }
+
+    /// Make `slug` the active avatar — exactly what `POST /model` does.
+    fn activate_model(&self, _slug: &str) -> Result<(), String> {
+        Err("this host cannot switch models".to_string())
+    }
+
+    /// Play a named clip on the loaded rig (`POST /animate`'s code path).
+    /// `false` means the rig has no such clip.
+    fn animate(&self, _clip: &str) -> bool {
+        false
+    }
 }
 
 /// Epoch milliseconds, without a panic on a pre-1970 clock.

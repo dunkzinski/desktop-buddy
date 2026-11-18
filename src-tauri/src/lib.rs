@@ -2132,6 +2132,9 @@ pub fn hotkey_spec(rules_path: Option<&std::path::Path>) -> String {
 struct AppHost {
     app: AppHandle,
     ctx: Arc<AppCtx>,
+    /// The model registry, so a plugin can publish and activate a rig without
+    /// the HTTP layer (this *is* the `POST /model` code path).
+    model: Arc<ModelCtx>,
 }
 
 impl plugins::PluginHost for AppHost {
@@ -2167,6 +2170,39 @@ impl plugins::PluginHost for AppHost {
         // A plugin that owns a config block reads it itself.
         self.ctx.ai_rules_path()
     }
+
+    fn write_model(&self, slug: &str, manifest: &Value) -> Result<(), String> {
+        models::install_generated_model(&self.model.root, slug, manifest).map(|_| ())
+    }
+
+    fn activate_model(&self, slug: &str) -> Result<(), String> {
+        let model = self.model.load(slug)?;
+        self.model.clear_pose();
+        if let Err(err) = self.app.emit("model-changed", model.clone()) {
+            log::warn!("failed to emit model-changed: {err}");
+        }
+        self.ctx
+            .emit_event("model", model_event_payload(&model, "digivolve"));
+        log::info!("plugin host: activated model {slug:?}");
+        Ok(())
+    }
+
+    fn animate(&self, clip: &str) -> bool {
+        let model = match self.model.ensure_loaded() {
+            Ok(model) => model,
+            Err(err) => {
+                log::warn!("plugin host: cannot animate, no model is loaded: {err}");
+                return false;
+            }
+        };
+        match models::find_animation(&model.rig, clip) {
+            Some(entry) => {
+                do_animate(&self.app, &self.ctx, Some(&entry));
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// Start the plugin host.
@@ -2174,10 +2210,11 @@ impl plugins::PluginHost for AppHost {
 /// The app knows nothing about which plugins exist — [`crate::plugins::manifest`]
 /// does, and each plugin reads its own config block. This function only hands
 /// over the host and logs what came up.
-fn start_plugins(handle: &AppHandle, ctx: &Arc<AppCtx>) {
+fn start_plugins(handle: &AppHandle, ctx: &Arc<AppCtx>, model: &Arc<ModelCtx>) {
     let host: Arc<dyn plugins::PluginHost> = Arc::new(AppHost {
         app: handle.clone(),
         ctx: Arc::clone(ctx),
+        model: Arc::clone(model),
     });
     let status = plugins::install(host);
     log::info!(
@@ -3631,7 +3668,7 @@ pub fn run() {
                 // Plugins first: `api::start` builds the router once, and that
                 // is when plugin routes are collected. A plugin installed later
                 // would serve nothing.
-                start_plugins(&handle, &ctx);
+                start_plugins(&handle, &ctx, &model_ctx);
 
                 match api::start(
                     handle.clone(),
