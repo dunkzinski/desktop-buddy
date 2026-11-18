@@ -134,6 +134,7 @@ function renderCard(status) {
     line.innerHTML = "";
     const arche = document.createElement("span");
     arche.className = "digi-chip";
+    // The attribute has its own chip right beside this one.
     arche.textContent = status.creature ? status.creature.archetype : "—";
     const attribute = document.createElement("span");
     attribute.className = `digi-chip attr ${attributeClass(status.attribute)}`;
@@ -253,7 +254,14 @@ function renderBranches(status) {
     // tooltip. A 31-character slug would only ever render as an ellipsis here.
     const detail = document.createElement("span");
     detail.className = "digi-branch-detail";
-    detail.textContent = branch.slug ? `#${String(branch.slug).split("-").pop()}` : "";
+    // What the attribute does to the body, not just which letter it is: the
+    // three branches are three different creatures now.
+    detail.textContent = branch.flavour
+      ? branch.flavour
+      : branch.slug
+        ? `#${String(branch.slug).split("-").pop()}`
+        : "";
+    if (branch.slug) detail.title = branch.slug;
 
     row.append(name, attribute, detail);
     row.addEventListener("click", (event) => {

@@ -3,6 +3,7 @@
 //! ```bash
 //! cargo run --example generate -- 42 drake mega /tmp/drake-mega.json
 //! cargo run --example generate -- 42 drake mega models/digi-drake-mega-0000002a
+//! cargo run --example generate -- 42 drake mega out.json virus   # attribute
 //! ```
 //!
 //! The second form writes `model.json` inside the folder, ready to drop into
@@ -12,20 +13,26 @@
 
 use std::path::PathBuf;
 
+use char_rig_digivolution_plugin::attribute::Attribute;
 use char_rig_digivolution_plugin::generator::{generate, validate, Archetype, Spec, Tier};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        eprintln!("usage: generate <seed> <archetype> <tier> [out.json|out-dir]");
-        eprintln!("       archetype: beast | drake | cyborg | holy");
+        eprintln!("usage: generate <seed> <archetype> <tier> [out.json|out-dir] [attribute]");
+        eprintln!("       archetype: beast | drake | cyborg | holy | aqua | cervid | machine | alien");
         eprintln!("       tier:      fresh | in-training | rookie | champion | ultimate | mega");
+        eprintln!("       attribute: vaccine | data | virus (default data)");
         std::process::exit(2);
     }
     let seed: u64 = args[0].parse().expect("seed must be an integer");
     let archetype = Archetype::parse(&args[1]).expect("unknown archetype");
     let tier = Tier::parse(&args[2]).expect("unknown tier");
-    let spec = Spec::new(seed, archetype, tier);
+    let attribute = match args.get(4) {
+        Some(raw) => Attribute::parse(raw).expect("unknown attribute"),
+        None => Attribute::default(),
+    };
+    let spec = Spec::with_attribute(seed, archetype, tier, attribute);
     let manifest = generate(&spec);
     let report = validate(&manifest).expect("the generator produced an invalid manifest");
     eprintln!(

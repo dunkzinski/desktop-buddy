@@ -575,7 +575,8 @@ touched `mod.rs` (three generic capabilities), `wasm_host.rs` (their imports) an
 | --- | --- |
 | `src/rng.rs` | SplitMix64. No dependency, no `getrandom`: `(seed, archetype, tier)` reproduces the same creature on every machine |
 | `src/skeleton.rs` | the `char-rig/model@1` types, the two mirroring formulas (`atan2(sin θ, −cos θ)` for a chain root, `−θ` for a descendant), `computeWorld`, and the painted-bounds pass |
-| `src/plan.rs` | The eight body plans: head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers |
+| `src/attribute.rs` | `Vaccine` / `Data` / `Virus`: wire spelling, the bond-driven branch shift, and the one-line flavour the UI shows |
+| `src/plan.rs` | The eight body plans, then the attribute's mutations, then the seeded build: head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers |
 | `src/generator.rs` | `generate(Spec) -> Manifest`: centerline → tail → right chains → mirror → clips → monitor guard, plus `validate` |
 | `src/evolution.rs` | stage/XP/bond/attribute state, the three-branch table, and the transitions both ways (generate → host write → host activate; `dedigivolve` regenerates the parent from its recorded seed) |
 | `src/plugin.rs` | live state: passive XP, the one-shot "ready" notice, the 30 s save, `GET /digimon/status`'s body |

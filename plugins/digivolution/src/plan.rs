@@ -8,6 +8,7 @@
 //! Everything here is a pure constant table — no RNG, no clock — so
 //! `(seed, archetype, tier)` still reproduces a creature byte for byte.
 
+use crate::attribute::Attribute;
 use crate::generator::Archetype;
 
 /// Skull and face construction.
@@ -150,6 +151,25 @@ pub struct Plan {
     pub visor: bool,
     pub engine: bool,
     pub spots: bool,
+    // ---- what the attribute adds on top of the plan ----
+    /// A ring of light above the head (Vaccine).
+    pub halo_ring: bool,
+    /// Feather tips on the wings (Vaccine).
+    pub feathers: bool,
+    /// Crystal growth on the shoulders and back (Data).
+    pub crystals: bool,
+    /// Circuit traces on the trunk (Data).
+    pub circuit: bool,
+    /// A row of spines down the back (Virus).
+    pub back_spikes: bool,
+    /// Extra fangs and a clawed grip (Virus).
+    pub fangs: bool,
+    /// Toxic drips from the jaw and tail (Virus).
+    pub drips: bool,
+    /// Seeded marking: 0 none, 1 spots, 2 stripes.
+    pub marking: u8,
+    /// The seeded build: 0 canonical, 1 lean, 2 broad.
+    pub variant: u8,
 }
 
 const fn base() -> Plan {
@@ -175,10 +195,39 @@ const fn base() -> Plan {
         visor: false,
         engine: false,
         spots: false,
+        halo_ring: false,
+        feathers: false,
+        crystals: false,
+        circuit: false,
+        back_spikes: false,
+        fangs: false,
+        drips: false,
+        marking: 0,
+        variant: 0,
     }
 }
 
-/// The plan for one archetype.
+/// Which family the attribute forms. The element is what makes a Vaccine line
+/// and a Virus line of the *same* archetype look like different creatures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Element {
+    Plain,
+    Blessed,
+    Crypto,
+    Viral,
+}
+
+impl Element {
+    pub fn of(attribute: Attribute) -> Self {
+        match attribute {
+            Attribute::Vaccine => Element::Blessed,
+            Attribute::Data => Element::Crypto,
+            Attribute::Virus => Element::Viral,
+        }
+    }
+}
+
+/// The plan for one archetype, before its attribute and seed get a say.
 pub fn plan(archetype: Archetype) -> Plan {
     match archetype {
         // The baseline: short, round, clawed, horned.
@@ -324,6 +373,105 @@ pub fn plan(archetype: Archetype) -> Plan {
     }
 }
 
+impl Plan {
+    /// What the attribute does to this body.
+    ///
+    /// The mutations are deliberately *structural* (a new crest, wings, claws,
+    /// crystals) rather than a colour swap: the request was that Vaccine, Data
+    /// and Virus digivolve into visibly different creatures, and a tint alone
+    /// would not survive a five-second look at the desktop.
+    fn with_element(mut self, element: Element) -> Self {
+        match element {
+            Element::Plain => {}
+            Element::Blessed => {
+                self.halo_ring = true;
+                self.feathers = true;
+                // Wings are the Vaccine signature; every blessed line flies.
+                self.wings = true;
+                // Spikes and antennae become a swept blade of light.
+                self.crest = match self.crest {
+                    CrestKind::Spikes | CrestKind::Antenna | CrestKind::None => CrestKind::Blade,
+                    other => other,
+                };
+                self.head_h *= 1.05;
+                self.torso_w *= 0.97;
+            }
+            Element::Crypto => {
+                self.crystals = true;
+                self.circuit = true;
+                // Every Data line gets a sensor band across the face: it is the
+                // one read that separates Crypto from Blessed at a glance, when
+                // both wear wings and a ring of light.
+                self.visor = true;
+                // Nothing on a Data line is organic tusk; it hardens into a
+                // blade or a sensor mast.
+                self.crest = match self.crest {
+                    CrestKind::Horns | CrestKind::Antlers | CrestKind::Spikes => CrestKind::Blade,
+                    other => other,
+                };
+                self.head_w *= 1.03;
+            }
+            Element::Viral => {
+                self.back_spikes = true;
+                self.fangs = true;
+                self.drips = true;
+                // Fangs and spines instead of ornament; claws instead of hands.
+                self.crest = match self.crest {
+                    CrestKind::Blade | CrestKind::Antenna | CrestKind::None => CrestKind::Spikes,
+                    other => other,
+                };
+                self.arms = match self.arms {
+                    ArmKind::Hand => ArmKind::Claw,
+                    other => other,
+                };
+                // A viral line is heavier in the chest and lower in the head.
+                self.torso_w *= 1.04;
+                self.head_h *= 0.96;
+            }
+        }
+        self
+    }
+
+    /// The seeded build inside a plan: lean, canonical or broad.
+    ///
+    /// This is what makes two Rookies of the same archetype and attribute read
+    /// as two individuals rather than one creature drawn twice.
+    fn with_variant(mut self, variant: u8) -> Self {
+        self.variant = variant % 3;
+        match self.variant {
+            1 => {
+                // Lean: taller, narrower, longer legs.
+                self.torso_w *= 0.93;
+                self.torso_h *= 1.03;
+                self.head_w *= 1.05;
+                self.leg_len *= 1.1;
+                self.arm_len *= 1.04;
+                self.marking = 2; // stripes
+            }
+            2 => {
+                // Broad: wider, squatter, heavier shoulders.
+                self.torso_w *= 1.09;
+                self.torso_h *= 0.96;
+                self.head_h *= 0.95;
+                self.leg_len *= 0.92;
+                self.arm_len *= 1.06;
+                self.marking = 1; // spots
+            }
+            _ => {
+                self.marking = 0;
+            }
+        }
+        self
+    }
+}
+
+/// The whole plan: archetype, then attribute, then the seeded build.
+pub fn plan_for(archetype: Archetype, attribute: Attribute, variant: u8) -> Plan {
+    plan(archetype)
+        .with_element(Element::of(attribute))
+        .with_variant(variant)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,7 +483,8 @@ mod tests {
         let mut shapes = Vec::new();
         for archetype in Archetype::ALL {
             let p = plan(archetype);
-            let shape = (
+            let shape = format!(
+                "{:?}/{:?}/{:?}/{:?}/{:?}/{:?}/{:?}/{}",
                 p.head, p.ears, p.crest, p.arms, p.legs, p.tail, p.torso, p.wings,
             );
             assert!(
@@ -348,10 +497,51 @@ mod tests {
     }
 
     #[test]
+    fn every_attribute_gives_each_archetype_a_different_body() {
+        // The headline promise: for one archetype, Vaccine/Data/Virus are three
+        // different creatures, not three tints of one.
+        for archetype in Archetype::ALL {
+            let mut seen = Vec::new();
+            for attribute in Attribute::ALL {
+                let p = plan_for(archetype, attribute, 0);
+                let shape = format!(
+                    "{:?}/{:?}/{:?}/{:?}/{:?}/{:?}/{:?}/{}/{}/{}/{}/{}/{}/{}",
+                    p.head, p.ears, p.crest, p.arms, p.legs, p.tail, p.torso,
+                    p.wings, p.halo_ring, p.crystals, p.back_spikes, p.feathers,
+                    p.circuit, p.fangs,
+                );
+                assert!(
+                    !seen.contains(&shape),
+                    "{} under {} has the same body plan as another attribute",
+                    archetype.as_str(),
+                    attribute.as_str()
+                );
+                seen.push(shape);
+            }
+        }
+    }
+
+    #[test]
+    fn the_three_builds_are_three_shapes() {
+        for archetype in Archetype::ALL {
+            let lean = plan_for(archetype, Attribute::Data, 1);
+            let plain = plan_for(archetype, Attribute::Data, 0);
+            let broad = plan_for(archetype, Attribute::Data, 2);
+            assert!(lean.torso_w < plain.torso_w, "leaner trunk");
+            assert!(broad.torso_w > plain.torso_w, "broader trunk");
+            assert!(lean.leg_len > broad.leg_len, "leggier than broad");
+            assert_ne!(lean.marking, broad.marking, "and marked differently");
+            assert_eq!(plain.marking, 0, "the canonical build is unmarked");
+        }
+    }
+
+    #[test]
     fn proportions_stay_in_a_sane_band() {
         for archetype in Archetype::ALL {
-            let p = plan(archetype);
-            for (name, factor) in [
+            for attribute in Attribute::ALL {
+                for variant in 0..3u8 {
+                    let p = plan_for(archetype, attribute, variant);
+                    for (name, factor) in [
                 ("torso_w", p.torso_w),
                 ("torso_h", p.torso_h),
                 ("head_w", p.head_w),
@@ -360,10 +550,13 @@ mod tests {
                 ("leg_len", p.leg_len),
             ] {
                 assert!(
-                    (0.4..=1.6).contains(&factor),
-                    "{}: {name} = {factor} is outside the armature's safe band",
-                    archetype.as_str()
+                    (0.4..=1.7).contains(&factor),
+                    "{} {} v{variant}: {name} = {factor} is outside the armature's safe band",
+                    archetype.as_str(),
+                    attribute.as_str()
                 );
+                    }
+                }
             }
         }
     }

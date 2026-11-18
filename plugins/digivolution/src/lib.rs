@@ -39,6 +39,7 @@
 use std::sync::Mutex;
 
 pub mod evolution;
+pub mod attribute;
 pub mod generator;
 pub mod plan;
 pub mod host;

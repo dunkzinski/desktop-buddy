@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::rng::{mix_seed, Rng};
+use crate::attribute::Attribute;
 use crate::plan::{self, ArmKind, CrestKind, EarKind, HeadKind, LegKind, Plan, TailKind, TorsoKind};
 use crate::skeleton::{
     hierarchy_is_sound, left_id, min_world_y, mirror_chain, round4, Anim, Bone, BoneDelta, Clip,
@@ -194,20 +195,46 @@ impl<'de> Deserialize<'de> for Tier {
 }
 
 /// Everything a creature's shape is derived from.
+///
+/// The attribute belongs here, not on the branch: a Vaccine Rookie and a Virus
+/// Rookie are different *rigs*, so the attribute has to reach the generator.
+/// The variant is the seeded build (lean / canonical / broad) and is derived
+/// from the seed so it costs the caller nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spec {
     pub seed: u64,
     pub archetype: Archetype,
     pub tier: Tier,
+    #[serde(default)]
+    pub attribute: Attribute,
 }
 
 impl Spec {
     pub fn new(seed: u64, archetype: Archetype, tier: Tier) -> Self {
+        Self::with_attribute(seed, archetype, tier, Attribute::default())
+    }
+
+    pub fn with_attribute(
+        seed: u64,
+        archetype: Archetype,
+        tier: Tier,
+        attribute: Attribute,
+    ) -> Self {
         Self {
             seed,
             archetype,
             tier,
+            attribute,
         }
+    }
+
+    /// The seeded build, spread over the seed so neighbouring seeds are not all
+    /// the same build.
+    pub fn variant(&self) -> u8 {
+        // Mix first: shifting only high bits made every small seed (0, 1, 2, …)
+        // land on the same build, which is the one thing a variant must not do.
+        let mixed = self.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        ((mixed >> 33) % 3) as u8
     }
 
     /// `digi-drake-champion-1f3a9c02` — stable, lowercase, filesystem-safe.
@@ -222,9 +249,10 @@ impl Spec {
 
     pub fn label(&self) -> String {
         format!(
-            "{} {}",
+            "{} {} ({})",
             title_case(self.archetype.as_str()),
-            self.tier.as_str()
+            self.tier.as_str(),
+            self.attribute.as_str()
         )
     }
 }
@@ -341,7 +369,7 @@ fn base_palette(archetype: Archetype) -> Palette {
 /// Tier and seed both move the palette: later stages sit darker and richer (a
 /// Mega should not be pastel), and the seed jitters each channel a little so two
 /// Rookies with different seeds read as different creatures.
-fn palette_for(archetype: Archetype, tier: Tier, rng: &mut Rng) -> Palette {
+fn palette_for(archetype: Archetype, attribute: Attribute, tier: Tier, rng: &mut Rng) -> Palette {
     let base = base_palette(archetype);
     let step = tier.index() as f64;
     let darken = 1.0 - step * 0.035;
@@ -351,15 +379,43 @@ fn palette_for(archetype: Archetype, tier: Tier, rng: &mut Rng) -> Palette {
     let accent = shade(&base.accent, (1.0 + step * 0.012) * jitter(rng));
     let glow = shade(&base.glow, (1.0 + step * 0.02) * jitter(rng));
     let metal = shade(&base.metal, darken * jitter(rng));
+    // The attribute tints the family: blessed lines lift toward light, crypto
+    // lines cool toward signal blue, viral lines sink into rot. Only a fraction,
+    // or every archetype would end up the same three colours again.
+    let (tint, strength, accent_tint, glow_tint) = match attribute {
+        Attribute::Vaccine => ("#fff4d0", 0.22, "#ffe9a3", "#fffbe8"),
+        Attribute::Data => ("#6fd8ff", 0.20, "#48e0ff", "#b8f4ff"),
+        Attribute::Virus => ("#2a0d1d", 0.24, "#ff3d81", "#9dff4a"),
+    };
     Palette {
-        body,
-        body_dark,
-        accent,
-        glow,
+        body: mix(&body, tint, strength),
+        body_dark: mix(&body_dark, tint, strength * 0.8),
+        accent: mix(&accent, accent_tint, strength * 1.4),
+        glow: mix(&glow, glow_tint, strength * 1.2),
         eye: base.eye,
         pupil: base.pupil,
         metal,
     }
+}
+
+/// Blend `#rrggbb` `a` toward `b` by `t` (0 = a, 1 = b).
+fn mix(a: &str, b: &str, t: f64) -> String {
+    let parse = |hex: &str| -> [u8; 3] {
+        let digits = hex.trim_start_matches('#');
+        if digits.len() != 6 {
+            return [0, 0, 0];
+        }
+        let at = |start: usize| u8::from_str_radix(&digits[start..start + 2], 16).unwrap_or(0);
+        [at(0), at(2), at(4)]
+    };
+    let (ca, cb) = (parse(a), parse(b));
+    let t = t.clamp(0.0, 1.0);
+    let blend = |index: usize| {
+        (ca[index] as f64 * (1.0 - t) + cb[index] as f64 * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    format!("#{:02x}{:02x}{:02x}", blend(0), blend(1), blend(2))
 }
 
 /// Multiply an `#rrggbb` colour by `factor`, clamped to the byte range.
@@ -449,6 +505,9 @@ struct Features {
     ear_tip: bool,
     /// Fin webbing on the tail.
     tail_web: bool,
+    /// Which tier these flags were derived for — the attribute details are
+    /// tier-gated too, and they only ever see the `Features` value.
+    tier_index: usize,
 }
 
 impl Features {
@@ -481,6 +540,7 @@ impl Features {
             arm_third: t >= 2,
             ear_tip: t >= 3,
             tail_web: t >= 2,
+            tier_index: t,
         }
     }
 }
@@ -512,8 +572,8 @@ pub fn generate(spec: &Spec) -> Manifest {
         spec.seed,
         &[spec.archetype as u64, spec.tier.index() as u64 + 1],
     ));
-    let plan = plan::plan(spec.archetype);
-    let pal = palette_for(spec.archetype, spec.tier, &mut rng);
+    let plan = plan::plan_for(spec.archetype, spec.attribute, spec.variant());
+    let pal = palette_for(spec.archetype, spec.attribute, spec.tier, &mut rng);
     let dims = Dims::for_tier(spec.tier, plan, &mut rng);
     let features = Features::for_spec(spec, plan);
 
@@ -773,6 +833,7 @@ pub fn generate(spec: &Spec) -> Manifest {
             ));
         }
     }
+    torso.parts.extend(aspect_torso_parts(&pal, dims, plan, features));
     if plan.spots && features.armor {
         for index in 0..3 {
             torso.parts.push(Part::circle(
@@ -831,6 +892,7 @@ pub fn generate(spec: &Spec) -> Manifest {
     );
     head.anim = Anim::sway(0.012, 0.9);
     head.parts = head_parts(&pal, dims, features, plan);
+    head.parts.extend(aspect_head_parts(&pal, dims, plan, features));
     if features.halo {
         head.parts.insert(
             0,
@@ -881,7 +943,7 @@ pub fn generate(spec: &Spec) -> Manifest {
 
     if features.wings {
         let mark = bones.len();
-        push_wing(&mut bones, &pal, dims, features, &mut rng);
+        push_wing(&mut bones, &pal, dims, features, plan, &mut rng);
         mirror_chain(&mut bones, mark);
     }
 
@@ -908,7 +970,40 @@ pub fn generate(spec: &Spec) -> Manifest {
     manifest.animations = Some(animations);
 
     enforce_monitor_budget(&mut manifest);
+    trim_details(&mut manifest);
     manifest
+}
+
+/// Parts that carry no silhouette. When a rich plan (a Mega machine under a rich
+/// attribute) runs into the 100-part budget, these go first — the creature must
+/// lose decoration, never a limb.
+const DECORATION: [&str; 12] = [
+    "spot",
+    "stripe",
+    "circuit_l",
+    "circuit_r",
+    "crystal_core",
+    "spine_mid",
+    "feather_more",
+    "halo_in",
+    "drip_l",
+    "drip_r",
+    "seam",
+    "barrel_ring",
+];
+
+fn trim_details(manifest: &mut Manifest) {
+    // Four parts of headroom under the cap, so the caller never gets a rig that
+    // passes today and fails after one more detail is added.
+    let budget = MAX_PARTS.saturating_sub(4);
+    for id in DECORATION {
+        if manifest.part_count() <= budget {
+            return;
+        }
+        for bone in manifest.bones.iter_mut() {
+            bone.parts.retain(|part| part.id != id);
+        }
+    }
 }
 
 /// Largest capsule length that stays inset inside an ellipse of radius
@@ -1153,6 +1248,16 @@ fn head_parts(pal: &Palette, dims: Dims, features: Features, plan: Plan) -> Vec<
     } else {
         (w * 0.24, h * 0.24, w * 0.2)
     };
+    if plan.visor && plan.head != HeadKind::Boxy {
+        parts.push(Part::ellipse(
+            "visor_band",
+            &pal.metal,
+            [round4(w * 0.84), round4(h * 0.3)],
+            [0.0, round4(-h * 0.06)],
+            4,
+            None,
+        ));
+    }
     for (id, sign) in [("brow_l", -1.0), ("brow_r", 1.0)] {
         parts.push(
             Part::ellipse(
@@ -1247,6 +1352,182 @@ fn head_parts(pal: &Palette, dims: Dims, features: Features, plan: Plan) -> Vec<
                 [round4(w * 0.16), round4(h * 0.3)],
                 [round4(sign * w * 0.44), round4(h * 0.12)],
                 Z_HEIGHT + 1,
+                None,
+            ));
+        }
+    }
+    parts
+}
+
+/// What the **attribute** puts on the trunk: crystals, circuit traces, spines,
+/// markings. Shared by every plan, so a Virus deer and a Virus robot are both
+/// unmistakably viral while staying a deer and a robot.
+fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features) -> Vec<Part> {
+    let w = dims.torso_w;
+    let h = dims.torso_h;
+    let t = features.tier_index;
+    let mut parts = Vec::new();
+
+    if plan.crystals && t >= 2 {
+        // Crystal growths break the body's ellipse contour — that is the point.
+        for (id, sign) in [("crystal_l", -1.0), ("crystal_r", 1.0)] {
+            parts.push(
+                Part::ellipse(
+                    id,
+                    &pal.accent,
+                    [round4(w * 0.3), round4(h * 0.16)],
+                    [round4(sign * w * 0.42), round4(-h * 0.34)],
+                    6,
+                    None,
+                )
+                .turned(round4(sign * 0.7)),
+            );
+        }
+        if t >= 4 {
+            parts.push(Part::ellipse(
+                "crystal_core",
+                &pal.glow,
+                [round4(w * 0.16), round4(h * 0.12)],
+                [0.0, round4(-h * 0.44)],
+                7,
+                None,
+            ));
+        }
+    }
+    if plan.circuit && t >= 3 {
+        for (index, sign) in [(-1.0, -0.34), (1.0, 0.34)] {
+            parts.push(Part::ellipse(
+                if index < 0.0 { "circuit_l" } else { "circuit_r" },
+                &pal.glow,
+                [round4(w * 0.5), 3.0],
+                [0.0, round4(sign * h)],
+                5,
+                None,
+            ));
+        }
+    }
+    if plan.back_spikes && t >= 2 {
+        for (id, sign) in [("spine_l", -1.0), ("spine_r", 1.0)] {
+            parts.push(
+                Part::ellipse(
+                    id,
+                    &pal.accent,
+                    [round4(w * 0.22), round4(h * 0.1)],
+                    [round4(sign * w * 0.3), round4(-h * 0.5)],
+                    6,
+                    None,
+                )
+                .turned(round4(sign * -0.8)),
+            );
+        }
+        if t >= 4 {
+            parts.push(
+                Part::ellipse(
+                    "spine_mid",
+                    &pal.accent,
+                    [round4(w * 0.18), round4(h * 0.08)],
+                    [0.0, round4(-h * 0.58)],
+                    6,
+                    None,
+                )
+                .turned(-std::f64::consts::FRAC_PI_2),
+            );
+        }
+    }
+    // Seeded markings: the third layer of variety, after archetype and build.
+    match plan.marking {
+        1 => {
+            for index in 0..3 {
+                parts.push(Part::circle(
+                    "spot",
+                    &pal.glow,
+                    round4(w * (0.07 + index as f64 * 0.01)),
+                    [
+                        round4(w * (-0.26 + index as f64 * 0.26)),
+                        round4(h * (-0.22 + index as f64 * 0.2)),
+                    ],
+                    5,
+                    None,
+                ));
+            }
+        }
+        2 => {
+            for index in 0..2 {
+                parts.push(Part::ellipse(
+                    "stripe",
+                    &pal.body_dark,
+                    [round4(w * 0.62), 6.0],
+                    [0.0, round4(-h * 0.3 + index as f64 * h * 0.34)],
+                    4,
+                    None,
+                ));
+            }
+        }
+        _ => {}
+    }
+    parts
+}
+
+/// What the attribute puts on the head: a ring of light, fangs, drips.
+fn aspect_head_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features) -> Vec<Part> {
+    let w = dims.head_w;
+    let h = dims.head_h;
+    let t = features.tier_index;
+    let mut parts = Vec::new();
+
+    if plan.halo_ring && t >= 1 {
+        parts.push(Part::ellipse(
+            "halo",
+            &pal.glow,
+            [round4(w * 0.86), 16.0],
+            [0.0, round4(-h * 0.86)],
+            Z_HEIGHT,
+            None,
+        ));
+        parts.push(Part::ellipse(
+            "halo_in",
+            &pal.body_dark,
+            [round4(w * 0.6), 8.0],
+            [0.0, round4(-h * 0.86)],
+            Z_HEIGHT + 1,
+            None,
+        ));
+    }
+    if plan.fangs && t >= 1 {
+        for (id, sign) in [("tooth_l", -1.0), ("tooth_r", 1.0)] {
+            parts.push(Part::ellipse(
+                id,
+                &pal.eye,
+                [round4(w * 0.05), round4(h * 0.1)],
+                [round4(sign * w * 0.14), round4(h * 0.46)],
+                9,
+                None,
+            ));
+        }
+    }
+    if plan.crystals && t >= 3 {
+        for (id, sign) in [("bit_l", -1.0), ("bit_r", 1.0)] {
+            parts.push(
+                Part::ellipse(
+                    id,
+                    &pal.glow,
+                    [round4(w * 0.14), round4(h * 0.14)],
+                    [round4(sign * w * 0.66), round4(-h * 0.16)],
+                    Z_HEIGHT,
+                    None,
+                )
+                .turned(round4(0.35)),
+            );
+        }
+    }
+    if plan.drips && t >= 3 {
+        for (id, sign) in [("drip_l", -1.0), ("drip_r", 1.0)] {
+            parts.push(Part::circle(
+                id,
+                &pal.glow,
+                round4(w * 0.05),
+                [round4(sign * w * 0.3), round4(h * 0.5)],
+                9,
                 None,
             ));
         }
@@ -2192,6 +2473,7 @@ fn push_wing(
     pal: &Palette,
     dims: Dims,
     features: Features,
+    plan: Plan,
     rng: &mut Rng,
 ) {
     let root_angle = round4(rng.range(-0.62, -0.42));
@@ -2226,6 +2508,23 @@ fn push_wing(
             2,
         ),
     ];
+    if plan.feathers {
+        // Three feather vanes trailing the spar: a blessed wing is feathered,
+        // not a flat panel.
+        for (index, tilt) in [-0.34, 0.0, 0.34].iter().enumerate() {
+            parts.push(
+                Part::ellipse(
+                    if index == 0 { "feather" } else { "feather_more" },
+                    &pal.glow,
+                    [round4(span * 0.42), round4(span * 0.14)],
+                    [round4(panel_offset - span * 0.1), round4(*tilt * span * 0.34)],
+                    3,
+                    None,
+                )
+                .turned(round4(*tilt)),
+            );
+        }
+    }
     if features.eyespot {
         // One eyespot is four parts: ring, disc, core, offset pip.
         let spot = [round4(panel_offset + span * 0.12), round4(-panel_h * 0.1)];

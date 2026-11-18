@@ -300,9 +300,22 @@ crest, limbs and tail before a single colour is chosen.
 | `machine` | robot | boxy visor head, whip antenna, slab torso with vents, treads |
 | `alien` | alien | bulbous cranium, stalk eyes, floating mantle, tentacle arms and tail |
 
-Every plan is still a pure function of `(seed, archetype, tier)`, still under the
-100-part budget, still mirrored exactly, and still inside the monitor's top clip
-budget — a body plan changes the shape, never the rules.
+On top of the plan, the **attribute** reshapes the body — that is why the three
+branches off any stage are three different creatures rather than one creature in
+three colours:
+
+| attribute | grows | reads as |
+| --- | --- | --- |
+| `Vaccine` | wings, a ring of light, feather vanes, a blade crest | haloed, feathered, gentle |
+| `Data` | crystal growths, circuit traces, a visor band, floating bits | crystalline, plated, digital |
+| `Virus` | back spines, fangs, toxic drips, clawed hands | fanged, spiked, toxic |
+
+…and then the seed picks one of three builds (lean / canonical / broad) with its
+own marking, so 8 archetypes × 3 attributes × 3 builds is 72 silhouettes before
+the palette is touched at all. Every one is still a pure function of
+`(seed, archetype, tier, attribute)`, still under the 100-part budget (decoration
+is trimmed before any limb), still mirrored exactly, and still inside the
+monitor's top clip budget — variety changes the shape, never the rules.
 
 ```bash
 curl -s localhost:8765/digimon/status        # stage, XP, bond, branches, rig stats

@@ -1564,7 +1564,22 @@ avatar onto the new rig — the same code path `POST /model` takes — and plays
 Stages are ordered `Fresh → In-Training → Rookie → Champion → Ultimate → Mega`.
 Each transition has three branches (one per attribute: `Vaccine`, `Data`,
 `Virus`), and the bond/XP state only *seeds* them, so the same creature always
-offers the same three options. State is persisted as
+offers the same three options.
+
+**The attribute is a body plan, not a badge.** It reaches the generator
+(`Spec.attribute`), so the three branches are three different creatures even
+from one seed:
+
+| attribute | the line grows | reads as |
+| --- | --- | --- |
+| `Vaccine` | wings, a ring of light, feather vanes, a blade crest | haloed, feathered, gentle |
+| `Data` | crystal growths, circuit traces, a visor band, floating bits | crystalline, plated, digital |
+| `Virus` | back spines, fangs, toxic drips, clawed hands | fanged, spiked, toxic |
+
+The colours follow too, but only as a tint: a Vaccine and a Virus Drake differ
+in silhouette first. On top of the archetype and the attribute, the seed picks
+one of three builds (lean / canonical / broad) and a marking (none / spots /
+stripes), so two Rookies of the same archetype are still two individuals. State is persisted as
 `plugins/digivolution.state.json`, so a restart resumes the same line.
 
 ### `GET /digimon/status`
@@ -1593,9 +1608,11 @@ curl -s localhost:8765/digimon/status
   "final_stage": false,
   "last_evolved_ms": 1732000123456,
   "rig": { "bones": 19, "parts": 46, "clips": 3, "min_world_y": -86.4, "symmetry_error": 0.0 },
+  "archetypes": [ { "value": "beast", "label": "Beast" }, { "value": "drake", "label": "Drake" } ],
   "branches": [
-    { "stage": "Champion", "attribute": "Virus", "label": "Drake Champion",
-      "slug": "digi-drake-champion-9b21c4d0", "seed": 11166978496, "xp_required": 180 }
+    { "stage": "Champion", "attribute": "Virus", "label": "Drake Champion (Virus)",
+      "slug": "digi-drake-champion-9b21c4d0", "seed": 11166978496, "xp_required": 180,
+      "flavour": "fanged, spiked, toxic" }
   ],
   "history": [ { "from": "In-Training", "to": "Rookie", "slug": "digi-drake-rookie-1f3a9c02", "at_ms": 1732000123456 } ],
   "last_error": null

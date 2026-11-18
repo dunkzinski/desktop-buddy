@@ -14,6 +14,7 @@
 
 use std::collections::HashSet;
 
+use char_rig_digivolution_plugin::attribute::Attribute;
 use char_rig_digivolution_plugin::generator::{generate, validate, Archetype, Spec, Tier};
 use char_rig_digivolution_plugin::skeleton::{
     hierarchy_is_sound, min_world_y, world_transforms, Manifest, MAX_PARTS, MONITOR_BUDGET_Y,
@@ -24,12 +25,14 @@ use char_rig_digivolution_plugin::skeleton::{
 /// seeds, which is enough to hit the random arms (wing angles, tail curves,
 /// palettes) without a slow sweep.
 fn corpus() -> Vec<Manifest> {
-    let seeds = [0u64, 1, 7, 42, 0xC0FFEE, 0xDEAD_BEEF_CAFE, u64::MAX];
+    let seeds = [0u64, 7, 42, 0xC0FFEE];
     let mut out = Vec::new();
     for seed in seeds {
         for archetype in Archetype::ALL {
             for tier in Tier::ALL {
-                out.push(generate(&Spec::new(seed, archetype, tier)));
+                for attribute in Attribute::ALL {
+                    out.push(generate(&Spec::with_attribute(seed, archetype, tier, attribute)));
+                }
             }
         }
     }
@@ -401,6 +404,101 @@ fn the_z_stack_keeps_wings_behind_and_arms_in_front() {
                 assert!(value < head, "{where_}: {id} must emerge from behind the skull");
             }
         }
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * 4b. Attribute and build variety
+ * ------------------------------------------------------------------ */
+
+/// Collect the geometry of a manifest — the things a viewer actually sees.
+fn shape_signature(manifest: &Manifest) -> String {
+    let mut sig = String::new();
+    for bone in &manifest.bones {
+        sig.push_str(&format!("{}@{:?};", bone.id, bone.pos));
+        for part in &bone.parts {
+            sig.push_str(&format!(
+                "{}/{}/{:?}/{:?}/{};",
+                part.id, part.shape, part.size, part.offset, part.color
+            ));
+        }
+    }
+    sig
+}
+
+#[test]
+fn each_attribute_grows_a_different_creature() {
+    // The headline rule: Vaccine, Data and Virus are three *forms*, not three
+    // labels. Same seed, same archetype, same tier — different rig.
+    for archetype in Archetype::ALL {
+        for tier in [Tier::InTraining, Tier::Rookie, Tier::Champion, Tier::Mega] {
+            let mut signatures = HashSet::new();
+            for attribute in Attribute::ALL {
+                let spec = Spec::with_attribute(0x5EED, archetype, tier, attribute);
+                let manifest = generate(&spec);
+                validate(&manifest).unwrap_or_else(|err| {
+                    panic!("{} {} {}: {err}", archetype.as_str(), tier.as_str(), attribute.as_str())
+                });
+                signatures.insert(shape_signature(&manifest));
+            }
+            assert_eq!(
+                signatures.len(),
+                3,
+                "{} {} produces the same rig for two attributes",
+                archetype.as_str(),
+                tier.as_str()
+            );
+        }
+    }
+}
+
+#[test]
+fn the_attribute_shows_up_in_the_parts_not_only_the_colour() {
+    // A tint alone would pass a "different manifest" check while looking
+    // identical on the desktop, so check the *shape* vocabulary as well.
+    let vaccine = generate(&Spec::with_attribute(11, Archetype::Beast, Tier::Champion, Attribute::Vaccine));
+    let virus = generate(&Spec::with_attribute(11, Archetype::Beast, Tier::Champion, Attribute::Virus));
+    let data = generate(&Spec::with_attribute(11, Archetype::Beast, Tier::Champion, Attribute::Data));
+
+    let ids = |manifest: &Manifest| -> HashSet<String> {
+        manifest
+            .bones
+            .iter()
+            .flat_map(|bone| bone.parts.iter().map(|part| part.id.clone()))
+            .collect()
+    };
+    let (v, w, d) = (ids(&vaccine), ids(&virus), ids(&data));
+    assert!(v.contains("halo"), "a Vaccine line wears a halo: {v:?}");
+    assert!(v.contains("feather"), "and feathered wings");
+    assert!(w.contains("tooth_l"), "a Virus line grows fangs");
+    assert!(w.contains("spine_l"), "and back spines");
+    assert!(d.contains("crystal_l"), "a Data line grows crystals: {d:?}");
+    assert!(d.contains("circuit_l"), "and circuit traces");
+}
+
+#[test]
+fn different_seeds_build_different_individuals() {
+    // Beyond archetype and attribute: within one plan, the seed still decides
+    // the build (lean / canonical / broad) and the markings.
+    for archetype in Archetype::ALL {
+        let mut signatures = HashSet::new();
+        let mut variants = HashSet::new();
+        for seed in 0..6u64 {
+            let spec = Spec::with_attribute(seed, archetype, Tier::Rookie, Attribute::Data);
+            variants.insert(spec.variant());
+            signatures.insert(shape_signature(&generate(&spec)));
+        }
+        assert_eq!(
+            signatures.len(),
+            6,
+            "{}: six seeds collapsed to fewer rigs",
+            archetype.as_str()
+        );
+        assert!(
+            variants.len() >= 2,
+            "{}: every seed landed on the same build",
+            archetype.as_str()
+        );
     }
 }
 

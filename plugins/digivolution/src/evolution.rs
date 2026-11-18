@@ -12,72 +12,9 @@ use crate::generator::{self, Archetype, Spec, Tier};
 use crate::host;
 use crate::rng::mix_seed;
 
-/// The three Digimon attributes. The branch a creature picks is flavoured by
-/// this, and each transition may rewrite it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Attribute {
-    Vaccine,
-    Data,
-    Virus,
-}
-
-impl Serialize for Attribute {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for Attribute {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = String::deserialize(deserializer)?;
-        Attribute::parse(&raw)
-            .ok_or_else(|| serde::de::Error::custom(format!("unknown attribute {raw:?}")))
-    }
-}
-
-impl Attribute {
-    pub const ALL: [Attribute; 3] = [Attribute::Vaccine, Attribute::Data, Attribute::Virus];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Attribute::Vaccine => "Vaccine",
-            Attribute::Data => "Data",
-            Attribute::Virus => "Virus",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "vaccine" => Some(Attribute::Vaccine),
-            "data" => Some(Attribute::Data),
-            "virus" => Some(Attribute::Virus),
-            _ => None,
-        }
-    }
-
-    fn index(self) -> u64 {
-        match self {
-            Attribute::Vaccine => 0,
-            Attribute::Data => 1,
-            Attribute::Virus => 2,
-        }
-    }
-
-    /// The attribute a branch pulls toward: high bond favours Vaccine, a low one
-    /// Virus, and Data is the neutral middle.
-    fn shifted(self, bond: f64, step: i64) -> Self {
-        let base = self.index() as i64;
-        let bias = if bond > 0.66 {
-            -1
-        } else if bond < 0.33 {
-            1
-        } else {
-            0
-        };
-        let index = (base + bias + step).rem_euclid(3);
-        Attribute::ALL[index as usize]
-    }
-}
+/// The attribute now lives in its own module because the *generator* needs it
+// (an attribute is a body plan modifier, not just a branch label).
+pub use crate::attribute::Attribute;
 
 /// One possible next stage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +25,9 @@ pub struct Branch {
     pub slug: String,
     pub seed: u64,
     pub xp_required: u64,
+    /// What this attribute does to the body, so the choice is legible before it
+    /// is made ("crystalline, plated, digital").
+    pub flavour: String,
 }
 
 /// A recorded transition, so `GET /digimon/status` can show the line.
@@ -200,7 +140,7 @@ impl Digivolution {
 
     /// The manifest for the current stage.
     pub fn spec(&self) -> Spec {
-        Spec::new(self.seed, self.archetype, self.tier)
+        Spec::with_attribute(self.seed, self.archetype, self.tier, self.attribute)
     }
 
     pub fn manifest(&self) -> generator::Manifest {
@@ -239,7 +179,7 @@ impl Digivolution {
                     self.generation as u64 + 1,
                 ],
             );
-            let spec = Spec::new(seed, self.archetype, next);
+            let spec = Spec::with_attribute(seed, self.archetype, next, attribute);
             out.push(Branch {
                 stage: next,
                 attribute,
@@ -247,6 +187,7 @@ impl Digivolution {
                 slug: spec.slug(),
                 seed,
                 xp_required: xp_required(self.tier),
+                flavour: attribute.flavour().to_string(),
             });
         }
         out
@@ -292,7 +233,12 @@ impl Digivolution {
             ));
         }
 
-        let spec = Spec::new(chosen.seed, self.archetype, chosen.stage);
+        let spec = Spec::with_attribute(
+            chosen.seed,
+            self.archetype,
+            chosen.stage,
+            chosen.attribute,
+        );
         let manifest = generator::generate(&spec);
         let report = generator::validate(&manifest)?;
 
