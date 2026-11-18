@@ -400,9 +400,20 @@ impl AiRuntime {
 
 /// Shared, switchable AI state: the runtime itself plus where it was loaded
 /// from (so an `ai_profile` frame can re-read the edited file without a restart).
+///
+/// The whole parsed [`Rules`] lives here too, not just the profile map: the
+/// panel rewrites `watcher_rules.json` while the watcher runs, and only this
+/// struct ever re-reads it. A setting a trigger consults (the `vision` block,
+/// `app_rules`, `ack_emote`, session rotation) that was read from `Config`
+/// instead stayed frozen at startup, so saving it in the panel changed the file
+/// while the running watcher kept answering from the old one — a `vision`
+/// profile renamed in the UI reloaded the profiles but left `vision.profile_name`
+/// pointing at the old key, and every screenshot failed with "no ai_profiles
+/// entry named ...".
 #[derive(Debug, Clone, Default)]
 struct AiShared {
     runtime: Arc<Mutex<AiRuntime>>,
+    rules: Arc<Mutex<Rules>>,
     rules_path: Option<PathBuf>,
 }
 
@@ -412,12 +423,27 @@ fn lock_ai(ai: &AiShared) -> MutexGuard<'_, AiRuntime> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn lock_rules(ai: &AiShared) -> MutexGuard<'_, Rules> {
+    ai.rules
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl AiShared {
     fn new(rules: &Rules, rules_path: Option<PathBuf>) -> Self {
         Self {
             runtime: Arc::new(Mutex::new(AiRuntime::from_rules(rules))),
+            rules: Arc::new(Mutex::new(rules.clone())),
             rules_path,
         }
+    }
+
+    /// The rules file as it was last read — the copy a trigger must use.
+    ///
+    /// `Config` is parsed once in `main`, so anything read from `config.rules`
+    /// during a dispatch is stale the moment the panel saves.
+    fn rules(&self) -> Rules {
+        lock_rules(self).clone()
     }
 
     fn snapshot(&self, requested: Option<&str>) -> Option<(String, AiProfile)> {
@@ -441,11 +467,16 @@ impl AiShared {
             .map(|(name, profile)| (name, profile.clone()))
     }
 
-    /// Re-read `watcher_rules.json` and adopt its `active_profile`.
+    /// Re-read `watcher_rules.json` and adopt its `active_profile` — and every
+    /// other rule with it (see [`AiShared::rules`]).
     ///
     /// Called for every `ai_profile` frame: the panel persists the switch to
     /// disk, then broadcasts, so the file — not the frame payload — is the
-    /// source of truth and a hand-edited file behaves the same way.
+    /// source of truth and a hand-edited file behaves the same way. A save that
+    /// moves `vision.profile_name` (or changes `app_rules`, capture size,
+    /// rotation limits) arrives on the same frame, so the *whole* document is
+    /// swapped, never just the profile map — a half-reload leaves the dispatch
+    /// reading a name the new profile map no longer has.
     fn reload(&self) -> Option<String> {
         let path = self.rules_path.as_ref()?;
         let text = std::fs::read_to_string(path).ok()?;
@@ -455,6 +486,10 @@ impl AiShared {
         {
             let mut runtime = lock_ai(self);
             std::mem::swap(&mut *runtime, &mut next);
+        }
+        {
+            let mut live = lock_rules(self);
+            *live = rules;
         }
         Some(adopted)
     }
@@ -1247,6 +1282,14 @@ struct CliConfig {
 }
 
 /// Everything the watcher needs at runtime.
+///
+/// `rules` here is the **startup** snapshot (CLI flags already merged in). The
+/// panel rewrites `watcher_rules.json` while the process runs and only
+/// [`AiShared`] re-reads it, so anything a trigger consults — the `vision`
+/// block, `app_rules`, rotation limits — must be taken from
+/// [`AiShared::rules`], never from this field. What is left in `Config` is
+/// what genuinely needs a restart: `api_url`, `dry_run`, the polling interval
+/// and the CLI-resolved `ack_emote`/webhook/timeout.
 #[derive(Debug, Clone, PartialEq)]
 struct Config {
     api_url: String,
@@ -3534,7 +3577,12 @@ async fn dispatch_vision(
     ai: &AiShared,
 ) -> DispatchReport {
     let _flight = flight;
-    let vision = &config.rules.vision;
+    // The vision block comes from the live rules, not `config.rules`: the panel
+    // can point it at another profile (or change the capture size) while the
+    // watcher runs, and re-reading only the profile map would leave this name
+    // dangling — "no ai_profiles entry named ..." on every screenshot.
+    let rules = ai.rules();
+    let vision = &rules.vision;
     let Some((name, profile)) = ai.named(&vision.profile_name) else {
         return vision_failure(
             client,
@@ -3777,8 +3825,11 @@ async fn handle_trigger(
     // 3. Screen vision: an explicit `include_screen` (the panel chip or
     //    `POST /reply`) or a phrase match sends the screenshot to the vision
     //    profile instead of routing the text. The guard moves in, so the
-    //    single-flight latch covers the capture and the round-trip.
-    if trigger.wants_vision(&config.rules.vision) {
+    //    single-flight latch covers the capture and the round-trip. Read from
+    //    the live rules so a vision block saved in the panel applies to this
+    //    trigger instead of the one the watcher started with.
+    let rules = ai.rules();
+    if trigger.wants_vision(&rules.vision) {
         let report = dispatch_vision(config, client, trigger, guard, ai).await;
         log_report(&report);
         return;
@@ -3811,7 +3862,7 @@ async fn handle_trigger(
     // hand-off lands in a session that respects max_session_turns.
     let session_id = {
         let mut state = lock_session(session);
-        session_for_dispatch(&config.rules, &mut state, Instant::now())
+        session_for_dispatch(&rules, &mut state, Instant::now())
     };
 
     let Some(backend) = backend_for(&profile_name, &profile, config.hermes_timeout) else {
@@ -4047,7 +4098,27 @@ async fn handle_frame(
             .unwrap_or("<unknown>");
         match ai.reload() {
             Some(active) => {
-                eprintln!("[watcher] ai profile switched to {active:?} (frame asked for {requested:?})")
+                // Name what the *whole* save did, so the log answers "did my
+                // vision endpoint take?" without waiting for a screenshot to
+                // fail.
+                let vision = ai.rules().vision;
+                let resolved = ai.named(&vision.profile_name).is_some();
+                eprintln!(
+                    "[watcher] rules re-read: ai profile {active:?} (frame asked for {requested:?}), \
+                     vision {:?} ({}), {:?}, max {}px, {}",
+                    vision.profile_name,
+                    if resolved { "resolved" } else { "MISSING from ai_profiles" },
+                    vision.capture_mode,
+                    vision.max_image_dim,
+                    if vision.enabled { "on" } else { "off" },
+                );
+                if !resolved {
+                    eprintln!(
+                        "[watcher] vision profile {:?} is not an ai_profiles entry — \
+                         screenshots fail until Settings points it at one",
+                        vision.profile_name
+                    );
+                }
             }
             None => eprintln!(
                 "[watcher] ai_profile frame asked for {requested:?}, but the rules file could not be re-read"
@@ -4143,7 +4214,8 @@ async fn stream_events(
         let bytes = chunk.map_err(|err| format!("stream error: {err}"))?;
         let text = String::from_utf8_lossy(&bytes);
         for frame in parser.feed(&text) {
-            handle_frame(&frame, &config.rules, shared, session, ai, tx).await;
+            let live = ai.rules();
+            handle_frame(&frame, &live, shared, session, ai, tx).await;
         }
     }
     Err("event stream closed by the server".to_string())
@@ -4175,6 +4247,7 @@ async fn context_loop(
     config: Config,
     client: reqwest::Client,
     shared: Arc<Mutex<Shared>>,
+    ai: AiShared,
     tx: mpsc::Sender<Trigger>,
 ) {
     let mut ticker = tokio::time::interval(config.context_interval);
@@ -4187,8 +4260,9 @@ async fn context_loop(
             Ok(context) => {
                 warned = false;
                 let triggers = {
+                    let live = ai.rules();
                     let mut guard = lock(&shared);
-                    context_triggers(&config.rules, &mut guard, &context, Instant::now())
+                    context_triggers(&live, &mut guard, &context, Instant::now())
                 };
                 for trigger in triggers {
                     if tx.send(trigger).await.is_err() {
@@ -4363,7 +4437,13 @@ async fn main() {
         ai.clone(),
         tx.clone(),
     ));
-    let context = tokio::spawn(context_loop(config.clone(), client.clone(), Arc::clone(&shared), tx.clone()));
+    let context = tokio::spawn(context_loop(
+        config.clone(),
+        client.clone(),
+        Arc::clone(&shared),
+        ai.clone(),
+        tx.clone(),
+    ));
     let dispatch = tokio::spawn(dispatcher(config, client, Arc::clone(&session), ai, rx));
 
     // Any task ending means the watcher is useless: stop everything.
@@ -7500,6 +7580,97 @@ c"));
         std::fs::write(&path, "{not json").expect("break the file");
         handle_frame(&frame, &parsed, &shared, &session, &ai, &tx).await;
         assert_eq!(lock_ai(&ai).active, "hermes", "a broken file does not change the brain");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The panel writes `vision.profile_name` on the **same** `ai_profile` frame
+    /// as a profile change. Reloading only the profile map left the old name in
+    /// `Config`, so a save that moved the vision profile made every screenshot
+    /// fail with "no ai_profiles entry named ..." until the watcher restarted.
+    #[tokio::test]
+    async fn an_ai_profile_frame_also_adopts_the_vision_block() {
+        const BEFORE: &str = r#"{
+            "active_profile": "vision",
+            "vision": {
+                "enabled": true,
+                "profile_name": "vision",
+                "capture_mode": "full_screen",
+                "max_image_dim": 1024
+            },
+            "ai_profiles": {
+                "vision": {
+                    "kind": "openai_compat",
+                    "label": "LFM3-VL-2B",
+                    "endpoint": "http://127.0.0.1:9932/v1",
+                    "model": "lfm3-vl-2b"
+                }
+            }
+        }"#;
+        // One save: the profile is renamed and `vision.profile_name` follows it.
+        const AFTER: &str = r#"{
+            "active_profile": "lfm3-vl",
+            "vision": {
+                "enabled": true,
+                "profile_name": "lfm3-vl",
+                "capture_mode": "active_window",
+                "max_image_dim": 768
+            },
+            "ai_profiles": {
+                "lfm3-vl": {
+                    "kind": "openai_compat",
+                    "label": "vision",
+                    "endpoint": "http://127.0.0.1:9932/v1",
+                    "model": "LFM3-1.7B-GGUF:Q4_K_M"
+                }
+            }
+        }"#;
+
+        let root = std::env::temp_dir().join(format!("char-rig-watcher-vision-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let path = root.join("watcher_rules.json");
+        std::fs::write(&path, BEFORE).expect("write rules");
+
+        let parsed = rules(BEFORE);
+        let ai = AiShared::new(&parsed, Some(path.clone()));
+        let frame = SseFrame {
+            event: "ai_profile".to_string(),
+            data: json!({
+                "seq": 4,
+                "type": "ai_profile",
+                "payload": { "name": "lfm3-vl", "source": "settings" }
+            })
+            .to_string(),
+        };
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let session = Arc::new(Mutex::new(SessionState::default()));
+        let (tx, _rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
+
+        std::fs::write(&path, AFTER).expect("rewrite rules");
+        handle_frame(&frame, &parsed, &shared, &session, &ai, &tx).await;
+
+        let live = ai.rules();
+        assert_eq!(
+            live.vision.profile_name, "lfm3-vl",
+            "the vision block follows the save, not the startup snapshot"
+        );
+        assert_eq!(live.vision.capture_mode, CaptureMode::ActiveWindow);
+        assert_eq!(live.vision.max_image_dim, 768);
+        assert!(
+            ai.named(&live.vision.profile_name).is_some(),
+            "the name the vision path resolves must exist in the reloaded map"
+        );
+        assert!(
+            ai.named("vision").is_none(),
+            "the old key is gone — this is the state that used to break the lookup"
+        );
+        // The parsed-at-startup copy is deliberately frozen; the live one is not,
+        // which is why the dispatch must read `ai.rules()`.
+        assert_eq!(parsed.vision.profile_name, "vision");
+
+        // An unreadable file keeps the last good vision block, like the profiles.
+        std::fs::write(&path, "{not json").expect("break the file");
+        handle_frame(&frame, &parsed, &shared, &session, &ai, &tx).await;
+        assert_eq!(ai.rules().vision.profile_name, "lfm3-vl");
         std::fs::remove_dir_all(&root).ok();
     }
 
