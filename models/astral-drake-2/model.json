@@ -1,0 +1,2914 @@
+{
+  "animations": {
+    "breathe": {
+      "duration_ms": 2800,
+      "keyframes": [
+        {
+          "bones": {
+            "root": {
+              "y": 0.0
+            },
+            "tail_tip": {
+              "rotation": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.0
+            },
+            "wing_inner_r": {
+              "rotation": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "root": {
+              "y": 3.5
+            },
+            "tail_tip": {
+              "rotation": -0.14
+            },
+            "torso": {
+              "scale": 1.035
+            },
+            "wing_inner_l": {
+              "rotation": 0.1
+            },
+            "wing_inner_r": {
+              "rotation": -0.1
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "root": {
+              "y": 0.0
+            },
+            "tail_tip": {
+              "rotation": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.0
+            },
+            "wing_inner_r": {
+              "rotation": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": true
+    },
+    "celebrate": {
+      "duration_ms": 1400,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.0
+            },
+            "wing_inner_r": {
+              "rotation": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 2.1
+            },
+            "arm_r": {
+              "rotation": -2.1
+            },
+            "head": {
+              "rotation": -0.12
+            },
+            "root": {
+              "y": -24.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.4
+            },
+            "wing_inner_r": {
+              "rotation": -0.4
+            }
+          },
+          "t": 0.25
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 1.8
+            },
+            "arm_r": {
+              "rotation": -1.8
+            },
+            "head": {
+              "rotation": -0.06
+            },
+            "root": {
+              "y": -4.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.25
+            },
+            "wing_inner_r": {
+              "rotation": -0.25
+            }
+          },
+          "t": 0.5
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 2.1
+            },
+            "arm_r": {
+              "rotation": -2.1
+            },
+            "head": {
+              "rotation": -0.1
+            },
+            "root": {
+              "y": -16.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.4
+            },
+            "wing_inner_r": {
+              "rotation": -0.4
+            }
+          },
+          "t": 0.72
+        },
+        {
+          "bones": {
+            "arm_l": {
+              "rotation": 0.0
+            },
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "root": {
+              "y": 0.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.0
+            },
+            "wing_inner_r": {
+              "rotation": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": false
+    },
+    "flare_wings": {
+      "duration_ms": 1600,
+      "keyframes": [
+        {
+          "bones": {
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.0
+            },
+            "wing_inner_r": {
+              "rotation": 0.0
+            },
+            "wing_outer_l": {
+              "rotation": 0.0
+            },
+            "wing_outer_r": {
+              "rotation": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "root": {
+              "y": -14.0
+            },
+            "torso": {
+              "scale": 1.05
+            },
+            "wing_inner_l": {
+              "rotation": 0.45
+            },
+            "wing_inner_r": {
+              "rotation": -0.45
+            },
+            "wing_outer_l": {
+              "rotation": 0.25
+            },
+            "wing_outer_r": {
+              "rotation": -0.25
+            }
+          },
+          "t": 0.25
+        },
+        {
+          "bones": {
+            "root": {
+              "y": -18.0
+            },
+            "torso": {
+              "scale": 1.06
+            },
+            "wing_inner_l": {
+              "rotation": 0.55
+            },
+            "wing_inner_r": {
+              "rotation": -0.55
+            },
+            "wing_outer_l": {
+              "rotation": 0.3
+            },
+            "wing_outer_r": {
+              "rotation": -0.3
+            }
+          },
+          "t": 0.55
+        },
+        {
+          "bones": {
+            "root": {
+              "y": 0.0
+            },
+            "torso": {
+              "scale": 1.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.0
+            },
+            "wing_inner_r": {
+              "rotation": 0.0
+            },
+            "wing_outer_l": {
+              "rotation": 0.0
+            },
+            "wing_outer_r": {
+              "rotation": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": false
+    },
+    "wave": {
+      "duration_ms": 1500,
+      "keyframes": [
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "forearm_r": {
+              "rotation": 0.0
+            },
+            "hand_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.0
+            },
+            "wing_inner_r": {
+              "rotation": 0.0
+            }
+          },
+          "t": 0.0
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -1.85
+            },
+            "forearm_r": {
+              "rotation": -0.35
+            },
+            "hand_r": {
+              "rotation": 0.2
+            },
+            "head": {
+              "rotation": -0.06
+            },
+            "wing_inner_l": {
+              "rotation": 0.25
+            },
+            "wing_inner_r": {
+              "rotation": -0.25
+            }
+          },
+          "t": 0.18
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -2.05
+            },
+            "forearm_r": {
+              "rotation": 0.25
+            },
+            "hand_r": {
+              "rotation": -0.3
+            },
+            "head": {
+              "rotation": 0.05
+            },
+            "wing_inner_l": {
+              "rotation": 0.15
+            },
+            "wing_inner_r": {
+              "rotation": -0.15
+            }
+          },
+          "t": 0.38
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -1.85
+            },
+            "forearm_r": {
+              "rotation": -0.35
+            },
+            "hand_r": {
+              "rotation": 0.2
+            },
+            "head": {
+              "rotation": -0.04
+            },
+            "wing_inner_l": {
+              "rotation": 0.25
+            },
+            "wing_inner_r": {
+              "rotation": -0.25
+            }
+          },
+          "t": 0.58
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": -2.05
+            },
+            "forearm_r": {
+              "rotation": 0.25
+            },
+            "hand_r": {
+              "rotation": -0.3
+            },
+            "head": {
+              "rotation": 0.05
+            },
+            "wing_inner_l": {
+              "rotation": 0.15
+            },
+            "wing_inner_r": {
+              "rotation": -0.15
+            }
+          },
+          "t": 0.78
+        },
+        {
+          "bones": {
+            "arm_r": {
+              "rotation": 0.0
+            },
+            "forearm_r": {
+              "rotation": 0.0
+            },
+            "hand_r": {
+              "rotation": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "wing_inner_l": {
+              "rotation": 0.0
+            },
+            "wing_inner_r": {
+              "rotation": 0.0
+            }
+          },
+          "t": 1.0
+        }
+      ],
+      "loop": false
+    }
+  },
+  "bones": [
+    {
+      "anim": {
+        "bob": 4.0,
+        "phase": 0.0,
+        "sway": 0.02
+      },
+      "id": "root",
+      "length": 0.0,
+      "parent": null,
+      "parts": [],
+      "pos": [
+        0,
+        0
+      ],
+      "rotation": 0.0,
+      "scale": 0.55,
+      "z": 10
+    },
+    {
+      "id": "pelvis",
+      "length": 0.0,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "pelvis_base",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            78,
+            46
+          ],
+          "z": 0
+        },
+        {
+          "color": "#3b326e",
+          "id": "pelvis_plate",
+          "offset": [
+            0,
+            -2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            58,
+            32
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "pelvis_gem",
+          "offset": [
+            0,
+            2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            14
+          ],
+          "z": 2
+        }
+      ],
+      "pos": [
+        0,
+        44
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 14
+    },
+    {
+      "anim": {
+        "sway": 0.03,
+        "walk": 0.04
+      },
+      "id": "torso",
+      "length": 0.0,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#17142b",
+          "id": "chest_outer",
+          "offset": [
+            0,
+            -56
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            104,
+            126
+          ],
+          "z": 0
+        },
+        {
+          "color": "#262047",
+          "id": "chest_armor",
+          "offset": [
+            0,
+            -58
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            92,
+            112
+          ],
+          "z": 1
+        },
+        {
+          "color": "#3b326e",
+          "id": "pectoral_l",
+          "offset": [
+            -22,
+            -74
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.2,
+          "shape": "ellipse",
+          "size": [
+            42,
+            48
+          ],
+          "z": 2
+        },
+        {
+          "color": "#3b326e",
+          "id": "pectoral_r",
+          "offset": [
+            22,
+            -74
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.2,
+          "shape": "ellipse",
+          "size": [
+            42,
+            48
+          ],
+          "z": 2
+        },
+        {
+          "color": "#3b326e",
+          "id": "sternum_plate",
+          "offset": [
+            0,
+            -54
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            34,
+            74
+          ],
+          "z": 3
+        },
+        {
+          "color": "#17142b",
+          "id": "core_bezel",
+          "offset": [
+            0,
+            -62
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            38,
+            42
+          ],
+          "z": 4
+        },
+        {
+          "color": "#ff6a2b",
+          "id": "core_ring",
+          "offset": [
+            0,
+            -62
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            30,
+            34
+          ],
+          "z": 5
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "core_amber",
+          "offset": [
+            0,
+            -62
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            22,
+            25
+          ],
+          "z": 6
+        },
+        {
+          "color": "#fff099",
+          "id": "core_spark",
+          "offset": [
+            -3,
+            -65
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            10,
+            12
+          ],
+          "z": 7
+        },
+        {
+          "color": "#38f2ff",
+          "id": "rib_rune_l",
+          "offset": [
+            -34,
+            -36
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.35,
+          "shape": "ellipse",
+          "size": [
+            10,
+            16
+          ],
+          "z": 4
+        },
+        {
+          "color": "#38f2ff",
+          "id": "rib_rune_r",
+          "offset": [
+            34,
+            -36
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.35,
+          "shape": "ellipse",
+          "size": [
+            10,
+            16
+          ],
+          "z": 4
+        },
+        {
+          "color": "#17142b",
+          "id": "waist_band",
+          "offset": [
+            0,
+            12
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            58,
+            26
+          ],
+          "z": 2
+        },
+        {
+          "color": "#3b326e",
+          "id": "collar_l",
+          "offset": [
+            -22,
+            -112
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.35,
+          "shape": "ellipse",
+          "size": [
+            34,
+            22
+          ],
+          "z": 5
+        },
+        {
+          "color": "#3b326e",
+          "id": "collar_r",
+          "offset": [
+            22,
+            -112
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.35,
+          "shape": "ellipse",
+          "size": [
+            34,
+            22
+          ],
+          "z": 5
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "collar_gem",
+          "offset": [
+            0,
+            -114
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            14
+          ],
+          "z": 6
+        }
+      ],
+      "pos": [
+        0,
+        2
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 20
+    },
+    {
+      "anim": {
+        "sway": 0.04,
+        "walk": 0.08
+      },
+      "id": "head",
+      "length": 0.0,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "neck_col",
+          "offset": [
+            0,
+            14
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            34,
+            38
+          ],
+          "z": -2
+        },
+        {
+          "color": "#3b326e",
+          "id": "cheek_crest_l",
+          "offset": [
+            -42,
+            -24
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.35,
+          "shape": "ellipse",
+          "size": [
+            34,
+            22
+          ],
+          "z": -1
+        },
+        {
+          "color": "#3b326e",
+          "id": "cheek_crest_r",
+          "offset": [
+            42,
+            -24
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.35,
+          "shape": "ellipse",
+          "size": [
+            34,
+            22
+          ],
+          "z": -1
+        },
+        {
+          "color": "#17142b",
+          "id": "skull_base",
+          "offset": [
+            0,
+            -36
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            104,
+            96
+          ],
+          "z": 0
+        },
+        {
+          "color": "#262047",
+          "id": "skull_plate",
+          "offset": [
+            0,
+            -37
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            94,
+            86
+          ],
+          "z": 1
+        },
+        {
+          "color": "#3b326e",
+          "id": "snout_bridge",
+          "offset": [
+            0,
+            -16
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            58,
+            36
+          ],
+          "z": 2
+        },
+        {
+          "color": "#38f2ff",
+          "id": "forehead_gem",
+          "offset": [
+            0,
+            -62
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            20
+          ],
+          "z": 3
+        },
+        {
+          "color": "#17142b",
+          "id": "eye_socket_l",
+          "offset": [
+            -22,
+            -34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.14,
+          "shape": "ellipse",
+          "size": [
+            36,
+            24
+          ],
+          "z": 3
+        },
+        {
+          "color": "#17142b",
+          "id": "eye_socket_r",
+          "offset": [
+            22,
+            -34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.14,
+          "shape": "ellipse",
+          "size": [
+            36,
+            24
+          ],
+          "z": 3
+        },
+        {
+          "color": "#ff6a2b",
+          "id": "eye_l",
+          "offset": [
+            -22,
+            -34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.14,
+          "shape": "ellipse",
+          "size": [
+            30,
+            18
+          ],
+          "tag": "eye",
+          "z": 4
+        },
+        {
+          "color": "#ff6a2b",
+          "id": "eye_r",
+          "offset": [
+            22,
+            -34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.14,
+          "shape": "ellipse",
+          "size": [
+            30,
+            18
+          ],
+          "tag": "eye",
+          "z": 4
+        },
+        {
+          "color": "#17142b",
+          "id": "pupil_l",
+          "offset": [
+            -22,
+            -34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            8,
+            14
+          ],
+          "tag": "pupil",
+          "z": 5
+        },
+        {
+          "color": "#17142b",
+          "id": "pupil_r",
+          "offset": [
+            22,
+            -34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            8,
+            14
+          ],
+          "tag": "pupil",
+          "z": 5
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "brow_l",
+          "offset": [
+            -23,
+            -47
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.2,
+          "shape": "ellipse",
+          "size": [
+            34,
+            9
+          ],
+          "tag": "brow",
+          "z": 6
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "brow_r",
+          "offset": [
+            23,
+            -47
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.2,
+          "shape": "ellipse",
+          "size": [
+            34,
+            9
+          ],
+          "tag": "brow",
+          "z": 6
+        },
+        {
+          "color": "#17142b",
+          "id": "mouth_l",
+          "offset": [
+            -9,
+            -11
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            22,
+            9
+          ],
+          "tag": "mouth",
+          "z": 5
+        },
+        {
+          "color": "#17142b",
+          "id": "mouth_r",
+          "offset": [
+            9,
+            -11
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            22,
+            9
+          ],
+          "tag": "mouth",
+          "z": 5
+        },
+        {
+          "color": "#a6faff",
+          "id": "fang_l",
+          "offset": [
+            -12,
+            -8
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            6,
+            10
+          ],
+          "z": 6
+        },
+        {
+          "color": "#a6faff",
+          "id": "fang_r",
+          "offset": [
+            12,
+            -8
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            6,
+            10
+          ],
+          "z": 6
+        }
+      ],
+      "pos": [
+        0,
+        -132
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "z": 30
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.04
+      },
+      "id": "horn_l",
+      "length": 44,
+      "parent": "head",
+      "parts": [
+        {
+          "color": "#ff6a2b",
+          "id": "horn_base_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": -0.0,
+          "shape": "capsule",
+          "size": [
+            26,
+            12
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "horn_mid_l",
+          "offset": [
+            18,
+            3
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.18,
+          "shape": "capsule",
+          "size": [
+            22,
+            9
+          ],
+          "z": 1
+        },
+        {
+          "color": "#fff099",
+          "id": "horn_tip_l",
+          "offset": [
+            34,
+            8
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.32,
+          "shape": "capsule",
+          "size": [
+            18,
+            5
+          ],
+          "z": 2
+        }
+      ],
+      "pos": [
+        -26,
+        -68
+      ],
+      "rotation": -2.091593,
+      "scale": 1.0,
+      "z": 28
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.04
+      },
+      "id": "horn_r",
+      "length": 44,
+      "parent": "head",
+      "parts": [
+        {
+          "color": "#ff6a2b",
+          "id": "horn_base_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            26,
+            12
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "horn_mid_r",
+          "offset": [
+            18,
+            -3
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": -0.18,
+          "shape": "capsule",
+          "size": [
+            22,
+            9
+          ],
+          "z": 1
+        },
+        {
+          "color": "#fff099",
+          "id": "horn_tip_r",
+          "offset": [
+            34,
+            -8
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": -0.32,
+          "shape": "capsule",
+          "size": [
+            18,
+            5
+          ],
+          "z": 2
+        }
+      ],
+      "pos": [
+        26,
+        -68
+      ],
+      "rotation": -1.05,
+      "scale": 1.0,
+      "z": 28
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.08,
+        "walk": 0.14,
+        "wave": 0.25
+      },
+      "id": "wing_inner_l",
+      "length": 62,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "pauldron_l",
+          "offset": [
+            6,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.0,
+          "shape": "ellipse",
+          "size": [
+            48,
+            40
+          ],
+          "z": 2
+        },
+        {
+          "color": "#ff6a2b",
+          "id": "pauldron_ring_l",
+          "offset": [
+            8,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.0,
+          "shape": "ellipse",
+          "size": [
+            26,
+            26
+          ],
+          "z": 3
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "pauldron_eye_l",
+          "offset": [
+            8,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            14
+          ],
+          "z": 4
+        },
+        {
+          "color": "#17142b",
+          "id": "wing_covert_1_l",
+          "offset": [
+            38,
+            2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.0,
+          "shape": "ellipse",
+          "size": [
+            58,
+            30
+          ],
+          "z": 1
+        },
+        {
+          "color": "#3b326e",
+          "id": "wing_sec_1_l",
+          "offset": [
+            36,
+            -14
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.28,
+          "shape": "ellipse",
+          "size": [
+            42,
+            22
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -44,
+        -84
+      ],
+      "rotation": -2.821593,
+      "scale": 1.0,
+      "z": 16
+    },
+    {
+      "anim": {
+        "phase": 0.3,
+        "sway": 0.12,
+        "walk": 0.18,
+        "wave": 0.35
+      },
+      "id": "wing_outer_l",
+      "length": 56,
+      "parent": "wing_inner_l",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "wing_covert_2_l",
+          "offset": [
+            28,
+            2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.0,
+          "shape": "ellipse",
+          "size": [
+            56,
+            26
+          ],
+          "z": 2
+        },
+        {
+          "color": "#574a9e",
+          "id": "wing_sec_2_l",
+          "offset": [
+            24,
+            -13
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.25,
+          "shape": "ellipse",
+          "size": [
+            44,
+            18
+          ],
+          "z": 1
+        },
+        {
+          "color": "#19b5d8",
+          "id": "wing_sec_3_l",
+          "offset": [
+            42,
+            -11
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.18,
+          "shape": "ellipse",
+          "size": [
+            40,
+            16
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        58,
+        0
+      ],
+      "rotation": -0.22,
+      "scale": 1.0,
+      "z": 15
+    },
+    {
+      "anim": {
+        "phase": 0.6,
+        "sway": 0.16,
+        "walk": 0.22,
+        "wave": 0.45
+      },
+      "id": "wing_tip_l",
+      "length": 44,
+      "parent": "wing_outer_l",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "wing_prim_1_l",
+          "offset": [
+            24,
+            3
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.05,
+          "shape": "ellipse",
+          "size": [
+            52,
+            18
+          ],
+          "z": 2
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "wing_prim_2_l",
+          "offset": [
+            22,
+            -6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.08,
+          "shape": "ellipse",
+          "size": [
+            46,
+            14
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "wing_prim_3_l",
+          "offset": [
+            16,
+            -13
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.2,
+          "shape": "ellipse",
+          "size": [
+            38,
+            12
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        52,
+        0
+      ],
+      "rotation": -0.16,
+      "scale": 1.0,
+      "z": 14
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.08,
+        "walk": 0.14,
+        "wave": 0.25
+      },
+      "id": "wing_inner_r",
+      "length": 62,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "pauldron_r",
+          "offset": [
+            6,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            48,
+            40
+          ],
+          "z": 2
+        },
+        {
+          "color": "#ff6a2b",
+          "id": "pauldron_ring_r",
+          "offset": [
+            8,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            26,
+            26
+          ],
+          "z": 3
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "pauldron_eye_r",
+          "offset": [
+            8,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            14
+          ],
+          "z": 4
+        },
+        {
+          "color": "#17142b",
+          "id": "wing_covert_1_r",
+          "offset": [
+            38,
+            -2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            58,
+            30
+          ],
+          "z": 1
+        },
+        {
+          "color": "#3b326e",
+          "id": "wing_sec_1_r",
+          "offset": [
+            36,
+            14
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.28,
+          "shape": "ellipse",
+          "size": [
+            42,
+            22
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        44,
+        -84
+      ],
+      "rotation": -0.32,
+      "scale": 1.0,
+      "z": 16
+    },
+    {
+      "anim": {
+        "phase": 0.3,
+        "sway": 0.12,
+        "walk": 0.18,
+        "wave": 0.35
+      },
+      "id": "wing_outer_r",
+      "length": 56,
+      "parent": "wing_inner_r",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "wing_covert_2_r",
+          "offset": [
+            28,
+            -2
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            56,
+            26
+          ],
+          "z": 2
+        },
+        {
+          "color": "#574a9e",
+          "id": "wing_sec_2_r",
+          "offset": [
+            24,
+            13
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.25,
+          "shape": "ellipse",
+          "size": [
+            44,
+            18
+          ],
+          "z": 1
+        },
+        {
+          "color": "#19b5d8",
+          "id": "wing_sec_3_r",
+          "offset": [
+            42,
+            11
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.18,
+          "shape": "ellipse",
+          "size": [
+            40,
+            16
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        58,
+        0
+      ],
+      "rotation": 0.22,
+      "scale": 1.0,
+      "z": 15
+    },
+    {
+      "anim": {
+        "phase": 0.6,
+        "sway": 0.16,
+        "walk": 0.22,
+        "wave": 0.45
+      },
+      "id": "wing_tip_r",
+      "length": 44,
+      "parent": "wing_outer_r",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "wing_prim_1_r",
+          "offset": [
+            24,
+            -3
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.05,
+          "shape": "ellipse",
+          "size": [
+            52,
+            18
+          ],
+          "z": 2
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "wing_prim_2_r",
+          "offset": [
+            22,
+            6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.08,
+          "shape": "ellipse",
+          "size": [
+            46,
+            14
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "wing_prim_3_r",
+          "offset": [
+            16,
+            13
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.2,
+          "shape": "ellipse",
+          "size": [
+            38,
+            12
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        52,
+        0
+      ],
+      "rotation": 0.16,
+      "scale": 1.0,
+      "z": 14
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.06,
+        "walk": 0.35,
+        "wave": 1.0
+      },
+      "id": "arm_l",
+      "length": 56,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "upper_arm_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": -0.0,
+          "shape": "capsule",
+          "size": [
+            56,
+            18
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -44,
+        -76
+      ],
+      "rotation": 2.051593,
+      "scale": 1.0,
+      "z": 24
+    },
+    {
+      "anim": {
+        "phase": 0.4,
+        "sway": 0.05,
+        "walk": 0.2,
+        "wave": 0.55
+      },
+      "id": "forearm_l",
+      "length": 44,
+      "parent": "arm_l",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "fore_arm_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": -0.0,
+          "shape": "capsule",
+          "size": [
+            44,
+            15
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "gauntlet_fin_l",
+          "offset": [
+            22,
+            7
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.2,
+          "shape": "ellipse",
+          "size": [
+            22,
+            10
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        52,
+        0
+      ],
+      "rotation": 0.22,
+      "scale": 1.0,
+      "z": 25
+    },
+    {
+      "anim": {
+        "phase": 0.8,
+        "walk": 0.12,
+        "wave": 0.3
+      },
+      "id": "hand_l",
+      "length": 0.0,
+      "parent": "forearm_l",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "palm_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.0,
+          "shape": "ellipse",
+          "size": [
+            15,
+            14
+          ],
+          "z": 0
+        },
+        {
+          "color": "#38f2ff",
+          "id": "claw_1_l",
+          "offset": [
+            11,
+            6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.2,
+          "shape": "ellipse",
+          "size": [
+            13,
+            6
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "claw_2_l",
+          "offset": [
+            13,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.0,
+          "shape": "ellipse",
+          "size": [
+            15,
+            6
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "claw_3_l",
+          "offset": [
+            11,
+            -6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.2,
+          "shape": "ellipse",
+          "size": [
+            13,
+            6
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        40,
+        0
+      ],
+      "rotation": 0.12,
+      "scale": 1.0,
+      "z": 26
+    },
+    {
+      "anim": {
+        "phase": 3.141593,
+        "sway": 0.06,
+        "walk": 0.35,
+        "wave": 1.0
+      },
+      "id": "arm_r",
+      "length": 56,
+      "parent": "torso",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "upper_arm_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            56,
+            18
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        44,
+        -76
+      ],
+      "rotation": 1.09,
+      "scale": 1.0,
+      "z": 24
+    },
+    {
+      "anim": {
+        "phase": 3.541593,
+        "sway": 0.05,
+        "walk": 0.2,
+        "wave": 0.55
+      },
+      "id": "forearm_r",
+      "length": 44,
+      "parent": "arm_r",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "fore_arm_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            44,
+            15
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "gauntlet_fin_r",
+          "offset": [
+            22,
+            -7
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.2,
+          "shape": "ellipse",
+          "size": [
+            22,
+            10
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        52,
+        0
+      ],
+      "rotation": -0.22,
+      "scale": 1.0,
+      "z": 25
+    },
+    {
+      "anim": {
+        "phase": 3.941593,
+        "walk": 0.12,
+        "wave": 0.3
+      },
+      "id": "hand_r",
+      "length": 0.0,
+      "parent": "forearm_r",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "palm_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            15,
+            14
+          ],
+          "z": 0
+        },
+        {
+          "color": "#38f2ff",
+          "id": "claw_1_r",
+          "offset": [
+            11,
+            -6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.2,
+          "shape": "ellipse",
+          "size": [
+            13,
+            6
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "claw_2_r",
+          "offset": [
+            13,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            15,
+            6
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "claw_3_r",
+          "offset": [
+            11,
+            6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.2,
+          "shape": "ellipse",
+          "size": [
+            13,
+            6
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        40,
+        0
+      ],
+      "rotation": -0.12,
+      "scale": 1.0,
+      "z": 26
+    },
+    {
+      "anim": {
+        "phase": 0.0,
+        "sway": 0.02,
+        "walk": 0.45
+      },
+      "id": "leg_l",
+      "length": 58,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "thigh_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": -0.0,
+          "shape": "capsule",
+          "size": [
+            58,
+            22
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        -22,
+        58
+      ],
+      "rotation": 1.781593,
+      "scale": 1.0,
+      "z": 12
+    },
+    {
+      "anim": {
+        "phase": 0.3,
+        "walk": 0.28
+      },
+      "id": "shin_l",
+      "length": 44,
+      "parent": "leg_l",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "calf_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": -0.0,
+          "shape": "capsule",
+          "size": [
+            44,
+            16
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "greave_fin_l",
+          "offset": [
+            20,
+            7
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.15,
+          "shape": "ellipse",
+          "size": [
+            20,
+            9
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        54,
+        0
+      ],
+      "rotation": -0.05,
+      "scale": 1.0,
+      "z": 11
+    },
+    {
+      "anim": {
+        "phase": 0.6,
+        "walk": 0.24
+      },
+      "id": "foot_l",
+      "length": 24,
+      "parent": "shin_l",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "sole_l",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.0,
+          "shape": "ellipse",
+          "size": [
+            26,
+            15
+          ],
+          "z": 0
+        },
+        {
+          "color": "#38f2ff",
+          "id": "talon_1_l",
+          "offset": [
+            15,
+            6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.15,
+          "shape": "ellipse",
+          "size": [
+            12,
+            6
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "talon_2_l",
+          "offset": [
+            17,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            6
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "talon_3_l",
+          "offset": [
+            15,
+            -6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.15,
+          "shape": "ellipse",
+          "size": [
+            12,
+            6
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        40,
+        0
+      ],
+      "rotation": 1.41,
+      "scale": 1.0,
+      "z": 11
+    },
+    {
+      "anim": {
+        "phase": 3.141593,
+        "sway": 0.02,
+        "walk": 0.45
+      },
+      "id": "leg_r",
+      "length": 58,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "thigh_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            58,
+            22
+          ],
+          "z": 0
+        }
+      ],
+      "pos": [
+        22,
+        58
+      ],
+      "rotation": 1.36,
+      "scale": 1.0,
+      "z": 12
+    },
+    {
+      "anim": {
+        "phase": 3.441593,
+        "walk": 0.28
+      },
+      "id": "shin_r",
+      "length": 44,
+      "parent": "leg_r",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "calf_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            44,
+            16
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "greave_fin_r",
+          "offset": [
+            20,
+            -7
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.15,
+          "shape": "ellipse",
+          "size": [
+            20,
+            9
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        54,
+        0
+      ],
+      "rotation": 0.05,
+      "scale": 1.0,
+      "z": 11
+    },
+    {
+      "anim": {
+        "phase": 3.741593,
+        "walk": 0.24
+      },
+      "id": "foot_r",
+      "length": 24,
+      "parent": "shin_r",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "sole_r",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            26,
+            15
+          ],
+          "z": 0
+        },
+        {
+          "color": "#38f2ff",
+          "id": "talon_1_r",
+          "offset": [
+            15,
+            -6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.15,
+          "shape": "ellipse",
+          "size": [
+            12,
+            6
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "talon_2_r",
+          "offset": [
+            17,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            14,
+            6
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "talon_3_r",
+          "offset": [
+            15,
+            6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.15,
+          "shape": "ellipse",
+          "size": [
+            12,
+            6
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        40,
+        0
+      ],
+      "rotation": -1.41,
+      "scale": 1.0,
+      "z": 11
+    },
+    {
+      "anim": {
+        "phase": 0.6,
+        "sway": 0.1,
+        "walk": 0.16,
+        "wave": 0.25
+      },
+      "id": "tail",
+      "length": 48,
+      "parent": "root",
+      "parts": [
+        {
+          "color": "#262047",
+          "id": "tail_seg1",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            48,
+            20
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "tail_plate1",
+          "offset": [
+            22,
+            8
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.15,
+          "shape": "ellipse",
+          "size": [
+            24,
+            9
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        -14,
+        44
+      ],
+      "rotation": 2.35,
+      "scale": 1.0,
+      "z": 8
+    },
+    {
+      "anim": {
+        "phase": 1.1,
+        "sway": 0.14,
+        "walk": 0.12
+      },
+      "id": "tail_mid",
+      "length": 42,
+      "parent": "tail",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "tail_seg2",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            42,
+            15
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ff6a2b",
+          "id": "tail_plate2",
+          "offset": [
+            20,
+            6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.1,
+          "shape": "ellipse",
+          "size": [
+            20,
+            8
+          ],
+          "z": 1
+        }
+      ],
+      "pos": [
+        44,
+        0
+      ],
+      "rotation": 0.38,
+      "scale": 1.0,
+      "z": 8
+    },
+    {
+      "anim": {
+        "phase": 1.6,
+        "sway": 0.18,
+        "walk": 0.1
+      },
+      "id": "tail_tip",
+      "length": 34,
+      "parent": "tail_mid",
+      "parts": [
+        {
+          "color": "#3b326e",
+          "id": "tail_seg3",
+          "offset": [
+            0,
+            0
+          ],
+          "pivot": [
+            0.0,
+            0.5
+          ],
+          "rotation": 0.0,
+          "shape": "capsule",
+          "size": [
+            32,
+            10
+          ],
+          "z": 0
+        },
+        {
+          "color": "#ff6a2b",
+          "id": "tail_fin_upper",
+          "offset": [
+            26,
+            6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.28,
+          "shape": "ellipse",
+          "size": [
+            34,
+            14
+          ],
+          "z": 1
+        },
+        {
+          "color": "#38f2ff",
+          "id": "tail_fin_lower",
+          "offset": [
+            26,
+            -6
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": -0.28,
+          "shape": "ellipse",
+          "size": [
+            34,
+            14
+          ],
+          "z": 1
+        },
+        {
+          "color": "#17142b",
+          "id": "tail_spade",
+          "offset": [
+            28,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            38,
+            22
+          ],
+          "z": 2
+        },
+        {
+          "color": "#ffbe3d",
+          "id": "tail_eye_ring",
+          "offset": [
+            28,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            18,
+            12
+          ],
+          "z": 3
+        },
+        {
+          "color": "#38f2ff",
+          "id": "tail_eye_core",
+          "offset": [
+            28,
+            0
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "shape": "ellipse",
+          "size": [
+            9,
+            6
+          ],
+          "z": 4
+        }
+      ],
+      "pos": [
+        38,
+        0
+      ],
+      "rotation": 0.42,
+      "scale": 1.0,
+      "z": 8
+    }
+  ],
+  "format": "char-rig/model@1",
+  "label": "Astral Drake (wyvern)",
+  "name": "astral-drake",
+  "notes": "26-bone, 99-part cyber-arcane wyvern with mathematically mirrored left/right limb chains, golden horns, layered feathered wings, glowing ember core, tagged expressions/pupils, and 4 keyframe clips."
+}

@@ -1,0 +1,1776 @@
+{
+  "format": "char-rig/model@1",
+  "name": "gloamfin",
+  "label": "Gloamfin (abyssal lantern)",
+  "notes": "Procedural-shape abyssal lantern-fish: 11-bone rig, glowing lure bulb, huge gaze-tracked eyes, mirrored side fins, tail fluke and tendrils, six keyframe clips (breathe, sway, pulse, greet, alert, scan).",
+  "bones": [
+    {
+      "id": "root",
+      "parent": null,
+      "pos": [
+        0,
+        0
+      ],
+      "rotation": 0.0,
+      "scale": 0.55,
+      "length": 0.0,
+      "z": 10,
+      "parts": [],
+      "anim": {
+        "bob": 3.0,
+        "sway": 0.02,
+        "phase": 0.0
+      }
+    },
+    {
+      "id": "body",
+      "parent": "root",
+      "pos": [
+        0,
+        -40
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "length": 0.0,
+      "z": 20,
+      "parts": [
+        {
+          "id": "body_rim",
+          "shape": "ellipse",
+          "size": [
+            122,
+            112
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            -4
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 0,
+          "color": "#0c1428"
+        },
+        {
+          "id": "body_mass",
+          "shape": "ellipse",
+          "size": [
+            104,
+            96
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#16264a"
+        },
+        {
+          "id": "belly",
+          "shape": "ellipse",
+          "size": [
+            68,
+            54
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            26
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 2,
+          "color": "#2a4674"
+        },
+        {
+          "id": "organ_ring",
+          "shape": "ellipse",
+          "size": [
+            32,
+            22
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            30
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 3,
+          "color": "#2b7f92"
+        },
+        {
+          "id": "organ",
+          "shape": "ellipse",
+          "size": [
+            16,
+            12
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            30
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 4,
+          "color": "#4ff2e2"
+        },
+        {
+          "id": "mark_r",
+          "shape": "ellipse",
+          "size": [
+            8,
+            8
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            42,
+            -4
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 5,
+          "color": "#4ff2e2"
+        },
+        {
+          "id": "mark_l",
+          "shape": "ellipse",
+          "size": [
+            8,
+            8
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -42,
+            -4
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 5,
+          "color": "#4ff2e2"
+        }
+      ],
+      "anim": {
+        "sway": 0.02,
+        "walk": 0.03,
+        "phase": 0.0
+      }
+    },
+    {
+      "id": "head",
+      "parent": "body",
+      "pos": [
+        0,
+        -50
+      ],
+      "rotation": 0.0,
+      "scale": 1.0,
+      "length": 0.0,
+      "z": 30,
+      "parts": [
+        {
+          "id": "skull_rim",
+          "shape": "ellipse",
+          "size": [
+            142,
+            122
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            -24
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 0,
+          "color": "#0c1428"
+        },
+        {
+          "id": "skull",
+          "shape": "ellipse",
+          "size": [
+            126,
+            106
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            -26
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#16264a"
+        },
+        {
+          "id": "brow_cap",
+          "shape": "ellipse",
+          "size": [
+            104,
+            40
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            -64
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 2,
+          "color": "#0c1428"
+        },
+        {
+          "id": "crest_l",
+          "shape": "ellipse",
+          "size": [
+            16,
+            26
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -26,
+            -88
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 3,
+          "color": "#2a4674"
+        },
+        {
+          "id": "crest_c",
+          "shape": "ellipse",
+          "size": [
+            14,
+            30
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            -94
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 3,
+          "color": "#2a4674"
+        },
+        {
+          "id": "crest_r",
+          "shape": "ellipse",
+          "size": [
+            16,
+            26
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            26,
+            -88
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 3,
+          "color": "#2a4674"
+        },
+        {
+          "id": "cheek_r",
+          "shape": "ellipse",
+          "size": [
+            26,
+            22
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            46,
+            2
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 4,
+          "color": "#2a4674"
+        },
+        {
+          "id": "cheek_l",
+          "shape": "ellipse",
+          "size": [
+            26,
+            22
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -46,
+            2
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 4,
+          "color": "#2a4674"
+        },
+        {
+          "id": "socket_r",
+          "shape": "ellipse",
+          "size": [
+            48,
+            44
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            32,
+            -30
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 5,
+          "color": "#0c1428"
+        },
+        {
+          "id": "socket_l",
+          "shape": "ellipse",
+          "size": [
+            48,
+            44
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -32,
+            -30
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 5,
+          "color": "#0c1428"
+        },
+        {
+          "id": "eye_r",
+          "shape": "ellipse",
+          "size": [
+            38,
+            34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            32,
+            -30
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 6,
+          "color": "#dffbff",
+          "tag": "eye"
+        },
+        {
+          "id": "eye_l",
+          "shape": "ellipse",
+          "size": [
+            38,
+            34
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -32,
+            -30
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 6,
+          "color": "#dffbff",
+          "tag": "eye"
+        },
+        {
+          "id": "pupil_r",
+          "shape": "ellipse",
+          "size": [
+            15,
+            15
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            32,
+            -30
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 7,
+          "color": "#0c1428",
+          "tag": "pupil"
+        },
+        {
+          "id": "pupil_l",
+          "shape": "ellipse",
+          "size": [
+            15,
+            15
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -32,
+            -30
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 7,
+          "color": "#0c1428",
+          "tag": "pupil"
+        },
+        {
+          "id": "glint_r",
+          "shape": "ellipse",
+          "size": [
+            5,
+            5
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            37,
+            -35
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 8,
+          "color": "#ffffff"
+        },
+        {
+          "id": "glint_l",
+          "shape": "ellipse",
+          "size": [
+            5,
+            5
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -37,
+            -35
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 8,
+          "color": "#ffffff"
+        },
+        {
+          "id": "brow_r",
+          "shape": "ellipse",
+          "size": [
+            26,
+            7
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            32,
+            -56
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 9,
+          "color": "#0c1428",
+          "tag": "brow"
+        },
+        {
+          "id": "brow_l",
+          "shape": "ellipse",
+          "size": [
+            26,
+            7
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -32,
+            -56
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 9,
+          "color": "#0c1428",
+          "tag": "brow"
+        },
+        {
+          "id": "mouth_r",
+          "shape": "ellipse",
+          "size": [
+            18,
+            11
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            8,
+            4
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 10,
+          "color": "#0c1428",
+          "tag": "mouth"
+        },
+        {
+          "id": "mouth_l",
+          "shape": "ellipse",
+          "size": [
+            18,
+            11
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -8,
+            4
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 10,
+          "color": "#0c1428",
+          "tag": "mouth"
+        },
+        {
+          "id": "tooth_r",
+          "shape": "ellipse",
+          "size": [
+            7,
+            9
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            12,
+            6
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 11,
+          "color": "#dffbff"
+        },
+        {
+          "id": "tooth_l",
+          "shape": "ellipse",
+          "size": [
+            7,
+            9
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -12,
+            6
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 11,
+          "color": "#dffbff"
+        },
+        {
+          "id": "lip_glow",
+          "shape": "ellipse",
+          "size": [
+            30,
+            5
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            12
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 12,
+          "color": "#2b7f92"
+        }
+      ],
+      "anim": {
+        "sway": 0.03,
+        "walk": 0.06,
+        "phase": 0.0
+      },
+      "limits": {
+        "min": -0.9,
+        "max": 0.9
+      }
+    },
+    {
+      "id": "lure",
+      "parent": "head",
+      "pos": [
+        0,
+        -72
+      ],
+      "rotation": -1.25,
+      "scale": 1.0,
+      "length": 56.0,
+      "z": 33,
+      "parts": [
+        {
+          "id": "stalk",
+          "shape": "capsule",
+          "size": [
+            56,
+            8
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 0,
+          "color": "#16264a"
+        },
+        {
+          "id": "stalk_glow",
+          "shape": "capsule",
+          "size": [
+            48,
+            3
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "offset": [
+            4,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#4ff2e2"
+        }
+      ],
+      "anim": {
+        "sway": 0.09,
+        "wave": 0.18,
+        "phase": 0.0
+      }
+    },
+    {
+      "id": "lure_bulb",
+      "parent": "lure",
+      "pos": [
+        54,
+        0
+      ],
+      "rotation": 0.55,
+      "scale": 1.0,
+      "length": 0.0,
+      "z": 34,
+      "parts": [
+        {
+          "id": "bulb_rim",
+          "shape": "ellipse",
+          "size": [
+            36,
+            36
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 0,
+          "color": "#8f2f58"
+        },
+        {
+          "id": "bulb",
+          "shape": "ellipse",
+          "size": [
+            26,
+            26
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#ff6fae"
+        },
+        {
+          "id": "bulb_core",
+          "shape": "ellipse",
+          "size": [
+            12,
+            12
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 2,
+          "color": "#ffe9f2"
+        },
+        {
+          "id": "bulb_pip",
+          "shape": "ellipse",
+          "size": [
+            4,
+            4
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            -6,
+            -6
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 3,
+          "color": "#ffffff"
+        }
+      ],
+      "anim": {
+        "sway": 0.12,
+        "phase": 1.2
+      }
+    },
+    {
+      "id": "fin_r",
+      "parent": "body",
+      "pos": [
+        56,
+        -6
+      ],
+      "rotation": 0.55,
+      "scale": 1.0,
+      "length": 44.0,
+      "z": 24,
+      "parts": [
+        {
+          "id": "fin_r",
+          "shape": "ellipse",
+          "size": [
+            56,
+            22
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            20,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 0,
+          "color": "#2a4674"
+        },
+        {
+          "id": "fin_edge_r",
+          "shape": "ellipse",
+          "size": [
+            28,
+            9
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            34,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#2b7f92"
+        },
+        {
+          "id": "fin_tip_r",
+          "shape": "ellipse",
+          "size": [
+            12,
+            10
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            46,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 2,
+          "color": "#4ff2e2"
+        }
+      ],
+      "anim": {
+        "sway": 0.06,
+        "walk": 0.12,
+        "wave": 0.5,
+        "phase": 0.0
+      }
+    },
+    {
+      "id": "fin_l",
+      "parent": "body",
+      "pos": [
+        -56,
+        -6
+      ],
+      "rotation": 2.5916,
+      "scale": 1.0,
+      "length": 44.0,
+      "z": 24,
+      "parts": [
+        {
+          "id": "fin_l",
+          "shape": "ellipse",
+          "size": [
+            56,
+            22
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            20,
+            0
+          ],
+          "rotation": -0.0,
+          "scale": 1.0,
+          "z": 0,
+          "color": "#2a4674"
+        },
+        {
+          "id": "fin_edge_l",
+          "shape": "ellipse",
+          "size": [
+            28,
+            9
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            34,
+            0
+          ],
+          "rotation": -0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#2b7f92"
+        },
+        {
+          "id": "fin_tip_l",
+          "shape": "ellipse",
+          "size": [
+            12,
+            10
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            46,
+            0
+          ],
+          "rotation": -0.0,
+          "scale": 1.0,
+          "z": 2,
+          "color": "#4ff2e2"
+        }
+      ],
+      "anim": {
+        "sway": 0.06,
+        "walk": 0.12,
+        "wave": 0.5,
+        "phase": 3.141592653589793
+      }
+    },
+    {
+      "id": "tail",
+      "parent": "body",
+      "pos": [
+        0,
+        42
+      ],
+      "rotation": 1.5708,
+      "scale": 1.0,
+      "length": 46.0,
+      "z": 14,
+      "parts": [
+        {
+          "id": "tail_seg",
+          "shape": "capsule",
+          "size": [
+            46,
+            16
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 0,
+          "color": "#16264a"
+        },
+        {
+          "id": "tail_glow",
+          "shape": "capsule",
+          "size": [
+            34,
+            5
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "offset": [
+            4,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#2b7f92"
+        }
+      ],
+      "anim": {
+        "sway": 0.1,
+        "walk": 0.16,
+        "wave": 0.25,
+        "phase": 0.6
+      },
+      "limits": {
+        "min": -1.2,
+        "max": 2.6
+      }
+    },
+    {
+      "id": "tail_fin",
+      "parent": "tail",
+      "pos": [
+        42,
+        0
+      ],
+      "rotation": 0.35,
+      "scale": 1.0,
+      "length": 0.0,
+      "z": 13,
+      "parts": [
+        {
+          "id": "fluke",
+          "shape": "ellipse",
+          "size": [
+            42,
+            28
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            14,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 0,
+          "color": "#16264a"
+        },
+        {
+          "id": "fluke_a",
+          "shape": "ellipse",
+          "size": [
+            26,
+            20
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            26,
+            -13
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#2a4674"
+        },
+        {
+          "id": "fluke_b",
+          "shape": "ellipse",
+          "size": [
+            26,
+            20
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            26,
+            13
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#2a4674"
+        },
+        {
+          "id": "fluke_tip",
+          "shape": "ellipse",
+          "size": [
+            12,
+            10
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            34,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 2,
+          "color": "#2b7f92"
+        }
+      ],
+      "anim": {
+        "sway": 0.14,
+        "phase": 0.9
+      }
+    },
+    {
+      "id": "tendril_r",
+      "parent": "body",
+      "pos": [
+        26,
+        40
+      ],
+      "rotation": 1.62,
+      "scale": 1.0,
+      "length": 40.0,
+      "z": 16,
+      "parts": [
+        {
+          "id": "tendril_r",
+          "shape": "capsule",
+          "size": [
+            40,
+            6
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 0,
+          "color": "#2a4674"
+        },
+        {
+          "id": "tendril_tip_r",
+          "shape": "ellipse",
+          "size": [
+            9,
+            9
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            38,
+            0
+          ],
+          "rotation": 0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#4ff2e2"
+        }
+      ],
+      "anim": {
+        "sway": 0.16,
+        "walk": 0.2,
+        "phase": 0.4
+      }
+    },
+    {
+      "id": "tendril_l",
+      "parent": "body",
+      "pos": [
+        -26,
+        40
+      ],
+      "rotation": 1.5216,
+      "scale": 1.0,
+      "length": 40.0,
+      "z": 16,
+      "parts": [
+        {
+          "id": "tendril_l",
+          "shape": "capsule",
+          "size": [
+            40,
+            6
+          ],
+          "pivot": [
+            0,
+            0.5
+          ],
+          "offset": [
+            0,
+            0
+          ],
+          "rotation": -0.0,
+          "scale": 1.0,
+          "z": 0,
+          "color": "#2a4674"
+        },
+        {
+          "id": "tendril_tip_l",
+          "shape": "ellipse",
+          "size": [
+            9,
+            9
+          ],
+          "pivot": [
+            0,
+            0
+          ],
+          "offset": [
+            38,
+            0
+          ],
+          "rotation": -0.0,
+          "scale": 1.0,
+          "z": 1,
+          "color": "#4ff2e2"
+        }
+      ],
+      "anim": {
+        "sway": 0.16,
+        "walk": 0.2,
+        "phase": 3.541592653589793
+      }
+    }
+  ],
+  "animations": {
+    "breathe": {
+      "duration_ms": 2600,
+      "loop": true,
+      "keyframes": [
+        {
+          "t": 0.0,
+          "bones": {
+            "root": {
+              "y": 0.0
+            },
+            "body": {
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "lure": {
+              "rotation": 0.0
+            },
+            "fin_l": {
+              "rotation": 0.0
+            },
+            "fin_r": {
+              "rotation": 0.0
+            }
+          }
+        },
+        {
+          "t": 0.5,
+          "bones": {
+            "root": {
+              "y": 3.0
+            },
+            "body": {
+              "scale": 1.04
+            },
+            "head": {
+              "rotation": 0.03
+            },
+            "lure": {
+              "rotation": 0.05
+            },
+            "fin_l": {
+              "rotation": 0.07
+            },
+            "fin_r": {
+              "rotation": -0.07
+            }
+          }
+        },
+        {
+          "t": 1.0,
+          "bones": {
+            "root": {
+              "y": 0.0
+            },
+            "body": {
+              "scale": 1.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "lure": {
+              "rotation": 0.0
+            },
+            "fin_l": {
+              "rotation": 0.0
+            },
+            "fin_r": {
+              "rotation": 0.0
+            }
+          }
+        }
+      ]
+    },
+    "sway": {
+      "duration_ms": 3400,
+      "loop": true,
+      "keyframes": [
+        {
+          "t": 0.0,
+          "bones": {
+            "body": {
+              "rotation": -0.04
+            },
+            "head": {
+              "rotation": 0.05
+            },
+            "tail": {
+              "rotation": 0.12
+            },
+            "tendril_l": {
+              "rotation": 0.2
+            },
+            "tendril_r": {
+              "rotation": -0.2
+            },
+            "lure": {
+              "rotation": 0.14
+            }
+          }
+        },
+        {
+          "t": 0.5,
+          "bones": {
+            "body": {
+              "rotation": 0.04
+            },
+            "head": {
+              "rotation": -0.05
+            },
+            "tail": {
+              "rotation": -0.12
+            },
+            "tendril_l": {
+              "rotation": -0.2
+            },
+            "tendril_r": {
+              "rotation": 0.2
+            },
+            "lure": {
+              "rotation": -0.14
+            }
+          }
+        },
+        {
+          "t": 1.0,
+          "bones": {
+            "body": {
+              "rotation": -0.04
+            },
+            "head": {
+              "rotation": 0.05
+            },
+            "tail": {
+              "rotation": 0.12
+            },
+            "tendril_l": {
+              "rotation": 0.2
+            },
+            "tendril_r": {
+              "rotation": -0.2
+            },
+            "lure": {
+              "rotation": 0.14
+            }
+          }
+        }
+      ]
+    },
+    "pulse": {
+      "duration_ms": 1200,
+      "loop": true,
+      "keyframes": [
+        {
+          "t": 0.0,
+          "bones": {
+            "lure_bulb": {
+              "scale": 1.0
+            },
+            "lure": {
+              "rotation": 0.0
+            }
+          }
+        },
+        {
+          "t": 0.45,
+          "bones": {
+            "lure_bulb": {
+              "scale": 1.4
+            },
+            "lure": {
+              "rotation": 0.05
+            }
+          }
+        },
+        {
+          "t": 1.0,
+          "bones": {
+            "lure_bulb": {
+              "scale": 1.0
+            },
+            "lure": {
+              "rotation": 0.0
+            }
+          }
+        }
+      ]
+    },
+    "greet": {
+      "duration_ms": 1400,
+      "loop": false,
+      "keyframes": [
+        {
+          "t": 0.0,
+          "bones": {
+            "root": {
+              "y": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "fin_l": {
+              "rotation": 0.0
+            },
+            "fin_r": {
+              "rotation": 0.0
+            },
+            "lure_bulb": {
+              "scale": 1.0
+            },
+            "lure": {
+              "rotation": 0.0
+            }
+          }
+        },
+        {
+          "t": 0.25,
+          "bones": {
+            "root": {
+              "y": -10.0
+            },
+            "head": {
+              "rotation": -0.12
+            },
+            "fin_l": {
+              "rotation": 0.85
+            },
+            "fin_r": {
+              "rotation": -0.85
+            },
+            "lure_bulb": {
+              "scale": 1.25
+            },
+            "lure": {
+              "rotation": -0.16
+            }
+          }
+        },
+        {
+          "t": 0.5,
+          "bones": {
+            "root": {
+              "y": -4.0
+            },
+            "head": {
+              "rotation": -0.04
+            },
+            "fin_l": {
+              "rotation": 0.55
+            },
+            "fin_r": {
+              "rotation": -0.55
+            },
+            "lure_bulb": {
+              "scale": 1.1
+            },
+            "lure": {
+              "rotation": -0.06
+            }
+          }
+        },
+        {
+          "t": 0.75,
+          "bones": {
+            "root": {
+              "y": -9.0
+            },
+            "head": {
+              "rotation": -0.1
+            },
+            "fin_l": {
+              "rotation": 0.8
+            },
+            "fin_r": {
+              "rotation": -0.8
+            },
+            "lure_bulb": {
+              "scale": 1.22
+            },
+            "lure": {
+              "rotation": -0.14
+            }
+          }
+        },
+        {
+          "t": 1.0,
+          "bones": {
+            "root": {
+              "y": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "fin_l": {
+              "rotation": 0.0
+            },
+            "fin_r": {
+              "rotation": 0.0
+            },
+            "lure_bulb": {
+              "scale": 1.0
+            },
+            "lure": {
+              "rotation": 0.0
+            }
+          }
+        }
+      ]
+    },
+    "alert": {
+      "duration_ms": 900,
+      "loop": false,
+      "keyframes": [
+        {
+          "t": 0.0,
+          "bones": {
+            "root": {
+              "y": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "fin_l": {
+              "rotation": 0.0
+            },
+            "fin_r": {
+              "rotation": 0.0
+            },
+            "lure": {
+              "rotation": 0.0
+            },
+            "lure_bulb": {
+              "scale": 1.0
+            },
+            "body": {
+              "scale": 1.0
+            }
+          }
+        },
+        {
+          "t": 0.2,
+          "bones": {
+            "root": {
+              "y": -14.0
+            },
+            "head": {
+              "rotation": -0.16
+            },
+            "fin_l": {
+              "rotation": 0.7
+            },
+            "fin_r": {
+              "rotation": -0.7
+            },
+            "lure": {
+              "rotation": -0.22
+            },
+            "lure_bulb": {
+              "scale": 1.45
+            },
+            "body": {
+              "scale": 1.06
+            }
+          }
+        },
+        {
+          "t": 0.55,
+          "bones": {
+            "root": {
+              "y": -4.0
+            },
+            "head": {
+              "rotation": 0.05
+            },
+            "fin_l": {
+              "rotation": 0.25
+            },
+            "fin_r": {
+              "rotation": -0.25
+            },
+            "lure": {
+              "rotation": 0.08
+            },
+            "lure_bulb": {
+              "scale": 1.12
+            },
+            "body": {
+              "scale": 1.02
+            }
+          }
+        },
+        {
+          "t": 1.0,
+          "bones": {
+            "root": {
+              "y": 0.0
+            },
+            "head": {
+              "rotation": 0.0
+            },
+            "fin_l": {
+              "rotation": 0.0
+            },
+            "fin_r": {
+              "rotation": 0.0
+            },
+            "lure": {
+              "rotation": 0.0
+            },
+            "lure_bulb": {
+              "scale": 1.0
+            },
+            "body": {
+              "scale": 1.0
+            }
+          }
+        }
+      ]
+    },
+    "scan": {
+      "duration_ms": 3800,
+      "loop": true,
+      "keyframes": [
+        {
+          "t": 0.0,
+          "bones": {
+            "head": {
+              "rotation": 0.0,
+              "x": 0.0
+            },
+            "lure": {
+              "rotation": 0.0
+            },
+            "body": {
+              "rotation": 0.0
+            }
+          }
+        },
+        {
+          "t": 0.25,
+          "bones": {
+            "head": {
+              "rotation": 0.28,
+              "x": 4.0
+            },
+            "lure": {
+              "rotation": 0.2
+            },
+            "body": {
+              "rotation": 0.04
+            }
+          }
+        },
+        {
+          "t": 0.5,
+          "bones": {
+            "head": {
+              "rotation": -0.28,
+              "x": -4.0
+            },
+            "lure": {
+              "rotation": -0.2
+            },
+            "body": {
+              "rotation": -0.04
+            }
+          }
+        },
+        {
+          "t": 0.75,
+          "bones": {
+            "head": {
+              "rotation": 0.12,
+              "x": 2.0
+            },
+            "lure": {
+              "rotation": 0.08
+            },
+            "body": {
+              "rotation": 0.02
+            }
+          }
+        },
+        {
+          "t": 1.0,
+          "bones": {
+            "head": {
+              "rotation": 0.0,
+              "x": 0.0
+            },
+            "lure": {
+              "rotation": 0.0
+            },
+            "body": {
+              "rotation": 0.0
+            }
+          }
+        }
+      ]
+    }
+  }
+}
