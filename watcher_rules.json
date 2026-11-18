@@ -87,11 +87,11 @@
   "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
   "vision": {
-    "enabled": true,
-    "profile_name": "vision",
     "capture_mode": "active_window",
-    "max_image_dim": 1024,
+    "enabled": true,
     "jpeg_quality": 85,
+    "max_image_dim": 1024,
+    "profile_name": "vision",
     "trigger_phrases": [
       "what's on my screen",
       "whats on my screen",
@@ -110,55 +110,30 @@
     8080,
     1234
   ],
-  "active_profile": "nemotron-3-5-bolt-e4b-q4_k_m",
+  "active_profile": "nvidia-nvidia-nemotron-3-5-bolt-e4b-4gb-",
   "ai_profiles": {
-    "colibri": {
-      "endpoint": "http://127.0.0.1:8001/v1",
-      "kind": "openai_compat",
-      "label": "Colibri (Qwen3-Coder-30B)",
-      "max_tokens": 16384,
-      "model": "qwen3-coder-30b-a3b-colibri",
-      "system_prompt": "You are a small local model answering a desktop avatar's trigger. One or two sentences, no lists.",
-      "timeout_secs": 120
-    },
     "hermes": {
       "cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
       "kind": "hermes_cli",
       "label": "Hermes CLI",
       "timeout_secs": 120
     },
-    "lfm3-fast": {
-      "endpoint": "http://127.0.0.1:9931",
+    "nvidia-nvidia-nemotron-3-5-bolt-e4b-4gb-": {
+      "endpoint": "http://127.0.0.1:9931/v1",
       "kind": "openai_compat",
-      "label": "LFM3 1.7B (llama.cpp)",
-      "max_tokens": 16384,
-      "model": "LiquidAI/LFM3-1.7B-GGUF:Q8_0",
+      "label": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB:Q4_K_M",
+      "max_tokens": 1600,
+      "model": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB:Q4_K_M",
       "system_prompt": "You are a tiny, fast desktop avatar assistant. Do not output thinking tags. Respond ONLY with a valid JSON object using this exact schema: {\"speech\": \"short reply under 180 chars\", \"expression\": \"neutral\", \"animate\": \"clip name\"}. Valid expressions: neutral, happy, sad, surprised, thinking, angry. Act yourself: use \"animate\" with a clip name from the list in the context (for example wave), or \"wave\": true for the built-in wave. Add \"escalate\": true ONLY for multi-step or external-tool tasks (clipboard contents, network scan, files, terminal); answer everything else yourself.",
       "timeout_secs": 120
-    },
-    "nemotron-3-5-bolt-e4b-q4_k_m": {
-      "endpoint": "http://127.0.0.1:8001/v1",
-      "kind": "openai_compat",
-      "label": "Nemotron-3.5-Bolt-E4B-Q4_K_M",
-      "model": "Nemotron-3.5-Bolt-E4B-Q4_K_M",
-      "system_prompt": "You are a tiny, fast desktop avatar assistant. Do not output thinking tags. Respond ONLY with a valid JSON object using this exact schema: {\"speech\": \"short reply under 180 chars\", \"expression\": \"neutral\", \"animate\": \"clip name\"}. Valid expressions: neutral, happy, sad, surprised, thinking, angry. Act yourself: use \"animate\" with a clip name from the list in the context (for example wave), or \"wave\": true for the built-in wave. Add \"escalate\": true ONLY for multi-step or external-tool tasks (clipboard contents, network scan, files, terminal); answer everything else yourself.",
-      "timeout_secs": 120
-    },
-    "ollama-fast": {
-      "endpoint": "http://127.0.0.1:8001/v1",
-      "kind": "openai_compat",
-      "label": "Ollama (llamabrain)",
-      "model": "Qwen3-Coder-30B-A3B",
-      "system_prompt": "You are a small local model answering a desktop avatar's trigger. One or two sentences, no lists.",
-      "timeout_secs": 60
     },
     "vision": {
-      "endpoint": "http://127.0.0.1:9932",
+      "endpoint": "http://127.0.0.1:9932/v1",
       "kind": "openai_compat",
-      "label": "LFM3-VL-2B (llama.cpp)",
-      "max_tokens": 1024,
-      "model": "lfm3-vl-2b",
-      "system_prompt": "You are looking at a screenshot of the user's desktop. Describe only what is visible, quote real UI text when it matters, and never invent windows or text that are not in the image.",
+      "label": "vision",
+      "max_tokens": 16000,
+      "model": "LiquidAI/LFM3-VL-2B-GGUF:Q4_K_M",
+      "system_prompt": "You are a tiny, fast desktop avatar assistant. Do not output thinking tags. Respond ONLY with a valid JSON object using this exact schema: {\"speech\": \"short reply under 180 chars\", \"expression\": \"neutral\", \"animate\": \"clip name\"}. Valid expressions: neutral, happy, sad, surprised, thinking, angry. Act yourself: use \"animate\" with a clip name from the list in the context (for example wave), or \"wave\": true for the built-in wave. Add \"escalate\": true ONLY for multi-step or external-tool tasks (clipboard contents, network scan, files, terminal); answer everything else yourself.",
       "timeout_secs": 120
     }
   },
