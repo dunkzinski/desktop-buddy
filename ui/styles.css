@@ -894,7 +894,8 @@ input[type="range"]::-webkit-slider-thumb {
   letter-spacing: 0.04em; text-transform: uppercase;
 }
 .digi-nudge .mini-btn { flex: 1 1 auto; }
-#digi-archetype { flex: 0 0 74px; width: 74px; }
+#digi-archetype, #digi-attribute { flex: 1 1 0; min-width: 0; }
+#digi-reset-gap { flex: 0 0 auto; }
 #digi-seed { flex: 1 1 auto; min-width: 0; }
 #btn-digi-reset { flex: 0 0 auto; }
 

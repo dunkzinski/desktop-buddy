@@ -1601,7 +1601,7 @@ curl -s localhost:8765/digimon/status
   "xp_to_next": 116,
   "bond": 0.52,
   "attribute": "Virus",
-  "slug": "digi-drake-rookie-1f3a9c02",
+  "slug": "digi-drake-rookie-virus-1f3a9c02",
   "generation": 2,
   "installed": true,
   "can_evolve": false,
@@ -1611,10 +1611,10 @@ curl -s localhost:8765/digimon/status
   "archetypes": [ { "value": "beast", "label": "Beast" }, { "value": "drake", "label": "Drake" } ],
   "branches": [
     { "stage": "Champion", "attribute": "Virus", "label": "Drake Champion (Virus)",
-      "slug": "digi-drake-champion-9b21c4d0", "seed": 11166978496, "xp_required": 180,
+      "slug": "digi-drake-champion-virus-9b21c4d0", "seed": 11166978496, "xp_required": 180,
       "flavour": "fanged, spiked, toxic" }
   ],
-  "history": [ { "from": "In-Training", "to": "Rookie", "slug": "digi-drake-rookie-1f3a9c02", "at_ms": 1732000123456 } ],
+  "history": [ { "from": "In-Training", "to": "Rookie", "slug": "digi-drake-rookie-virus-1f3a9c02", "at_ms": 1732000123456 } ],
   "last_error": null
 }
 ```
@@ -1724,6 +1724,10 @@ Grants growth directly — `{"xp": 40, "bond": 0.2}` (either field alone works).
 `bond` is clamped to `-1..1` around the current value. Empty body is a **400**.
 
 ### `POST /digimon/reset`
+
+Model ids are `digi-<archetype>-<stage>-<attribute>-<seed>` (`digi-beast-fresh-virus-00001092`).
+The attribute is in the name because it is part of the rig — Vaccine and Virus
+versions of the same seed are different creatures and must not share a folder.
 
 Starts a new creature, installs its `Fresh` rig **and switches the avatar to it**
 (the `POST /model` path), then plays the `digivolve` clip:

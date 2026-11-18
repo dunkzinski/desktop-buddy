@@ -257,12 +257,17 @@ impl Spec {
         ((mixed >> 33) % 3) as u8
     }
 
-    /// `digi-drake-champion-1f3a9c02` — stable, lowercase, filesystem-safe.
+    /// `digi-drake-champion-virus-1f3a9c02` — stable, lowercase, filesystem-safe.
+    ///
+    /// The attribute is part of the name because it is part of the rig: without
+    /// it, a Vaccine and a Virus creature of the same seed/archetype/stage are
+    /// two different monsters fighting over one `models/<slug>/` folder.
     pub fn slug(&self) -> String {
         format!(
-            "digi-{}-{}-{:08x}",
+            "digi-{}-{}-{}-{:08x}",
             self.archetype.as_str(),
             self.tier.slug(),
+            self.attribute.slug(),
             (self.seed & 0xFFFF_FFFF) as u32
         )
     }

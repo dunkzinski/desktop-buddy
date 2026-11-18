@@ -43,6 +43,13 @@ const ARCHETYPES = [
   ["alien", "Alien"],
 ];
 
+/** Attributes, with the shape each one grows. */
+const ATTRIBUTES = [
+  ["Vaccine", "Vaccine · haloed"],
+  ["Data", "Data · crystalline"],
+  ["Virus", "Virus · fanged"],
+];
+
 const digivolve = {
   base: DEFAULT_BASE,
   /** Last `GET /digimon/status` body, or null before the first read. */
@@ -56,6 +63,8 @@ const digivolve = {
   stageKey: "",
   /** Has the user touched the archetype picker? Then stop syncing it. */
   archetypeTouched: false,
+  /** Same, for the attribute picker. */
+  attributeTouched: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -182,6 +191,25 @@ function renderCard(status) {
 
   // The "new creature" picker follows the live creature until the user picks
   // something, so resetting does not silently change the archetype.
+  const attribute = el("digi-attribute");
+  if (attribute && Array.isArray(status.attributes) && status.attributes.length) {
+    const wanted = status.attributes.map((entry) => entry.value).join(",");
+    const have = [...attribute.options].map((option) => option.value).join(",");
+    if (wanted !== have) {
+      attribute.replaceChildren();
+      for (const entry of status.attributes) {
+        const option = document.createElement("option");
+        option.value = entry.value;
+        option.textContent = entry.label;
+        option.title = entry.flavour;
+        attribute.appendChild(option);
+      }
+    }
+  }
+  if (attribute && !digivolve.attributeTouched && status.attribute) {
+    attribute.value = status.attribute;
+  }
+
   const archetype = el("digi-archetype");
   if (archetype && Array.isArray(status.archetypes) && status.archetypes.length) {
     // Rebuild only when the list really changed, or the poll would wipe the
@@ -453,9 +481,11 @@ function nudge(xp, bond) {
 
 function reset() {
   const archetype = el("digi-archetype") ? el("digi-archetype").value : "";
+  const attribute = el("digi-attribute") ? el("digi-attribute").value : "";
   const rawSeed = el("digi-seed") ? el("digi-seed").value.trim() : "";
   const body = {};
   if (archetype) body.archetype = archetype;
+  if (attribute) body.attribute = attribute;
   if (rawSeed) {
     const seed = Number(rawSeed);
     if (!Number.isFinite(seed) || seed < 0) {
@@ -516,6 +546,19 @@ export async function setupDigivolve() {
   archetype?.addEventListener("change", () => {
     digivolve.archetypeTouched = true;
   });
+  const attribute = el("digi-attribute");
+  attribute?.addEventListener("change", () => {
+    digivolve.attributeTouched = true;
+  });
+  if (attribute && !attribute.options.length) {
+    for (const [value, label] of ATTRIBUTES) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      option.title = label;
+      attribute.appendChild(option);
+    }
+  }
   if (archetype && !archetype.options.length) {
     fillArchetypes(archetype, ARCHETYPES);
   }

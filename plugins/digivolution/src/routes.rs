@@ -176,7 +176,14 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
                     400,
                     json!({
                         "ok": false,
-                        "error": "`archetype` must be one of beast, drake, cyborg, holy",
+                        "error": format!(
+                            "`archetype` must be one of {}",
+                            Archetype::ALL
+                                .iter()
+                                .map(|archetype| archetype.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
                     }),
                 );
             }

@@ -53,7 +53,14 @@ impl Digimon {
     /// usable; a malformed one is ignored (a fresh creature) rather than fatal.
     pub fn restore_state(&mut self, value: &Value) -> bool {
         match serde_json::from_value::<Digivolution>(value.clone()) {
-            Ok(state) => {
+            Ok(mut state) => {
+                // Re-derive the slug rather than trusting the save: the naming
+                // scheme now carries the attribute, and a save written before
+                // that would keep pointing at a shared folder.
+                let expected = state.spec().slug();
+                if state.slug != expected {
+                    state.slug = expected;
+                }
                 self.state = state;
                 self.announced_ready = self.state.can_evolve();
                 true
@@ -351,6 +358,16 @@ impl Digimon {
             "branches": branches,
             // The archetypes this build can generate, so the UI never carries a
             // second copy of the list that can drift out of date.
+            // The attributes, with what each does to a body, so the card can
+            // offer the choice instead of inheriting whatever it already was.
+            "attributes": crate::attribute::Attribute::ALL
+                .iter()
+                .map(|attribute| json!({
+                    "value": attribute.as_str(),
+                    "label": attribute.as_str(),
+                    "flavour": attribute.flavour(),
+                }))
+                .collect::<Vec<_>>(),
             "archetypes": crate::generator::Archetype::ALL
                 .iter()
                 .map(|archetype| json!({
@@ -443,6 +460,79 @@ mod tests {
         assert_eq!(recorded.states.len(), 1, "the save is flushed at once");
         let saved: Value = serde_json::from_slice(&recorded.states[0]).expect("json");
         assert_eq!(saved["tier"], json!("In-Training"));
+    }
+
+    #[test]
+    fn an_old_save_is_renamed_to_the_attribute_aware_slug() {
+        // Saves written before the attribute joined the name point at a folder
+        // shared with every other attribute; the slug is re-derived on load.
+        let mut state = plugin();
+        let old = json!({
+            "seed": 31337u64,
+            "archetype": "beast",
+            "tier": "Rookie",
+            "attribute": "Virus",
+            "slug": "digi-beast-rookie-00007a69",
+        });
+        assert!(state.restore_state(&old));
+        assert_eq!(
+            state.state().slug,
+            "digi-beast-rookie-virus-00007a69",
+            "the old name is migrated, not kept"
+        );
+        // A save that is already correct is left exactly as it is.
+        let correct = json!({
+            "seed": 31337u64,
+            "archetype": "beast",
+            "tier": "Rookie",
+            "attribute": "Virus",
+            "slug": "digi-beast-rookie-virus-00007a69",
+        });
+        assert!(state.restore_state(&correct));
+        assert_eq!(state.state().slug, "digi-beast-rookie-virus-00007a69");
+    }
+
+    #[test]
+    fn a_new_creature_takes_the_attribute_it_was_asked_for() {
+        // The card used to send seed + archetype only, so `reset` inherited the
+        // current attribute and every new creature came out the same family.
+        let mut state = plugin();
+        let status = state.reset(Some(7), None, Some(Attribute::Virus)).expect("reset");
+        assert_eq!(status["attribute"], json!("Virus"));
+        assert_eq!(state.state().attribute, Attribute::Virus);
+
+        // An explicit ask wins even over a creature that was something else.
+        let status = state.reset(Some(8), None, Some(Attribute::Vaccine)).expect("reset");
+        assert_eq!(status["attribute"], json!("Vaccine"));
+
+        // And omitting it still inherits, which is what the API documents.
+        let status = state.reset(Some(9), None, None).expect("reset");
+        assert_eq!(status["attribute"], json!("Vaccine"));
+
+        // The rig's folder name carries the attribute too — a Fresh creature
+        // built as Virus must not be written into the "data" slug.
+        let status = state.reset(Some(99), None, Some(Attribute::Virus)).expect("reset");
+        let slug = status["slug"].as_str().expect("slug");
+        assert!(
+            slug.contains("-virus-"),
+            "the slug must name the attribute: {slug}"
+        );
+        assert_eq!(slug, "digi-drake-fresh-virus-00000063");
+    }
+
+    #[test]
+    fn the_status_lists_the_attributes_with_their_flavour() {
+        let status = plugin().status_json();
+        let attributes = status["attributes"].as_array().expect("attributes");
+        assert_eq!(attributes.len(), 3);
+        for entry in attributes {
+            assert!(entry["value"].is_string());
+            assert!(entry["label"].is_string());
+            assert!(
+                entry["flavour"].as_str().map(|f| !f.is_empty()).unwrap_or(false),
+                "every attribute needs a flavour line for the picker"
+            );
+        }
     }
 
     #[test]

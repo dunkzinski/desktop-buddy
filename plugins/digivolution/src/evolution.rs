@@ -121,7 +121,9 @@ pub fn xp_required(tier: Tier) -> u64 {
 impl Digivolution {
     /// A fresh creature, at Fresh, with nothing installed yet.
     pub fn new(seed: u64, archetype: Archetype, attribute: Attribute) -> Self {
-        let spec = Spec::new(seed, archetype, Tier::Fresh);
+        // The attribute has to reach the spec here too: `Spec::new` defaults to
+        // Data, which is how every hatchling's folder ended up named "data".
+        let spec = Spec::with_attribute(seed, archetype, Tier::Fresh, attribute);
         Self {
             version: 1,
             seed,
@@ -318,7 +320,15 @@ impl Digivolution {
         };
 
         let from = self.tier;
-        let spec = Spec::new(parent_seed, self.archetype, entry.from);
+        // The attribute belongs to the *parent*, not to the creature doing the
+        // rewind: regenerating a Virus ancestor in the Vaccine family would put
+        // a different creature back on screen.
+        let spec = Spec::with_attribute(
+            parent_seed,
+            self.archetype,
+            entry.from,
+            entry.from_attribute,
+        );
         let manifest = generator::generate(&spec);
         let report = generator::validate(&manifest)?;
         host::write_model(&spec.slug(), &serde_json::to_value(&manifest).unwrap_or_default())?;
