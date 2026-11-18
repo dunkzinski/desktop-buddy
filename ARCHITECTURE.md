@@ -573,24 +573,52 @@ touched `mod.rs` (three generic capabilities), `wasm_host.rs` (their imports) an
 
 | file | responsibility |
 | --- | --- |
-| `src/rng.rs` | SplitMix64. No dependency, no `getrandom`: `(seed, archetype, tier)` reproduces the same creature on every machine |
+| `src/rng.rs` | SplitMix64. No dependency, no `getrandom`: `(seed, archetype, tier, attribute)` reproduces the same creature — same bones, same colours — on every machine |
 | `src/skeleton.rs` | the `char-rig/model@1` types, the two mirroring formulas (`atan2(sin θ, −cos θ)` for a chain root, `−θ` for a descendant), `computeWorld`, and the painted-bounds pass |
 | `src/attribute.rs` | `Vaccine` / `Data` / `Virus`: wire spelling, the bond-driven branch shift, and the one-line flavour the UI shows |
-| `src/plan.rs` | The eight body plans, then the attribute's mutations, then the seeded build: head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers |
-| `src/generator.rs` | `generate(Spec) -> Manifest`: centerline → tail → right chains → mirror → clips → monitor guard, plus `validate` |
-| `src/evolution.rs` | stage/XP/bond/attribute state, the three-branch table, and the transitions both ways (generate → host write → host activate; `dedigivolve` regenerates the parent from its recorded seed) |
-| `src/plugin.rs` | live state: passive XP, the one-shot "ready" notice, the 30 s save, `GET /digimon/status`'s body |
+| `src/plan.rs` | The twelve body plans, then the attribute's mutations, then the seeded build: head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers |
+| `src/generator.rs` | `generate(Spec) -> Manifest`: centerline → tail → right chains → mirror → archetype parts → attribute parts → clips → monitor guard → detail trim, plus `validate` |
+| `src/evolution.rs` | stage/XP/bond/attribute state, the three-branch table, and the transitions both ways (generate → host write → host activate; `dedigivolve` regenerates the parent from its recorded seed **and attribute**) |
+| `src/host.rs` | typed wrappers over the host imports (`write_model`, `activate_model`, `animate`, `emit`, `notify`, `log`, `save_state`, `now_ms`); the one place the guest talks to the app |
+| `src/plugin.rs` | live state: passive XP, the one-shot "ready" notice, the 30 s save, `GET /digimon/status`'s body (stage, XP, bond, attribute, rig measurements, branches, history, and the `archetypes` / `attributes` lists the UI builds its pickers from) |
 | `src/routes.rs` | the `ROUTES` table + dispatcher |
-| `tests/generator_tests.rs` | every tier × archetype × seed: schema, parents, cycles, limits, FK symmetry, monitor bounds, face tags, z-stack |
+| `tests/generator_tests.rs` | every tier × archetype × attribute × seed: schema, parents, cycles, limits, FK symmetry, monitor bounds, face tags, z-stack, budget, and the variety rules (three attributes ⇒ three rigs) |
+
+**Three layers of variety, one function.** `generate(Spec)` composes three
+independent choices, so the corpus is large without any of it being hand-drawn:
+
+1. **The archetype** (`src/plan.rs`) picks the body plan — head, ears, crest,
+   arms, legs, tail and trunk, plus proportion multipliers. Twelve of them:
+   beast, drake, cyborg, holy, aqua, cervid, machine, alien, avian, insect,
+   serpent, golem.
+2. **The attribute** (`Element::of(attribute)`) reshapes that plan: Vaccine
+   grows wings, a halo and feather vanes; Data grows crystals, circuit traces
+   and a visor band; Virus grows spines, fangs and claws. Structural, not a tint.
+3. **The seed** (`Spec::variant`) picks one of three builds — lean, canonical,
+   broad — with its own marking (none / spots / stripes).
+
+12 × 3 × 3 is 108 silhouettes before a palette is chosen, and the palette
+follows the attribute as a tint (a fraction, never a replacement).
 
 **Generation, not authoring.** Each stage is built from tier-scaled dimensions:
-bone count, limb segments (forearm / shin / hand / foot), horns, wings (and a
-second wing segment), armour plates, tail segments, eyespots, halo and aura
-appear as the tier rises, while the part count stays under the 100-part budget
-(`MAX_PARTS`). Coordinates are authored in local pixels with the root at
-`scale: 0.55`, and `enforce_monitor_budget` verifies `min_world_y >= -170` over
-every painted corner — the format's top-clip budget — shifting the pelvis down
-if a hand-tuned number ever exceeded it.
+bone count, limb segments (forearm / shin / hand / foot), wings (and a second
+wing segment), armour plates, tail segments, eyespots, halo and aura grow as the
+tier rises, while the part count stays under the 100-part budget (`MAX_PARTS`).
+The archetype's signature is present from `Fresh` — a small crest, ears, gills,
+treads, coil or folded wing buds — because hiding it until In-Training made every
+hatchling the same blob; the tier scales those parts instead of introducing them.
+Coordinates are authored in local pixels with the root at `scale: 0.55`, and
+`enforce_monitor_budget` verifies `min_world_y >= -170` over every painted corner
+— the format's top-clip budget — shifting the pelvis down if a hand-tuned number
+ever exceeded it. `trim_details` then drops decoration (`spot`, `stripe`,
+`circuit_*`, `crystal_core`, …) in a fixed order until the rig fits four parts
+under the cap, so a rich plan loses decoration, never a limb.
+
+**Names carry the rig.** A model id is
+`digi-<archetype>-<stage>-<attribute>-<seed>`; the attribute is part of the name
+because it is part of the shape, and two attributes of one seed must not share a
+`models/<slug>/` folder. Saved games are migrated on load — the slug is
+re-derived, never trusted.
 
 **Mirroring is arithmetic, never hand-typed.** Only the centerline
 (`root`, `pelvis`, `torso`, `neck`, `head`, `tail`) and the right-side chains
@@ -607,7 +635,7 @@ handedness. The clips then key `+a` on `_l` and `−a` on `_r`.
 | `POST /digivolve` | `{branch?, force?}` → generate the next stage, `host_model_write`, `host_model_activate` (the `POST /model` path), `host_animate("digivolve")`, then one `digimon` event |
 | `POST /dedigivolve` | `{steps?}` → regenerate the **parent** stage from the history entry's seed/attribute (deterministic, so the exact earlier rig comes back), write it, activate it, play the clip, emit `dedigivolved`; `409` at Fresh |
 | `POST /digimon/xp` | `{xp, bond}` — grant growth directly |
-| `POST /digimon/reset` | `{seed?, archetype?, attribute?}` — a new creature plus its `Fresh` rig |
+| `POST /digimon/reset` | `{seed?, archetype?, attribute?}` — a new creature plus its `Fresh` rig, installed **and activated**; omitted fields inherit the current creature |
 
 State lives in `plugins/digivolution.state.json` through `host_state_save`. The
 current stage's rig is (re-)published at every `init` — `installed` is a

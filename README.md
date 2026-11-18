@@ -321,10 +321,12 @@ before the palette is touched at all.
 **Stage one is already the creature.** The archetype's signature — crest, ears,
 gills, treads, coil, wing buds — is present from `Fresh`, scaled small, instead
 of waiting for In-Training; the attribute's marker (halo, visor, fangs) is
-there too. A hatchling is a bird or a bug or a rock, not a blob that becomes one. Every one is still a pure function of
-`(seed, archetype, tier, attribute)`, still under the 100-part budget (decoration
-is trimmed before any limb), still mirrored exactly, and still inside the
-monitor's top clip budget — variety changes the shape, never the rules.
+there too. A hatchling is a bird or a bug or a rock, not a blob that becomes one.
+
+Every one is still a pure function of `(seed, archetype, tier, attribute)`, still
+under the 100-part budget (decoration is trimmed before any limb), still mirrored
+exactly, and still inside the monitor's top clip budget — variety changes the
+shape, never the rules.
 
 ```bash
 curl -s localhost:8765/digimon/status        # stage, XP, bond, branches, rig stats
@@ -337,11 +339,17 @@ curl -s -X POST localhost:8765/digivolve \
 re-loads the file before keeping it), hot-swaps the avatar through the same code
 path as `POST /model`, and plays the new rig's `digivolve` clip. `POST
 /dedigivolve` walks the same path **backwards**: every history entry remembers
-the parent's seed, and generation is deterministic, so a rewind brings back the
-exact earlier creature (XP is kept, so it can grow straight back). The
-**Digivolve** card in the control panel does all of it by hand. Growth state
-persists in `plugins/digivolution.state.json`, so a restart resumes the same
-line; `POST /digimon/xp` and `POST /digimon/reset` drive it by hand.
+the parent's seed *and* attribute, and generation is deterministic, so a rewind
+brings back the exact earlier creature even across a change of attribute (XP is
+kept, so it can grow straight back). The
+**Digivolve** card in the control panel does all of it by hand, and the *New*
+row offers the archetype **and the attribute** for the next hatchling — the
+picker is filled from `status.archetypes` / `status.attributes`, so adding a body
+plan never leaves a stale list in the UI. Growth state persists in
+`plugins/digivolution.state.json`, so a restart resumes the same line; `POST
+/digimon/xp` and `POST /digimon/reset` drive it by hand. Model ids are
+`digi-<archetype>-<stage>-<attribute>-<seed>` — the attribute is part of the rig,
+so it is part of the folder name.
 
 ### The economy loop
 

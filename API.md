@@ -1606,8 +1606,12 @@ curl -s localhost:8765/digimon/status
   "installed": true,
   "can_evolve": false,
   "final_stage": false,
+  "can_dedigivolve": true,
+  "rewind_depth": 1,
+  "previous_stage": "In-Training",
   "last_evolved_ms": 1732000123456,
   "rig": { "bones": 19, "parts": 46, "clips": 3, "min_world_y": -86.4, "symmetry_error": 0.0 },
+  "attributes": [ { "value": "Virus", "label": "Virus", "flavour": "fanged, spiked, toxic" } ],
   "archetypes": [ { "value": "beast", "label": "Beast" }, { "value": "drake", "label": "Drake" } ],
   "branches": [
     { "stage": "Champion", "attribute": "Virus", "label": "Drake Champion (Virus)",
@@ -1693,7 +1697,9 @@ curl -s -X POST localhost:8765/dedigivolve -H 'content-type: application/json' -
 ```
 
 Because generation is deterministic and each history entry records the
-**parent's** seed and attribute, a rewind regenerates the *exact* creature the
+**parent's** seed and attribute — and both are used when rebuilding, so rewinding
+across a change of attribute lands on the creature that was actually there — a
+rewind regenerates the *exact* creature the
 line had before — same bones, colours and clips — then writes it and hot-swaps
 the avatar through the same `POST /model` path as evolution. XP is kept (a
 creature has still grown), so it can evolve straight back. At `Fresh` — or with
