@@ -40,7 +40,33 @@ pub struct ModelEntry {
     pub bones: usize,
     pub parts: usize,
     pub has_rig_override: bool,
+    /// `true` when this folder is a procedural creature (a `Spec::slug` name:
+    /// `digi-<archetype>-<stage>[-<attribute>]-<8 hex>`) — the digivolution
+    /// plugin writes one per stage, so they would otherwise flood the model
+    /// picker. `GET /models` still lists them; the picker filters on the flag.
+    pub generated: bool,
     pub error: Option<String>,
+}
+
+/// Does this folder name look like a digivolution slug?
+///
+/// The plugin names rigs with `Spec::slug` (`digi-beast-champion-virus-1f3a9c02`),
+/// and the eight lowercase hex digits at the end are the seed fingerprint — they
+/// are what makes this a *pattern* rather than "any folder starting with digi-",
+/// so a hand-authored `digi-thing` stays a custom model.
+pub fn is_generated_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("digi-") else {
+        return false;
+    };
+    let Some((body, suffix)) = rest.rsplit_once('-') else {
+        return false;
+    };
+    if body.is_empty() || suffix.len() != 8 {
+        return false;
+    }
+    suffix
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// One entry of `GET /animations`: a custom keyframe clip on the rig root.
@@ -558,12 +584,13 @@ pub fn list_models(root: &Path) -> Vec<ModelEntry> {
                 let bones = model.rig.get("bones").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
                 let parts = count_parts(&model.rig);
                 entries.push(ModelEntry {
-                    name: model.name,
+                    name: model.name.clone(),
                     label: model.label,
                     path: model.dir,
                     bones,
                     parts,
                     has_rig_override: model.is_override,
+                    generated: is_generated_name(&model.name),
                     error: None,
                 });
             }
@@ -571,11 +598,12 @@ pub fn list_models(root: &Path) -> Vec<ModelEntry> {
                 log::warn!("model {name:?} is unusable: {err}");
                 entries.push(ModelEntry {
                     name: name.clone(),
-                    label: name,
+                    label: name.clone(),
                     path: path.display().to_string(),
                     bones: 0,
                     parts: 0,
                     has_rig_override: path.join("rig.json").is_file(),
+                    generated: is_generated_name(&name),
                     error: Some(err),
                 });
             }
@@ -1016,6 +1044,33 @@ pub fn import_asset(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn procedural_slugs_are_recognised_and_custom_names_are_not() {
+        // The plugin's own slugs, both eras: with and without the attribute
+        // segment (the attribute was added after the first models were written).
+        for slug in [
+            "digi-beast-champion-virus-1f3a9c02",
+            "digi-alien-fresh-00000309",
+            "digi-beast-fresh-5eed1234",
+            "digi-golem-mega-vaccine-0000ffff",
+        ] {
+            assert!(is_generated_name(slug), "{slug} is a generated slug");
+        }
+        // Everything a person might hand-author, including near misses.
+        for name in [
+            "demo-blob",
+            "xenomorph-7",
+            "digi-thing",
+            "digi-beast-champion-virus",
+            "digi-beast-champion-virus-1f3a9c0",
+            "digi-beast-champion-virus-1F3A9C02",
+            "adigi-beast-champion-virus-1f3a9c02",
+            "digi--1f3a9c02",
+        ] {
+            assert!(!is_generated_name(name), "{name} is not a generated slug");
+        }
+    }
 
     fn rig_with(animations: Value) -> Value {
         json!({

@@ -117,7 +117,23 @@ export function applyModel(model) {
   setDirty(false);
 
   const select = document.getElementById("model-select");
-  if (select && model.name) select.value = model.name;
+  if (select && model.name) {
+    // A procedural creature is deliberately absent from the picker (see
+    // refreshModelList), but the loaded model still has to be *in* the control,
+    // or it would sit there showing some other rig's name — or nothing at all.
+    if (![...select.options].some((option) => option.value === model.name)) {
+      const option = document.createElement("option");
+      option.value = model.name;
+      // Name only: the control is narrow, and "· generated" pushed the seed
+      // (the part that identifies the creature) out of view. The tooltip says
+      // the rest.
+      option.textContent = model.name;
+      option.title =
+        "Procedural creature (digivolution) — the picker lists custom models only";
+      select.insertBefore(option, select.firstChild);
+    }
+    select.value = model.name;
+  }
   const brand = document.getElementById("brand");
   if (brand) brand.textContent = model.label || model.name || "Avatar";
 
@@ -135,14 +151,34 @@ export async function refreshModelList(selectName) {
   const models = await call("list_models");
   const select = document.getElementById("model-select");
   if (!select) return;
+  // The picker is for models you keep: hand-authored rigs, and generated ones
+  // you have edited and saved (they carry a rig.json override). Procedural
+  // creatures are the digivolution line's business — the Digivolve card names
+  // the current one — so listing every stage of every line here only buried
+  // the two or three rigs a person actually switches between.
+  const kept = (models || []).filter(
+    (entry) => !entry.generated || entry.has_rig_override,
+  );
+  // Whatever is loaded right now has to stay selectable, procedural or not, or
+  // the control would show the wrong model (or an empty value).
+  if (selectName && !kept.some((entry) => entry.name === selectName)) {
+    const current = (models || []).find((entry) => entry.name === selectName);
+    if (current) kept.unshift(current);
+  }
   select.innerHTML = "";
-  for (const entry of models || []) {
+  for (const entry of kept) {
     const option = document.createElement("option");
     option.value = entry.name;
     option.textContent = entry.error
       ? entry.name + " (broken)"
-      : entry.name + " · " + entry.bones + "b/" + entry.parts + "p";
-    if (entry.error) option.title = entry.error;
+      : entry.name +
+        " · " +
+        entry.bones +
+        "b/" +
+        entry.parts +
+        "p" +
+        (entry.generated ? " · generated" : "");
+    option.title = entry.error || option.textContent;
     select.appendChild(option);
   }
   if (selectName) select.value = selectName;

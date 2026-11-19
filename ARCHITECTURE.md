@@ -1133,7 +1133,11 @@ Environment variables: `CHAR_RIG_MODELS` (model root), `CHAR_RIG_API_PORT`
 * Top-right titlebar: **rig mode (wrench)**, **click-through (cursor)**, **minimize**, **close**.
 * Bottom-right panel: state/mood readout, model dropdown + **Import…** / **Rig edit**,
   expression buttons, Wave/Idle/Walk/Center, a **Watcher** row (switch, badge,
-  **Logs ↗**), walk speed, position, API URL.
+  **Logs ↗**), walk speed, position, API URL. The dropdown lists the models you
+  keep: hand-authored rigs, plus any procedural creature you edited and saved
+  (`has_rig_override`). Everything the digivolution plugin writes per stage is
+  hidden — except the model currently loaded, which stays listed and is tagged
+  `· generated` so the control never goes blank.
 * Empty desktop space is click-through once the page publishes its regions; the
   cursor button toggles it manually.
 * Close = titlebar **X** (stops the tracker and the API) or `POST /shutdown`.
@@ -1989,7 +1993,7 @@ curl -s -X POST localhost:8765/import -H 'content-type: application/json' \
 ```json
 {"ok":true,"root":"C:\\hermes\\char-rig\\models","models":[
   {"name":"demo-blob","label":"Demo Blob (sprite parts)","bones":7,"parts":11,
-   "has_rig_override":false,"error":null,"path":"…\\models\\demo-blob"}]}
+   "has_rig_override":false,"generated":false,"error":null,"path":"…\\models\\demo-blob"}]}
 ```
 Image imports in `mode:"part"` return the sprite **staged**, not attached:
 

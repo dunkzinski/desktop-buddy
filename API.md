@@ -239,11 +239,19 @@ See [MODEL_FORMAT.md](MODEL_FORMAT.md) for the manifest schema.
 ```json
 { "ok": true, "root": "C:\\hermes\\char-rig\\models", "models": [
   { "name": "demo-blob", "label": "Demo Blob (sprite parts)", "path": "...",
-    "bones": 7, "parts": 10, "has_rig_override": false, "error": null }
+    "bones": 7, "parts": 10, "has_rig_override": false, "generated": false,
+    "error": null }
 ] }
 ```
 
 Broken folders appear with `"error": "<reason>"` instead of failing the request.
+
+`"generated": true` marks a folder whose name is a digivolution slug
+(`digi-<archetype>-<stage>[-<attribute>]-<8 hex>`) — the procedural creatures the
+plugin writes on every stage change. The endpoint lists them like any other
+model (the bridge and the MCP tools still see everything); the desktop model
+picker hides them unless they carry a `rig.json` override (i.e. you edited and
+saved one) or are the model currently loaded.
 
 #### `GET /model`
 
