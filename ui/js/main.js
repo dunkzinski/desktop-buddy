@@ -63,6 +63,8 @@ import {
   setupSettings, toggleSettings, settingsOpen, onSettingsSaved,
 } from "./settings.js";
 
+import { setupPluginGate, pluginActive } from "./plugins.js";
+
 import { call, listen } from "./ipc.js";
 
 /* ---------- behaviour (play mode) ---------- */
@@ -1285,12 +1287,23 @@ async function init() {
   refreshTts();
   // Microphone / Whisper: ready, and what is it doing right now?
   refreshStt();
+  // Which plugin-backed controls exist? Every one ships hidden in the markup
+  // and `GET /plugins` is what reveals the ones whose plugin is active — the
+  // app is allowed to run with `plugins/` empty, and a dead button is worse
+  // than no button. Runs before the widgets so their polls never start for a
+  // plugin that is not installed.
+  await setupPluginGate();
+
   // Hunger / saturation / tier, hydrated over HTTP from `GET /survival` and the
   // `GET /foods` catalog. Must not hold up the first paint if the API is slow.
-  setupSurvival().catch((err) => console.error("[avatar] survival widget:", err));
+  if (pluginActive("survival")) {
+    setupSurvival().catch((err) => console.error("[avatar] survival widget:", err));
+  }
   // Stage / growth / evolution branches over `GET /creature/status`. Same rule as
   // survival: a slow API must not hold up the first paint.
-  setupMetamorphose().catch((err) => console.error("[avatar] metamorphose widget:", err));
+  if (pluginActive("metamorphosis")) {
+    setupMetamorphose().catch((err) => console.error("[avatar] metamorphose widget:", err));
+  }
   // Settings: the modal over `GET/POST /config`. A save can change a path, an
   // AI endpoint or the survival rates, so the panel's own badges are refreshed
   // from the server rather than trusted to update themselves.

@@ -305,6 +305,12 @@ Restart `avatar-desktop.exe` and its routes, its config block in the Settings
 modal and its entry in `GET /plugins` are live. Delete `plugins/survival.wasm`
 and they are gone — the app still starts and still serves `/plugins`.
 
+The page follows the same registry: the control panel's **Survival** and
+**Metamorphose** buttons and the Settings **Survival** tab ship hidden in
+`index.html` and are revealed only while `GET /plugins` reports that plugin as
+`active` (`ui/js/plugins.js`). A missing `.wasm` therefore removes the menu
+entry, not just the routes behind it.
+
 Isolation is the point: a plugin that traps is parked by the registry (the app
 keeps running), every call is fuel-metered so a spinning guest cannot hang the
 ticker, and a `.wasm` that will not load is logged and skipped. `survival.enabled:
@@ -430,7 +436,9 @@ is kept, so it can grow straight back). Determinism is per **generator version**
 changing the form table or the individual layer (as the variety pass did) means
 a creature generated before the change rebuilds with the new rules — its seed is
 unchanged, its body is not. The
-**Metamorphosis** card in the control panel does all of it by hand, and the *New*
+**Metamorphosis** card in the control panel does all of it by hand (that button,
+like **Survival**, appears only while the plugin is `active` in `GET /plugins`),
+and the *New*
 row offers the archetype **and the attribute** for the next hatchling — the
 picker is filled from `status.archetypes` / `status.attributes`, so adding a body
 plan never leaves a stale list in the UI. Growth state persists in

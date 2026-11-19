@@ -80,9 +80,14 @@
       <button class="control-btn danger" id="btn-center" title="Walk back to center">Center</button>
       <button class="control-btn" id="btn-new-chat" title="Start a new chat: reset the conversation context">New chat ↺</button>
       <button class="control-btn" id="btn-history" title="Conversation history (H)" aria-pressed="false">History</button>
-      <button class="control-btn" id="btn-survival" title="Hunger, saturation and food — pops out as a card (Esc closes)"
+      <!-- Plugin-backed controls ship hidden: `plugins.js` reveals each one only
+           when its plugin is installed and active (`GET /plugins`). The app is
+           allowed to run with `plugins/` empty. -->
+      <button class="control-btn hidden" id="btn-survival" data-plugin="survival"
+              title="Hunger, saturation and food — pops out as a card (Esc closes)"
               aria-pressed="false">Survival</button>
-      <button class="control-btn" id="btn-metamorphose" title="Stage, growth and evolution branches — pops out as a card (Esc closes)"
+      <button class="control-btn hidden" id="btn-metamorphose" data-plugin="metamorphosis"
+              title="Stage, growth and evolution branches — pops out as a card (Esc closes)"
               aria-pressed="false">Metamorphose</button>
       <button class="control-btn" id="btn-settings" title="Settings: paths, AI profiles and survival (Esc closes)"
               aria-pressed="false">Settings ⚙</button>
@@ -526,7 +531,7 @@
     <nav class="settings-tabs">
       <button class="settings-tab active" data-tab="voice" type="button">Voice &amp; paths</button>
       <button class="settings-tab" data-tab="ai" type="button">AI brain</button>
-      <button class="settings-tab" data-tab="survival" type="button">Survival</button>
+      <button class="settings-tab hidden" data-tab="survival" data-plugin="survival" type="button">Survival</button>
       <button class="settings-tab" data-tab="soul" type="button">SOUL</button>
     </nav>
     <div class="settings-body">
