@@ -726,7 +726,8 @@ fn forty_seeds_of_one_family_are_forty_creatures() {
     // *structural templates* (which parts exist at all — form accessory,
     // second trait, marking), not hash-everything distinctness, which a 1%
     // shade of brown already satisfies. Before the individual layer this
-    // plateaued at the twelve seeded variants (four forms x three builds).
+    // plateaued at the twelve variants the first table shipped (four forms x
+    // three builds); forms, builds and markings since then only raised it.
     for archetype in Archetype::ALL {
         let mut templates = HashSet::new();
         let mut poses = HashSet::new();

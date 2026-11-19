@@ -381,6 +381,9 @@ impl Creature {
                 "seed": self.state.seed,
                 "archetype": self.state.archetype.as_str(),
                 "seed_hex": format!("{:016x}", self.state.seed),
+                // The pinned body: what this stage *is*, independent of the
+                // generator version that produced it.
+                "variant": self.state.variant(),
             },
             "stage": self.state.tier.as_str(),
             "tier_index": self.state.tier.index(),

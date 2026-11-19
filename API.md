@@ -1676,6 +1676,10 @@ avatar onto the new rig — the same code path `POST /model` takes — and plays
 `metamorphose` clip.
 
 Stages are ordered `Fresh → In-Training → Rookie → Champion → Ultimate → Mega`.
+Each stage **pins its variant** (form, build, marking) in its saved state and each
+history entry pins the parent's, so a stage rebuilds identically forever; a child
+inherits its parent's body, mutating (12% new form, 16% new build/marking) only
+occasionally.
 Each transition has three branches — one per attribute, `Seraph`, `Prism` and
 `Feral` — and **all three are always on offer**. Bond only *orders* them: a
 devoted creature (bond > 0.66) is offered `Seraph` first, a feral one
@@ -1695,8 +1699,10 @@ from one seed:
 
 The colours follow too, but only as a tint: a Seraph and a Feral Drake differ
 in silhouette first. On top of the archetype and the attribute, the seed picks
-one of three builds (lean / canonical / broad) and a marking (none / spots /
-stripes), so two Rookies of the same archetype are still two individuals. State is persisted as
+one of the family's six structural forms, one of four builds (lean / canonical
+/ broad / spare), a marking (none / spots / stripes / patches / bands / dapple) and, just under half the
+time, a second accessory from that family's own vocabulary, so two Rookies of
+the same archetype are still two individuals. State is persisted as
 `plugins/metamorphosis.state.json`, so a restart resumes the same line.
 
 ### `GET /creature/status`

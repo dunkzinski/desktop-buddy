@@ -160,6 +160,24 @@ pub enum Accessory {
     Frill,
     /// A second, shorter sensor pair beside the crest.
     Antennae,
+    /// A domed carapace over the back — a shell, not a row of plates.
+    Shell,
+    /// Heavy plates hanging over each shoulder: bulk, not spurs.
+    Pauldrons,
+    /// Long forward-curving tusks either side of the jaw.
+    Tusks,
+    /// One tall sail down the spine, shoulders to hips.
+    BackSail,
+    /// Angular armour plates on the hips.
+    HipPlates,
+    /// A cloak falling either side of the trunk.
+    Cape,
+    /// A second, smaller pair of horns above the brows.
+    HeadHorns,
+    /// A ring of sensor lights orbiting the skull.
+    SensorRing,
+    /// Rounded carapace caps over each shoulder.
+    ShoulderShells,
     /// Blades along the tail.
     TailBlades,
     /// A ring around the throat.
@@ -243,7 +261,8 @@ pub struct Plan {
     pub fangs: bool,
     /// Toxic drips from the jaw and tail (Feral).
     pub drips: bool,
-    /// Seeded marking: 0 none, 1 spots, 2 stripes, 3 patches.
+    /// Seeded marking: 0 none, 1 spots, 2 stripes, 3 patches, 4 bands,
+    /// 5 dapple (see [`MARKING_COUNT`]).
     pub marking: u8,
     /// The seeded build: 0 canonical, 1 lean, 2 broad (proportions + marking).
     pub build: u8,
@@ -537,6 +556,74 @@ pub fn plan(archetype: Archetype) -> Plan {
             arm_len: 0.92,
             ..base()
         },
+
+        // Amphibian: everything wide and low — a jaw as broad as the chest, no
+        // neck, short limbs braced out to the sides.
+        Archetype::Amphibian => Plan {
+            head: HeadKind::Round,
+            ears: EarKind::None,
+            crest: CrestKind::None,
+            arms: ArmKind::Claw,
+            legs: LegKind::Biped,
+            tail: TailKind::Stub,
+            torso: TorsoKind::Round,
+            torso_w: 1.22,
+            torso_h: 0.78,
+            head_w: 1.3,
+            head_h: 0.76,
+            arm_len: 0.78,
+            leg_len: 0.62,
+            snout: 1.25,
+            arm_stance: 0.15,
+            leg_stance: 0.15,
+            spots: true,
+            ..base()
+        },
+
+        // Flora: a thin stalk under a heavy cap — the only plan whose trunk is
+        // narrower than its head — on a root cluster, with vines for arms.
+        Archetype::Flora => Plan {
+            head: HeadKind::Dome,
+            ears: EarKind::None,
+            crest: CrestKind::Comb,
+            arms: ArmKind::Tentacle,
+            legs: LegKind::Insectoid,
+            tail: TailKind::Stub,
+            torso: TorsoKind::Round,
+            torso_w: 0.62,
+            torso_h: 1.34,
+            head_w: 1.26,
+            head_h: 0.9,
+            arm_len: 1.2,
+            leg_len: 0.7,
+            neck: 10.0,
+            crest_scale: 1.35,
+            crest_spread: 0.18,
+            ..base()
+        },
+
+        // Wraith: a hooded robe that never touches the ground, clawed hands at
+        // the ends of its sleeves, a dissolving trailing edge.
+        Archetype::Wraith => Plan {
+            head: HeadKind::Dome,
+            ears: EarKind::None,
+            crest: CrestKind::None,
+            arms: ArmKind::Claw,
+            legs: LegKind::Hover,
+            tail: TailKind::Tentacle,
+            torso: TorsoKind::Robe,
+            torso_w: 0.9,
+            torso_h: 1.15,
+            head_w: 1.0,
+            head_h: 1.1,
+            arm_len: 1.1,
+            leg_len: 0.8,
+            neck: 6.0,
+            tail_scale: 1.15,
+            tail_arc: -0.15,
+            drips: true,
+            ..base()
+        },
     }
 }
 
@@ -547,15 +634,22 @@ pub fn plan(archetype: Archetype) -> Plan {
 /// How many seeded variants `Spec::variant` can draw. `BUILD_COUNT` builds ×
 /// `FORM_COUNT` forms.
 pub const VARIANT_COUNT: u8 = BUILD_COUNT * FORM_COUNT;
-/// Proportions and markings: canonical, lean, broad.
-pub const BUILD_COUNT: u8 = 3;
-/// Structural forms inside one archetype. Five is still small enough that every
-/// form stays hand-tuned instead of generated into mush, and the fifth is the
-/// family's *odd one out*: a kind swap (a Machine with legs, a Serpent that
-/// hovers, a Holy warden in stone greaves) rather than one more set of
-/// proportions. Twelve families x five forms x three builds is sixty
-/// silhouettes before the seed's own individual layer is even applied.
-pub const FORM_COUNT: u8 = 5;
+/// Proportions and markings: canonical, lean, broad, spare.
+pub const BUILD_COUNT: u8 = 4;
+
+/// How many seeded paint patterns exist: none, spots, stripes, patches, bands
+/// and dapple. Kept beside the build count because a variant's marking is
+/// `(build + form) mod MARKING_COUNT`.
+pub const MARKING_COUNT: u8 = 6;
+/// Structural forms inside one archetype. Six is still small enough that every
+/// form stays hand-tuned instead of generated into mush. The fifth is the
+/// family's *odd one out* (a Machine on legs, a Serpent that hovers, a Holy
+/// warden in stone greaves); the sixth is its second kind swap — the branch
+/// that leaves the family's default locomotion or covering behind (a Beast
+/// that flies, a Drake with no legs, an Insect with a raised tail). Twelve
+/// families x six forms x four builds is three hundred and sixty silhouettes
+/// before the seed's own individual layer is even applied.
+pub const FORM_COUNT: u8 = 6;
 
 /// The form table for one archetype.
 ///
@@ -578,6 +672,9 @@ fn form_of(archetype: Archetype, p: Plan, form: u8) -> Plan {
         Archetype::Insect => insect_form(p, form),
         Archetype::Serpent => serpent_form(p, form),
         Archetype::Golem => golem_form(p, form),
+        Archetype::Amphibian => amphibian_form(p, form),
+        Archetype::Flora => flora_form(p, form),
+        Archetype::Wraith => wraith_form(p, form),
     }
 }
 
@@ -637,6 +734,28 @@ fn beast_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — mole: earless, blunt-faced and broad, built for digging.
+        // 5 — griffin: a beaked skull, a comb of feathers and folded wings
+        // over hoofed hind legs — the beast line's one flighted branch.
+        5 => Plan {
+            head: HeadKind::Beak,
+            crest: CrestKind::Comb,
+            crest_scale: 1.15,
+            crest_spread: -0.08,
+            arms: ArmKind::Wing,
+            legs: LegKind::Hoofed,
+            tail: TailKind::Fan,
+            wings: true,
+            snout: 1.25,
+            neck: 8.0,
+            torso_w: p.torso_w * 0.96,
+            torso_h: p.torso_h * 1.04,
+            head_w: p.head_w * 0.94,
+            arm_len: p.arm_len * 1.15,
+            leg_len: p.leg_len * 1.06,
+            tail_scale: 1.1,
+            accessory: Accessory::Frill,
+            ..p
+        },
         _ => Plan {
             ears: EarKind::None,
             snout: 0.78,
@@ -706,6 +825,27 @@ fn drake_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — tide: a sail instead of spikes, a fan tail and a jaw frill.
+        // 5 — hydra: no legs at all — a coiled serpent base, gill fans, a
+        // tall head fin and tentacles where the forelimbs were.
+        5 => Plan {
+            ears: EarKind::Gill,
+            crest: CrestKind::Fin,
+            crest_scale: 1.3,
+            crest_spread: 0.12,
+            arms: ArmKind::Tentacle,
+            legs: LegKind::Coiled,
+            tail: TailKind::Tentacle,
+            snout: 1.15,
+            neck: 22.0,
+            torso_w: p.torso_w * 0.9,
+            torso_h: p.torso_h * 1.08,
+            head_w: p.head_w * 0.94,
+            arm_len: p.arm_len * 1.1,
+            tail_scale: 1.3,
+            tail_arc: -0.12,
+            accessory: Accessory::BackSail,
+            ..p
+        },
         _ => Plan {
             crest: CrestKind::Fin,
             crest_scale: 1.25,
@@ -767,6 +907,27 @@ fn cyborg_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — drone: sensor stalks on a domed housing, a low radiator stack.
+        // 5 — crawler: a low chassis on six thin legs, claw arms and a stub
+        // instead of a cable — the plated slab, taken off its treads.
+        5 => Plan {
+            ears: EarKind::None,
+            crest: CrestKind::Antenna,
+            crest_scale: 1.25,
+            crest_spread: -0.12,
+            arms: ArmKind::Claw,
+            legs: LegKind::Insectoid,
+            tail: TailKind::Stub,
+            visor: true,
+            snout: 1.15,
+            torso_w: p.torso_w * 1.02,
+            torso_h: p.torso_h * 0.92,
+            head_w: p.head_w * 0.92,
+            arm_len: p.arm_len * 1.08,
+            leg_len: p.leg_len * 1.15,
+            leg_stance: 0.12,
+            accessory: Accessory::Spurs,
+            ..p
+        },
         _ => Plan {
             head: HeadKind::Dome,
             ears: EarKind::Stalk,
@@ -831,6 +992,29 @@ fn holy_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — warden: armoured greaves, a swept blade, a stubbed tail.
+        // 5 — valkyrie: a round helm with swept ear-wings, feathered arm
+        // wings and a studded collar — the order's winged messenger.
+        5 => Plan {
+            head: HeadKind::Round,
+            ears: EarKind::Long,
+            ear_angle: -0.18,
+            crest: CrestKind::Blade,
+            crest_scale: 1.2,
+            crest_spread: -0.06,
+            arms: ArmKind::Wing,
+            tail: TailKind::Stub,
+            wings: true,
+            feathers: true,
+            snout: 1.1,
+            neck: 12.0,
+            torso_w: p.torso_w * 0.9,
+            torso_h: p.torso_h * 1.02,
+            head_w: p.head_w * 0.92,
+            arm_len: p.arm_len * 1.12,
+            leg_len: p.leg_len * 1.04,
+            accessory: Accessory::Pauldrons,
+            ..p
+        },
         _ => Plan {
             crest: CrestKind::Blade,
             crest_scale: 1.45,
@@ -898,6 +1082,27 @@ fn aqua_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — turtle: a slab shell, a boxy skull and stumpy flippers.
+        // 5 — angler: an earless low skull with a long swept lure over the
+        // brow, clawed fins and a blunt paddle tail.
+        5 => Plan {
+            ears: EarKind::None,
+            crest: CrestKind::Antenna,
+            crest_scale: 1.45,
+            crest_spread: -0.18,
+            arms: ArmKind::Claw,
+            tail: TailKind::BlobFin,
+            gills: true,
+            snout: 1.3,
+            torso_w: p.torso_w * 0.96,
+            torso_h: p.torso_h * 1.06,
+            head_w: p.head_w * 1.08,
+            head_h: p.head_h * 0.78,
+            arm_len: p.arm_len * 1.15,
+            leg_len: p.leg_len * 0.9,
+            tail_scale: 1.1,
+            accessory: Accessory::HipFins,
+            ..p
+        },
         _ => Plan {
             head: HeadKind::Boxy,
             ears: EarKind::None,
@@ -963,6 +1168,29 @@ fn cervid_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — ram: curled horns, a heavy brow, a short thick neck.
+        // 5 — nightmare: a muzzled skull with a single long blade, pointed
+        // ears swept flat and a barrel chest over a fanned tail.
+        5 => Plan {
+            head: HeadKind::Muzzle,
+            ears: EarKind::Pointed,
+            ear_angle: 0.16,
+            crest: CrestKind::Blade,
+            crest_scale: 1.45,
+            crest_spread: -0.1,
+            arms: ArmKind::Hand,
+            tail: TailKind::Fan,
+            torso: TorsoKind::Barrel,
+            snout: 1.2,
+            neck: 16.0,
+            torso_w: p.torso_w * 0.94,
+            torso_h: p.torso_h * 1.04,
+            arm_len: p.arm_len * 1.05,
+            leg_len: p.leg_len * 1.02,
+            tail_scale: 1.15,
+            tail_arc: 0.1,
+            accessory: Accessory::Spurs,
+            ..p
+        },
         _ => Plan {
             crest: CrestKind::Horns,
             crest_scale: 1.4,
@@ -1021,6 +1249,24 @@ fn machine_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — walker: legs instead of treads, no antennae, a low blade.
+        // 5 — sentinel: no ground contact at all — a hovering chassis under a
+        // tall mast, cannon arms and a slack cable tail.
+        5 => Plan {
+            ears: EarKind::None,
+            crest: CrestKind::Antenna,
+            crest_scale: 1.35,
+            arms: ArmKind::Cannon,
+            legs: LegKind::Hover,
+            tail: TailKind::Cable,
+            visor: true,
+            engine: true,
+            torso_w: p.torso_w * 1.06,
+            torso_h: p.torso_h * 0.88,
+            head_w: p.head_w * 0.9,
+            arm_len: p.arm_len * 1.12,
+            accessory: Accessory::Pauldrons,
+            ..p
+        },
         _ => Plan {
             ears: EarKind::None,
             legs: LegKind::Hoofed,
@@ -1083,6 +1329,24 @@ fn alien_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — hive: a domed carapace, antennae in place of eye stalks, thin legs.
+        // 5 — squid: a coiled mantle of tentacles below, a heavy bulb skull
+        // above, a jaw frill and no crest at all.
+        5 => Plan {
+            crest: CrestKind::None,
+            arms: ArmKind::Tentacle,
+            legs: LegKind::Coiled,
+            tail: TailKind::Tentacle,
+            torso_w: p.torso_w * 1.02,
+            torso_h: p.torso_h * 1.14,
+            head_w: p.head_w * 1.08,
+            head_h: p.head_h * 0.92,
+            arm_len: p.arm_len * 1.18,
+            ear_scale: 1.2,
+            ear_angle: -0.12,
+            tail_scale: 1.3,
+            accessory: Accessory::Shell,
+            ..p
+        },
         _ => Plan {
             head: HeadKind::Dome,
             ears: EarKind::Antenna,
@@ -1149,6 +1413,29 @@ fn avian_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — penguin: a heavy body on finned feet, a flat comb, a stub tail.
+        // 5 — harpy: hands instead of folded wings, bare legs, a long-eared
+        // round head and a feathered fan tail.
+        5 => Plan {
+            head: HeadKind::Round,
+            ears: EarKind::Long,
+            ear_angle: -0.16,
+            crest: CrestKind::Comb,
+            crest_scale: 1.1,
+            arms: ArmKind::Hand,
+            legs: LegKind::Biped,
+            tail: TailKind::Fan,
+            wings: true,
+            feathers: true,
+            snout: 1.05,
+            neck: 10.0,
+            torso_w: p.torso_w * 0.94,
+            torso_h: p.torso_h * 1.02,
+            head_w: p.head_w * 0.96,
+            arm_len: p.arm_len * 0.96,
+            leg_len: p.leg_len * 1.02,
+            accessory: Accessory::Frill,
+            ..p
+        },
         _ => Plan {
             head: HeadKind::Round,
             crest: CrestKind::Comb,
@@ -1213,6 +1500,29 @@ fn insect_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — hopper: long jumping legs, a round skull, folded wing cases.
+        // 5 — scorpion: a plated slab of a thorax, claw arms and a spined
+        // tail carried high over the back instead of a stub abdomen.
+        5 => Plan {
+            head: HeadKind::Boxy,
+            ears: EarKind::None,
+            crest: CrestKind::Horns,
+            crest_scale: 0.8,
+            crest_spread: 0.1,
+            arms: ArmKind::Claw,
+            tail: TailKind::Tentacle,
+            torso: TorsoKind::Slab,
+            snout: 1.1,
+            torso_w: p.torso_w * 1.06,
+            torso_h: p.torso_h * 0.94,
+            head_w: p.head_w * 1.06,
+            arm_len: p.arm_len * 1.12,
+            leg_len: p.leg_len * 0.92,
+            leg_stance: 0.1,
+            tail_scale: 1.2,
+            tail_arc: 0.16,
+            accessory: Accessory::Shell,
+            ..p
+        },
         _ => Plan {
             head: HeadKind::Round,
             legs: LegKind::Hoofed,
@@ -1273,6 +1583,25 @@ fn serpent_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — leviathan: no coil at all — a floating body, tendrils, a neck ring.
+        // 5 — basilisk: a short necked coil with true clawed forelimbs, a
+        // combed crown and a blunt paddle tail.
+        5 => Plan {
+            crest: CrestKind::Comb,
+            crest_scale: 1.3,
+            crest_spread: 0.14,
+            arms: ArmKind::Claw,
+            tail: TailKind::BlobFin,
+            snout: 1.1,
+            neck: 8.0,
+            torso_w: p.torso_w * 1.04,
+            torso_h: p.torso_h * 0.96,
+            head_w: p.head_w * 1.06,
+            head_h: p.head_h * 1.06,
+            arm_len: p.arm_len * 1.1,
+            tail_scale: 0.9,
+            accessory: Accessory::BackSail,
+            ..p
+        },
         _ => Plan {
             head: HeadKind::Bulbous,
             arms: ArmKind::Tentacle,
@@ -1336,6 +1665,29 @@ fn golem_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 4 — idol: a domed head, disc ears, carved arm-cannons, a chain tail.
+        // 5 — monolith: the stone does not walk, it floats — a barrel trunk on
+        // a hovering base, antenna horns, cannon arms and a chain tail.
+        5 => Plan {
+            head: HeadKind::Boxy,
+            ears: EarKind::Antenna,
+            ear_scale: 0.9,
+            crest: CrestKind::Antenna,
+            crest_scale: 1.2,
+            arms: ArmKind::Cannon,
+            legs: LegKind::Hover,
+            tail: TailKind::Cable,
+            torso: TorsoKind::Barrel,
+            engine: true,
+            snout: 1.05,
+            torso_w: p.torso_w * 1.02,
+            torso_h: p.torso_h * 1.1,
+            head_w: p.head_w * 0.94,
+            arm_len: p.arm_len * 1.06,
+            leg_len: p.leg_len * 0.9,
+            tail_scale: 1.1,
+            accessory: Accessory::Pauldrons,
+            ..p
+        },
         _ => Plan {
             head: HeadKind::Dome,
             ears: EarKind::Disc,
@@ -1348,6 +1700,272 @@ fn golem_form(p: Plan, form: u8) -> Plan {
             arm_len: p.arm_len * 0.92,
             leg_len: p.leg_len * 1.06,
             accessory: Accessory::Frill,
+            ..p
+        },
+    }
+}
+
+// Amphibian: wide, low, damp — six ways to be a frog.
+fn amphibian_form(p: Plan, form: u8) -> Plan {
+    match form {
+        0 => p,
+        // 1 — toad: broader still, on shorter legs, with a warty crown of bumps.
+        1 => Plan {
+            arm_segment: 0.9,
+            snout: 1.38,
+            crest: CrestKind::Spikes,
+            crest_scale: 0.8,
+            crest_spread: 0.15,
+            torso_w: p.torso_w * 1.2,
+            torso_h: p.torso_h * 1.1,
+            head_w: p.head_w * 1.15,
+            head_h: p.head_h * 1.06,
+            arm_len: p.arm_len * 0.85,
+            leg_len: p.leg_len * 0.78,
+            arm_stance: 0.12,
+            accessory: Accessory::Shell,
+            ..p
+        },
+        // 2 — newt: the slim one, with a long swimming tail and hip fins.
+        2 => Plan {
+            leg_segment: 1.12,
+            snout: 1.3,
+            torso_w: p.torso_w * 0.84,
+            torso_h: p.torso_h * 1.08,
+            head_w: p.head_w * 0.9,
+            arm_len: p.arm_len * 1.1,
+            leg_len: p.leg_len * 1.15,
+            tail_scale: 1.5,
+            tail_arc: 0.14,
+            accessory: Accessory::HipFins,
+            ..p
+        },
+        // 3 — axolotl: gill fans either side of the skull and a jaw frill.
+        3 => Plan {
+            ears: EarKind::Gill,
+            ear_scale: 1.5,
+            ear_angle: -0.2,
+            crest: CrestKind::Fin,
+            crest_scale: 1.35,
+            snout: 1.12,
+            head_w: p.head_w * 1.06,
+            head_h: p.head_h * 1.1,
+            torso_w: p.torso_w * 0.94,
+            leg_len: p.leg_len * 1.08,
+            accessory: Accessory::Frill,
+            ..p
+        },
+        // 4 — caecilian: no legs at all, a burrower that moves like a worm.
+        4 => Plan {
+            arms: ArmKind::Flipper,
+            legs: LegKind::Coiled,
+            tail: TailKind::Tentacle,
+            snout: 0.95,
+            crest_scale: 0.75,
+            head_w: p.head_w * 0.82,
+            torso_w: p.torso_w * 0.78,
+            torso_h: p.torso_h * 1.2,
+            arm_len: p.arm_len * 1.3,
+            tail_scale: 1.35,
+            tail_arc: -0.18,
+            accessory: Accessory::Ridge,
+            ..p
+        },
+        // 5 — salamander queen: wings and a heavy crest, the line's one
+        // flighted branch.
+        _ => Plan {
+            crest: CrestKind::Spikes,
+            crest_scale: 1.45,
+            crest_spread: -0.16,
+            arms: ArmKind::Wing,
+            tail: TailKind::Fan,
+            wings: true,
+            snout: 1.15,
+            torso_w: p.torso_w * 0.96,
+            torso_h: p.torso_h * 1.1,
+            head_w: p.head_w * 0.94,
+            arm_len: p.arm_len * 1.25,
+            leg_len: p.leg_len * 1.06,
+            tail_scale: 1.2,
+            accessory: Accessory::BackSail,
+            ..p
+        },
+    }
+}
+
+// Flora: a stalk under a cap — six plants that walk.
+fn flora_form(p: Plan, form: u8) -> Plan {
+    match form {
+        0 => p,
+        // 1 — fern: long leaf ears, a wide frond crest and a jaw frill.
+        1 => Plan {
+            ears: EarKind::Long,
+            ear_scale: 1.35,
+            ear_angle: -0.2,
+            crest: CrestKind::Fin,
+            crest_scale: 1.45,
+            crest_spread: 0.14,
+            torso_w: p.torso_w * 0.92,
+            torso_h: p.torso_h * 1.04,
+            arm_len: p.arm_len * 1.12,
+            accessory: Accessory::Frill,
+            ..p
+        },
+        // 2 — mushroom: the cap swallows the head, and the stalk goes squat.
+        2 => Plan {
+            arm_segment: 0.88,
+            head: HeadKind::Bulbous,
+            crest: CrestKind::None,
+            crest_scale: 0.62,
+            snout: 0.85,
+            torso_w: p.torso_w * 1.2,
+            torso_h: p.torso_h * 0.86,
+            head_w: p.head_w * 1.18,
+            head_h: p.head_h * 0.82,
+            leg_len: p.leg_len * 0.84,
+            accessory: Accessory::Shell,
+            ..p
+        },
+        // 3 — vine: taller and thinner, with a runner trailing behind.
+        3 => Plan {
+            arm_segment: 1.14,
+            leg_segment: 1.15,
+            snout: 1.15,
+            crest_scale: 1.1,
+            torso_w: p.torso_w * 0.82,
+            torso_h: p.torso_h * 1.16,
+            head_w: p.head_w * 0.88,
+            arm_len: p.arm_len * 1.3,
+            leg_len: p.leg_len * 1.12,
+            tail: TailKind::Tentacle,
+            tail_scale: 1.45,
+            tail_arc: 0.12,
+            accessory: Accessory::HipFins,
+            ..p
+        },
+        // 4 — treant: the only one that walks on stone — bark, branches and a
+        // slab of a trunk.
+        4 => Plan {
+            head: HeadKind::Round,
+            ears: EarKind::None,
+            crest: CrestKind::Antlers,
+            crest_scale: 1.4,
+            crest_spread: 0.12,
+            arms: ArmKind::Hand,
+            legs: LegKind::Stonework,
+            torso: TorsoKind::Slab,
+            snout: 1.05,
+            torso_w: p.torso_w * 1.9,
+            torso_h: p.torso_h * 0.86,
+            head_w: p.head_w * 0.92,
+            arm_len: p.arm_len * 0.9,
+            leg_len: p.leg_len * 1.3,
+            leg_stance: 0.1,
+            accessory: Accessory::Ridge,
+            ..p
+        },
+        // 5 — orchid: petal wings, a huge bloom crest and a fanned seed tail.
+        _ => Plan {
+            crest: CrestKind::Comb,
+            crest_scale: 1.5,
+            crest_spread: -0.18,
+            arms: ArmKind::Wing,
+            legs: LegKind::Hoofed,
+            tail: TailKind::Fan,
+            wings: true,
+            snout: 1.1,
+            torso_w: p.torso_w * 1.06,
+            torso_h: p.torso_h * 0.94,
+            head_w: p.head_w * 1.08,
+            arm_len: p.arm_len * 1.16,
+            leg_len: p.leg_len * 1.1,
+            tail_scale: 1.25,
+            accessory: Accessory::Pauldrons,
+            ..p
+        },
+    }
+}
+
+// Wraith: a hood and a hem, never a foot — six kinds of haunting.
+fn wraith_form(p: Plan, form: u8) -> Plan {
+    match form {
+        0 => p,
+        // 1 — shade: the longest sleeves and the most trailing hem.
+        1 => Plan {
+            arm_segment: 1.15,
+            snout: 1.1,
+            crest_scale: 0.8,
+            torso_w: p.torso_w * 0.88,
+            torso_h: p.torso_h * 1.24,
+            arm_len: p.arm_len * 1.2,
+            tail_scale: 1.4,
+            tail_arc: -0.2,
+            accessory: Accessory::Frill,
+            ..p
+        },
+        // 2 — reaper: a tall blade over the hood and a throat collar.
+        2 => Plan {
+            crest: CrestKind::Blade,
+            crest_scale: 1.3,
+            crest_spread: -0.12,
+            arm_segment: 1.2,
+            torso_w: p.torso_w * 0.94,
+            torso_h: p.torso_h * 1.08,
+            arm_len: p.arm_len * 1.15,
+            arm_stance: -0.1,
+            accessory: Accessory::Collar,
+            ..p
+        },
+        // 3 — poltergeist: no sleeves at all, floating spurs and a stub.
+        3 => Plan {
+            head: HeadKind::Bulbous,
+            arms: ArmKind::Tentacle,
+            tail: TailKind::Stub,
+            arm_segment: 0.9,
+            snout: 1.15,
+            head_w: p.head_w * 1.2,
+            head_h: p.head_h * 0.9,
+            torso_w: p.torso_w * 1.1,
+            torso_h: p.torso_h * 0.9,
+            arm_len: p.arm_len * 0.9,
+            leg_stance: 0.12,
+            accessory: Accessory::Spurs,
+            ..p
+        },
+        // 4 — lich: it has given up floating and walks on carved stone.
+        4 => Plan {
+            head: HeadKind::Boxy,
+            crest: CrestKind::Horns,
+            crest_scale: 1.1,
+            arms: ArmKind::Hand,
+            legs: LegKind::Stonework,
+            tail: TailKind::Cable,
+            torso: TorsoKind::Slab,
+            torso_w: p.torso_w * 1.1,
+            torso_h: p.torso_h * 0.98,
+            head_w: p.head_w * 1.05,
+            leg_len: p.leg_len * 1.2,
+            tail_scale: 0.95,
+            tail_arc: 0.1,
+            accessory: Accessory::HipPlates,
+            ..p
+        },
+        // 5 — chorus: the wide one — disc ears like eyes in the dark, wings of
+        // smoke, and a sail down its back.
+        _ => Plan {
+            ears: EarKind::Disc,
+            ear_scale: 1.25,
+            crest: CrestKind::Antenna,
+            crest_scale: 1.15,
+            arms: ArmKind::Wing,
+            wings: true,
+            snout: 1.05,
+            torso_w: p.torso_w * 1.08,
+            torso_h: p.torso_h * 0.96,
+            head_w: p.head_w * 1.14,
+            arm_len: p.arm_len * 1.1,
+            tail_scale: 1.2,
+            accessory: Accessory::BackSail,
             ..p
         },
     }
@@ -1462,7 +2080,7 @@ impl Plan {
         self
     }
 
-    /// The seeded build inside a plan: lean, canonical or broad.
+    /// The seeded build inside a plan: lean, canonical, broad or spare.
     ///
     /// This is what makes two Rookies of the same archetype and attribute read
     /// as two individuals rather than one creature drawn twice. The *form* (see
@@ -1487,6 +2105,18 @@ impl Plan {
                 self.leg_len *= 0.92;
                 self.arm_len *= 1.06;
             }
+            3 => {
+                // Spare: a small skull on a short, narrow trunk with long legs
+                // and short arms. Lean is the taller build; spare is the wiry
+                // one, and the shrunken head is what tells them apart at a
+                // glance. `leg_len` stays under ×1.18: a gazelle form already
+                // multiplies it by 1.12 and the armature band is 1.7.
+                self.torso_h *= 0.92;
+                self.head_w *= 0.92;
+                self.head_h *= 0.98;
+                self.leg_len *= 1.08;
+                self.arm_len *= 0.94;
+            }
             _ => {}
         }
         self
@@ -1496,10 +2126,10 @@ impl Plan {
     fn with_variant(mut self, variant: u8) -> Self {
         let variant = variant % VARIANT_COUNT;
         self = self.with_build(variant % BUILD_COUNT);
-        // Four markings (none / spots / stripes / patches) with both the build
-        // and the form moving the count, so the marking is not just a second
-        // name for the build.
-        self.marking = (self.build + self.form) % 4;
+        // Every marking (none / spots / stripes / patches / bands / dapple) with
+        // both the build and the form moving the count, so the marking is not
+        // just a second name for the build.
+        self.marking = (self.build + self.form) % MARKING_COUNT;
         self
     }
 }
@@ -1526,7 +2156,7 @@ pub fn plan_for_blend(archetype: Archetype, blend: AttributeBlend, variant: u8) 
  * The individual layer
  * ------------------------------------------------------------------ */
 
-/// The furniture a family knows how to wear: the union of its four forms'
+/// The furniture a family knows how to wear: the union of its forms'
 /// accessories.
 ///
 /// [`Plan::individualise`] draws a *second* trait from this list and never from
@@ -1535,57 +2165,146 @@ pub fn plan_for_blend(archetype: Archetype, blend: AttributeBlend, variant: u8) 
 /// the per-archetype form tables exist to prevent.
 pub fn secondary_traits(archetype: Archetype) -> &'static [Accessory] {
     match archetype {
-        Archetype::Beast => &[Accessory::Mane, Accessory::Spurs, Accessory::Ridge],
+        Archetype::Beast => &[
+            Accessory::Mane,
+            Accessory::Spurs,
+            Accessory::Ridge,
+            Accessory::Tusks,
+            Accessory::BackSail,
+            Accessory::Cape,
+            Accessory::HeadHorns,
+        ],
         Archetype::Drake => &[
             Accessory::Ridge,
             Accessory::HipFins,
             Accessory::TailBlades,
             Accessory::Frill,
+            Accessory::BackSail,
+            Accessory::Tusks,
+            Accessory::Cape,
+            Accessory::ShoulderShells,
         ],
         Archetype::Cyborg => &[
             Accessory::Antennae,
             Accessory::Spurs,
             Accessory::Collar,
             Accessory::Ridge,
+            Accessory::Pauldrons,
+            Accessory::HipPlates,
+            Accessory::SensorRing,
+            Accessory::ShoulderShells,
         ],
-        Archetype::Holy => &[Accessory::Frill, Accessory::Collar, Accessory::HipFins],
+        Archetype::Holy => &[
+            Accessory::Frill,
+            Accessory::Collar,
+            Accessory::HipFins,
+            Accessory::Pauldrons,
+            Accessory::Cape,
+            Accessory::HeadHorns,
+        ],
         Archetype::Aqua => &[
             Accessory::HipFins,
             Accessory::Spurs,
             Accessory::Frill,
             Accessory::Collar,
+            Accessory::BackSail,
+            Accessory::Shell,
+            Accessory::ShoulderShells,
+            Accessory::SensorRing,
         ],
-        Archetype::Cervid => &[Accessory::Mane, Accessory::Frill, Accessory::Collar],
+        Archetype::Cervid => &[
+            Accessory::Mane,
+            Accessory::Frill,
+            Accessory::Collar,
+            Accessory::Tusks,
+            Accessory::HeadHorns,
+            Accessory::Cape,
+        ],
         Archetype::Machine => &[
             Accessory::Spurs,
             Accessory::Antennae,
             Accessory::Collar,
             Accessory::Ridge,
+            Accessory::Pauldrons,
+            Accessory::HipPlates,
+            Accessory::SensorRing,
+            Accessory::ShoulderShells,
         ],
         Archetype::Alien => &[
             Accessory::Frill,
             Accessory::Ridge,
             Accessory::HipFins,
             Accessory::Collar,
+            Accessory::Shell,
+            Accessory::Tusks,
+            Accessory::SensorRing,
+            Accessory::Cape,
         ],
-        Archetype::Avian => &[Accessory::Frill, Accessory::TailBlades, Accessory::Collar],
+        Archetype::Avian => &[
+            Accessory::Frill,
+            Accessory::TailBlades,
+            Accessory::Collar,
+            Accessory::Tusks,
+            Accessory::HipPlates,
+            Accessory::Cape,
+            Accessory::HeadHorns,
+        ],
         Archetype::Insect => &[
             Accessory::Ridge,
             Accessory::Spurs,
             Accessory::TailBlades,
             Accessory::Frill,
+            Accessory::Shell,
+            Accessory::HipPlates,
+            Accessory::SensorRing,
+            Accessory::HeadHorns,
         ],
         Archetype::Serpent => &[
             Accessory::Frill,
             Accessory::Ridge,
             Accessory::TailBlades,
             Accessory::Collar,
+            Accessory::BackSail,
+            Accessory::Tusks,
+            Accessory::Cape,
+            Accessory::HeadHorns,
         ],
         Archetype::Golem => &[
             Accessory::Spurs,
             Accessory::Collar,
             Accessory::Ridge,
             Accessory::Frill,
+            Accessory::Shell,
+            Accessory::Pauldrons,
+            Accessory::ShoulderShells,
+            Accessory::HeadHorns,
+        ],
+        Archetype::Amphibian => &[
+            Accessory::Frill,
+            Accessory::HipFins,
+            Accessory::Ridge,
+            Accessory::Tusks,
+            Accessory::Shell,
+            Accessory::SensorRing,
+            Accessory::ShoulderShells,
+        ],
+        Archetype::Flora => &[
+            Accessory::Frill,
+            Accessory::HipFins,
+            Accessory::Ridge,
+            Accessory::BackSail,
+            Accessory::Shell,
+            Accessory::HeadHorns,
+            Accessory::Cape,
+        ],
+        Archetype::Wraith => &[
+            Accessory::Frill,
+            Accessory::Collar,
+            Accessory::Spurs,
+            Accessory::HipPlates,
+            Accessory::BackSail,
+            Accessory::Cape,
+            Accessory::SensorRing,
         ],
     }
 }
@@ -1613,7 +2332,8 @@ fn offset(rng: &mut Rng, value: f64, spread: f64, band: (f64, f64)) -> f64 {
 impl Plan {
     /// Deform this silhouette into *this particular individual*.
     ///
-    /// The variant decides which of the family's twelve silhouettes a seed gets;
+    /// The variant decides which of the family's twenty-four silhouettes a seed
+    /// gets;
     /// that is a lookup table, so twelve seeds in a row can hand back the same
     /// body. This layer is the fix: the seed then moves every proportion, every
     /// posture angle and the limb-segment ratio, and (a bit under half the time)
@@ -1650,7 +2370,7 @@ impl Plan {
         // that rerolls is the difference between "the lean, spotted one" and
         // "the lean, striped one" — the combos multiply without a new form.
         if rng.chance(0.5) {
-            self.marking = rng.below(4) as u8;
+            self.marking = rng.below(u32::from(MARKING_COUNT)) as u8;
         }
 
         // The second trait. `TailBlades` counts here too — the generator grows it
@@ -1663,6 +2383,46 @@ impl Plan {
                 .collect();
             if !available.is_empty() {
                 self.accessory2 = *rng.pick(&available);
+            }
+        }
+        self
+    }
+}
+
+impl Plan {
+    /// One trait borrowed from a *sibling form* of the same family.
+    ///
+    /// A family's six forms are its vocabulary, so an individual may wear one
+    /// trait from a different form of its own family: a mole's ears on a
+    /// sabre's skull, a hydra's tail on a wyrm. Only the attribute-neutral
+    /// knobs move — ears, tail and the form's accessory. The crest stays put
+    /// because it belongs to the element (a Seraph blade, a Feral spike crown)
+    /// and a borrowed crest would erase the attribute's signature.
+    ///
+    /// This does not consume the individual layer's stream: it draws from its
+    /// own seed-derived stream, so a creature that borrows nothing is
+    /// byte-identical to the creature it was before this layer existed.
+    fn borrow_sibling_trait(mut self, archetype: Archetype, form: u8, rng: &mut Rng) -> Self {
+        if !rng.chance(0.18) {
+            return self;
+        }
+        let sibling = (form + 1 + rng.below(u32::from(FORM_COUNT - 1)) as u8) % FORM_COUNT;
+        let other = form_of(archetype, plan(archetype), sibling);
+        match rng.below(3) {
+            0 => {
+                self.ears = other.ears;
+                self.ear_scale = other.ear_scale;
+                self.ear_angle = other.ear_angle;
+            }
+            1 => {
+                self.tail = other.tail;
+                self.tail_scale = other.tail_scale;
+                self.tail_arc = other.tail_arc;
+            }
+            _ => {
+                if other.accessory != Accessory::None {
+                    self.accessory = other.accessory;
+                }
             }
         }
         self
@@ -1690,7 +2450,13 @@ pub fn plan_for_seed_blend(
     seed: u64,
 ) -> Plan {
     let mut rng = Rng::new(mix_seed(seed, &[0x1D1F_D0A1, archetype as u64]));
-    plan_for_blend(archetype, blend, variant).individualise(archetype, &mut rng)
+    // A separate stream for the hybrid draw, so borrowing cannot shift every
+    // other seed-driven decision.
+    let mut traits = Rng::new(mix_seed(seed, &[0x5B1A_D0A7, archetype as u64]));
+    let plan = plan_for_blend(archetype, blend, variant);
+    let form = plan.form;
+    plan.borrow_sibling_trait(archetype, form, &mut traits)
+        .individualise(archetype, &mut rng)
 }
 
 #[cfg(test)]
@@ -1743,14 +2509,19 @@ mod tests {
     }
 
     #[test]
-    fn the_three_builds_are_three_shapes() {
+    fn the_four_builds_are_four_shapes() {
         for archetype in Archetype::ALL {
-            let lean = plan_for(archetype, Attribute::Prism, 1);
             let plain = plan_for(archetype, Attribute::Prism, 0);
+            let lean = plan_for(archetype, Attribute::Prism, 1);
             let broad = plan_for(archetype, Attribute::Prism, 2);
+            let spare = plan_for(archetype, Attribute::Prism, 3);
             assert!(lean.torso_w < plain.torso_w, "leaner trunk");
             assert!(broad.torso_w > plain.torso_w, "broader trunk");
             assert!(lean.leg_len > broad.leg_len, "leggier than broad");
+            assert!(spare.leg_len > plain.leg_len, "the spare build is leggy");
+            assert!(spare.torso_h < plain.torso_h, "on the shortest trunk");
+            assert!(spare.head_w < plain.head_w, "and the smallest skull");
+            assert!(spare.arm_len < plain.arm_len, "with the shortest arms");
             assert_ne!(lean.marking, broad.marking, "and marked differently");
             assert_eq!(plain.marking, 0, "the canonical build is unmarked");
         }
@@ -1791,9 +2562,9 @@ mod tests {
     }
 
     #[test]
-    fn every_archetype_has_five_distinct_forms() {
+    fn every_archetype_has_six_distinct_forms() {
         // The headline of this layer: the same archetype, same attribute, same
-        // build, five different creatures — before a colour is chosen.
+        // build, six different creatures — before a colour is chosen.
         for archetype in Archetype::ALL {
             let mut seen = Vec::new();
             for form in 0..FORM_COUNT {
@@ -1834,8 +2605,8 @@ mod tests {
     #[test]
     fn every_archetype_reshapes_a_limb_ratio_and_a_skull() {
         // A knob that is never set is a knob that does not exist: each
-        // archetype's four forms must actually move the arm/leg segment split
-        // and the muzzle, not only the trunk proportions.
+        // archetype's forms must actually move the arm/leg segment split and
+        // the muzzle, not only the trunk proportions.
         for archetype in Archetype::ALL {
             let forms: Vec<Plan> = (0..FORM_COUNT)
                 .map(|form| plan_for(archetype, Attribute::default(), form * BUILD_COUNT))
@@ -1846,7 +2617,7 @@ mod tests {
                 .collect();
             assert!(
                 splits.len() >= 2,
-                "{}: all four forms share one limb-segment split",
+                "{}: every form shares one limb-segment split",
                 archetype.as_str()
             );
             assert!(
@@ -1889,10 +2660,11 @@ mod tests {
                 .collect();
             assert_eq!(
                 markings.len(),
-                4,
-                "{} only reaches {} of the four markings",
+                usize::from(MARKING_COUNT),
+                "{} only reaches {} of the {} markings",
                 archetype.as_str(),
-                markings.len()
+                markings.len(),
+                MARKING_COUNT
             );
         }
     }
@@ -1968,6 +2740,77 @@ mod tests {
                 different, 0,
                 "{}: eight seeds produced one individual",
                 archetype.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn individuals_may_borrow_a_trait_from_a_sibling_form() {
+        // The hybrid layer: some individuals wear one trait from another of
+        // their family's forms. It must actually fire, and it must never reach
+        // outside the family's own vocabulary.
+        for archetype in Archetype::ALL {
+            let base = plan_for(archetype, Attribute::Prism, 0);
+            let own: Vec<Accessory> = (0..FORM_COUNT)
+                .map(|form| plan_for(archetype, Attribute::default(), form * BUILD_COUNT).accessory)
+                .collect();
+            let mut borrowed = 0;
+            for seed in 0..200u64 {
+                let p = plan_for_seed(archetype, Attribute::Prism, 0, seed);
+                if p.ears != base.ears || p.tail != base.tail || p.accessory != base.accessory {
+                    borrowed += 1;
+                }
+                if p.accessory != Accessory::None {
+                    assert!(
+                        own.contains(&p.accessory) || p.accessory == base.accessory,
+                        "{} seed {seed}: borrowed a foreign accessory",
+                        archetype.as_str()
+                    );
+                }
+            }
+            assert!(
+                borrowed >= 10,
+                "{}: only {borrowed} of 200 individuals borrowed a sibling trait",
+                archetype.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn every_accessory_is_somebodys_furniture() {
+        // An accessory no family can draw is dead code wearing an enum: pin
+        // that the form tables and the second-trait pools between them reach
+        // every non-empty kind.
+        let mut seen: Vec<Accessory> = Vec::new();
+        for archetype in Archetype::ALL {
+            for form in 0..FORM_COUNT {
+                let p = plan_for(archetype, Attribute::default(), form * BUILD_COUNT);
+                seen.push(p.accessory);
+            }
+            seen.extend_from_slice(secondary_traits(archetype));
+        }
+        for kind in [
+            Accessory::Mane,
+            Accessory::Ridge,
+            Accessory::Spurs,
+            Accessory::HipFins,
+            Accessory::Frill,
+            Accessory::Antennae,
+            Accessory::TailBlades,
+            Accessory::Collar,
+            Accessory::Shell,
+            Accessory::Pauldrons,
+            Accessory::Tusks,
+            Accessory::BackSail,
+            Accessory::HipPlates,
+            Accessory::Cape,
+            Accessory::HeadHorns,
+            Accessory::SensorRing,
+            Accessory::ShoulderShells,
+        ] {
+            assert!(
+                seen.contains(&kind),
+                "{kind:?} is in the enum but no family can ever wear it"
             );
         }
     }

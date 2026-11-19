@@ -602,9 +602,9 @@ touched `mod.rs` (three generic capabilities), `wasm_host.rs` (their imports) an
 | `src/rng.rs` | SplitMix64. No dependency, no `getrandom`: `(seed, archetype, tier, attribute)` reproduces the same creature — same bones, same colours — on every machine |
 | `src/skeleton.rs` | the `char-rig/model@1` types, the two mirroring formulas (`atan2(sin θ, −cos θ)` for a chain root, `−θ` for a descendant), `computeWorld`, and the painted-bounds pass |
 | `src/attribute.rs` | `Seraph` / `Prism` / `Feral`: wire spelling, `branch_order` (bond re-orders the three branches — Seraph leading for a devoted creature, Feral for a feral one — and never drops one), the one-line flavour the UI shows, and `AttributeBlend` — the recency-weighted mix of a whole evolution line (linear step weights `1..n`, normalised) plus its percentages, prominence and blended flavour |
-| `src/plan.rs` | The twelve body plans, each with its own five-form table (`beast_form`, `drake_form`, …), then the attribute's mutations, then the seeded build and the seed's individual layer (`individualise`): head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers, posture, accessory geometry and the family's secondary-trait vocabulary (`secondary_traits`) |
+| `src/plan.rs` | The fifteen body plans, each with its own six-form table (`beast_form`, `drake_form`, …), then the attribute's mutations, then the seeded build and the seed's individual layer (`individualise`): head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers, posture, accessory geometry and the family's secondary-trait vocabulary (`secondary_traits`) |
 | `src/generator.rs` | `generate(Spec) -> Manifest`: centerline → tail → right chains → mirror → archetype parts → blended attribute parts → clips → monitor guard → detail trim, plus `validate` / `validate_at(manifest, tier)` and `max_parts(tier)` |
-| `src/evolution.rs` | stage/XP/bond/attribute state, the three-branch table (each branch previews the mix it would produce), and the transitions both ways (generate → host write → host activate; `revert` regenerates the parent from its recorded seed **and attribute**, and from the *truncated* lineage's blend) |
+| `src/evolution.rs` | stage/XP/bond/attribute state plus the **pinned variant** each stage keeps (so a later form/build/marking addition cannot move an existing creature), the three-branch table (each branch previews the mix *and* the body it would produce; a child inherits its parent's variant, mutating only 12% of the time for a new form and 16% for a new build/marking), and the transitions both ways (generate → host write → host activate; `revert` regenerates the parent from its recorded seed, attribute **and variant**, and from the *truncated* lineage's blend) |
 | `src/host.rs` | typed wrappers over the host imports (`write_model`, `activate_model`, `animate`, `emit`, `notify`, `log`, `save_state`, `now_ms`); the one place the guest talks to the app |
 | `src/plugin.rs` | live state: passive XP, the one-shot "ready" notice, the 30 s save, `GET /creature/status`'s body (stage, XP, bond, attribute, rig measurements, branches, history, and the `archetypes` / `attributes` lists the UI builds its pickers from) |
 | `src/routes.rs` | the `ROUTES` table + dispatcher |
@@ -614,9 +614,9 @@ touched `mod.rs` (three generic capabilities), `wasm_host.rs` (their imports) an
 independent choices, so the corpus is large without any of it being hand-drawn:
 
 1. **The archetype** (`src/plan.rs`) picks the body plan — head, ears, crest,
-   arms, legs, tail and trunk, plus proportion multipliers. Twelve of them:
+   arms, legs, tail and trunk, plus proportion multipliers. Fifteen of them:
    beast, drake, cyborg, holy, aqua, cervid, machine, alien, avian, insect,
-   serpent, golem.
+   serpent, golem, amphibian, flora and wraith.
 2. **The attribute mix** (`with_blend`) reshapes that plan: Seraph grows
    wings, a halo and feather vanes; Prism grows crystals, circuit traces and a
    visor band; Feral grows spines, fangs and claws. Structural, not a tint.
@@ -624,21 +624,28 @@ independent choices, so the corpus is large without any of it being hand-drawn:
    see *Attribute blend* below. A body has one crest and one pair of hands, so
    those two choices belong to the loudest attribute; everything additive is
    drawn for every attribute above the visibility threshold.
-3. **The seed** (`Spec::variant`, fifteen values) picks one of five *forms* —
+3. **The seed** (`Spec::variant`, twenty-four values) picks one of six *forms* —
    the archetype's own structural silhouettes (a Beast is classic, lupine,
-   ursine, sabre or mole; a Drake is spiked, a wyrm, a wyvern, serpentine or a
-   finned tide-drake; and so on) — one of three *builds* (lean, canonical,
-   broad) and one of four markings (none / spots / stripes / patches). Each
-   family's fifth form is its *odd one out*: a kind swap rather than another set
-   of proportions (a Machine on legs, a hovering Serpent, a Holy warden in stone
-   greaves, a Golem with carved arm-cannons).
+   ursine, sabre, mole or griffin; a Drake is spiked, a wyrm, a wyvern,
+   serpentine, a finned tide-drake or a legless hydra; and so on) — one of three
+   *builds* (lean, canonical, broad, spare) and one of six markings (none /
+   spots / stripes / patches / bands / dapple). A family's last two forms are its *kind swaps* rather
+   than another set of proportions: the fifth leaves the family's default
+   locomotion or covering behind (a Machine on legs, a hovering Serpent, a Holy
+   warden in stone greaves, a Golem with carved arm-cannons), and the sixth
+   leaves it again in a different direction (a Beast that flies, a Drake with no
+   legs at all, a hovering Machine, a Holy order's winged messenger, an Insect
+   with a raised stinging tail).
 4. **The seed again, continuously** (`Plan::individualise`): the variant is a
    table, so the seed then deforms the chosen silhouette — every proportion and
    posture angle inside the armature's safe band (`BAND_PROPORTION`,
    `BAND_SCALE`, `BAND_SEGMENT`, `BAND_SNOUT`, the same constants the tests
    assert against), a second family trait just under half the time (drawn only
    from `secondary_traits`, so it can never blur two families together), a
-   rerolled marking, and a hue drift on the body and a larger one on the accent.
+   rerolled marking, a hue drift on the body and a larger one on the accent,
+   and — for about one individual in five — one trait (ears, tail or furniture)
+   borrowed from a *sibling form* of the same family, so a mole's ears can sit
+   on a sabre's skull while the family still reads as one animal.
    Two creatures that share a variant are the same *kind* of animal, not the same
    animal.
 
@@ -647,23 +654,28 @@ segment split inside each limb (`arm_segment`/`leg_segment`, a multiply/divide
 pair that keeps the reach and moves the joint), arm and leg stance, muzzle
 stretch (`snout`), tail length and arc, and one accessory drawn as parts (mane,
 dorsal ridge, shoulder spurs, hip fins, jaw frill, second sensor pair, throat
-collar, tail blades). 12 archetypes × 5 forms × 3 builds × 4 markings × 3 attributes is
-2,160 silhouettes before a palette is chosen, and the palette follows the
-attribute as a tint (a fraction, never a replacement).
+collar, tail blades, shell, pauldrons, tusks, back sail, hip plates, cape,
+second horns, sensor ring, shoulder shells). 15
+archetypes × 6 forms × 4 builds × 6 markings × 3 attributes is 6,480
+silhouettes before a palette is chosen, and the palette follows the attribute as
+a tint (a fraction, never a replacement).
 
 Measured with `cargo run --example variety -- 40` (forty seeds per family, at
 one tier and attribute): distinct *structural templates* per family went from 12
-— the ceiling the twelve-variant table imposed — to about 29, and all forty are
-unique in proportion and colour. `examples/digits.rs` dumps one rig per family
+— the ceiling the twelve-variant table imposed — to about 34 (31–37 depending
+on the family), and all forty are unique in proportion and colour. Half of that spread is furniture: the individual
+layer draws a second accessory from the family's own vocabulary just under half
+the time, and each family's pool holds five or six kinds, so the shells, tusks,
+sails, pauldrons and hip plates are worn in every combination the family allows. `examples/digits.rs` dumps one rig per family
 by form index so the form table can be rendered as a contact sheet and eyeballed.
 
 **The forms are per-archetype functions, not a template.** `plan_for` composes
 `plan(archetype)` → `<archetype>_form(plan, form)` → `with_blend` →
-`with_build`, and each of the twelve form tables in `src/plan.rs` returns the
+`with_build`, and each of the fifteen form tables in `src/plan.rs` returns the
 plan it was handed with only that archetype's numbers changed. Nothing is shared
 between two archetypes' forms, so a Beast's mane can never appear on a Drake by
 accident, and `plan.rs`'s own tests assert both that each archetype has five
-distinct forms and that the twelve archetypes stay distinct *at every form
+distinct forms and that the fifteen archetypes stay distinct *at every form
 index*. `generator_tests.rs` adds the end-to-end version: forty seeds of one
 family have to yield at least eighteen distinct templates and forty distinct
 bind poses.

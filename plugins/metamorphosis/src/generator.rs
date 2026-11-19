@@ -63,10 +63,16 @@ pub enum Archetype {
     Serpent,
     /// Golem: carved stone, blunt fists, heavy stance.
     Golem,
+    /// Amphibian: a wide flat body on short splayed legs, huge jaw, warts.
+    Amphibian,
+    /// Flora: a tall thin stalk under a heavy cap, vines and a root cluster.
+    Flora,
+    /// Wraith: hooded, tattered, no feet at all — it floats.
+    Wraith,
 }
 
 impl Archetype {
-    pub const ALL: [Archetype; 12] = [
+    pub const ALL: [Archetype; 15] = [
         Archetype::Beast,
         Archetype::Drake,
         Archetype::Cyborg,
@@ -79,6 +85,9 @@ impl Archetype {
         Archetype::Insect,
         Archetype::Serpent,
         Archetype::Golem,
+        Archetype::Amphibian,
+        Archetype::Flora,
+        Archetype::Wraith,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -95,6 +104,9 @@ impl Archetype {
             Archetype::Insect => "insect",
             Archetype::Serpent => "serpent",
             Archetype::Golem => "golem",
+            Archetype::Amphibian => "amphibian",
+            Archetype::Flora => "flora",
+            Archetype::Wraith => "wraith",
         }
     }
 
@@ -112,6 +124,9 @@ impl Archetype {
             "insect" | "bug" => Some(Archetype::Insect),
             "serpent" | "snake" => Some(Archetype::Serpent),
             "golem" | "rock" => Some(Archetype::Golem),
+            "amphibian" | "frog" | "toad" => Some(Archetype::Amphibian),
+            "flora" | "plant" | "tree" => Some(Archetype::Flora),
+            "wraith" | "ghost" => Some(Archetype::Wraith),
             _ => None,
         }
     }
@@ -222,7 +237,8 @@ impl<'de> Deserialize<'de> for Tier {
 /// Rookie are different *rigs*, so the attribute has to reach the generator —
 /// and so does the lineage `blend`, because a stage is shaped by every attribute
 /// its line has been, not just the one it is now.
-/// The variant is the seeded build (lean / canonical / broad) and is derived
+/// The variant is the seeded build (lean / canonical / broad / spare) and is
+/// derived
 /// from the seed so it costs the caller nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Spec {
@@ -239,6 +255,14 @@ pub struct Spec {
     /// `PartialEq` and not `Eq`: a blend is three floats.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blend: Option<AttributeBlend>,
+    /// The variant this stage **is**, when something already decided it.
+    ///
+    /// `None` derives it from the seed, which is what a hatchling and every
+    /// pre-persistence save do. Once a stage exists, the plugin pins the number
+    /// in its save: adding forms or builds changes `VARIANT_COUNT`, and the
+    /// derived number changes with it — a pinned one cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_variant: Option<u8>,
 }
 
 impl Spec {
@@ -258,6 +282,7 @@ impl Spec {
             tier,
             attribute,
             blend: None,
+            pinned_variant: None,
         }
     }
 
@@ -278,7 +303,14 @@ impl Spec {
             tier,
             attribute,
             blend: Some(blend),
+            pinned_variant: None,
         }
+    }
+
+    /// Pin the variant: this stage keeps exactly this form/build/marking.
+    pub fn with_variant(mut self, variant: u8) -> Self {
+        self.pinned_variant = Some(variant);
+        self
     }
 
     /// The mix this rig is generated from; falls back to the single attribute,
@@ -297,6 +329,9 @@ impl Spec {
         // it easier to hit than `% 3` did. One more avalanche step (rather than
         // a bare modulo of the mixed word) keeps small seeds — the ones people
         // type — spread across the forms instead of clustering on one.
+        if let Some(pinned) = self.pinned_variant {
+            return pinned % plan::VARIANT_COUNT;
+        }
         let mut rng = Rng::new(mix_seed(self.seed, &[0x5EED]));
         rng.below(u32::from(plan::VARIANT_COUNT)) as u8
     }
@@ -467,6 +502,33 @@ fn base_palette(archetype: Archetype) -> Palette {
             eye: "#ffe9b0".into(),
             pupil: "#241f18".into(),
             metal: "#b3aa9c".into(),
+        },
+        Archetype::Amphibian => Palette {
+            body: "#5f8f4e".into(),
+            body_dark: "#2f4a29".into(),
+            accent: "#f0a63c".into(),
+            glow: "#c8f58a".into(),
+            eye: "#f7ffd9".into(),
+            pupil: "#111c09".into(),
+            metal: "#8e9a7a".into(),
+        },
+        Archetype::Flora => Palette {
+            body: "#4f8f3f".into(),
+            body_dark: "#274d21".into(),
+            accent: "#ef6fa8".into(),
+            glow: "#ffe27a".into(),
+            eye: "#fff6ea".into(),
+            pupil: "#1c1208".into(),
+            metal: "#9aa782".into(),
+        },
+        Archetype::Wraith => Palette {
+            body: "#5b5a78".into(),
+            body_dark: "#2b2a3d".into(),
+            accent: "#7fe3e0".into(),
+            glow: "#b6f6ff".into(),
+            eye: "#eafcff".into(),
+            pupil: "#0b0d18".into(),
+            metal: "#8d8ca0".into(),
         },
     }
 }
@@ -1576,6 +1638,287 @@ fn accessory_parts(pal: &Palette, dims: Dims, plan: Plan) -> (&'static str, Vec<
             ],
         ),
 
+        // A domed carapace that swallows the trunk — the shell is the outline.
+        Accessory::Shell => (
+            "torso",
+            vec![
+                Part::ellipse(
+                    "shell",
+                    &pal.body_dark,
+                    [round4(w * 1.46), round4(h * 0.98)],
+                    [0.0, round4(-h * 0.2)],
+                    0,
+                    None,
+                ),
+                Part::ellipse(
+                    "shell_rim",
+                    &pal.metal,
+                    [round4(w * 1.5), round4(h * 0.18)],
+                    [0.0, round4(h * 0.26)],
+                    1,
+                    None,
+                ),
+            ],
+        ),
+
+        // Heavy plates over each shoulder: bulk where spurs are points.
+        Accessory::Pauldrons => (
+            "torso",
+            vec![
+                Part::ellipse(
+                    "pauldron_l",
+                    &pal.metal,
+                    [round4(w * 0.5), round4(h * 0.32)],
+                    [round4(-w * 0.5), round4(-h * 0.34)],
+                    6,
+                    None,
+                )
+                .turned(round4(-0.24)),
+                Part::ellipse(
+                    "pauldron_r",
+                    &pal.metal,
+                    [round4(w * 0.5), round4(h * 0.32)],
+                    [round4(w * 0.5), round4(-h * 0.34)],
+                    6,
+                    None,
+                )
+                .turned(round4(0.24)),
+                Part::circle(
+                    "pauldron_stud",
+                    &pal.glow,
+                    round4(w * 0.12),
+                    [0.0, round4(-h * 0.34)],
+                    7,
+                    None,
+                ),
+            ],
+        ),
+
+        // Tusks: two long curves off the jaw, longer than any fang.
+        Accessory::Tusks => (
+            "head",
+            vec![
+                Part::ellipse(
+                    "tusk_l",
+                    &pal.accent,
+                    [round4(hw * 0.14), round4(hh * 0.46)],
+                    [round4(-hw * 0.3), round4(hh * 0.5)],
+                    4,
+                    None,
+                )
+                .turned(round4(-0.26)),
+                Part::ellipse(
+                    "tusk_r",
+                    &pal.accent,
+                    [round4(hw * 0.14), round4(hh * 0.46)],
+                    [round4(hw * 0.3), round4(hh * 0.5)],
+                    4,
+                    None,
+                )
+                .turned(round4(0.26)),
+            ],
+        ),
+
+        // One continuous sail down the spine, rather than three plates.
+        Accessory::BackSail => (
+            "torso",
+            vec![
+                // A fan, not one blade: the head sits directly over the
+                // spine, so a straight fin is occluded to a nub. The two
+                // swept wings clear the shoulders either side of it.
+                Part::ellipse(
+                    "sail_l",
+                    &pal.accent,
+                    [round4(w * 0.48), round4(h * 0.2)],
+                    [round4(-w * 0.4), round4(-h * 0.5)],
+                    Z_HEIGHT,
+                    None,
+                )
+                .turned(round4(-0.55)),
+                Part::ellipse(
+                    "sail_r",
+                    &pal.accent,
+                    [round4(w * 0.48), round4(h * 0.2)],
+                    [round4(w * 0.4), round4(-h * 0.5)],
+                    Z_HEIGHT,
+                    None,
+                )
+                .turned(round4(0.55)),
+                Part::ellipse(
+                    "sail_web",
+                    &pal.body_dark,
+                    [round4(w * 0.26), round4(h * 0.7)],
+                    [0.0, round4(-h * 0.62)],
+                    Z_HEIGHT - 1,
+                    None,
+                ),
+            ],
+        ),
+
+        // Armour on the hips: straight slabs where the fins sweep.
+        Accessory::HipPlates => (
+            "pelvis",
+            vec![
+                Part::ellipse(
+                    "hipplate_l",
+                    &pal.metal,
+                    [round4(w * 0.52), round4(h * 0.26)],
+                    [round4(-w * 0.5), round4(h * 0.04)],
+                    5,
+                    None,
+                )
+                .turned(round4(-0.32)),
+                Part::ellipse(
+                    "hipplate_r",
+                    &pal.metal,
+                    [round4(w * 0.52), round4(h * 0.26)],
+                    [round4(w * 0.5), round4(h * 0.04)],
+                    5,
+                    None,
+                )
+                .turned(round4(0.32)),
+            ],
+        ),
+
+        // A cloak falling either side of the trunk, with a hem that catches the
+        // accent. Behind the body, so it reads as cloth and not as a shell.
+        Accessory::Cape => (
+            "torso",
+            vec![
+                // One sheet behind the whole trunk. Two side panels read as
+                // detached blobs: on a body this wide the cloak has to be a
+                // single silhouette that hangs *below* the hips to be seen.
+                Part::ellipse(
+                    "cape",
+                    &pal.body_dark,
+                    [round4(w * 1.04), round4(h * 1.6)],
+                    [0.0, round4(h * 0.45)],
+                    0,
+                    None,
+                ),
+                Part::ellipse(
+                    "cape_trim",
+                    &pal.accent,
+                    [round4(w * 0.98), 9.0],
+                    [0.0, round4(h * 1.22)],
+                    1,
+                    None,
+                ),
+            ],
+        ),
+
+        // A second, smaller pair of horns under the main crest.
+        Accessory::HeadHorns => (
+            "head",
+            vec![
+                Part::ellipse(
+                    "horn2_l",
+                    &pal.accent,
+                    [round4(hw * 0.13), round4(hh * 0.42)],
+                    [round4(-hw * 0.36), round4(-hh * 0.5)],
+                    Z_HEIGHT,
+                    None,
+                )
+                .turned(round4(-0.42)),
+                Part::ellipse(
+                    "horn2_r",
+                    &pal.accent,
+                    [round4(hw * 0.13), round4(hh * 0.42)],
+                    [round4(hw * 0.36), round4(-hh * 0.5)],
+                    Z_HEIGHT,
+                    None,
+                )
+                .turned(round4(0.42)),
+            ],
+        ),
+
+        // Sensor lights orbiting the skull — five points, not a ring.
+        Accessory::SensorRing => (
+            "head",
+            vec![
+                Part::circle(
+                    "sensor",
+                    &pal.glow,
+                    round4(hw * 0.11),
+                    [round4(-hw * 0.62), round4(-hh * 0.34)],
+                    Z_HEIGHT,
+                    None,
+                ),
+                Part::circle(
+                    "sensor",
+                    &pal.glow,
+                    round4(hw * 0.09),
+                    [round4(hw * 0.62), round4(-hh * 0.34)],
+                    Z_HEIGHT,
+                    None,
+                ),
+                Part::circle(
+                    "sensor",
+                    &pal.glow,
+                    round4(hw * 0.075),
+                    [0.0, round4(-hh * 0.94)],
+                    Z_HEIGHT,
+                    None,
+                ),
+                Part::circle(
+                    "sensor",
+                    &pal.metal,
+                    round4(hw * 0.065),
+                    [round4(-hw * 0.5), round4(hh * 0.3)],
+                    Z_HEIGHT,
+                    None,
+                ),
+                Part::circle(
+                    "sensor",
+                    &pal.metal,
+                    round4(hw * 0.065),
+                    [round4(hw * 0.5), round4(hh * 0.3)],
+                    Z_HEIGHT,
+                    None,
+                ),
+            ],
+        ),
+
+        // Rounded caps over each shoulder — softer and further back than the
+        // metal pauldrons, so the two read as different armour.
+        Accessory::ShoulderShells => (
+            "torso",
+            vec![
+                Part::ellipse(
+                    "shoulder_shell_l",
+                    &pal.body_dark,
+                    [round4(w * 0.36), round4(h * 0.27)],
+                    [round4(-w * 0.46), round4(-h * 0.36)],
+                    0,
+                    None,
+                ),
+                Part::ellipse(
+                    "shoulder_shell_r",
+                    &pal.body_dark,
+                    [round4(w * 0.36), round4(h * 0.27)],
+                    [round4(w * 0.46), round4(-h * 0.36)],
+                    0,
+                    None,
+                ),
+                Part::ellipse(
+                    "shoulder_rim_l",
+                    &pal.accent,
+                    [round4(w * 0.24), round4(h * 0.1)],
+                    [round4(-w * 0.46), round4(-h * 0.42)],
+                    1,
+                    None,
+                ),
+                Part::ellipse(
+                    "shoulder_rim_r",
+                    &pal.accent,
+                    [round4(w * 0.24), round4(h * 0.1)],
+                    [round4(w * 0.46), round4(-h * 0.42)],
+                    1,
+                    None,
+                ),
+            ],
+        ),
+
         // Drawn per tail segment in `push_tail`.
         Accessory::TailBlades => ("tail", Vec::new()),
     }
@@ -1607,11 +1950,14 @@ pub fn max_parts(tier: Tier) -> usize {
 ///
 /// Structural and limb parts are deliberately absent from this table: they are
 /// not decoration, so no blend can ever trim them.
-const DECORATION: [(&str, Option<Attribute>); 38] = [
+const DECORATION: [(&str, Option<Attribute>); 62] = [
     ("spot", None),
     ("stripe", None),
     ("patch", None),
     ("patch_l", None),
+    ("band", None),
+    ("dapple", None),
+    ("dapple_alt", None),
     ("patch_r", None),
     ("seam", None),
     ("barrel_ring", None),
@@ -1635,6 +1981,27 @@ const DECORATION: [(&str, Option<Attribute>); 38] = [
     ("tail_blade", None),
     ("mane", None),
     ("ridge", None),
+    ("shell_rim", None),
+    ("shell", None),
+    ("sail_web", None),
+    ("sail_l", None),
+    ("sail_r", None),
+    ("pauldron_stud", None),
+    ("pauldron_l", None),
+    ("pauldron_r", None),
+    ("tusk_l", None),
+    ("tusk_r", None),
+    ("hipplate_l", None),
+    ("hipplate_r", None),
+    ("cape_trim", None),
+    ("cape", None),
+    ("horn2_l", None),
+    ("horn2_r", None),
+    ("sensor", None),
+    ("shoulder_rim_l", None),
+    ("shoulder_rim_r", None),
+    ("shoulder_shell_l", None),
+    ("shoulder_shell_r", None),
     ("halo_in", Some(Attribute::Seraph)),
     ("circuit2_l", Some(Attribute::Prism)),
     ("circuit2_r", Some(Attribute::Prism)),
@@ -2326,6 +2693,46 @@ fn aspect_torso_parts(
                 4,
                 None,
             ));
+        }
+        4 => {
+            // Bands: three narrow hoops across the trunk, so the creature reads
+            // as ringed rather than speckled.
+            for index in 0..3 {
+                parts.push(Part::ellipse(
+                    "band",
+                    &pal.accent,
+                    [round4(w * 0.62 - index as f64 * w * 0.03), 5.0],
+                    [0.0, round4(-h * 0.36 + index as f64 * h * 0.3)],
+                    4,
+                    None,
+                ));
+            }
+        }
+        5 => {
+            // Dapple: many small marks of both paints, scattered down one flank
+            // and across the belly — a coat, not a trio of dots.
+            let scatter = [
+                (-0.22, -0.34, 0.140),
+                (0.16, -0.28, 0.105),
+                (-0.05, -0.16, 0.125),
+                (0.24, -0.06, 0.095),
+                (-0.26, 0.02, 0.115),
+                (0.10, 0.12, 0.130),
+                (-0.12, 0.26, 0.095),
+                (0.21, 0.33, 0.085),
+            ];
+            for (index, (dx, dy, r)) in scatter.iter().enumerate() {
+                // Two paints, alternating: a coat has more than one tone in it,
+                // and a single flat colour would read as a rash rather than fur.
+                parts.push(Part::circle(
+                    if index % 2 == 0 { "dapple" } else { "dapple_alt" },
+                    if index % 2 == 0 { &pal.accent } else { &pal.glow },
+                    round4(w * r),
+                    [round4(w * dx), round4(h * dy)],
+                    5,
+                    None,
+                ));
+            }
         }
         _ => {}
     }

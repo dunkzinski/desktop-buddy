@@ -332,7 +332,7 @@ only the centerline and the `*_r` chains are authored, and the `*_l` twins are
 computed with `atan2(sin θ, −cos θ)` (chain roots) and `−θ` (descendants).
 
 Colour is the *last* thing that varies. Each archetype is a **body plan**
-(`src/plan.rs`), not a palette: twelve silhouettes that differ in trunk, head,
+(`src/plan.rs`), not a palette: fifteen silhouettes that differ in trunk, head,
 crest, limbs and tail before a single colour is chosen.
 
 | archetype | reads as | plan |
@@ -349,6 +349,9 @@ crest, limbs and tail before a single colour is chosen.
 | `insect` | bug | domed shell, antennae, two thin leg pairs, stub abdomen |
 | `serpent` | snake | long jaw, no legs at all — a stacked coil — and a tentacle tail |
 | `golem` | rock creature | carved slab torso, blunt stone fists, cracked stone legs |
+| `amphibian` | frog | wide low body and jaw, no neck, short limbs braced out to the sides |
+| `flora` | plant | a thin stalk under a heavy cap, vines for arms, a root cluster for feet |
+| `wraith` | ghost | hooded robe that never touches the ground, clawed sleeves, tattered hem |
 
 On top of the plan, the **attribute** reshapes the body — that is why the three
 branches off any stage are three different creatures rather than one creature in
@@ -360,9 +363,10 @@ three colours:
 | `Prism` | crystal growths, circuit traces, a visor band, floating bits | crystalline, plated, digital |
 | `Feral` | back spines, fangs, toxic drips, clawed hands | fanged, spiked, toxic |
 
-…today's plan-first, **individuated** creature: the seed picks one of **fifteen
-variants** (one of the archetype's five *forms*, one of three builds — lean /
-canonical / broad — plus a marking), and then a per-seed **individual layer**
+…today's plan-first, **individuated** creature: the seed picks one of **twenty-four
+variants** (one of the archetype's six *forms*, one of four builds — lean /
+canonical / broad / spare — plus one of six markings), and then a per-seed
+**individual layer**
 deforms that variant so no two seeds share a body.
 
 A *form* is the archetype's own structural silhouette, and it moves what reads at
@@ -370,10 +374,14 @@ a glance: ear and crest scale and sweep, overall limb length *and* where each
 limb bends (upper arm vs forearm, thigh vs shin), arm and leg stance, muzzle
 length, tail length and arc, and one accessory hung on the body (a mane, a
 dorsal ridge, shoulder spurs, hip fins, a jaw frill, a second sensor pair, a
-throat collar or tail blades). The fifth form of each family is its **odd one
-out** — a kind swap rather than another set of proportions: a Machine that walks
-on legs, a Serpent that hovers instead of coiling, a Holy warden in stone
-greaves, a Golem with carved arm-cannons.
+throat collar, tail blades, a shell, pauldrons, tusks, a back sail, hip
+plates, a cape, a second pair of horns, a sensor ring or shoulder shells). The last two forms of each family are its **kind swaps** rather than
+another set of proportions: the fifth leaves the family's usual stance or
+covering behind (a Machine that walks on legs, a Serpent that hovers instead of
+coiling, a Holy warden in stone greaves, a Golem with carved arm-cannons), and
+the sixth leaves it again in another direction — a Beast that flies on a
+griffin's wings, a Drake with no legs at all, a hovering Machine, a Holy
+order's winged messenger, an Insect with a raised stinging tail.
 
 The **individual layer** (`Plan::individualise`) is what the seed alone decides,
 and it is why two creatures of the same form are the same *kind* of animal
@@ -385,20 +393,23 @@ rather than the same animal. It
 * grows a **second family trait** just under half the time — a mane *and* a
   dorsal ridge — drawn only from that archetype's own accessory vocabulary, so
   individuality can never blur two families together;
+* borrows **one trait from a sibling form** for about one individual in five —
+  a mole's ears on a sabre's skull, a hydra's tail on a wyrm — drawn from the
+  same family's own form table, so a hybrid is always still in character;
 * rerolls the marking half the time, decoupling pattern from build;
 * turns the **hue**: a seeded drift on the body and a larger one on the accent,
   because two littermates are not one animal in the same paint.
 
-That is **2,160 base silhouettes** (12 families x 5 forms x 3 builds x 4 markings
+That is **6,480 base silhouettes** (15 families x 6 forms x 4 builds x 6 markings
 x 3 attributes) before the individual layer — which is continuous, not a table —
 is applied. Measured over 40 seeds per family, distinct structural templates per
-family went from 12 to ~29, and every one of those 40 creatures is unique in
+family went from 12 to ~34, and every one of those 40 creatures is unique in
 proportion and colour (`cargo run --example variety -- 40`).
 
-Each archetype's five forms live in **its own table** in `src/plan.rs`
+Each archetype's six forms live in **its own table** in `src/plan.rs`
 (`beast_form`, `drake_form`, …). They are not a shared template with per-body
 numbers: a form only ever returns the plan it was handed, so one archetype's
-mutations cannot reach another's and the twelve body plans stay twelve.
+mutations cannot reach another's and the fifteen body plans stay fifteen.
 
 **Stage one is already the creature.** The archetype's signature — crest, ears,
 gills, treads, coil, wing buds — is present from `Fresh`, scaled small, instead
@@ -429,13 +440,19 @@ avatar through the same code path as `POST /model`, and plays the new rig's
 `attribute_blend`: the percentages, the blended traits and the lineage they came
 from, which the **Metamorphosis** card shows as chips and a stacked bar (each branch
 previews the mix it would produce). `POST /revert` walks the same path
-**backwards**: every history entry remembers the parent's seed *and* attribute,
-and generation is deterministic, so a rewind brings back the exact earlier
-creature — and its earlier attribute mix — even across a change of attribute (XP
-is kept, so it can grow straight back). Determinism is per **generator version**:
-changing the form table or the individual layer (as the variety pass did) means
-a creature generated before the change rebuilds with the new rules — its seed is
-unchanged, its body is not. The
+**backwards**: every history entry remembers the parent's seed, attribute *and*
+pinned variant, and generation is deterministic, so a rewind brings back the
+exact earlier creature — and its earlier attribute mix — even across a change of
+attribute (XP is kept, so it can grow straight back).
+
+**A creature's body is pinned, not recomputed.** Each stage stores its variant —
+form, build and marking — in `plugins/metamorphosis.state.json`, so adding forms,
+builds or markings later moves nothing that already exists: the only thing that
+can change a body is an evolution you trigger. (A save written before pinning
+existed has no variant; it derives one from its seed once and pins that.) And
+evolution is continuity first: a child **keeps its parent's body**, with a rare
+seeded mutation — **12%** a new form (a real metamorphosis: the legs can change
+kind) and **16%** a new build or marking inside the same form. The
 **Metamorphosis** card in the control panel does all of it by hand (that button,
 like **Survival**, appears only while the plugin is `active` in `GET /plugins`),
 and the *New*

@@ -25,6 +25,10 @@ pub struct Branch {
     pub label: String,
     pub slug: String,
     pub seed: u64,
+    /// The body this branch would install, decided now so the preview and the
+    /// transition cannot disagree — and so a child inherits its parent's form
+    /// unless a mutation fires.
+    pub variant: u8,
     pub xp_required: u64,
     /// What this attribute does to the body, so the choice is legible before it
     /// is made ("crystalline, plated, digital").
@@ -57,6 +61,9 @@ pub struct HistoryEntry {
     pub at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_seed: Option<u64>,
+    /// The parent stage's pinned variant, so a rewind restores its exact body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_variant: Option<u8>,
     #[serde(default = "default_attribute")]
     pub from_attribute: Attribute,
     /// The attribute this transition **chose** — the child's own attribute.
@@ -88,6 +95,12 @@ pub struct Metamorphosis {
     pub slug: String,
     #[serde(default)]
     pub generation: u32,
+    /// The live stage's variant, pinned the moment the creature is created or
+    /// evolves. `None` only for a save written before this existed (or a
+    /// creature made by a host that did not pin), where it is derived from the
+    /// seed once and then stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<u8>,
     #[serde(default)]
     pub history: Vec<HistoryEntry>,
     #[serde(default)]
@@ -122,6 +135,34 @@ impl Default for Metamorphosis {
     }
 }
 
+/// The body a child stage gets from its parent.
+///
+/// Continuity is the rule and metamorphosis is the exception: a creature keeps
+/// its parent's variant — the same form, the same build, the same marking — so
+/// it grows up rather than re-rolling into a stranger. Two rare, seeded events
+/// break that:
+///
+/// * **12%** a new *form*: a real metamorphosis (the legs can change kind);
+/// * **16%** a new build or marking inside the parent's form: the same animal,
+///   differently proportioned and patterned.
+///
+/// The draw comes from the *child's* seed, so it is reproducible and cannot be
+/// rerolled by re-previewing the same branch.
+pub fn inherited_variant(parent: u8, child_seed: u64) -> u8 {
+    let mut rng = crate::rng::Rng::new(mix_seed(child_seed, &[0x7A1E_57]));
+    if rng.chance(0.12) {
+        return rng.below(u32::from(crate::plan::VARIANT_COUNT)) as u8;
+    }
+    let parent = parent % crate::plan::VARIANT_COUNT;
+    if rng.chance(0.16) {
+        // Keep the form, redraw the build (and with it the marking).
+        let form = (parent / crate::plan::BUILD_COUNT) % crate::plan::FORM_COUNT;
+        let build = rng.below(u32::from(crate::plan::BUILD_COUNT)) as u8;
+        return form * crate::plan::BUILD_COUNT + build;
+    }
+    parent
+}
+
 /// XP needed to leave `tier` (i.e. to reach `tier.next()`).
 pub fn xp_required(tier: Tier) -> u64 {
     match tier {
@@ -150,6 +191,7 @@ impl Metamorphosis {
             attribute,
             slug: spec.slug(),
             generation: 0,
+            variant: Some(spec.variant()),
             history: Vec::new(),
             last_evolved_ms: 0,
             installed: false,
@@ -194,6 +236,14 @@ impl Metamorphosis {
         AttributeBlend::from_lineage(&lineage)
     }
 
+    /// The live stage's variant: pinned when it was created or evolved, and
+    /// derived from the seed only for a save that predates pinning.
+    pub fn variant(&self) -> u8 {
+        self.variant.unwrap_or_else(|| {
+            Spec::with_attribute(self.seed, self.archetype, self.tier, self.attribute).variant()
+        })
+    }
+
     /// The manifest for the current stage.
     pub fn spec(&self) -> Spec {
         Spec::with_blend(
@@ -203,6 +253,7 @@ impl Metamorphosis {
             self.attribute,
             self.blend(),
         )
+        .with_variant(self.variant())
     }
 
     pub fn manifest(&self) -> generator::Manifest {
@@ -239,7 +290,9 @@ impl Metamorphosis {
                     self.generation as u64 + 1,
                 ],
             );
-            let spec = Spec::with_attribute(seed, self.archetype, next, attribute);
+            let variant = inherited_variant(self.variant(), seed);
+            let spec =
+                Spec::with_attribute(seed, self.archetype, next, attribute).with_variant(variant);
             // The mix this branch would produce, computed exactly as the
             // transition itself will compute it.
             let blend = self.preview_blend(attribute);
@@ -249,6 +302,7 @@ impl Metamorphosis {
                 label: spec.label(),
                 slug: spec.slug(),
                 seed,
+                variant,
                 xp_required: xp_required(self.tier),
                 flavour: attribute.flavour().to_string(),
                 blend,
@@ -308,7 +362,8 @@ impl Metamorphosis {
             chosen.stage,
             chosen.attribute,
             blend,
-        );
+        )
+        .with_variant(chosen.variant);
         let manifest = generator::generate(&spec);
         let report = generator::validate_at(&manifest, chosen.stage)?;
 
@@ -319,8 +374,10 @@ impl Metamorphosis {
         let previous = self.tier;
         let previous_seed = self.seed;
         let previous_attribute = self.attribute;
+        let previous_variant = self.variant();
         self.tier = chosen.stage;
         self.seed = chosen.seed;
+        self.variant = Some(chosen.variant);
         self.attribute = chosen.attribute;
         self.slug = spec.slug();
         self.generation = self.generation.saturating_add(1);
@@ -333,6 +390,7 @@ impl Metamorphosis {
             slug: self.slug.clone(),
             at_ms: self.last_evolved_ms,
             from_seed: Some(previous_seed),
+            from_variant: Some(previous_variant),
             from_attribute: previous_attribute,
             to_attribute: Some(chosen.attribute),
         });
@@ -398,19 +456,25 @@ impl Metamorphosis {
         // lineage, exactly the prefix the parent was built from on the way up.
         let keep = self.history.len() - steps;
         let blend = AttributeBlend::from_lineage(&lineage[..=keep]);
+        let parent_variant = entry.from_variant.unwrap_or_else(|| {
+            Spec::with_attribute(parent_seed, self.archetype, entry.from, entry.from_attribute)
+                .variant()
+        });
         let spec = Spec::with_blend(
             parent_seed,
             self.archetype,
             entry.from,
             entry.from_attribute,
             blend,
-        );
+        )
+        .with_variant(parent_variant);
         let manifest = generator::generate(&spec);
         let report = generator::validate_at(&manifest, entry.from)?;
         host::write_model(&spec.slug(), &serde_json::to_value(&manifest).unwrap_or_default())?;
 
         self.tier = entry.from;
         self.seed = parent_seed;
+        self.variant = Some(parent_variant);
         self.attribute = entry.from_attribute;
         self.slug = spec.slug();
         self.generation = self.generation.saturating_sub(steps as u32);
@@ -581,6 +645,75 @@ mod tests {
                 seen.dedup();
                 assert_eq!(seen.len(), 3, "bond {bond} from {attribute:?} offered {seen:?}");
             }
+        }
+    }
+
+    #[test]
+    fn a_child_inherits_its_parents_body_and_mutates_rarely() {
+        // Continuity is the rule: a creature grows up, it does not re-roll into
+        // a stranger. A mutation is the exception, and it must stay rare.
+        let mut kept = 0;
+        let mut changed = 0;
+        for seed in 0..2048u64 {
+            let parent = 7u8;
+            let child = inherited_variant(parent, seed);
+            assert!(
+                child < crate::plan::VARIANT_COUNT,
+                "seed {seed}: variant {child} is out of range"
+            );
+            if child == parent {
+                kept += 1;
+            } else {
+                changed += 1;
+            }
+        }
+        assert!(kept > 1400, "only {kept} of 2048 children kept the body");
+        assert!(changed > 200, "only {changed} of 2048 mutated");
+    }
+
+    #[test]
+    fn a_child_keeps_the_parents_form_unless_it_mutates() {
+        // Same form = the same silhouette. A build/marking swap is the quiet
+        // mutation; a form change is the loud one. Both must be rare.
+        let parent = 3u8; // form 0, build 3
+        let mut same_form = 0;
+        for seed in 0..1024u64 {
+            let child = inherited_variant(parent, seed);
+            let form = (child / crate::plan::BUILD_COUNT) % crate::plan::FORM_COUNT;
+            if form == 0 {
+                same_form += 1;
+            }
+        }
+        assert!(
+            same_form > 800,
+            "only {same_form} of 1024 children kept the form"
+        );
+    }
+
+    #[test]
+    fn a_pinned_variant_survives_a_save_and_reload() {
+        // The whole point: a plugin update that adds forms or builds must not
+        // move a creature that already exists.
+        let mut state = Metamorphosis::new(99, Archetype::Alien, Attribute::Feral);
+        let pinned = state.variant();
+        state.metamorphose(None, true).expect("evolve");
+        let evolved = state.variant();
+        let json = serde_json::to_string(&state).expect("serialise");
+        let restored: Metamorphosis = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(restored.variant(), evolved);
+        assert_eq!(restored.spec().variant(), evolved);
+        // And the parent's pin is in the history, for a rewind.
+        assert_eq!(restored.history.last().unwrap().from_variant, Some(pinned));
+    }
+
+    #[test]
+    fn evolving_installs_the_branch_it_previewed() {
+        let mut state = Metamorphosis::new(1234, Archetype::Flora, Attribute::Prism);
+        for _ in 0..3 {
+            let branch = state.branches().into_iter().next().expect("a branch");
+            state.metamorphose(Some(0), true).expect("evolve");
+            assert_eq!(state.variant(), branch.variant);
+            assert_eq!(state.spec().slug(), branch.slug);
         }
     }
 
