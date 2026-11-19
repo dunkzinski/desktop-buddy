@@ -174,6 +174,8 @@ The **Settings ⚙** button in the control panel opens a modal that edits
   endpoint, model id, `max_tokens` and timeout.
 * **Survival** — the hunger system switch, tier notifications, both metabolic
   drain rates, the telemetry interval and the starting values.
+* **SOUL** — the avatar's persona file, `SOUL.md`, in a plain textarea. Save it
+  here or **Open SOUL.md** to edit it in your own editor.
 
 Saving sends **only what you changed** (`POST /config`), validates each block with
 the same struct the runtime loads it from, and answers what applied live versus
@@ -190,6 +192,38 @@ pretending those settings work.
 Everything the modal writes is still plain JSON, so hand-editing remains fine:
 the editor rewrites only the blocks it touches and leaves the rest of the file
 byte-for-byte alone.
+
+---
+
+## SOUL.md — the avatar's persona
+
+`SOUL.md` is the buddy's durable voice and personality, modelled on Hermes
+Agent's own `SOUL.md`: a plain markdown file you own and edit, holding only
+*who the creature is* — tone, speech-bubble brevity, humour, candour, how it
+reacts to screen events, and the stylistic anti-patterns to avoid. It carries no
+paths, profiles or secrets; those stay in `watcher_rules.json`.
+
+* **Where it lives** — beside `watcher_rules.json` (`SOUL.md` in the repo/app
+  directory). A `soul_path` key in `watcher_rules.json` or the `CHAR_RIG_SOUL`
+  environment variable overrides the location. The app and the watcher resolve
+  it with the same rule, so the editor and the next turn always agree.
+* **Seeded once** — on first start a ~50-line starter is written. An existing
+  file, even an empty one, is **never** overwritten. An empty or unreadable file
+  falls back to the built-in persona at runtime.
+* **Read live** — the watcher re-reads it on every turn, so an edit applies
+  without restarting anything. It is injected as the **first section** of the
+  system prompt, ahead of the role prompt, the JSON action/expression contract
+  and the creature's runtime state. The vision path uses the same slot order.
+* **Creature flavour** — when the digivolution plugin is loaded, the buddy's
+  current stage, archetype and recency-weighted `Vaccine` / `Data` / `Virus`
+  blend are appended as a compact runtime block, so its speech and chosen
+  `expression` match its current form without overriding `SOUL.md`.
+* **Both backends** — `openai_compat` gets it as system-prompt slot #1;
+  `hermes_cli` gets the same persona in its headless directive.
+* **Editing** — **Settings ⚙ → SOUL**, or the API: `GET /soul` returns
+  `{path, exists, is_default, content, persona, max_bytes}` and `POST /soul`
+  with `{"content": "..."}` replaces the file atomically. An empty body is
+  refused; delete the file to return to the starter.
 
 ---
 

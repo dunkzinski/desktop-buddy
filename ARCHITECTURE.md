@@ -404,6 +404,22 @@ The local voice. One module, one worker thread, one config block.
 | `play_file`, `stop_playback` | `rodio`: one `OutputStream` per worker, a `Sink` per line (`append` + `sleep_until_end`, sequential by construction), and `Sink::stop()` for mute/interrupt. The sink is shared with `stop_playback` through an `Arc`, so a cut from another thread also unblocks the worker |
 | `sanitize_for_speech`, `strip_code_fences`, `strip_links`, `strip_urls`, `strip_tags`, `is_emoji`, `is_markup_marker`, `truncate_chars` | the "Piper reads clean prose" half: fenced code blocks, links (the label stays, the URL goes), bare URLs, `<tag>` control/expression markers, markdown emphasis and code markers, emoji and control characters are removed; whitespace collapses; an empty result is never spoken |
 
+### `src-tauri/src/soul.rs`
+
+The avatar's durable persona, `SOUL.md`. Dependency-light (std + `serde_json`)
+because `char-rig-watcher` includes it directly with `#[path = "../soul.rs"]`,
+so the app and the watcher share one resolver and one seed.
+
+| Item | Responsibility |
+| --- | --- |
+| `DEFAULT_SOUL` | the ~50-line starter: voice, brevity, candour, humour, face/body, screen reactions, anti-patterns. No paths, profiles or secrets — those live in `watcher_rules.json` |
+| `MAX_SOUL_BYTES`, `ENV_SOUL_PATH`, `SOUL_FILE_NAME` | 64 KB cap; `CHAR_RIG_SOUL` override; `SOUL.md` |
+| `soul_path` | the one resolution rule: `CHAR_RIG_SOUL` → `soul_path` in the rules file → `<rules dir>/SOUL.md` → `<app config dir>/SOUL.md` |
+| `read_soul`, `load_soul` | read with the size cap; empty/missing/unreadable/oversized all fall back to `DEFAULT_SOUL` |
+| `ensure_soul` | seed a missing file with `create_new` (never clobbers an existing or empty file), then return the effective persona |
+| `write_soul` | atomic replace (temp file + rename); refuses an empty body or anything over the cap |
+| `soul_json` | the `GET /soul` body: `path`, `exists`, `is_default`, `content` (raw file) and `persona` (effective) |
+
 ### `src-tauri/src/api.rs` (1425 lines)
 
 | Section | Responsibility |
@@ -416,9 +432,10 @@ The local voice. One module, one worker thread, one config block.
 | `ai_profiles`, `switch_ai_profile` | `GET /ai-profiles` / `POST /ai-profile` → `ai_status_json` / `do_set_ai_profile`, both on a `spawn_blocking` thread because the health probe is a blocking 800 ms HTTP GET; `event_name` maps the frame to `ai_profile` |
 | `discover_models` | `POST /ai-discover` → `discovery::discover`, on a `spawn_blocking` thread (each port is a blocking GET with a 1.5 s budget); an optional `{ports: […]}` body overrides the rules file, otherwise `settings::discovery_ports` supplies the list |
 | `get_config`, `set_config` | `GET /config` / `POST /config` → `settings::config_json` / `settings::apply_config` (the write runs on `spawn_blocking`), then the live side effects: `tts::set_enabled`, `stt::set_enabled`, `plugins::apply_survival_config`, and one `ai_profile` frame so the watcher re-reads the file |
+| `get_soul`, `set_soul` | `GET /soul` / `POST /soul` → `soul::soul_json` / `soul::write_soul` on `spawn_blocking`; `soul_path` resolves the same file the watcher reads. No cache to invalidate — the watcher re-reads on every turn |
 | `start` | bind, spawn thread, Tokio runtime, axum serve, graceful shutdown |
 | `bind_first_available` | port fallback `preferred..preferred+9` |
-| `router` | 40 core routes, then `crate::plugins::routes()` merged in (deduped by path) — **no plugin endpoint is named in this file** |
+| `router` | 41 core routes, then `crate::plugins::routes()` merged in (deduped by path) — **no plugin endpoint is named in this file** |
 | request bodies | `SetStateBody`, `MoveBody`, `ExpressionBody`, `ClickThroughBody`, `HitRegionsBody`, `ModelBody`, `RigBody`, `PoseBody`, `ImportBody`, `PartPatchBody`, `MouthBody`, `EmoteBody`, `SpeakBody` (incl. optional `details`), `ReplyBody`, `AlertBody`, `ClipboardBody`, `AnimateBody`, `TtsBody`, `SttBody` |
 | `ApiError` | `IntoResponse` → `{"ok":false,"error":…}` + status |
 | `context` | `GET /context` — OS probes (title, process, idle, `window_rect`, `visible_windows`, `foreground_hwnd`, `screen`), `avatar_state` snapshot and the `recent_events` history |
@@ -2208,6 +2225,46 @@ to a profile it creates. `vision.profile_name` must resolve, or the save is a
 400 instead of a screenshot sent nowhere. `discovery_ports` is written with
 `replace_or_insert`, so a file that predates the key gains it without any other
 byte changing.
+
+### `/soul`
+
+`SOUL.md` is the avatar's durable persona — the same architecture as Hermes
+Agent's `SOUL.md`: one markdown file the user owns, holding only identity
+(voice, speech-bubble brevity, humour, candour, how it reacts to screen events,
+style anti-patterns). It is deliberately **not** part of `watcher_rules.json`:
+it is prose the user edits, not configuration the app writes.
+
+```bash
+curl -s localhost:8765/soul | jq '.path, .exists, .is_default'
+curl -s -X POST localhost:8765/soul -H 'content-type: application/json' \
+     -d '{"content": "# SOUL.md\n\nDry, brief, a little odd.\n"}'
+```
+
+`GET` answers `{path, exists, is_default, content, persona, max_bytes}`.
+`content` is the raw file (empty when missing) and `persona` is what the next
+turn would actually inject — the file when it has text, the built-in starter
+otherwise — so the modal can say "this is the starter" instead of guessing.
+`POST` replaces the file atomically (temp file + rename); an empty body is a
+400 (delete the file to fall back to the starter) and anything over 64 KB is
+refused. There is no cache to invalidate: the watcher re-reads the file on
+every turn.
+
+**One resolver, both processes.** `src-tauri/src/soul.rs` is compiled into the
+app *and* into `char-rig-watcher` (via `#[path = "../soul.rs"]`), so the editor
+and the prompt cannot disagree. Order: `CHAR_RIG_SOUL` → `soul_path` in
+`watcher_rules.json` → `<rules dir>/SOUL.md` → `<app config dir>/SOUL.md`.
+Seeding is `create_new` only — a missing file gets the ~50-line starter, an
+existing file (even an empty one) is never touched. Reads degrade to the
+built-in persona on empty, missing, unreadable or oversized content.
+
+**Prompt slot #1.** `avatar_system_message` (openai_compat) and
+`vision_request_body` (screenshots) both put the persona first, ahead of the
+role prompt, the JSON action/expression contract and — last — the creature's
+runtime block. `hermes_cli` gets the same persona through
+`Trigger::prompt_with_persona`, so both backends share one voice. The creature
+block comes from `GET /digimon/status` (stage, archetype, recency-weighted
+`attribute_blend` percentages) and is flavour only: it colours tone and the
+chosen `expression`, while `SOUL.md` stays authoritative.
 
 ### `/survival`, `/survival/feed`, `/survival/craft`, `/inventory`, `/inventory/add`,
 `/inventory/remove`, `/inventory/use`, `/fishing`, `/fishing/cast`, `/fishing/hook`,

@@ -398,6 +398,7 @@ fn router(api: ApiCtx) -> Router {
         .route("/ai-profile", post(switch_ai_profile))
         .route("/ai-discover", post(discover_models))
         .route("/config", get(get_config).post(set_config))
+        .route("/soul", get(get_soul).post(set_soul))
         .route("/shutdown", post(shutdown_app));
 
     // Everything else is a plugin's business. The host merges whatever the
@@ -993,6 +994,69 @@ async fn discover_models(State(api): State<ApiCtx>, body: Option<Json<Value>>) -
 async fn get_config(State(api): State<ApiCtx>) -> Json<Value> {
     let path = api.shared.ai_rules_path();
     Json(crate::settings::config_json(path.as_deref()))
+}
+
+/// `GET /soul` — the persona file the watcher reads on every turn.
+///
+/// The path comes from the same resolver both processes use
+/// ([`crate::soul::soul_path`]), so what the editor shows is exactly what the
+/// next trigger will inject. `persona` is the effective persona (the built-in
+/// starter when the file is missing or empty), which is what lets the modal say
+/// "this is the default" instead of guessing.
+async fn get_soul(State(api): State<ApiCtx>) -> Json<Value> {
+    Json(read_soul_payload(soul_path(&api.shared)).await)
+}
+
+/// The `GET /soul` body for an explicit path.
+///
+/// Split out from the handler so the read contract is testable without an
+/// `AppHandle` (which cannot be constructed in a unit test).
+async fn read_soul_payload(path: std::path::PathBuf) -> Value {
+    tokio::task::spawn_blocking(move || crate::soul::soul_json(&path))
+        .await
+        .unwrap_or_else(|err| json!({ "ok": false, "error": err.to_string() }))
+}
+
+/// `POST /soul` — replace the persona (span-free: it is its own file).
+///
+/// Refusals are the writer's, not a copy of them: empty/oversized content is a
+/// 400 with the reason, so the modal can show it verbatim. There is no caching
+/// to invalidate — the watcher re-reads the file at the start of every turn, so
+/// a save is live immediately.
+async fn set_soul(
+    State(api): State<ApiCtx>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let Some(content) = body.get("content").and_then(Value::as_str) else {
+        return Err(ApiError::bad_request(
+            "expected {\"content\": \"...\"} - the new SOUL.md text".to_string(),
+        ));
+    };
+    let content = content.to_string();
+    Ok(Json(
+        write_soul_payload(soul_path(&api.shared), content).await?,
+    ))
+}
+
+/// The `POST /soul` effect for an explicit path: write, then answer with the
+/// same body `GET /soul` would. Split out so the write contract is testable
+/// without an `AppHandle`.
+async fn write_soul_payload(
+    path: std::path::PathBuf,
+    content: String,
+) -> Result<Value, ApiError> {
+    let write_path = path.clone();
+    tokio::task::spawn_blocking(move || crate::soul::write_soul(&write_path, &content))
+        .await
+        .map_err(|err| ApiError::bad_request(format!("the SOUL.md task failed: {err}")))?
+        .map_err(ApiError::bad_request)?;
+    Ok(read_soul_payload(path).await)
+}
+
+/// The `SOUL.md` path this app resolves — beside `watcher_rules.json`, or the
+/// `soul_path` override in it, or the app config directory.
+fn soul_path(shared: &crate::AppCtx) -> std::path::PathBuf {
+    crate::soul::soul_path(shared.ai_rules_path().as_deref())
 }
 
 /// `POST /config` — persist a partial settings patch, then apply what can be
@@ -1618,5 +1682,76 @@ mod tests {
         let pinned: ReplyBody =
             serde_json::from_str(r#"{"text":"hi","profile":"lfm3-fast"}"#).expect("valid");
         assert_eq!(pinned.profile.as_deref(), Some("lfm3-fast"));
+    }
+
+    /* ---------- SOUL.md API ---------- */
+
+    fn soul_scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "char-rig-api-soul-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|t| t.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir.join("SOUL.md")
+    }
+
+    #[tokio::test]
+    async fn get_soul_reports_the_starter_for_a_missing_file() {
+        let path = soul_scratch("missing");
+        let body = read_soul_payload(path.clone()).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["exists"], false);
+        assert_eq!(body["is_default"], true);
+        assert_eq!(body["content"], "");
+        assert_eq!(body["path"], path.display().to_string());
+        // The effective persona is the starter, not an empty string.
+        assert_eq!(body["persona"], crate::soul::DEFAULT_SOUL);
+        assert!(!path.exists(), "a GET must not create the file");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn post_soul_writes_and_answers_with_the_new_persona() {
+        let path = soul_scratch("write");
+        let text = "# Mine\n\nDry, brief, a little odd.";
+        let written = write_soul_payload(path.clone(), text.to_string())
+            .await
+            .expect("write");
+        assert_eq!(written["ok"], true);
+        assert_eq!(written["exists"], true);
+        assert_eq!(written["is_default"], false);
+        assert_eq!(written["content"], text);
+        assert_eq!(written["persona"], text);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file"),
+            text,
+            "the handler's write reaches the same file the watcher reads"
+        );
+
+        // A second GET sees the saved persona, not the starter.
+        let read = read_soul_payload(path.clone()).await;
+        assert_eq!(read["content"], text);
+        assert_eq!(read["is_default"], false);
+
+        // An empty body is refused by the writer (the handler's 400).
+        let err = write_soul_payload(path.clone(), "   \n".to_string())
+            .await
+            .expect_err("empty persona must be refused");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(
+            err.message.contains("cannot be empty"),
+            "the reason names the rule: {}",
+            err.message
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file"),
+            text,
+            "a refused write leaves the persona untouched"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

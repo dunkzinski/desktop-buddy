@@ -47,6 +47,13 @@ use tokio_stream::StreamExt;
 /// Screen capture + JPEG encoding for the vision path (`capture/mod.rs`).
 mod capture;
 
+/// The `SOUL.md` persona: one file, one resolver, shared with `avatar-desktop`
+/// (`#[path]` because the binaries are separate crates' roots and this module
+/// has no crate-specific dependencies).
+#[path = "../soul.rs"]
+#[allow(dead_code)] // the app owns writing/seeding; the watcher only reads
+mod soul;
+
 use capture::Rect;
 
 /* ------------------------------------------------------------------ *
@@ -187,6 +194,130 @@ const AI_REPLY_CONTRACT: &str = "Reply with ONE JSON object and nothing else: \
 Prefer your own actions: answer, emote, and animate/wave yourself instead of escalating. \
 Set escalate to true (and speech to one short sentence) only for multi-step tasks or work needing external tools — \
 clipboard contents, network scans, files, a terminal or the user's machine; otherwise answer yourself.";
+
+/// Slot #1 header. `SOUL.md` is injected before the role line, the profile
+/// prompt, the JSON contract and the runtime state, so a small model reads the
+/// persona first and treats it as the frame everything else hangs off.
+const SOUL_SLOT_HEADER: &str = "[SOUL.md - your persona. This is who you are, and it outranks every default \
+below. Read it first; it is re-read from disk on every turn and the user edits it live.]";
+
+/// The `openai_compat` system message, in slot order:
+///
+/// 1. `SOUL.md` (the persona — slot #1, ahead of everything);
+/// 2. the role line, or the profile's own `system_prompt` when it has one;
+/// 3. [`AI_REPLY_CONTRACT`] (the JSON action/expression formatting contract);
+/// 4. the creature's runtime state (stage, archetype, attribute blend).
+///
+/// Pure on purpose: the order is a contract the tests pin, and neither the soul
+/// nor the creature block is allowed to drift into the user message.
+fn avatar_system_message(soul_text: &str, profile_prompt: Option<&str>, creature: &str) -> String {
+    let mut sections: Vec<String> = Vec::new();
+    let persona = soul_text.trim();
+    if !persona.is_empty() {
+        sections.push(format!("{SOUL_SLOT_HEADER}\n{persona}"));
+    }
+    match profile_prompt.map(str::trim).filter(|extra| !extra.is_empty()) {
+        Some(extra) => sections.push(extra.to_string()),
+        None => sections.push(
+            "You are the brain of a small desktop avatar that lives on the user's screen. \
+You do not have tools: you see only the context you are given and you answer with a JSON object."
+                .to_string(),
+        ),
+    }
+    sections.push(AI_REPLY_CONTRACT.to_string());
+    if !creature.trim().is_empty() {
+        sections.push(creature.trim().to_string());
+    }
+    sections.join("\n\n")
+}
+
+/// The creature's current form, as one compact block for the prompt.
+///
+/// Reads `GET /digimon/status`: the stage, the archetype and the recency-weighted
+/// `attribute_blend` (`Vaccine` / `Data` / `Virus` percentages). The block is
+/// *flavour*, not an override — it tells the model which body it is wearing so
+/// its tone and `expression` fit the form, while `SOUL.md` still owns the voice.
+/// A build without the plugin (404) or a status without those keys yields
+/// `None`, and the prompt simply has no creature slot.
+fn creature_context(status: &Value) -> Option<String> {
+    let stage = status.get("stage").and_then(Value::as_str).map(str::trim)?;
+    if stage.is_empty() {
+        return None;
+    }
+    let archetype = status
+        .get("creature")
+        .and_then(|creature| creature.get("archetype"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let blend = status.get("attribute_blend");
+    let percent = |name: &str| {
+        blend
+            .and_then(|blend| blend.get("percent"))
+            .and_then(|percent| percent.get(name))
+            .and_then(Value::as_u64)
+    };
+    let weights = match (percent("Vaccine"), percent("Data"), percent("Virus")) {
+        (Some(vaccine), Some(data), Some(virus)) => {
+            Some(format!("Vaccine {vaccine}% / Data {data}% / Virus {virus}%"))
+        }
+        _ => None,
+    };
+    let summary = blend
+        .and_then(|blend| blend.get("summary"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let flavour = blend
+        .and_then(|blend| blend.get("flavour"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let form = match archetype {
+        Some(archetype) => format!("a {stage}-stage {archetype}"),
+        None => format!("a {stage}-stage creature"),
+    };
+    let mut line = format!("[Your current form] You are {form}");
+    match (&weights, &summary) {
+        (Some(weights), _) => line.push_str(&format!(", blended {weights}")),
+        (None, Some(summary)) => line.push_str(&format!(", blended {summary}")),
+        (None, None) => {}
+    }
+    if let Some(flavour) = flavour {
+        line.push_str(&format!(" (traits: {flavour})"));
+    }
+    line.push_str(
+        ". Let this body colour your tone and the expression you choose, and never \
+mention these numbers out loud; SOUL.md still decides how you speak.",
+    );
+    Some(line)
+}
+
+/// The persona for this turn, read fresh from disk (edits are live).
+fn soul_for_turn(ai: &AiShared) -> String {
+    let path = soul::soul_path(ai.rules_path.as_deref());
+    soul::ensure_soul(&path)
+}
+
+/// `GET /digimon/status` — the digivolution plugin's status body.
+///
+/// The route belongs to a plugin, so a build without it answers 404 and the turn
+/// simply has no creature slot. Never fatal.
+async fn fetch_digimon(client: &reqwest::Client, api_url: &str) -> Result<Value, String> {
+    let url = format!("{api_url}/digimon/status");
+    let response = client
+        .get(&url)
+        .timeout(CONTEXT_TIMEOUT)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("{url} answered {}", response.status()));
+    }
+    response.json().await.map_err(|err| err.to_string())
+}
 
 /* ------------------------------------------------------------------ *
  * AI profiles (inference backends)
@@ -685,6 +816,11 @@ struct DispatchCtx<'a> {
     /// offline fallback on a working brain. `None` means "use the profile's own
     /// timeout", which is what a `user_reply` or an `alert` gets.
     timeout_floor: Option<Duration>,
+    /// `SOUL.md` as read at the start of this turn (slot #1 for both backends).
+    soul: &'a str,
+    /// The creature's stage/archetype/attribute blend, or `""` when the
+    /// digivolution plugin is not loaded.
+    creature: &'a str,
 }
 
 /// A profile that can actually run a trigger.
@@ -754,23 +890,18 @@ impl OpenaiCompatBackend {
         }
     }
 
-    fn system_message(&self) -> String {
-        match self.system_prompt.as_deref().map(str::trim) {
-            Some(extra) if !extra.is_empty() => format!("{extra}\n\n{AI_REPLY_CONTRACT}"),
-            _ => format!(
-                "You are the brain of a small desktop avatar that lives on the user's screen. \
-You do not have tools: you see only the context you are given and you answer with a JSON object. \
-{AI_REPLY_CONTRACT}"
-            ),
-        }
+    /// The system message: `SOUL.md` first, then the role/profile prompt, the
+    /// reply contract and (last) the creature's runtime state.
+    fn system_message(&self, soul_text: &str, creature: &str) -> String {
+        avatar_system_message(soul_text, self.system_prompt.as_deref(), creature)
     }
 
     /// Build the request body. Pure, so the contract is testable.
-    fn request_body(&self, prompt: &str) -> Value {
+    fn request_body(&self, prompt: &str, soul_text: &str, creature: &str) -> Value {
         let mut body = json!({
             "model": self.model,
             "messages": [
-                { "role": "system", "content": self.system_message() },
+                { "role": "system", "content": self.system_message(soul_text, creature) },
                 { "role": "user", "content": prompt },
             ],
             "response_format": { "type": "json_object" },
@@ -872,9 +1003,14 @@ You do not have tools: you see only the context you are given and you answer wit
         client: &reqwest::Client,
         prompt: &str,
         timeout: Duration,
+        soul_text: &str,
+        creature: &str,
     ) -> Result<AiReply, String> {
         let url = Self::chat_url(&self.endpoint);
-        let mut request = client.post(&url).json(&self.request_body(prompt)).timeout(timeout);
+        let mut request = client
+            .post(&url)
+            .json(&self.request_body(prompt, soul_text, creature))
+            .timeout(timeout);
         if let Some(key) = &self.api_key {
             request = request.header("authorization", format!("Bearer {key}"));
         }
@@ -925,7 +1061,10 @@ impl InferenceBackend for OpenaiCompatBackend {
             let (prompt, clips) = self
                 .augmented_prompt(ctx.client, ctx.api_url, ctx.prompt)
                 .await;
-            let reply = match self.ask(ctx.client, &prompt, timeout).await {
+            let reply = match self
+                .ask(ctx.client, &prompt, timeout, ctx.soul, ctx.creature)
+                .await
+            {
                 Ok(reply) => reply,
                 Err(err) => {
                     eprintln!("[watcher] ai profile {:?} failed: {err}", self.name);
@@ -1766,6 +1905,11 @@ struct Rules {
     /// Cooldown / switch for the survival plugin's `survival-*` frames.
     #[serde(default)]
     survival: SurvivalRules,
+    /// Optional absolute path to `SOUL.md`. Absent means "beside this file"
+    /// (see [`soul::soul_path`]); the panel's SOUL tab edits whatever this
+    /// resolves to, never the key.
+    #[serde(default)]
+    soul_path: Option<String>,
 }
 
 impl Rules {
@@ -2228,18 +2372,36 @@ Treat it as their task: do what they asked with your tools, then report the outc
             || self.event_type == FISH_LOST_EVENT
     }
 
-    /// Concise context prompt for the `hermes_cli` backend.
+    /// Concise context prompt for the `hermes_cli` backend, with no persona.
     ///
-    /// Ends with [`HEADLESS_DIRECTIVE`]: the child has no stdin, so a prompt that
-    /// invites a clarifying question would just stall the turn. A `user_reply`
-    /// puts the user's words verbatim in the middle — that text is the whole
-    /// reason the turn exists — and an `app_rules` hint is appended as
-    /// "Context:" so the tailored advice reaches the model.
-    ///
-    /// Only the CLI runner gets this: [`Trigger::brief`] is what goes to an
-    /// OpenAI-compatible model, which has neither the tools nor the session.
+    /// Kept for the tests and for callers that have no soul yet; the dispatch
+    /// path always uses [`Trigger::prompt_with_persona`].
+    #[allow(dead_code)]
     fn prompt(&self) -> String {
-        let mut prompt = self.brief();
+        self.prompt_with_persona("", "")
+    }
+
+    /// The CLI prompt with `SOUL.md` (slot #1) and the creature's form on top.
+    ///
+    /// `hermes_cli` children get no system message — the whole directive is one
+    /// argv entry — so the persona has to live in the prompt itself. It is
+    /// placed *before* [`Self::brief`] and [`HEADLESS_DIRECTIVE`]: same order as
+    /// the `openai_compat` system message, so both backends read one voice.
+    fn prompt_with_persona(&self, soul_text: &str, creature: &str) -> String {
+        let mut prompt = String::new();
+        let persona = soul_text.trim();
+        if !persona.is_empty() {
+            prompt.push_str(SOUL_SLOT_HEADER);
+            prompt.push('\n');
+            prompt.push_str(persona);
+            prompt.push_str("\n\n");
+        }
+        let creature = creature.trim();
+        if !creature.is_empty() {
+            prompt.push_str(creature);
+            prompt.push_str("\n\n");
+        }
+        prompt.push_str(&self.brief());
         prompt.push_str(HEADLESS_DIRECTIVE);
         prompt
     }
@@ -3506,18 +3668,35 @@ fn ack_plan(trigger: &Trigger, config: &Config) -> Option<Ack> {
 /// unit-tested: one text part plus one `data:` image part).
 fn vision_request_body(
     model: &str,
+    soul_text: &str,
+    creature: &str,
     system_prompt: Option<&str>,
     prompt: &str,
     data_url: &str,
     max_tokens: Option<u32>,
 ) -> Value {
-    let system = match system_prompt.map(str::trim).filter(|extra| !extra.is_empty()) {
-        Some(extra) => format!("{extra}\n\n{AI_REPLY_CONTRACT}"),
-        None => format!(
-            "You are the eyes of a small desktop avatar. You are shown one screenshot of the user's \
-screen and must answer a question about it. {AI_REPLY_CONTRACT}"
-        ),
+    let role = match system_prompt.map(str::trim).filter(|extra| !extra.is_empty()) {
+        Some(extra) => extra.to_string(),
+        None => "You are the eyes of a small desktop avatar. You are shown one screenshot of the user's \
+screen and must answer a question about it."
+            .to_string(),
     };
+    // Persona first, exactly like the text path: the avatar looks at the screen
+    // as the same creature that talks about it. The creature's form follows the
+    // contract, so a screenshot answer is coloured by the same body as a text
+    // answer — flavour only, `SOUL.md` still owns the voice.
+    let mut sections: Vec<String> = Vec::new();
+    let soul = soul_text.trim();
+    if !soul.is_empty() {
+        sections.push(format!("{SOUL_SLOT_HEADER}\n{soul}"));
+    }
+    sections.push(role);
+    sections.push(AI_REPLY_CONTRACT.to_string());
+    let form = creature.trim();
+    if !form.is_empty() {
+        sections.push(form.to_string());
+    }
+    let system = sections.join("\n\n");
     let mut body = json!({
         "model": model,
         "messages": [
@@ -3652,8 +3831,18 @@ async fn dispatch_vision(
         vision.capture_mode.as_str()
     );
 
+    // The persona is read on the vision path too, so a screenshot answer sounds
+    // like the same creature as a text answer. The creature's form is fetched
+    // here as well, so the face the model picks matches the body it is in.
+    let soul_text = soul_for_turn(ai);
+    let creature = match fetch_digimon(client, &config.api_url).await {
+        Ok(status) => creature_context(&status).unwrap_or_default(),
+        Err(_) => String::new(),
+    };
     let body = vision_request_body(
         model,
+        &soul_text,
+        &creature,
         system_prompt.as_deref(),
         &trigger.vision_prompt(shot.source),
         &shot.data_url,
@@ -3842,6 +4031,17 @@ async fn handle_trigger(
     //    the live rules so a vision block saved in the panel applies to this
     //    trigger instead of the one the watcher started with.
     let rules = ai.rules();
+
+    // Persona and creature flavour are resolved once per turn, both read from
+    // disk/HTTP now rather than at startup: a SOUL.md edit in the Settings modal
+    // applies to the very next trigger, and an evolution changes the body the
+    // same way. `""` means "no creature slot" (plugin not loaded).
+    let soul_text = soul_for_turn(ai);
+    let creature = match fetch_digimon(client, &config.api_url).await {
+        Ok(status) => creature_context(&status).unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+
     if trigger.wants_vision(&rules.vision) {
         let report = dispatch_vision(config, client, trigger, guard, ai).await;
         log_report(&report);
@@ -3864,8 +4064,9 @@ async fn handle_trigger(
 
     // Two prompts: the CLI runner needs the headless directive (it has tools and
     // a session), while a no-tools HTTP model must not be told to call MCP tools
-    // — and must not see the word "clipboard" unless the user said it.
-    let cli_prompt = trigger.prompt();
+    // — and must not see the word "clipboard" unless the user said it. Both
+    // carry the same persona first, so the two backends share one voice.
+    let cli_prompt = trigger.prompt_with_persona(&soul_text, &creature);
     let prompt = if profile.is_cli() {
         cli_prompt.clone()
     } else {
@@ -3898,6 +4099,8 @@ async fn handle_trigger(
             flight: guard,
             failure_speech: FailureSpeech::from_trigger(trigger),
             timeout_floor: dispatch_timeout_floor(trigger),
+            soul: &soul_text,
+            creature: &creature,
         })
         .await;
     log_report(&report);
@@ -3935,6 +4138,8 @@ async fn handle_trigger(
             flight: guard,
             failure_speech: FailureSpeech::from_trigger(trigger),
             timeout_floor: dispatch_timeout_floor(trigger),
+            soul: &soul_text,
+            creature: &creature,
         })
         .await;
     log_report(&report);
@@ -5020,6 +5225,84 @@ mod tests {
         }
     }
 
+    /* ---------- SOUL.md slots ---------- */
+
+    #[test]
+    fn the_persona_is_slot_one_in_the_openai_system_message() {
+        let soul = "# SOUL.md\n\nI speak in one dry sentence.";
+        let system = avatar_system_message(soul, Some("Be terse."), "[Your current form] A Rookie.");
+
+        let persona = system.find(soul).expect("the persona is present");
+        let role = system.find("Be terse.").expect("the profile prompt is present");
+        let contract = system.find("ONE JSON object").expect("the contract is present");
+        let creature = system.find("[Your current form]").expect("the creature slot is present");
+        assert!(persona < role, "SOUL.md comes before the profile prompt: {system}");
+        assert!(role < contract, "the JSON contract follows the prompts: {system}");
+        assert!(creature > contract, "runtime state is the last slot: {system}");
+        assert!(system.starts_with(SOUL_SLOT_HEADER), "{system}");
+
+        // No soul, no persona slot: the profile prompt keeps slot #1 (an
+        // untouched install must behave exactly as before).
+        let bare = avatar_system_message("", Some("Be terse."), "");
+        assert!(bare.starts_with("Be terse."), "{bare}");
+        assert_eq!(bare.matches(AI_REPLY_CONTRACT).count(), 1);
+    }
+
+    #[test]
+    fn the_cli_prompt_puts_the_persona_first_and_the_directive_last() {
+        let trigger = Trigger {
+            event_type: "interaction".to_string(),
+            detail: "the user double-clicked the avatar".to_string(),
+            window_title: "Editor".to_string(),
+            idle_secs: 2,
+            ..Trigger::default()
+        };
+        let soul = "# SOUL.md\n\nI am dry, brief and kind.";
+        let creature = "[Your current form] A Champion-stage drake.";
+        let prompt = trigger.prompt_with_persona(soul, creature);
+
+        assert!(prompt.starts_with(SOUL_SLOT_HEADER), "{prompt}");
+        let persona = prompt.find(soul).expect("persona");
+        let body = prompt.find("[char-rig interaction]").expect("brief");
+        let directive = prompt.find(HEADLESS_DIRECTIVE).expect("directive");
+        assert!(persona < body, "persona precedes the trigger: {prompt}");
+        assert!(prompt.find(creature).expect("creature") < body, "{prompt}");
+        assert!(body < directive, "the directive still ends the prompt: {prompt}");
+        assert!(prompt.ends_with(HEADLESS_DIRECTIVE), "{prompt}");
+
+        // No soul = the pre-SOUL.md prompt, byte for byte.
+        assert_eq!(trigger.prompt(), trigger.prompt_with_persona("", ""));
+    }
+
+    #[test]
+    fn the_creature_block_carries_stage_archetype_and_the_attribute_blend() {
+        let status = json!({
+            "stage": "Champion",
+            "creature": { "archetype": "drake" },
+            "attribute_blend": {
+                "percent": { "Vaccine": 60, "Data": 40, "Virus": 0 },
+                "summary": "60% Vaccine · 40% Data",
+                "flavour": "haloed, feathered, gentle · crystalline, plated, digital"
+            }
+        });
+        let block = creature_context(&status).expect("a status yields a block");
+        assert!(block.starts_with("[Your current form]"), "{block}");
+        assert!(block.contains("Champion-stage drake"), "{block}");
+        assert!(block.contains("Vaccine 60% / Data 40% / Virus 0%"), "{block}");
+        assert!(block.contains("haloed"), "{block}");
+        // The model is told not to read the numbers back to the user.
+        assert!(block.contains("never mention these numbers"), "{block}");
+
+        // A status without a blend still describes the body (plugin drift).
+        let sparse = json!({ "stage": "Fresh", "creature": { "archetype": "beast" } });
+        let block = creature_context(&sparse).expect("stage alone is enough");
+        assert!(block.contains("Fresh-stage beast"), "{block}");
+        assert!(!block.contains("blended"), "{block}");
+
+        // No stage = no creature slot at all (a 404 body, an error payload).
+        assert!(creature_context(&json!({ "ok": false })).is_none());
+    }
+
     #[test]
     fn hermes_timeout_defaults_to_120s_and_is_configurable() {
         let config = Config::resolve(CliConfig::default(), Rules::default());
@@ -5428,6 +5711,8 @@ mod tests {
     fn vision_request_body_is_multimodal() {
         let body = vision_request_body(
             "lfm3-vl-2b",
+            "",
+            "",
             Some("be terse"),
             "What is on my screen?",
             "data:image/jpeg;base64,AAAA",
@@ -5455,12 +5740,33 @@ mod tests {
 
         // Without a system prompt the default eyes prompt is used, and no
         // max_tokens key appears when the profile does not set one.
-        let bare = vision_request_body("m", None, "p", "data:image/jpeg;base64,AA", None);
+        let bare = vision_request_body("m", "", "", None, "p", "data:image/jpeg;base64,AA", None);
         assert!(bare["messages"][0]["content"]
             .as_str()
             .unwrap()
             .contains("eyes of a small desktop avatar"));
         assert!(bare.get("max_tokens").is_none());
+
+        // The persona and the creature's form reach the vision path too, in the
+        // same slot order as the text path: soul, role, contract, creature.
+        let soul = "# SOUL.md\n\nI speak in one dry sentence.";
+        let creature = "[Your current form] You are a Rookie-stage Drake.";
+        let flavoured = vision_request_body(
+            "m",
+            soul,
+            creature,
+            None,
+            "p",
+            "data:image/jpeg;base64,AA",
+            None,
+        );
+        let system = flavoured["messages"][0]["content"].as_str().unwrap();
+        assert!(system.starts_with(SOUL_SLOT_HEADER), "{system}");
+        let persona = system.find(soul).expect("persona present");
+        let role = system.find("eyes of a small desktop avatar").expect("role");
+        let contract = system.find("ONE JSON object").expect("contract");
+        let form = system.find(creature).expect("creature");
+        assert!(persona < role && role < contract && contract < form, "{system}");
     }
 
     #[test]
@@ -6986,7 +7292,7 @@ c"));
         .expect("openai profile");
 
         assert_eq!(backend.timeout, Duration::from_secs(45), "timeout_secs is honoured");
-        let body = backend.request_body("the user double-clicked");
+        let body = backend.request_body("the user double-clicked", "", "");
         assert_eq!(body["model"], "lfm3-1.7b");
         assert_eq!(body["response_format"]["type"], "json_object");
         assert_eq!(body["max_tokens"], 320);
@@ -7014,7 +7320,7 @@ c"));
             OpenaiCompatBackend::from_profile("x", &custom.ai_profiles["x"], Duration::from_secs(5))
                 .expect("profile");
         assert_eq!(backend.timeout, Duration::from_secs(DEFAULT_OPENAI_TIMEOUT_SECS));
-        let system = backend.system_message();
+        let system = backend.system_message("", "");
         assert!(system.starts_with("Be terse."), "{system}");
         assert!(system.contains("escalate"), "{system}");
 
@@ -7144,6 +7450,8 @@ c"));
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
+                soul: "",
+                creature: "",
             })
             .await;
 
@@ -7230,6 +7538,8 @@ c"));
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
+                soul: "",
+                creature: "",
             })
             .await;
 
@@ -7357,6 +7667,8 @@ c"));
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
+                soul: "",
+                creature: "",
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -7417,6 +7729,8 @@ c"));
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
+                soul: "",
+                creature: "",
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -7462,6 +7776,8 @@ c"));
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
+                soul: "",
+                creature: "",
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -7610,6 +7926,8 @@ c"));
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
+                soul: "",
+                creature: "",
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))
@@ -7705,6 +8023,8 @@ c"));
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
+                soul: "",
+                creature: "",
             })
             .await;
         let requests = tokio::task::spawn_blocking(move || server.join().expect("server"))

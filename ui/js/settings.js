@@ -105,6 +105,19 @@ const settings = {
 };
 
 /**
+ * The `SOUL.md` editor's working state.
+ *
+ * It is deliberately separate from `settings.loaded` and from the Save button:
+ * the persona lives in its own file and its own endpoint (`GET`/`POST /soul`),
+ * so saving it must never resend the config form. `dirty` is what keeps a slow
+ * `GET /soul` from overwriting text the user is in the middle of typing.
+ */
+const soul = {
+  loaded: null,
+  dirty: false,
+};
+
+/**
  * The AI brain tab's working copy.
  *
  * `profiles` is what the cards show (loaded entries plus unsaved drafts, each
@@ -259,8 +272,9 @@ function buildForm() {
     voice: el("settings-pane-voice"),
     ai: el("settings-pane-ai"),
     survival: el("settings-pane-survival"),
+    soul: el("settings-pane-soul"),
   };
-  if (!panes.voice || !panes.ai || !panes.survival) return false;
+  if (!panes.voice || !panes.ai || !panes.survival || !panes.soul) return false;
 
   for (const pane of Object.values(panes)) pane.innerHTML = "";
 
@@ -379,6 +393,77 @@ function buildForm() {
     }
     panes.survival.appendChild(group);
   }
+
+  /* SOUL.md: the persona is its own file and its own endpoint, so this pane is
+     one textarea plus two buttons — save it here, or open the file and edit it
+     in the user's own editor. It deliberately does not participate in the
+     config form's Save button. */
+  const persona = document.createElement("div");
+  persona.className = "set-group";
+  persona.appendChild(heading("Persona"));
+
+  const soulNote = document.createElement("p");
+  soulNote.className = "set-note";
+  soulNote.id = "soul-note";
+  soulNote.textContent =
+    "SOUL.md is read fresh on every watcher turn, so edits apply without a restart.";
+  persona.appendChild(soulNote);
+
+  const soulPath = document.createElement("code");
+  soulPath.className = "set-soul-path";
+  soulPath.id = "soul-path";
+  persona.appendChild(soulPath);
+
+  const editorRow = document.createElement("div");
+  editorRow.className = "set-row set-row-area";
+  const editorLabel = document.createElement("label");
+  editorLabel.textContent = "SOUL.md";
+  const editorHint = document.createElement("span");
+  editorHint.className = "set-hint";
+  editorHint.textContent = "identity, tone, brevity — the first section of the prompt";
+  editorLabel.appendChild(editorHint);
+  editorRow.appendChild(editorLabel);
+  const editor = document.createElement("textarea");
+  editor.id = "soul-editor";
+  editor.className = "set-soul-editor";
+  editor.rows = 16;
+  editor.spellcheck = true;
+  editor.placeholder = "Loading SOUL.md…";
+  editor.addEventListener("input", () => {
+    soul.dirty = true;
+  });
+  editorRow.appendChild(editor);
+  persona.appendChild(editorRow);
+
+  const soulActions = document.createElement("div");
+  soulActions.className = "set-soul-actions";
+  const saveSoul = document.createElement("button");
+  saveSoul.type = "button";
+  saveSoul.className = "mini-btn primary";
+  saveSoul.id = "btn-soul-save";
+  saveSoul.textContent = "Save SOUL.md";
+  saveSoul.addEventListener("click", saveSoulFile);
+  soulActions.appendChild(saveSoul);
+  const openSoul = document.createElement("button");
+  openSoul.type = "button";
+  openSoul.className = "mini-btn";
+  openSoul.id = "btn-soul-open";
+  openSoul.textContent = "Open SOUL.md";
+  openSoul.title = "Open the file in your default editor";
+  openSoul.addEventListener("click", openSoulFile);
+  soulActions.appendChild(openSoul);
+  const reloadSoul = document.createElement("button");
+  reloadSoul.type = "button";
+  reloadSoul.className = "mini-btn";
+  reloadSoul.id = "btn-soul-reload";
+  reloadSoul.textContent = "Reload";
+  reloadSoul.addEventListener("click", () => {
+    soul.dirty = false;
+    refreshSoul();
+  });
+  soulActions.appendChild(reloadSoul);
+  persona.appendChild(soulActions);
+  panes.soul.appendChild(persona);
 
   return true;
 }
@@ -938,12 +1023,121 @@ export async function refreshSettings(render = true) {
   try {
     const response = await fetch(`${settings.base}/config`, { cache: "no-store" });
     const body = await response.json().catch(() => ({}));
-    if (render) renderSettings(body);
+    if (render) {
+      renderSettings(body);
+      // The persona is its own endpoint; keep the SOUL tab in step with the
+      // config refresh without making either wait on the other.
+      refreshSoul();
+    }
     return body;
   } catch (err) {
     setStatus(`API unreachable: ${err.message}`, "error");
     return null;
   }
+}
+
+/* ---------- SOUL.md ---------- */
+
+function soulElements() {
+  return {
+    editor: el("soul-editor"),
+    path: el("soul-path"),
+    note: el("soul-note"),
+    save: el("btn-soul-save"),
+  };
+}
+
+/** Paint the persona pane from a `GET /soul` body. */
+export function renderSoul(body) {
+  const { editor, path, note } = soulElements();
+  if (!editor) return;
+  const ok = !!body && body.ok !== false;
+  soul.loaded = ok ? body : null;
+
+  if (path) {
+    path.textContent = ok ? body.path || "" : "";
+    path.title = ok ? body.path || "" : "";
+  }
+  // A slow GET must not overwrite text the user is in the middle of typing.
+  if (ok && !soul.dirty) {
+    editor.value = body.content || body.persona || "";
+  }
+  if (note) {
+    if (!ok) {
+      note.textContent = "SOUL.md unavailable — the built-in persona is in use.";
+    } else if (body.is_default) {
+      note.textContent =
+        "No SOUL.md yet — the built-in starter is in use. Save to write this file.";
+    } else {
+      note.textContent =
+        "Read fresh on every watcher turn, so edits apply without a restart.";
+    }
+  }
+}
+
+/** Fetch the persona; `render` unless the caller wants the raw body. */
+export async function refreshSoul(render = true) {
+  try {
+    const response = await fetch(`${settings.base}/soul`, { cache: "no-store" });
+    const body = await response.json().catch(() => ({}));
+    if (render) renderSoul(body);
+    return body;
+  } catch (err) {
+    if (render) renderSoul({ ok: false, error: String(err) });
+    return null;
+  }
+}
+
+/** Save the textarea to `POST /soul` — the persona's own endpoint. */
+async function saveSoulFile() {
+  const { editor, save } = soulElements();
+  if (!editor) return;
+  const content = editor.value;
+  if (!content.trim()) {
+    setStatus("SOUL.md cannot be empty — delete the file to fall back to the starter", "error");
+    return;
+  }
+  if (save) save.disabled = true;
+  setStatus("saving SOUL.md…", "");
+  try {
+    const response = await fetch(`${settings.base}/soul`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.ok === false) {
+      const message = body.error || `HTTP ${response.status}`;
+      setStatus(message, "error");
+      toast(`SOUL.md not saved: ${message}`, true);
+      return;
+    }
+    soul.dirty = false;
+    renderSoul(body);
+    setStatus("SOUL.md saved — the next watcher turn uses it", "ok");
+    toast("SOUL.md saved");
+  } catch (err) {
+    setStatus(`save failed: ${err}`, "error");
+  } finally {
+    if (save) save.disabled = false;
+  }
+}
+
+/** Open the persona file in the user's default editor. */
+async function openSoulFile() {
+  const result = await call("open_soul_file");
+  if (result && result.__error) {
+    setStatus(`could not open SOUL.md: ${result.__error}`, "error");
+    return;
+  }
+  if (typeof result === "string" && result) {
+    toast(`Opened ${result}`);
+    setStatus(`opened ${result}`, "ok");
+    return;
+  }
+  // Not in Tauri (a browser tab): show the path so it can be copied by hand.
+  const path = soul.loaded && soul.loaded.path;
+  setStatus(path ? `SOUL.md lives at ${path}` : "SOUL.md path unavailable", "warn");
 }
 
 /* ---------- diffing + saving ---------- */
@@ -1169,6 +1363,9 @@ function selectTab(name) {
   for (const pane of document.querySelectorAll(".settings-pane")) {
     pane.classList.toggle("active", pane.dataset.pane === name);
   }
+  // Opening the SOUL tab is a deliberate look at the file: re-read it, unless
+  // the user has unsaved edits in the textarea.
+  if (name === "soul" && !soul.dirty) refreshSoul();
 }
 
 /** Wire the modal, hydrate once, and follow the file from outside edits too. */

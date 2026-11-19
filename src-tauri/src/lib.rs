@@ -17,6 +17,7 @@ pub mod models;
 pub mod platform;
 pub mod plugins;
 pub mod settings;
+pub mod soul;
 pub mod stt;
 pub mod tts;
 
@@ -1233,6 +1234,34 @@ fn reset_session(app: AppHandle, ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<V
 #[tauri::command(rename_all = "snake_case")]
 fn get_watcher_status(ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<Value, String> {
     Ok(ctx.watcher_status())
+}
+
+/// Open `SOUL.md` in the OS's default editor, from the Settings modal.
+///
+/// The persona is a plain markdown file the user is *meant* to edit, so the
+/// panel offers a hand-editing escape hatch beside its textarea. The path comes
+/// from the same resolver both processes use ([`soul::soul_path`]), so this
+/// always opens the file the watcher reads next turn. A missing file is seeded
+/// first: opening a non-existent path would just fail in the editor.
+#[tauri::command(rename_all = "snake_case")]
+fn open_soul_file(ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<String, String> {
+    let path = crate::soul::soul_path(ctx.ai_rules_path().as_deref());
+    crate::soul::ensure_soul(&path);
+    if !path.exists() {
+        return Err(format!("SOUL.md could not be created at {}", path.display()));
+    }
+    let shown = path.display().to_string();
+    #[cfg(windows)]
+    let spawned = std::process::Command::new("cmd")
+        .args(["/C", "start", ""])
+        .arg(&path)
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let spawned = std::process::Command::new("open").arg(&path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let spawned = std::process::Command::new("xdg-open").arg(&path).spawn();
+    spawned.map_err(|err| format!("could not open {shown}: {err}"))?;
+    Ok(shown)
 }
 
 /// Start or stop `char-rig-watcher.exe` on demand, without restarting the app.
@@ -3613,6 +3642,7 @@ pub fn run() {
             clear_pose,
             get_joints,
             get_watcher_status,
+            open_soul_file,
             set_watcher_enabled,
             get_ai_profiles,
             set_ai_profile,
@@ -3634,6 +3664,15 @@ pub fn run() {
                 // resets) need a window handle to publish page-local events
                 // such as `chat-message` / `chat-history-cleared`.
                 ctx.set_app_handle(handle.clone());
+
+                // Seed the persona once, beside the rules file the watcher
+                // reads. `ensure_soul` is create-only: a user-edited SOUL.md is
+                // never overwritten, and an unreadable one is left for the
+                // fallback to handle. The watcher re-reads it every turn.
+                {
+                    let soul_file = crate::soul::soul_path(ctx.ai_rules_path().as_deref());
+                    crate::soul::ensure_soul(&soul_file);
+                }
 
                 // Cover the whole **virtual desktop** (every monitor) with the
                 // transparent overlay. The page then has one CSS coordinate
