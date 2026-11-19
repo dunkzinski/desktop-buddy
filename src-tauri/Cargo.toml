@@ -82,3 +82,12 @@ cpal = "0.15"
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 global-hotkey = "0.6"
 rdev = "0.5"
+
+# Debug builds compile every dependency at opt-level 0, which is right for our
+# own code (breakpoints, quick rebuilds) and catastrophic for Cranelift: building
+# one 400 KB plugin module in wasmtime took ~4.5 s per plugin in that profile, and
+# every launch paid it again (9 s of a 10 s startup). Optimising *only* the
+# dependencies keeps `avatar-desktop` itself debuggable while making plugin
+# instantiation, JSON parsing and image decoding production-fast.
+[profile.dev.package."*"]
+opt-level = 2
