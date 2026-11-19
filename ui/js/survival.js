@@ -152,6 +152,14 @@ function renderFoods(foods) {
   const owned = new Map(
     ((survival.inventory && survival.inventory.totals) || []).map((entry) => [entry.id, entry.count]),
   );
+  // Foods that live in the bag are drunk/eaten *from* it (POST /survival/feed
+  // spends one), so their option has to say how many are left. The shelf meals
+  // (cake, coffee, sandwich …) have no bag entry and are eaten as-is.
+  const bagFoods = new Set(
+    ((survival.inventory && survival.inventory.catalog) || [])
+      .filter((item) => item.food)
+      .map((item) => item.food),
+  );
 
   const groups = [
     ["Ingredients", feedable.filter((food) => food.kind === "raw")],
@@ -166,8 +174,9 @@ function renderFoods(foods) {
     for (const food of items) {
       const option = document.createElement("option");
       option.value = food.id;
-      const held = owned.get(food.id);
-      option.textContent = `${food.label} · +${Math.round(food.nutrition)}${held ? ` · own ${held}` : ""}`;
+      const held = owned.get(food.id) || 0;
+      const stock = bagFoods.has(food.id) ? (held ? ` · own ${held}` : " · none in bag") : "";
+      option.textContent = `${food.label} · +${Math.round(food.nutrition)}${stock}`;
       option.title = food.effects && food.effects.length
         ? `effects: ${food.effects.map((e) => e.expression || e.kind).join(", ")}`
         : `saturation ratio ${food.saturation_ratio}`;
@@ -404,7 +413,10 @@ function mealNote(body, fallback) {
     ? ` · well fed ${Math.round(Number(body.comfort_secs) / 60)}m`
     : "";
   const craving = body.craving_satisfied ? ` · craving satisfied` : "";
-  return `${body.label || fallback} eaten (+${Math.round(gained * 10) / 10} hunger)${moving}${comfort}${craving}`;
+  // A meal that came out of the bag reports what is left, so the picker's
+  // "own N" and the note agree after one click.
+  const left = Number.isInteger(body.remaining) ? ` · ${body.remaining} left` : "";
+  return `${body.label || fallback} eaten (+${Math.round(gained * 10) / 10} hunger)${moving}${comfort}${craving}${left}`;
 }
 
 /** The Craft button: a real `POST /survival/craft` with a recipe id. */

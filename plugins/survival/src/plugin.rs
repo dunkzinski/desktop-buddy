@@ -712,13 +712,74 @@ impl Survival {
     }
 
     /// `POST /survival/feed`: eat one catalog id.
+    ///
+    /// A food that can sit in the bag (`apple`, `tomato`, a caught fish) is
+    /// **spent from the bag** — the same transaction as Bag → Use, so the
+    /// picker's `own N` badge is honest and feeding cannot conjure food. With
+    /// none left the meal is a 409 that says so, and nothing moves.
+    ///
+    /// The shelf meals that have no bag entry (`cake`, `coffee`, `sandwich` …)
+    /// are still eaten from the shelf: they are snacks the picker offers, not
+    /// things you can hold.
     pub fn feed(&mut self, food_id: &str) -> Result<Value, FeedError> {
         let food =
             model::find_food(food_id).ok_or_else(|| FeedError::UnknownFood(food_id.to_string()))?;
+        match inventory::find_item_for_food(food.id) {
+            Some(definition) => self.eat_held(definition, "feed"),
+            None => {
+                let outcome = self.stats.eat(food, host::now_ms());
+                let payload = self.finish_meal(&outcome);
+                if !outcome.accepted {
+                    return Err(FeedError::Refused(payload));
+                }
+                Ok(payload)
+            }
+        }
+    }
+
+    /// Eat one **held** item: move the bars through [`SurvivalStats::eat`], then
+    /// take the item out of the bag and publish `inventory-changed`.
+    ///
+    /// Shared by `POST /survival/feed` (by food id) and `POST /inventory/use`
+    /// (by item id) so both paths spend the bag exactly once. A refused meal
+    /// (too full, still digesting) consumes **nothing**.
+    fn eat_held(
+        &mut self,
+        definition: &inventory::ItemDefinition,
+        source: &str,
+    ) -> Result<Value, FeedError> {
+        let held = self.inventory.count(definition.id);
+        if held == 0 {
+            return Err(FeedError::denied(
+                409,
+                format!(
+                    "no {} in the bag — buy one on the Store tab or catch something first",
+                    definition.label
+                ),
+            ));
+        }
+        let Some(food_id) = definition.food else {
+            return Err(FeedError::denied(
+                400,
+                format!("{} is not something you can use — it can only be held", definition.label),
+            ));
+        };
+        let food = model::find_food(food_id).ok_or_else(|| {
+            FeedError::denied(500, format!("{} points at unknown food {food_id}", definition.id))
+        })?;
+
         let outcome = self.stats.eat(food, host::now_ms());
-        let payload = self.finish_meal(&outcome);
+        let mut payload = self.finish_meal(&outcome);
         if !outcome.accepted {
             return Err(FeedError::Refused(payload));
+        }
+        self.inventory.remove(definition.id, 1);
+        let changed = self.emit_inventory(definition.id, -1, source);
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("item".to_string(), json!(definition.id));
+            object.insert("item_label".to_string(), json!(definition.label));
+            object.insert("remaining".to_string(), json!(self.inventory.count(definition.id)));
+            object.insert("change".to_string(), changed);
         }
         Ok(payload)
     }
@@ -1077,7 +1138,9 @@ impl Survival {
     /// `POST /inventory/use` — spend one item. An edible one is a meal: the
     /// item leaves the bag and the hunger bars move through the same
     /// [`SurvivalStats::eat`] path `POST /survival/feed` uses, which is what
-    /// makes a caught fish worth catching.
+    /// makes a caught fish worth catching. Both entry points share
+    /// [`Self::eat_held`], so feeding by food id and using by item id spend the
+    /// bag exactly the same way.
     ///
     /// A refused meal (too full, still digesting) consumes **nothing**.
     pub fn use_item(&mut self, id: &str) -> Result<Value, FeedError> {
@@ -1087,36 +1150,7 @@ impl Survival {
                 format!("there is no item called {id:?} — GET /inventory lists the catalog"),
             )
         })?;
-        if self.inventory.count(definition.id) == 0 {
-            return Err(FeedError::denied(
-                409,
-                format!("no {} in the bag", definition.label),
-            ));
-        }
-        let Some(food_id) = definition.food else {
-            return Err(FeedError::denied(
-                400,
-                format!("{} is not something you can use — it can only be held", definition.label),
-            ));
-        };
-        let food = model::find_food(food_id).ok_or_else(|| {
-            FeedError::denied(500, format!("{} points at unknown food {food_id}", definition.id))
-        })?;
-
-        let outcome = self.stats.eat(food, host::now_ms());
-        let mut payload = self.finish_meal(&outcome);
-        if !outcome.accepted {
-            return Err(FeedError::Refused(payload));
-        }
-        self.inventory.remove(definition.id, 1);
-        let changed = self.emit_inventory(definition.id, -1, "use");
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("item".to_string(), json!(definition.id));
-            object.insert("item_label".to_string(), json!(definition.label));
-            object.insert("remaining".to_string(), json!(self.inventory.count(definition.id)));
-            object.insert("change".to_string(), changed);
-        }
-        Ok(payload)
+        self.eat_held(definition, "use")
     }
 
     /* ---------------------------------------------------------------- *
@@ -1811,9 +1845,11 @@ mod tests {
             payload["comfort_secs"].as_u64().unwrap() as f32
         );
         // The halved-drain arithmetic itself is pinned in the model's tests; a
-        // raw ingredient, by contrast, grants no comfort at all. (Feeding is the
-        // hand-it-a-snack path and does not need the bag.)
+        // raw ingredient, by contrast, grants no comfort at all. Feeding spends
+        // the bag, so the tomato has to be held (the pasta just ate the ones
+        // the test stocked).
         advance_clock(31_000);
+        stock(&mut state, &[("tomato", 1)]);
         state.feed("tomato").expect("tomato");
         assert!(!state.stats().is_well_fed(), "raw food is not comfort food");
     }
@@ -1848,6 +1884,60 @@ mod tests {
         state.feed("sandwich").expect("feed");
         let craving = state.stats().craving.as_ref().expect("still craving");
         assert_eq!(craving.target, "sweet");
+    }
+
+    #[test]
+    fn feeding_a_held_food_spends_one_from_the_bag() {
+        let mut state = plugin(40.0, 0.0);
+        stock(&mut state, &[("apple", 2)]);
+        take_recorded();
+
+        let payload = state.feed("apple").expect("apple");
+        assert_eq!(payload["item"], "apple");
+        assert_eq!(payload["remaining"], 1);
+        assert_eq!(state.inventory.count("apple"), 1, "one apple left the bag");
+
+        let recorded = take_recorded();
+        let change = recorded
+            .events
+            .iter()
+            .find(|(name, payload)| name == EVENT_INVENTORY && payload["item"] == "apple")
+            .expect("inventory-changed for the meal");
+        assert_eq!(change.1["delta"], -1);
+        assert_eq!(change.1["source"], "feed");
+    }
+
+    #[test]
+    fn feeding_a_food_you_do_not_hold_is_a_409_and_moves_nothing() {
+        let mut state = plugin(40.0, 0.0);
+        let hunger_before = state.stats().hunger;
+        let err = state.feed("apple").expect_err("an empty bag cannot feed");
+        assert_eq!(err.status_code(), 409);
+        assert!(err.to_string().contains("no Apple in the bag"), "{err}");
+        assert_eq!(state.stats().hunger, hunger_before, "no free meal");
+        assert_eq!(state.inventory.count("apple"), 0);
+    }
+
+    #[test]
+    fn a_refused_meal_leaves_the_bag_alone() {
+        // Satiated: `cake` is refused by the full check, and the item stays.
+        let mut state = plugin(100.0, 100.0);
+        stock(&mut state, &[("apple", 1)]);
+        let err = state.feed("apple").expect_err("too full");
+        assert_eq!(err.status_code(), 409);
+        assert_eq!(state.inventory.count("apple"), 1);
+    }
+
+    #[test]
+    fn a_shelf_meal_with_no_bag_entry_is_still_eaten_as_is() {
+        let mut state = plugin(40.0, 0.0);
+        assert_eq!(state.inventory.count("sandwich"), 0);
+        let payload = state.feed("sandwich").expect("shelf snack");
+        assert!(payload["accepted"].as_bool().unwrap_or(false));
+        assert!(
+            payload.get("remaining").is_none(),
+            "nothing to report when nothing left the bag"
+        );
     }
 
     #[test]

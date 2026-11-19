@@ -344,6 +344,19 @@ pub fn find_item(id: &str) -> Option<&'static ItemDefinition> {
     ITEMS.iter().find(|item| item.id == needle)
 }
 
+/// The item a given food id is eaten *from* (`apple` → the `apple` stack,
+/// `silver_trout` → the fish of the same name). `None` for the shelf meals
+/// (cake, coffee, sandwich …) that have no bag entry and are eaten as-is.
+///
+/// This is what makes `POST /survival/feed` spend the bag the same way
+/// `POST /inventory/use` does: the food and the held thing are the same item.
+pub fn find_item_for_food(food_id: &str) -> Option<&'static ItemDefinition> {
+    let needle = crate::model::normalize_id(food_id);
+    ITEMS
+        .iter()
+        .find(|item| item.food == Some(needle.as_str()))
+}
+
 /// What a bag starts with, so a fresh avatar can fish before it owns anything.
 /// The rod is gear, the bait is finite, and the driftwood makes the tab look
 /// inhabited rather than empty on first open.

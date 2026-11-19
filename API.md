@@ -1089,7 +1089,19 @@ curl -s -X POST localhost:8765/survival/feed \
 ```
 
 `id` is accepted as an alias for `food`, so an agent can round-trip the
-catalog's `id` field. The response is the `EatOutcome`:
+catalog's `id` field.
+
+A food that can sit in the bag (`apple`, `tomato`, a caught fish — every
+`GET /inventory` entry with a `food`) is **spent from the bag**: feeding it is
+the same transaction as `POST /inventory/use`, so it costs one of what you hold,
+emits `inventory-changed` with `source: "feed"`, and the response gains
+`item` / `item_label` / `remaining` / `change`. With none left the answer is a
+**409** (`"no Apple in the bag — buy one on the Store tab or catch something
+first"`) and neither the bars nor the bag move; a refused meal (`too_full`,
+`still_digesting`) consumes nothing either. The shelf meals that have no bag
+entry (`cake`, `coffee`, `sandwich`, the crafted dishes) are still eaten as-is.
+
+The response is the `EatOutcome`:
 
 ```json
 {
@@ -1105,7 +1117,11 @@ catalog's `id` field. The response is the `EatOutcome`:
   "tier_after": "hungry",
   "effects": [],
   "refusal": null,
-  "cooldown_remaining_secs": 0
+  "cooldown_remaining_secs": 0,
+  "item": "apple",
+  "item_label": "Apple",
+  "remaining": 1,
+  "change": {"item": "apple", "delta": -1, "count": 1, "source": "feed", "…": "…"}
 }
 ```
 

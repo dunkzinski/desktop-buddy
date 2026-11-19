@@ -1388,7 +1388,11 @@ tick, so they keep moving whether or not the card is on screen.
   pretending the click worked. The picker is filled from `GET /foods` and is
   **grouped** into `Ingredients` (raw) and `Meals & drinks`; crafted dishes are
   deliberately left out, so an omelette has to be cooked, not eaten from the
-  shelf.
+  shelf. A food that lives in the bag shows `own N` (`· none in bag` at zero) and
+  feeding it **spends one**, exactly like Bag → Use — the plugin's `eat_held` is
+  shared by both routes, so the note can print `· N left` and no meal comes free
+  from an empty bag. Shelf meals with no bag entry (`cake`, `coffee`, `sandwich`)
+  are eaten as-is.
 * **Crave** sends `POST /survival {"craving": "<id>"}` and the row fills in;
   **Clear** sends `{"craving": null}`. This is the manual version of the
   craving the plugin rolls on its own, and it is how you demonstrate the
@@ -1403,8 +1407,9 @@ tick, so they keep moving whether or not the card is on screen.
   left the pantry (`used 2 × Egg, 1 × Cheese`); a refusal prints the API's own
   prose. The dish is eaten in the same call and its `comfort_secs` window halves
   the hunger drain for that long. Feeding is the other path: the Status picker
-  now shows `own N` per raw ingredient too, but with nobody having asked — a
-  `POST /survival/feed` still just eats the id you hand it.
+  shows `own N` per raw ingredient too, and `POST /survival/feed` now takes that
+  item out of the bag through the same `eat_held` the Bag tab's Use button uses —
+  a food you do not hold is a 409, not a free snack.
 * **Where the numbers come from.** `GET /survival` on open/start, the
   `survival` telemetry event, a `GET /survival` re-read on `survival-meal`,
   `survival-threshold`, `survival-craft` and `survival-craving`, plus a 15 s poll
@@ -2300,7 +2305,7 @@ its own `/plugins`. `GET /survival` returns the appetite
 (`config`, `stats`, `craving`, the `coins` wallet and the tier duplicated at the
 top level);
 `POST /survival` overrides `hunger`/`saturation` (at least one of those or
-`craving`, clamped 0–100, **400** if none); `POST /survival/feed` eats one catalog id and returns
+`craving`, clamped 0–100, **400** if none); `POST /survival/feed` eats one catalog id — a bag food is spent (`item`/`remaining` in the reply), a shelf meal is not — and returns
 the `EatOutcome` (**409** when refused as `too_full` or `still_digesting`, **400**
 for an unknown id); `GET /foods` lists the static catalog; `GET /plugins` returns
 the registry's lifecycle state, tick/error counters and each plugin's `status`.
