@@ -129,6 +129,7 @@ const ai = {
   profiles: [],
   removed: [],
   ports: [],
+  hosts: [],
   discovered: null,
   selectedActive: "",
   selectedVision: "",
@@ -323,7 +324,21 @@ function buildForm() {
   discovery.className = "set-group";
   discovery.appendChild(heading("Model discovery"));
 
-  const portsRow = bareRow("Discovery ports", "comma separated · 127.0.0.1");
+  const hostsRow = bareRow(
+    "Discovery hosts",
+    "comma separated IPs/hostnames · add :port to target just that port",
+  );
+  const hostsInput = document.createElement("input");
+  hostsInput.type = "text";
+  hostsInput.id = "set-ai-hosts";
+  hostsInput.spellcheck = false;
+  hostsInput.placeholder = "127.0.0.1";
+  hostsInput.title =
+    "Hosts probed by Discover models — LAN, Tailscale or a second interface. An entry may carry its own port (`192.168.0.36:11434`). Saved as `discovery_hosts`";
+  hostsRow.appendChild(hostsInput);
+  discovery.appendChild(hostsRow);
+
+  const portsRow = bareRow("Discovery ports", "comma separated · probed on every host");
   const portsInput = document.createElement("input");
   portsInput.type = "text";
   portsInput.id = "set-ai-ports";
@@ -344,7 +359,7 @@ function buildForm() {
   note.className = "set-note";
   note.id = "ai-discovery-note";
   note.textContent =
-    "Probes each port for OpenAI /v1/models, llama.cpp /models and Ollama /api/tags, then lists local .gguf files.";
+    "Probes every host+port for OpenAI /v1/models, llama.cpp /models and Ollama /api/tags, then lists local .gguf files.";
   discovery.appendChild(note);
 
   const results = document.createElement("div");
@@ -728,6 +743,68 @@ function parsePorts(text) {
   return ports;
 }
 
+/** Clean one host entry: trim, lose an accidental scheme/path, drop junk. */
+function normalizeHost(part) {
+  let value = String(part || "").trim();
+  value = value.replace(/^https?:\/\//i, "");
+  value = value.replace(/[/?#].*$/, "");
+  value = value.trim();
+  if (!value || /\s/.test(value) || value.includes("@")) return "";
+  return value;
+}
+
+/**
+ * Split `host`, `host:port`, `[::1]:8001` into its parts the same way the
+ * backend does, so the note can count real targets and a loopback chip can keep
+ * its short `:port` form.
+ */
+function splitHostPort(entry) {
+  const text = String(entry || "").trim();
+  const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(text);
+  if (bracketed) {
+    const port = Number(bracketed[2]);
+    return { host: bracketed[1], port: Number.isInteger(port) && port > 0 ? port : 0 };
+  }
+  if ((text.match(/:/g) || []).length === 1) {
+    const [host, rawPort] = text.split(":");
+    const port = Number(rawPort);
+    if (host && Number.isInteger(port) && port >= 1 && port <= 65535) return { host, port };
+  }
+  return { host: text, port: 0 };
+}
+
+function isLoopbackHost(host) {
+  const value = String(host || "")
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+  return value === "localhost" || value === "::1" || value === "0.0.0.0" || value.startsWith("127.");
+}
+
+/** `:8001` for loopback (the form the modal always used), `host:port` otherwise. */
+function targetLabel(host, port) {
+  return isLoopbackHost(host) ? `:${port}` : `${host}:${port}`;
+}
+
+function parseHosts(text) {
+  const hosts = [];
+  for (const part of String(text || "").split(/[,\s;]+/)) {
+    const host = normalizeHost(part);
+    if (!host) continue;
+    if (!hosts.some((known) => known.toLowerCase() === host.toLowerCase())) hosts.push(host);
+  }
+  return hosts;
+}
+
+/** How many `(host, port)` pairs the current form would probe. */
+function countTargets(hosts, ports) {
+  let count = 0;
+  for (const host of hosts) {
+    const { port } = splitHostPort(host);
+    count += port ? 1 : ports.length;
+  }
+  return count;
+}
+
 function portInUrl(url) {
   const match = /^[a-z]+:\/\/([^/?#]*)/i.exec(String(url || ""));
   if (!match) return 0;
@@ -778,7 +855,7 @@ function clearDiscovery() {
   }
   if (note) {
     note.textContent =
-      "Probes each port for OpenAI /v1/models, llama.cpp /models and Ollama /api/tags, then lists local .gguf files.";
+      "Probes every host+port for OpenAI /v1/models, llama.cpp /models and Ollama /api/tags, then lists local .gguf files.";
   }
 }
 
@@ -795,7 +872,7 @@ function renderDiscovery(body) {
   }
   host.classList.remove("hidden");
   if (note) {
-    note.textContent = `${body.summary} · ${body.elapsed_ms} ms (${body.timeout_ms} ms per port)`;
+    note.textContent = `${body.summary} · ${body.elapsed_ms} ms (${body.timeout_ms} ms per target)`;
   }
 
   const ports = document.createElement("div");
@@ -803,8 +880,9 @@ function renderDiscovery(body) {
   for (const entry of body.ports || []) {
     const chip = document.createElement("span");
     chip.className = `set-chip${entry.reachable ? " ok" : ""}`;
-    chip.textContent = `:${entry.port} · ${entry.reachable ? entry.detail : "offline"}`;
-    chip.title = entry.detail || "";
+    const label = entry.label || targetLabel(entry.host, entry.port);
+    chip.textContent = `${label} · ${entry.reachable ? entry.detail : "offline"}`;
+    chip.title = entry.host && !isLoopbackHost(entry.host) ? `${entry.host} — ${entry.detail || ""}` : entry.detail || "";
     ports.appendChild(chip);
   }
   host.appendChild(ports);
@@ -814,7 +892,7 @@ function renderDiscovery(body) {
     const empty = document.createElement("p");
     empty.className = "set-note";
     empty.textContent =
-      "Nothing found: no model server answered and no local .gguf files were seen. Start a server, or check the ports.";
+      "Nothing found: no model server answered and no local .gguf files were seen. Start a server, or check the hosts and ports.";
     host.appendChild(empty);
     return;
   }
@@ -889,10 +967,17 @@ function importModel(index) {
 async function discoverModels() {
   const button = el("btn-ai-discover");
   const note = el("ai-discovery-note");
-  const input = el("set-ai-ports");
-  const ports = parsePorts(input ? input.value : "");
-  if (!ports.length) {
-    if (note) note.textContent = "Add at least one port first (for example 8001, 11434).";
+  const hostsInput = el("set-ai-hosts");
+  const portsInput = el("set-ai-ports");
+  const hosts = parseHosts(hostsInput ? hostsInput.value : "");
+  const ports = parsePorts(portsInput ? portsInput.value : "");
+  if (!hosts.length) {
+    if (note) note.textContent = "Add at least one host first (for example 127.0.0.1).";
+    return;
+  }
+  const targetCount = countTargets(hosts, ports);
+  if (!targetCount) {
+    if (note) note.textContent = "Add at least one port first (for example 8001, 11434), or give a host its own :port.";
     return;
   }
 
@@ -900,13 +985,15 @@ async function discoverModels() {
     button.disabled = true;
     button.textContent = "Probing…";
   }
-  if (note) note.textContent = `probing ${ports.length} port(s) on 127.0.0.1…`;
+  if (note) {
+    note.textContent = `probing ${targetCount} target(s) on ${hosts.length} host(s)…`;
+  }
 
   try {
     const response = await fetch(`${settings.base}/ai-discover`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ports }),
+      body: JSON.stringify({ hosts, ports }),
     });
     const body = await response.json().catch(() => ({}));
     ai.discovered = body && typeof body === "object" ? body : { ok: false, reason: "empty reply" };
@@ -986,6 +1073,10 @@ export function renderSettings(body) {
   }));
   ai.removed = [];
   ai.ports = Array.isArray(config.discovery_ports) ? config.discovery_ports.slice() : [];
+  ai.hosts =
+    Array.isArray(config.discovery_hosts) && config.discovery_hosts.length
+      ? config.discovery_hosts.slice()
+      : ["127.0.0.1"];
   const active = (config.ai && config.ai.active_profile) || "";
   ai.selectedActive = active || (ai.profiles[0] && ai.profiles[0].name) || "";
   ai.selectedVision = (config.vision && config.vision.profile_name) || ai.selectedActive;
@@ -994,6 +1085,11 @@ export function renderSettings(body) {
   if (portsInput) {
     portsInput.value = ai.ports.join(", ");
     portsInput.scrollLeft = 0;
+  }
+  const hostsInput = el("set-ai-hosts");
+  if (hostsInput) {
+    hostsInput.value = ai.hosts.join(", ");
+    hostsInput.scrollLeft = 0;
   }
 
   renderProfileCards();
@@ -1174,6 +1270,11 @@ function sameList(a, b) {
   return a.every((value, index) => Number(value) === Number(b[index]));
 }
 
+function sameStringList(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((value, index) => String(value).toLowerCase() === String(b[index]).toLowerCase());
+}
+
 /** The `ai` half of a save: routing, creates, edits, renames and removals. */
 function collectAiPatch(patch, config) {
   syncCards();
@@ -1258,6 +1359,13 @@ function collectAiPatch(patch, config) {
     const ports = parsePorts(portsInput.value);
     if (!sameList(config.discovery_ports || [], ports)) {
       patch.discovery_ports = ports;
+    }
+  }
+  const hostsInput = el("set-ai-hosts");
+  if (hostsInput) {
+    const hosts = parseHosts(hostsInput.value);
+    if (!sameStringList(config.discovery_hosts || [], hosts)) {
+      patch.discovery_hosts = hosts;
     }
   }
 }
@@ -1404,6 +1512,7 @@ export async function setupSettings() {
         profiles: ai.profiles.map((profile) => ({ ...profile })),
         removed: ai.removed.slice(),
         ports: ai.ports.slice(),
+        hosts: ai.hosts.slice(),
         active: ai.selectedActive,
         vision: ai.selectedVision,
         discovered: ai.discovered,

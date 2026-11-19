@@ -88,7 +88,7 @@ ui/
     │                  # `POST /metamorphose` — the plugin writes the model and the
     │                  # host swaps the avatar, so nothing here touches the rig), `nudge` (`POST /creature/xp`),
     │                  # `reset` (`POST /creature/reset`), `toggleMetamorphoseCard` / `metamorphoseCardOpen`
-    ├── settings.js     # The **Settings** modal over `GET /config` / `POST /config`: `setupSettings` (build the form from one `FIELDS` spec, hydrate from the server, prime at startup), `renderSettings` (values, per-path ✓/✗, stray-key warnings), `collectPatch` (sends **only** what changed, including `ai.create` / `ai.rename` / `ai.remove` and `discovery_ports`), the AI brain tab's own `renderProfileCards` / `refreshProfileOptions` / `addProfile` / `removeProfile` / `discoverModels` / `importModel` / `renderDiscovery`, `save` (partial `POST /config`, then reports applied vs `restart_required`), `toggleSettings` / `settingsOpen`
+    ├── settings.js     # The **Settings** modal over `GET /config` / `POST /config`: `setupSettings` (build the form from one `FIELDS` spec, hydrate from the server, prime at startup), `renderSettings` (values, per-path ✓/✗, stray-key warnings), `collectPatch` (sends **only** what changed, including `ai.create` / `ai.rename` / `ai.remove`, `discovery_ports` and `discovery_hosts`), the AI brain tab's own `renderProfileCards` / `refreshProfileOptions` / `addProfile` / `removeProfile` / `discoverModels` / `importModel` / `renderDiscovery`, `save` (partial `POST /config`, then reports applied vs `restart_required`), `toggleSettings` / `settingsOpen`
     └── main.js         # Entry point: DOM bindings, keyboard shortcuts, gaze targeting (`updateGaze`, `attachGazeTracking`), `window.__avatarDebug`, `requestAnimationFrame` main loop (`step`, `frame` — bubble re-anchor), the ask/task command bar (`openCommandBar`, `sendUserMessage`, quick-task chips, `resetSession`)
 ```
 
@@ -430,7 +430,7 @@ so the app and the watcher share one resolver and one seed.
 | `get_speech`, `history` | `GET /speech` (the stored bubble + `talking`) and `GET /history` (`crate::chat_history_json` — the same bounded conversation log the History drawer renders) |
 | `get_stt`, `set_stt` | `GET /stt` / `POST /stt` → `stt::status_json` / `stt::set_enabled` (status + live `idle`/`listening`/`transcribing` state) |
 | `ai_profiles`, `switch_ai_profile` | `GET /ai-profiles` / `POST /ai-profile` → `ai_status_json` / `do_set_ai_profile`, both on a `spawn_blocking` thread because the health probe is a blocking 800 ms HTTP GET; `event_name` maps the frame to `ai_profile` |
-| `discover_models` | `POST /ai-discover` → `discovery::discover`, on a `spawn_blocking` thread (each port is a blocking GET with a 1.5 s budget); an optional `{ports: […]}` body overrides the rules file, otherwise `settings::discovery_ports` supplies the list |
+| `discover_models` | `POST /ai-discover` → `discovery::discover`, on a `spawn_blocking` thread (each `(host, port)` target is a blocking GET with a 1.5 s budget, probed in parallel); an optional `{hosts: […], ports: […]}` body overrides the rules file, otherwise `settings::discovery_hosts` / `settings::discovery_ports` supply the lists and `discovery::targets` crosses them |
 | `get_config`, `set_config` | `GET /config` / `POST /config` → `settings::config_json` / `settings::apply_config` (the write runs on `spawn_blocking`), then the live side effects: `tts::set_enabled`, `stt::set_enabled`, `plugins::apply_survival_config`, and one `ai_profile` frame so the watcher re-reads the file |
 | `get_soul`, `set_soul` | `GET /soul` / `POST /soul` → `soul::soul_json` / `soul::write_soul` on `spawn_blocking`; `soul_path` resolves the same file the watcher reads. No cache to invalidate — the watcher re-reads on every turn |
 | `start` | bind, spawn thread, Tokio runtime, axum serve, graceful shutdown |
@@ -745,18 +745,22 @@ writes anything: it probes, and the modal decides what to import.
 | --- | --- |
 | `DISCOVERY_TIMEOUT_MS`, `MAX_GGUF_DEPTH` | 1.5 s per request; the `.gguf` walk depth (3) |
 | `port_in_url` | the port a profile endpoint already names (`…:8001/v1` → 8001), so `discovery_ports` can include it |
+| `Target`, `split_host_port`, `normalize_host` | one `(host, port)` pair; a `discovery_hosts` entry is cleaned here (trim, no `http(s)://`, no path, dedupe) and `192.168.0.36:11434` keeps its own port. `label` / `is_loopback` / `authority` give the modal its `:8001` vs `host:port` badge and a bracket-correct URL for IPv6 |
+| `targets` | cross `discovery_hosts` with `discovery_ports` (a `host:port` entry is one target), preserving order and dropping duplicates |
 | `openai_rows`, `ollama_rows` | parse `{data:[…]}` / `{models:[…]}` (OpenAI, llama.cpp, vLLM) and Ollama's `{models:[…]}`; `multimodal` comes from `architecture.input_modalities` or a `clip` family |
-| `probe_port` | per port: `v1/models`, then the root-mounted `models`, then `api/tags` — one `reqwest::blocking` client with `no_proxy`, so a dead port is a fast `None` and a wrong-protocol port is one timeout |
+| `probe_target` | per target (resolved through `to_socket_addrs`, so hostnames work): `v1/models`, then the root-mounted `models`, then `api/tags` — one `reqwest::blocking` client with `no_proxy`, so a dead target is a fast `None` and a wrong-protocol port is one timeout |
 | `gguf_dirs`, `walk_gguf`, `gguf_models` | `.gguf` weights under `%LOCALAPPDATA%\hermes\models` (plus the `USERPROFILE` / `$HOME` fallbacks), reported with `path` and `size_bytes` so an unloaded model is still visible |
-| `discover` | the whole `POST /ai-discover` body: `{ok, summary, elapsed_ms, timeout_ms, ports:[{port, reachable, detail}], models:[…], gguf_dirs}` |
+| `discover` | the whole `POST /ai-discover` body: `{ok, summary, elapsed_ms, timeout_ms, targets:[{host, port, label, loopback, reachable, detail}], ports:[the same], models:[…], gguf_dirs}`. Targets are probed in parallel threads, one 1.5 s budget each |
 
-Every model row is `{id, label, endpoint, port, source, owned_by, multimodal}`
-(`source` is `openai_compat`, `ollama` or `gguf`; a `.gguf` row also carries
-`path` / `size_bytes` and a `null` port). `endpoint` is always the URL a profile
-should store — `http://127.0.0.1:<port>/v1` — because that is the prefix the
-watcher's `chat/completions` call hangs off. Unit tests serve a one-shot
-`TcpListener` and pin the endpoint, the multimodal flag, a silent port and the
-port parser; no model server is needed.
+Every model row is `{id, label, endpoint, host, port, loopback, source,
+owned_by, multimodal}` (`source` is `openai_compat`, `ollama` or `gguf`; a
+`.gguf` row also carries `path` / `size_bytes` and a `null` port). `endpoint` is
+always the URL a profile should store — `http://<host>:<port>/v1` — because that
+is the prefix the watcher's `chat/completions` call hangs off, and `host` is what
+lets the modal show a LAN/Tailscale hit differently from loopback. Unit tests
+serve a one-shot `TcpListener` and pin the endpoint, the multimodal flag, a
+silent target, the host normaliser and the host×port cross product; no model
+server is needed.
 
 ### `src-tauri/src/models.rs` (1081 lines)
 
@@ -1464,12 +1468,16 @@ form now. **Settings ⚙** in the control panel opens a modal with three tabs �
   (`active_profile`) and **Vision / screen capture** (`vision.profile_name`) —
   both rebuilt from the profile list whenever a card is added, renamed or
   removed, so a new profile is selectable before it is saved. Below them:
-  **Discovery ports** (comma separated, saved as the top-level
-  `discovery_ports`) and **Discover models**, which probes each port for an
-  OpenAI `v1/models` listing, llama.cpp's root-mounted `models` listing and
-  Ollama's `api/tags` (plus the `.gguf` files under
+  **Discovery hosts** (comma separated IPs/hostnames, `127.0.0.1` as the
+  placeholder, saved as the top-level `discovery_hosts`, each entry optionally
+  `host:port`), **Discovery ports** (comma separated, saved as
+  `discovery_ports`, probed on every host) and **Discover models**, which probes
+  each host+port for an OpenAI `v1/models` listing, llama.cpp's root-mounted
+  `models` listing and Ollama's `api/tags` (plus the `.gguf` files under
   `%LOCALAPPDATA%\hermes\models`) and lists every model it found with its
-  endpoint and whether it is already configured. **+ Import** turns a row into a
+  endpoint and whether it is already configured. Status chips name the host for
+  non-loopback targets (`192.168.0.36:11434 · offline`), so a remote hit is
+  never mistaken for a local one. **+ Import** turns a row into a
   draft card pre-filled with the endpoint, model id, `timeout_secs: 120` and the
   JSON-avatar system prompt. Each card edits the key, label, kind, endpoint (or
   `cmd`), model, `max_tokens`, timeout and the **system prompt** textarea, and
@@ -1519,7 +1527,7 @@ working and a missing/broken one falls back to the built-in defaults
 (`README.md` shows the shipped file). On top of the interaction kinds, title
 keywords and cooldowns it now also carries `app_rules`, `alerts`,
 `quick_tasks`, the session/rotation keys, `hotkey`, `tts`, `stt`, the `vision`
-block and `discovery_ports`:
+block and `discovery_hosts` / `discovery_ports`:
 
 ```json
 {
@@ -1567,17 +1575,24 @@ block and `discovery_ports`:
     "trigger_phrases": ["what's on my screen", "look at my screen"]
   },
   "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
+  "discovery_hosts": ["127.0.0.1"],
   "discovery_ports": [8001, 9931, 9932, 11434, 8080, 1234]
 }
 ```
 
-* **`discovery_ports`** — the ports **Discover models** probes on
-  `127.0.0.1`. Absent means the shipped defaults (`8001`, `9931`, `9932`,
-  `11434`, `8080`, `1234`); the modal also shows any port an `ai_profiles`
-  endpoint already names, so a hand-written profile is discoverable without
-  editing the list. The watcher never dials these — only the app's
-  `POST /ai-discover` does — so the key is tolerated by an older watcher and
-  a file without it loads on defaults.
+* **`discovery_hosts`** — the hosts **Discover models** probes, defaulting to
+  `["127.0.0.1"]` when absent or empty. A LAN box, a Tailscale peer or a second
+  interface is just another entry; `192.168.0.36:11434` targets that one port
+  instead of being crossed with `discovery_ports`. Entries are cleaned on save
+  (trimmed, `http(s)://` and any path dropped, deduplicated) so the file only
+  ever holds `host` or `host:port`. The watcher never dials these either.
+* **`discovery_ports`** — the ports **Discover models** probes on every
+  `discovery_hosts` entry. Absent means the shipped defaults (`8001`, `9931`,
+  `9932`, `11434`, `8080`, `1234`); the modal also shows any port an
+  `ai_profiles` endpoint already names, so a hand-written profile is
+  discoverable without editing the list. The watcher never dials these — only
+  the app's `POST /ai-discover` does — so the key is tolerated by an older
+  watcher and a file without it loads on defaults.
 * **`app_rules`** — evaluated when the focused window *changes*. `process` is
   matched against `/context`'s `process_name` and `title_contains` against the
   window title, both case-insensitive substrings; a blank matcher is a wildcard,
@@ -2174,18 +2189,21 @@ the API can read and mute, not press the button. The panel uses
 
 ```bash
 curl -s -X POST localhost:8765/ai-discover -H 'content-type: application/json' \
-     -d '{"ports": [8001, 11434]}'
+     -d '{"hosts": ["127.0.0.1", "192.168.0.36:11434"], "ports": [8001, 11434]}'
 ```
 
-Probes loopback for local model servers and lists what they serve — the
-**Discover models** button in the AI brain tab. With no `ports` array the
-configured `discovery_ports` are used. Each port is asked for an OpenAI
-`v1/models` listing, llama.cpp's root-mounted `models` listing and Ollama's
-`api/tags`, one blocking request at a time with a 1.5 s budget on a
-`spawn_blocking` thread; `.gguf` weights under `%LOCALAPPDATA%\hermes\models` are
-listed as well. The body is `{ok, summary, elapsed_ms, timeout_ms, ports,
-models, gguf_dirs}` — see `API.md` for the full shape. Discovery only *reports*:
-importing a model is the modal filling a draft card, and `POST /config` writes it.
+Probes the configured targets for local (or LAN) model servers and lists what
+they serve — the **Discover models** button in the AI brain tab. With no
+`hosts` / `ports` arrays the configured `discovery_hosts` and `discovery_ports`
+are used, and `discovery::targets` crosses them (`host:port` entries keep their
+own port). Each target is asked for an OpenAI `v1/models` listing, llama.cpp's
+root-mounted `models` listing and Ollama's `api/tags`, all targets **in
+parallel** with a 1.5 s budget each on a `spawn_blocking` thread; `.gguf` weights
+under `%LOCALAPPDATA%\hermes\models` are listed as well. The body is `{ok,
+summary, elapsed_ms, timeout_ms, targets, ports, models, gguf_dirs}` — the last
+two include `host` and `loopback` so the modal can badge remote hits — see
+`API.md` for the full shape. Discovery only *reports*: importing a model is the
+modal filling a draft card, and `POST /config` writes it.
 
 ### `/config`
 
@@ -2212,7 +2230,7 @@ paths) and `restart_required`.
 Live: `tts.enabled`, `stt.enabled`, **every block a plugin owns** (the editor
 asks `plugins::config_specs()` and each plugin applies its own section through
 `PluginConfig::apply`, reporting live vs restart) and everything under `ai` /
-`vision` / `discovery_ports` (the `ai_profile` frame is what makes
+`vision` / `discovery_hosts` / `discovery_ports` (the `ai_profile` frame is what makes
 `char-rig-watcher.exe` re-read the file). A Piper/Whisper **path** or
 `stt.hotkey` is read once at startup, so it is reported under
 `restart_required` instead of being pretended live.
@@ -2224,7 +2242,8 @@ asks `plugins::config_specs()` and each plugin applies its own section through
 for the last profile, the active profile and the vision profile. They are all
 resolved against the map that *results* from the patch, so one save can switch
 to a profile it creates. `vision.profile_name` must resolve, or the save is a
-400 instead of a screenshot sent nowhere. `discovery_ports` is written with
+400 instead of a screenshot sent nowhere. `discovery_hosts` (cleaned to bare
+`host` / `host:port` values) and `discovery_ports` are written with
 `replace_or_insert`, so a file that predates the key gains it without any other
 byte changing.
 

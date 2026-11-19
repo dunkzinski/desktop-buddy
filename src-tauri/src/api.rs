@@ -937,15 +937,31 @@ async fn switch_ai_profile(
     }
 }
 
-/// `POST /ai-discover {"ports": [8001, …]}` — probe loopback for local model
-/// servers and report what they serve.
+/// `POST /ai-discover {"ports": [8001, …], "hosts": ["127.0.0.1"]}` — probe the
+/// configured `(host, port)` pairs for model servers and report what they serve.
 ///
-/// The body is optional: with no `ports` array the configured
-/// `discovery_ports` are used (so the button still works before a save). Each
-/// request has a 1.5 s budget and the whole probe runs on a blocking thread, so
-/// an offline port costs a spinner tick, never a stalled API worker.
+/// The body is optional: with no `hosts` / `ports` arrays the `discovery_hosts`
+/// and `discovery_ports` lists from `watcher_rules.json` are used (so the button
+/// still works before a save). A host may carry its own port
+/// (`192.168.0.36:11434`), in which case it is probed at that port only. Every
+/// request has a 1.5 s budget and all targets are probed in parallel on a
+/// blocking thread, so an offline host costs a spinner tick, never a stalled
+/// API worker.
 async fn discover_models(State(api): State<ApiCtx>, body: Option<Json<Value>>) -> Json<Value> {
-    let requested: Option<Vec<u16>> = body
+    fn string_list(value: Option<&Value>) -> Option<Vec<String>> {
+        let mut out: Vec<String> = Vec::new();
+        for entry in value?.as_array()? {
+            let Some(raw) = entry.as_str().and_then(crate::discovery::normalize_host) else {
+                continue;
+            };
+            if !out.iter().any(|known| known.eq_ignore_ascii_case(&raw)) {
+                out.push(raw);
+            }
+        }
+        Some(out)
+    }
+
+    let requested_ports: Option<Vec<u16>> = body
         .as_ref()
         .and_then(|Json(value)| value.get("ports"))
         .and_then(Value::as_array)
@@ -956,30 +972,39 @@ async fn discover_models(State(api): State<ApiCtx>, body: Option<Json<Value>>) -
                 .map(|port| port as u16)
                 .collect()
         });
+    let requested_hosts = body
+        .as_ref()
+        .and_then(|Json(value)| string_list(value.get("hosts")));
 
-    let ports = match requested {
-        Some(ports) if !ports.is_empty() => ports,
-        _ => {
-            let document = api
-                .shared
-                .ai_rules_path()
-                .and_then(|path| std::fs::read_to_string(path).ok())
-                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-                .unwrap_or_else(|| json!({}));
-            crate::settings::discovery_ports(&document)
-        }
+    let document = api
+        .shared
+        .ai_rules_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({}));
+
+    let hosts = match requested_hosts {
+        Some(hosts) if !hosts.is_empty() => hosts,
+        _ => crate::settings::discovery_hosts(&document),
     };
+    let ports = match requested_ports {
+        Some(ports) if !ports.is_empty() => ports,
+        _ => crate::settings::discovery_ports(&document),
+    };
+    let targets = crate::discovery::targets(&hosts, &ports);
 
-    match tokio::task::spawn_blocking(move || crate::discovery::discover(&ports)).await {
+    match tokio::task::spawn_blocking(move || crate::discovery::discover(&targets)).await {
         Ok(body) => Json(body),
         Err(err) => Json(json!({
             "ok": false,
             "reason": format!("the discovery task failed: {err}"),
             "models": [],
             "ports": [],
+            "targets": [],
         })),
     }
 }
+
 
 /* ------------------------------------------------------------------ *
  * Settings: read and write `watcher_rules.json` from the UI.

@@ -922,6 +922,7 @@ falls back to the built-in defaults shown here:
   "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
   "active_profile": "hermes",
+  "discovery_hosts": ["127.0.0.1"],
   "discovery_ports": [8001, 9931, 9932, 11434, 8080, 1234],
   "tts": {
     "enabled": true,
@@ -1028,8 +1029,8 @@ lists one card per profile with **+ Add Profile** and **Remove** (refused for
 the last profile, the active one and the vision one — switch that dropdown
 first), edits the label, kind, endpoint or `cmd`, model, `max_tokens`, timeout
 and the system prompt, and has a second dropdown for **Vision / screen
-capture** (`vision.profile_name`). **Discover models** probes the
-`discovery_ports` list on `127.0.0.1` for OpenAI `v1/models`, llama.cpp's
+capture** (`vision.profile_name`). **Discover models** probes every
+`discovery_hosts` × `discovery_ports` target for OpenAI `v1/models`, llama.cpp's
 root-mounted `models` and Ollama's `api/tags`, plus any `.gguf` weights under
 `%LOCALAPPDATA%\hermes\models`, and **+ Import** turns a hit into a pre-filled
 card (endpoint, model id, `timeout_secs: 120` and the JSON-avatar prompt) ready
@@ -1037,8 +1038,14 @@ to save:
 
 ```bash
 curl -s -X POST localhost:8765/ai-discover -H 'content-type: application/json' \
-     -d '{"ports": [8001, 11434]}'
+     -d '{"hosts": ["127.0.0.1", "192.168.0.36:11434"], "ports": [8001, 11434]}'
 ```
+
+**Discovery hosts** takes comma-separated IPs or hostnames (`127.0.0.1` when
+empty), so a model server on the LAN, a Tailscale peer or a second interface is
+discoverable too; add `:port` to a host to probe just that port. Targets are
+probed in parallel and the result chips name the host for anything that is not
+loopback.
 
 The shipped `hermes_cmd` keeps one conversation across triggers and is
 **rotatable**: `hermes chat --continue {session} --create-if-missing -Q -q`.

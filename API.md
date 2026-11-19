@@ -745,33 +745,40 @@ frame's `profile`). Both fall back to `active_profile` when absent.
 
 ### `POST /ai-discover`
 
-Probe this machine for model servers and list what they serve — the backend of
-the AI brain tab's **Discover models** button.
+Probe configured targets for model servers and list what they serve — the
+backend of the AI brain tab's **Discover models** button.
 
 ```bash
 curl -s -X POST localhost:8765/ai-discover \
-     -H 'content-type: application/json' -d '{"ports": [8001, 9931, 11434]}'
+     -H 'content-type: application/json' \
+     -d '{"hosts": ["127.0.0.1", "192.168.0.36:11434"], "ports": [8001, 9931, 11434]}'
 ```
 
-The body is optional: with no `ports` array the `discovery_ports` list from
-`watcher_rules.json` is used, so the button works before a save.
+The body is optional: with no `hosts` / `ports` arrays the `discovery_hosts`
+and `discovery_ports` lists from `watcher_rules.json` are used, so the button
+works before a save. A `host:port` entry is probed at that port only; every
+other host is crossed with the port list.
 
 ```json
 {
   "ok": true,
-  "summary": "1 server(s) answered on 3 port(s) · 2 served model(s) · 1 local .gguf",
+  "summary": "1 server(s) answered on 3 target(s) · 2 served model(s) · 1 local .gguf",
   "elapsed_ms": 41,
   "timeout_ms": 1500,
-  "ports": [
-    {"port": 8001, "reachable": true, "detail": "/v1/models listed model(s)"},
-    {"port": 9931, "reachable": false, "detail": "nothing answered (no /v1/models, /models or /api/tags)"}
+  "targets": [
+    {"host": "127.0.0.1", "port": 8001, "label": ":8001", "loopback": true,
+     "reachable": true, "detail": "/v1/models listed model(s)"},
+    {"host": "192.168.0.36", "port": 11434, "label": "192.168.0.36:11434", "loopback": false,
+     "reachable": false, "detail": "nothing answered (no /v1/models, /models or /api/tags)"}
   ],
   "models": [
     {"id": "qwen3-coder-30b-a3b-colibri", "label": "qwen3-coder-30b-a3b-colibri",
-     "endpoint": "http://127.0.0.1:8001/v1", "port": 8001, "source": "openai_compat",
-     "owned_by": "colibri", "multimodal": false},
-    {"id": "lfm3-vl-2b", "label": "lfm3-vl-2b", "endpoint": "http://127.0.0.1:9932/v1",
-     "port": 9932, "source": "openai_compat", "owned_by": "", "multimodal": true},
+     "endpoint": "http://127.0.0.1:8001/v1", "host": "127.0.0.1", "port": 8001,
+     "loopback": true, "source": "openai_compat", "owned_by": "colibri",
+     "multimodal": false},
+    {"id": "llama3.2:3b", "label": "llama3.2:3b", "endpoint": "http://192.168.0.36:11434/v1",
+     "host": "192.168.0.36", "port": 11434, "loopback": false, "source": "ollama",
+     "owned_by": "3.2B", "multimodal": false},
     {"id": "LFM3-1.7B-Q8_0", "label": "LFM3-1.7B-Q8_0", "endpoint": "", "port": null,
      "source": "gguf", "owned_by": "", "multimodal": false,
      "path": "C:\\Users\\me\\AppData\\Local\\hermes\\models\\LFM3-1.7B-Q8_0.gguf",
@@ -781,15 +788,21 @@ The body is optional: with no `ports` array the `discovery_ports` list from
 }
 ```
 
-Each port is asked, in order, for an OpenAI `v1/models` listing, llama.cpp's
+Each target is asked, in order, for an OpenAI `v1/models` listing, llama.cpp's
 root-mounted `models` listing and Ollama's `api/tags`; `source` says which one
 answered and `endpoint` is the URL a profile should store (`.../v1`, the prefix
 `chat/completions` hangs off). `multimodal: true` means the server itself
-reported an image input modality. Ports are probed one at a time with a **1.5 s**
-budget each (`DISCOVERY_TIMEOUT_MS`) on a blocking thread, so an offline port
-costs a spinner tick rather than a stalled API worker. `.gguf` weights under
-`%LOCALAPPDATA%\hermes\models` are listed too (`source: "gguf"`, no endpoint), so
-an unloaded model is still visible.
+reported an image input modality. **`host`** names the machine each model came
+from, so a LAN / Tailscale / second-interface hit is distinguishable from
+loopback; `label` is the display form (`:8001` for loopback,
+`192.168.0.36:11434` otherwise) and `loopback` is the boolean the modal styles
+on. Every target is probed **in parallel** with a **1.5 s** budget each
+(`DISCOVERY_TIMEOUT_MS`) on a blocking thread, so ten extra targets cost one
+budget rather than ten and an offline host costs a spinner tick rather than a
+stalled API worker. `.gguf` weights under `%LOCALAPPDATA%\hermes\models` are
+listed too (`source: "gguf"`, no endpoint), so an unloaded model is still
+visible. `targets` and `ports` carry the same per-target array (the latter kept
+for older callers).
 
 Nothing is written: **importing** a model is the modal filling a draft profile
 card, and `POST /config` persists it.
@@ -859,6 +872,7 @@ creates:
     "remove": ["colibri"]
   },
   "vision": {"profile_name": "lfm3-vl-2b"},
+  "discovery_hosts": ["127.0.0.1", "192.168.0.36:11434"],
   "discovery_ports": [8001, 9931, 9932, 11434, 8080, 1234]
 }
 ```
@@ -885,6 +899,13 @@ creates:
 * **`discovery_ports`** — the top-level port list **Discover models** probes. The
   key is inserted after the opening brace when the file predates it; the array is
   deduplicated and every entry must be a port (1–65535).
+* **`discovery_hosts`** — the top-level host list those ports are probed on,
+  defaulting to `["127.0.0.1"]` when omitted or empty. Entries are trimmed, lose
+  an accidental `http://` / `https://` prefix and any trailing path or slash, and
+  are deduplicated case-insensitively. A `host:port` entry (`192.168.0.36:11434`)
+  is probed at that port **only** instead of being crossed with every entry in
+  `discovery_ports`. Anything that is not a host, IP or `host:port` is a 400 and
+  nothing is written.
 * **`vision.profile_name`** must name an existing `ai_profiles` entry — a name
   that does not resolve is a 400 rather than a screenshot sent to nothing.
 

@@ -7087,7 +7087,7 @@ mod tests {
         assert_eq!(without.ai_profiles.len(), 2);
 
         let with = rules(&format!(
-            "{{\"discovery_ports\": [8001, 11434], \"active_profile\": \"lfm3-fast\", \"ai_profiles\": {{\"lfm3-fast\": {{\"kind\": \"openai_compat\", \"endpoint\": \"http://127.0.0.1:8080\", \"model\": \"m\"}}}}}}"
+            "{{\"discovery_hosts\": [\"127.0.0.1\", \"192.168.0.36:11434\"], \"discovery_ports\": [8001, 11434], \"active_profile\": \"lfm3-fast\", \"ai_profiles\": {{\"lfm3-fast\": {{\"kind\": \"openai_compat\", \"endpoint\": \"http://127.0.0.1:8080\", \"model\": \"m\"}}}}}}"
         ));
         assert_eq!(with.active_profile, "lfm3-fast");
         assert_eq!(with.ai_profiles.len(), 1);

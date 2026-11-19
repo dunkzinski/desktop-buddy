@@ -422,6 +422,7 @@ else:
                 "active_profile",
                 "ai_profiles",
                 "discovery_ports",
+                "discovery_hosts",
                 "survival",
             }
             unknown = set(shipped) - known
@@ -446,6 +447,40 @@ else:
                 if "`discovery_ports`" not in arch_md:
                     problems.append(
                         "ARCHITECTURE.md: watcher_rules.json carries `discovery_ports` but it is "
+                        "not documented"
+                    )
+
+            # discovery_hosts: the same list, but of targets instead of ports.
+            # A bare hostname, an IP or `host:port`; no scheme, no path, no
+            # duplicates once the app has cleaned it.
+            hosts = shipped.get("discovery_hosts")
+            if hosts is not None:
+                if not isinstance(hosts, list) or not hosts:
+                    problems.append("watcher_rules.json: discovery_hosts must be a non-empty array")
+                else:
+                    for index, host in enumerate(hosts):
+                        if not isinstance(host, str) or not host.strip():
+                            problems.append(
+                                f"watcher_rules.json: discovery_hosts[{index}] {host!r} is not a host"
+                            )
+                            continue
+                        if "://" in host or "/" in host or " " in host:
+                            problems.append(
+                                f"watcher_rules.json: discovery_hosts[{index}] {host!r} must be a "
+                                "bare host or host:port"
+                            )
+                        port = host.rsplit(":", 1)[1] if host.count(":") == 1 else ""
+                        if port and not (port.isdigit() and 1 <= int(port) <= 65535):
+                            problems.append(
+                                f"watcher_rules.json: discovery_hosts[{index}] {host!r} has an "
+                                "invalid port"
+                            )
+                    lowered = [host.lower() for host in hosts if isinstance(host, str)]
+                    if len(set(lowered)) != len(lowered):
+                        problems.append("watcher_rules.json: discovery_hosts has duplicates")
+                if "`discovery_hosts`" not in arch_md:
+                    problems.append(
+                        "ARCHITECTURE.md: watcher_rules.json carries `discovery_hosts` but it is "
                         "not documented"
                     )
 

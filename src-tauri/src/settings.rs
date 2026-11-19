@@ -98,6 +98,9 @@ pub const DEFAULT_AVATAR_SYSTEM_PROMPT: &str = r#"You are a tiny, fast desktop a
 /// Ports the **Discover models** button probes when the rules file says nothing.
 pub const DEFAULT_DISCOVERY_PORTS: &[u16] = &[8001, 9931, 9932, 11434, 8080, 1234];
 
+/// Hosts those ports are probed on when the rules file says nothing.
+pub const DEFAULT_DISCOVERY_HOSTS: &[&str] = &["127.0.0.1"];
+
 /// Longest a profile key may be (it is a JSON object key, a label and a CLI
 /// argument all at once).
 const MAX_PROFILE_KEY: usize = 64;
@@ -142,6 +145,31 @@ pub fn discovery_ports(document: &Value) -> Vec<u16> {
         }
     }
     ports
+}
+
+/// The hosts **Discover models** probes, cleaned and deduplicated.
+///
+/// An omitted key, an empty array or an array of nothing but blank/`http://`
+/// entries all mean "loopback": probing nothing is never what the user wanted
+/// by clearing the field. Entries are trimmed, lose an accidental
+/// `http(s)://` prefix and any trailing path, and may carry their own port
+/// (`192.168.0.36:11434`) to skip the cross product with `discovery_ports`.
+pub fn discovery_hosts(document: &Value) -> Vec<String> {
+    let mut hosts: Vec<String> = Vec::new();
+    if let Some(list) = document.get("discovery_hosts").and_then(Value::as_array) {
+        for value in list {
+            let Some(host) = value.as_str().and_then(crate::discovery::normalize_host) else {
+                continue;
+            };
+            if !hosts.iter().any(|known| known.eq_ignore_ascii_case(&host)) {
+                hosts.push(host);
+            }
+        }
+    }
+    if hosts.is_empty() {
+        hosts.extend(DEFAULT_DISCOVERY_HOSTS.iter().map(|host| host.to_string()));
+    }
+    hosts
 }
 
 /// Is `name` usable as an `ai_profiles` key? Lowercase slug so the name can be
@@ -290,6 +318,7 @@ pub fn config_json(path: Option<&Path>) -> Value {
         None => Value::Array(Vec::new()),
     };
     let ports = discovery_ports(&document);
+    let hosts = discovery_hosts(&document);
 
     let tts_value = serde_json::to_value(&tts).unwrap_or(Value::Null);
     let stt_value = serde_json::to_value(&stt).unwrap_or(Value::Null);
@@ -347,6 +376,7 @@ pub fn config_json(path: Option<&Path>) -> Value {
         }),
     );
     settings.insert("discovery_ports".to_string(), json!(ports));
+    settings.insert("discovery_hosts".to_string(), json!(hosts));
 
     json!({
         "ok": true,
@@ -962,12 +992,19 @@ pub fn apply_config(path: &Path, patch: &Value) -> Result<Applied, String> {
     for key in patch.keys() {
         if matches!(
             key.as_str(),
-            "tts" | "stt" | "vision" | "ai" | "discovery_ports"
+            "tts" | "stt" | "vision" | "ai" | "discovery_ports" | "discovery_hosts"
         ) {
             continue;
         }
         if !specs.iter().any(|spec| spec.key() == key.as_str()) {
-            let mut known: Vec<&str> = vec!["tts", "stt", "vision", "ai", "discovery_ports"];
+            let mut known: Vec<&str> = vec![
+                "tts",
+                "stt",
+                "vision",
+                "ai",
+                "discovery_ports",
+                "discovery_hosts",
+            ];
             known.extend(specs.iter().map(|spec| spec.key()));
             return Err(format!(
                 "no plugin owns `{key}` (known sections: {})",
@@ -1235,6 +1272,32 @@ pub fn apply_config(path: &Path, patch: &Value) -> Result<Applied, String> {
             applied.push("vision.profile_name".to_string());
         }
         ai_changed = true; // same frame makes the watcher adopt it
+    }
+
+    /* discovery hosts: the same flat-array treatment as the ports, and the
+       values are cleaned here so the file only ever holds `host` or
+       `host:port` (no scheme, no trailing slash, no duplicates). */
+    if let Some(hosts_patch) = patch.get("discovery_hosts") {
+        let list = hosts_patch
+            .as_array()
+            .ok_or_else(|| "`discovery_hosts` must be an array of host names or `host:port` strings".to_string())?;
+        let mut hosts: Vec<String> = Vec::new();
+        for value in list {
+            let raw = value.as_str().ok_or_else(|| {
+                format!("`discovery_hosts` entries must be strings, got {value}")
+            })?;
+            let host = crate::discovery::normalize_host(raw).ok_or_else(|| {
+                format!(
+                    "`discovery_hosts` entry {raw:?} is not a host name, IP address or `host:port`"
+                )
+            })?;
+            if !hosts.iter().any(|known| known.eq_ignore_ascii_case(&host)) {
+                hosts.push(host);
+            }
+        }
+        let rendered = serde_json::to_string_pretty(&hosts).map_err(|err| err.to_string())?;
+        next = replace_or_insert(&next, "discovery_hosts", &indented(&rendered, 2, newline), newline)?;
+        applied.push("discovery_hosts".to_string());
     }
 
     /* discovery ports: a flat array, so it can be inserted into a file that
@@ -1749,6 +1812,73 @@ mod tests {
     }
 
     #[test]
+    fn discovery_hosts_default_to_loopback_and_clean_the_configured_list() {
+        assert_eq!(discovery_hosts(&json!({})), DEFAULT_DISCOVERY_HOSTS.iter().map(|h| h.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            discovery_hosts(&json!({ "discovery_hosts": [] })),
+            vec!["127.0.0.1".to_string()],
+            "an empty list is a cleared field, not 'probe nothing'"
+        );
+        let document = json!({
+            "discovery_hosts": [
+                " http://192.168.0.36:11434/ ",
+                "192.168.0.36:11434",
+                "   ",
+                "tailscale-box",
+                "http://"
+            ]
+        });
+        assert_eq!(
+            discovery_hosts(&document),
+            vec!["192.168.0.36:11434".to_string(), "tailscale-box".to_string()],
+            "trimmed, scheme-free, deduplicated, junk dropped"
+        );
+    }
+
+    #[test]
+    fn discovery_hosts_are_inserted_and_normalised_on_save() {
+        let dir = temp_dir("hosts");
+        let path = write_sample(&dir);
+        assert!(read(&path).get("discovery_hosts").is_none());
+
+        let applied = apply_config(
+            &path,
+            &json!({ "discovery_hosts": [
+                " https://192.168.0.36:11434/v1/ ",
+                "192.168.0.36:11434",
+                "lan-box"
+            ] }),
+        )
+        .expect("apply");
+        assert_eq!(applied.applied, vec!["discovery_hosts".to_string()]);
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read"))
+            .expect("parse");
+        assert_eq!(
+            doc["discovery_hosts"],
+            json!(["192.168.0.36:11434", "lan-box"]),
+            "the scheme, path and duplicate are gone"
+        );
+
+        // The rest of the file is byte-identical.
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.contains(r#""hotkey": "Alt+Space""#));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bad_discovery_host_is_refused() {
+        let dir = temp_dir("hosts-bad");
+        let path = write_sample(&dir);
+        let before = std::fs::read_to_string(&path).expect("read");
+        for bad in [json!(["two words"]), json!([8001]), json!(["http://"])] {
+            let err = apply_config(&path, &json!({ "discovery_hosts": bad })).expect_err("refuse");
+            assert!(err.contains("discovery_hosts"), "{err}");
+        }
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_bad_discovery_port_is_refused() {
         let dir = temp_dir("ports-bad");
         let path = write_sample(&dir);
@@ -1776,6 +1906,8 @@ mod tests {
             .iter()
             .map(|value| value.as_u64().expect("number"))
             .collect();
+        // The host list defaults to loopback even when the file never had it.
+        assert_eq!(body["settings"]["discovery_hosts"], json!(["127.0.0.1"]));
         // The defaults, plus the ports the two endpoints already name.
         assert!(ports.contains(&11434));
         assert!(ports.contains(&9932));

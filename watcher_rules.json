@@ -102,6 +102,9 @@
       "check my screen"
     ]
   },
+  "discovery_hosts": [
+    "127.0.0.1"
+  ],
   "discovery_ports": [
     8001,
     9931,
