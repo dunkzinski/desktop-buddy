@@ -454,6 +454,48 @@ mod tests {
     }
 
     #[test]
+    fn a_high_bond_status_still_lists_all_three_branches() {
+        // The card is what the user reads, so pin the contract on the payload
+        // `GET /creature/status` actually returns: at bond 0.80 a Prism
+        // creature must be offered Seraph, Prism and Feral — once each.
+        let mut state = plugin();
+        handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/creature/reset", "body": { "attribute": "Prism" } }),
+        );
+        let grown = handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/creature/xp", "body": { "xp": 1, "bond": 0.3 } }),
+        );
+        assert_eq!(grown["body"]["status"]["bond"], json!(0.8));
+
+        let response = handle(
+            &mut state,
+            &json!({ "method": "GET", "path": "/creature/status" }),
+        );
+        let branches = response["body"]["branches"].as_array().expect("branches");
+        assert_eq!(branches.len(), 3);
+        let mut attributes: Vec<&str> = branches
+            .iter()
+            .map(|branch| branch["attribute"].as_str().expect("attribute"))
+            .collect();
+        assert_eq!(
+            attributes[0], "Seraph",
+            "a devoted creature's card leads with Seraph"
+        );
+        attributes.sort_unstable();
+        attributes.dedup();
+        assert_eq!(attributes, ["Feral", "Prism", "Seraph"]);
+        let mut slugs: Vec<&str> = branches
+            .iter()
+            .map(|branch| branch["slug"].as_str().expect("slug"))
+            .collect();
+        slugs.sort_unstable();
+        slugs.dedup();
+        assert_eq!(slugs.len(), 3, "no branch may be listed twice");
+    }
+
+    #[test]
     fn an_unknown_path_is_a_404() {
         let mut state = plugin();
         let response = handle(

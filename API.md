@@ -1639,9 +1639,12 @@ avatar onto the new rig — the same code path `POST /model` takes — and plays
 `metamorphose` clip.
 
 Stages are ordered `Fresh → In-Training → Rookie → Champion → Ultimate → Mega`.
-Each transition has three branches (one per attribute: `Seraph`, `Prism`,
-`Feral`), and the bond/XP state only *seeds* them, so the same creature always
-offers the same three options.
+Each transition has three branches — one per attribute, `Seraph`, `Prism` and
+`Feral` — and **all three are always on offer**. Bond only *orders* them: a
+devoted creature (bond > 0.66) is offered `Seraph` first, a feral one
+(bond < 0.33) `Feral` first with `Seraph` last, and the neutral middle keeps the
+creature's own attribute in front. Bond and XP seed the branch labels, never the
+choice set.
 
 **The attribute is a body plan, not a badge.** It reaches the generator
 (`Spec.attribute`), so the three branches are three different creatures even

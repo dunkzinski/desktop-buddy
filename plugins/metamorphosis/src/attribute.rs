@@ -72,19 +72,33 @@ impl Attribute {
         }
     }
 
-    /// The attribute a branch pulls toward: high bond favours Seraph, a low one
-    /// Feral, and Prism is the neutral middle.
-    pub fn shifted(self, bond: f64, step: i64) -> Self {
-        let base = self.index() as i64;
-        let bias = if bond > 0.66 {
-            -1
+    /// The three attributes one transition offers, in the order its card lists
+    /// them — **always the whole triangle**.
+    ///
+    /// Bond *orders* the choices, it never removes one. A devoted creature
+    /// (bond > 0.66) is offered Seraph first, the haloed end leading; a feral
+    /// one (bond < 0.33) Feral first with Seraph last; the neutral middle keeps
+    /// the creature's own attribute in front, then the rest of the triangle, so
+    /// the same creature always reads the same three rows.
+    ///
+    /// This replaced a `shifted(bond, step)` helper that folded the bond offset
+    /// into the step index while the first branch took no offset at all: at
+    /// bond > 0.66 (or < 0.33) two steps landed on the same attribute, and the
+    /// card silently lost a whole branch — at ~0.70 bond a Prism creature was
+    /// offered `Prism, Prism, Feral` and could not become Seraph at all.
+    pub fn branch_order(self, bond: f64) -> [Attribute; 3] {
+        if bond > 0.66 {
+            [Attribute::Seraph, Attribute::Prism, Attribute::Feral]
         } else if bond < 0.33 {
-            1
+            [Attribute::Feral, Attribute::Prism, Attribute::Seraph]
         } else {
-            0
-        };
-        let index = (base + bias + step).rem_euclid(3);
-        Attribute::ALL[index as usize]
+            let base = self.index() as usize;
+            [
+                Attribute::ALL[base],
+                Attribute::ALL[(base + 1) % 3],
+                Attribute::ALL[(base + 2) % 3],
+            ]
+        }
     }
 
     /// One line describing what this attribute does to a body, for the UI.
@@ -320,12 +334,45 @@ mod tests {
     }
 
     #[test]
-    fn bond_shifts_the_family_toward_its_temperament() {
-        // A devoted creature leans Seraph, a feral one leans Feral.
-        let devoted = Attribute::Feral.shifted(0.9, 0);
-        assert_eq!(devoted, Attribute::Prism);
-        let feral = Attribute::Seraph.shifted(0.05, 0);
-        assert_eq!(feral, Attribute::Prism);
+    fn bond_orders_the_triangle_and_never_removes_a_choice() {
+        // The bug this pins: the bond offset used to be folded into the step
+        // index while the first branch took no offset, so an extreme bond
+        // offered one attribute twice and dropped a third (reported as "at
+        // around 70 bond we lose the ability to evolve to Seraph").
+        for bond in [0.0, 0.2, 0.33, 0.34, 0.5, 0.66, 0.67, 0.81, 1.0] {
+            for current in Attribute::ALL {
+                let order = current.branch_order(bond);
+                let mut seen = order.to_vec();
+                seen.sort_by_key(|attribute| attribute.index());
+                seen.dedup();
+                assert_eq!(
+                    seen.len(),
+                    3,
+                    "bond {bond} from {current:?} lost a choice: {order:?}"
+                );
+            }
+        }
+
+        // A devoted creature leads with Seraph, a feral one with Feral and puts
+        // Seraph last; the neutral middle keeps the creature's own attribute in
+        // front, exactly as it did before the fix.
+        for current in Attribute::ALL {
+            assert_eq!(current.branch_order(0.9)[0], Attribute::Seraph);
+            assert_eq!(current.branch_order(0.05)[0], Attribute::Feral);
+            assert_eq!(current.branch_order(0.05)[2], Attribute::Seraph);
+            assert_eq!(current.branch_order(0.5)[0], current);
+        }
+        assert_eq!(
+            Attribute::Prism.branch_order(0.5),
+            [Attribute::Prism, Attribute::Feral, Attribute::Seraph]
+        );
+        assert_eq!(
+            Attribute::Prism.branch_order(0.9),
+            [Attribute::Seraph, Attribute::Prism, Attribute::Feral]
+        );
+        // The thresholds are exclusive: 0.66 is already the neutral middle.
+        assert_eq!(Attribute::Prism.branch_order(0.66)[0], Attribute::Prism);
+        assert_eq!(Attribute::Prism.branch_order(0.67)[0], Attribute::Seraph);
     }
 
     #[test]

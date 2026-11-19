@@ -315,7 +315,7 @@ answering with `"enabled": false`.
 
 `plugins/metamorphosis` is a second guest with a different job: instead of
 tracking bars it **writes new characters**. One creature is a seed, a stage, XP,
-a bond, an attribute (`Seraph` / `Data` / `Feral`) and the *mix* of attributes
+a bond, an attribute (`Seraph` / `Prism` / `Feral`) and the *mix* of attributes
 its evolution line has accumulated — every transition records what it chose, and
 the stage is generated from all of it, recency-weighted. Each of the six stages
 (`Fresh → In-Training → Rookie → Champion → Ultimate → Mega`) is a complete

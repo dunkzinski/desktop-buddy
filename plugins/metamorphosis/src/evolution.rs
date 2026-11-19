@@ -219,20 +219,18 @@ impl Metamorphosis {
 
     /// Every branch out of the current stage, in a deterministic order.
     ///
-    /// Three candidates (one per attribute) is the smallest set that makes the
-    /// choice meaningful; the bonds/xp shape only their *seeds* and labels, so
-    /// the same creature never silently changes its options.
+    /// Always one per attribute — [`Attribute::branch_order`] lets the bond
+    /// decide which of the three *leads* (Seraph for a devoted creature, Feral
+    /// for a feral one, the creature's own attribute in the neutral middle), so
+    /// XP and bond shape the order, the seeds and the labels but can never take
+    /// an option away. Two rows of the same attribute with a whole triangle
+    /// missing is the bug that rule exists to prevent.
     pub fn branches(&self) -> Vec<Branch> {
         let Some(next) = self.tier.next() else {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for step in 0..3i64 {
-            let attribute = if step == 0 {
-                self.attribute
-            } else {
-                self.attribute.shifted(self.bond, step)
-            };
+        for attribute in self.attribute.branch_order(self.bond) {
             let seed = mix_seed(
                 self.seed,
                 &[
@@ -540,6 +538,50 @@ mod tests {
         assert_eq!(restored.history, state.history);
         // `installed` is a per-process hint, so it is not in the save.
         assert!(!restored.installed);
+    }
+
+    #[test]
+    fn a_devoted_creature_still_gets_a_seraph_branch() {
+        // Reported: Prism, Ultimate, bond 0.80 listed "Mega Prism, Mega Prism,
+        // Mega Feral" — Seraph simply was not on offer.
+        let mut state = Metamorphosis::new(42, Archetype::Alien, Attribute::Prism);
+        state.tier = Tier::Ultimate;
+        state.bond = 0.80;
+        let branches = state.branches();
+        assert_eq!(branches.len(), 3);
+        assert_eq!(
+            branches[0].attribute,
+            Attribute::Seraph,
+            "a devoted creature leads with Seraph"
+        );
+        let mut attributes: Vec<&str> = branches.iter().map(|b| b.attribute.as_str()).collect();
+        attributes.sort_unstable();
+        attributes.dedup();
+        assert_eq!(attributes, ["Feral", "Prism", "Seraph"]);
+        // Three different rigs, not one row printed twice.
+        let mut slugs: Vec<&str> = branches.iter().map(|b| b.slug.as_str()).collect();
+        slugs.sort_unstable();
+        slugs.dedup();
+        assert_eq!(slugs.len(), 3);
+    }
+
+    #[test]
+    fn every_bond_level_offers_the_whole_triangle() {
+        for bond in [0.0, 0.2, 0.4, 0.6, 0.7, 0.9, 1.0] {
+            for attribute in Attribute::ALL {
+                let mut state = Metamorphosis::new(7, Archetype::Cervid, attribute);
+                state.tier = Tier::Champion;
+                state.bond = bond;
+                let mut seen: Vec<&str> = state
+                    .branches()
+                    .iter()
+                    .map(|branch| branch.attribute.as_str())
+                    .collect();
+                seen.sort_unstable();
+                seen.dedup();
+                assert_eq!(seen.len(), 3, "bond {bond} from {attribute:?} offered {seen:?}");
+            }
+        }
     }
 
     #[test]
