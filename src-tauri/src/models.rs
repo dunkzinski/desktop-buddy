@@ -48,21 +48,21 @@ pub struct ModelEntry {
     pub parts: usize,
     pub has_rig_override: bool,
     /// `true` when this folder is a procedural creature (a `Spec::slug` name:
-    /// `digi-<archetype>-<stage>[-<attribute>]-<8 hex>`) — the digivolution
+    /// `buddy-<archetype>-<stage>[-<attribute>]-<8 hex>`) — the metamorphosis
     /// plugin writes one per stage, so they would otherwise flood the model
     /// picker. `GET /models` still lists them; the picker filters on the flag.
     pub generated: bool,
     pub error: Option<String>,
 }
 
-/// Does this folder name look like a digivolution slug?
+/// Does this folder name look like a metamorphosis slug?
 ///
-/// The plugin names rigs with `Spec::slug` (`digi-beast-champion-virus-1f3a9c02`),
+/// The plugin names rigs with `Spec::slug` (`buddy-beast-champion-feral-1f3a9c02`),
 /// and the eight lowercase hex digits at the end are the seed fingerprint — they
-/// are what makes this a *pattern* rather than "any folder starting with digi-",
-/// so a hand-authored `digi-thing` stays a custom model.
+/// are what makes this a *pattern* rather than "any folder starting with buddy-",
+/// so a hand-authored `buddy-thing` stays a custom model.
 pub fn is_generated_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("digi-") else {
+    let Some(rest) = name.strip_prefix("buddy-") else {
         return false;
     };
     let Some((body, suffix)) = rest.rsplit_once('-') else {
@@ -835,7 +835,7 @@ pub fn clear_rig(root: &Path, name: &str) -> Result<bool, String> {
 
 /// Install a **generated** manifest as `models/<slug>/model.json`.
 ///
-/// This is the write half of the digivolution plugin's `host_model_write`
+/// This is the write half of the metamorphosis plugin's `host_model_write`
 /// import. The host owns the filesystem — a wasm guest cannot — and it
 /// validates with the app's own loader, so a rig the app would reject never
 /// lands on disk. The file is written through a temp file and then *loaded*;
@@ -1208,10 +1208,10 @@ mod tests {
         // The plugin's own slugs, both eras: with and without the attribute
         // segment (the attribute was added after the first models were written).
         for slug in [
-            "digi-beast-champion-virus-1f3a9c02",
-            "digi-alien-fresh-00000309",
-            "digi-beast-fresh-5eed1234",
-            "digi-golem-mega-vaccine-0000ffff",
+            "buddy-beast-champion-feral-1f3a9c02",
+            "buddy-alien-fresh-00000309",
+            "buddy-beast-fresh-5eed1234",
+            "buddy-golem-mega-seraph-0000ffff",
         ] {
             assert!(is_generated_name(slug), "{slug} is a generated slug");
         }
@@ -1219,12 +1219,12 @@ mod tests {
         for name in [
             "demo-blob",
             "xenomorph-7",
-            "digi-thing",
-            "digi-beast-champion-virus",
-            "digi-beast-champion-virus-1f3a9c0",
-            "digi-beast-champion-virus-1F3A9C02",
-            "adigi-beast-champion-virus-1f3a9c02",
-            "digi--1f3a9c02",
+            "buddy-thing",
+            "buddy-beast-champion-feral",
+            "buddy-beast-champion-feral-1f3a9c0",
+            "buddy-beast-champion-feral-1F3A9C02",
+            "abuddy-beast-champion-feral-1f3a9c02",
+            "buddy--1f3a9c02",
         ] {
             assert!(!is_generated_name(name), "{name} is not a generated slug");
         }
@@ -1542,7 +1542,7 @@ mod tests {
         fs::remove_dir_all(&scratch).ok();
     }
 
-    /// The digivolution plugin's write path: a generated manifest is validated,
+    /// The metamorphosis plugin's write path: a generated manifest is validated,
     /// written as `models/<slug>/model.json`, and loads back clean.
     #[test]
     fn a_generated_manifest_installs_and_loads_back() {
@@ -1565,13 +1565,13 @@ mod tests {
             "animations": { "breathe": clip(1200, json!([{ "t": 0.0, "bones": {} }])) }
         });
 
-        let path = install_generated_model(&root, "digi-test-fresh-00000001", &rig)
+        let path = install_generated_model(&root, "buddy-test-fresh-00000001", &rig)
             .expect("install");
         assert!(Path::new(&path).is_file());
-        let loaded = load_model(&root, "digi-test-fresh-00000001").expect("loads back");
+        let loaded = load_model(&root, "buddy-test-fresh-00000001").expect("loads back");
         assert_eq!(loaded.rig["bones"].as_array().expect("bones").len(), 2);
         // The host owns the identity: the folder name wins over the guest's.
-        assert_eq!(loaded.rig["name"], json!("digi-test-fresh-00000001"));
+        assert_eq!(loaded.rig["name"], json!("buddy-test-fresh-00000001"));
 
         // A slug that could escape the models root is refused before writing.
         for bad in ["../escape", "UpperCase", "", "a b", "-lead"] {
@@ -1579,9 +1579,9 @@ mod tests {
         }
         // A structurally broken rig is refused, and leaves nothing behind.
         let broken = json!({ "bones": [{ "id": "a", "parent": "ghost", "parts": [] }] });
-        let err = install_generated_model(&root, "digi-broken", &broken).expect_err("must fail");
+        let err = install_generated_model(&root, "buddy-broken", &broken).expect_err("must fail");
         assert!(err.contains("ghost"), "{err}");
-        assert!(!root.join("digi-broken").join("model.json").exists());
+        assert!(!root.join("buddy-broken").join("model.json").exists());
 
         fs::remove_dir_all(&root).ok();
     }

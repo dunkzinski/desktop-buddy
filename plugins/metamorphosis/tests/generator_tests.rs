@@ -1,6 +1,6 @@
 //! End-to-end verification of the procedural generator.
 //!
-//! These are the acceptance tests for the Digivolution plugin: they generate a
+//! These are the acceptance tests for the Metamorphosis plugin: they generate a
 //! creature for **every archetype × tier × a spread of seeds** and assert the
 //! four properties `MODEL_FORMAT.md` demands of a hand-written rig:
 //!
@@ -14,12 +14,12 @@
 
 use std::collections::HashSet;
 
-use char_rig_digivolution_plugin::attribute::{Attribute, AttributeBlend};
-use char_rig_digivolution_plugin::evolution::Digivolution;
-use char_rig_digivolution_plugin::generator::{
+use char_rig_metamorphosis_plugin::attribute::{Attribute, AttributeBlend};
+use char_rig_metamorphosis_plugin::evolution::Metamorphosis;
+use char_rig_metamorphosis_plugin::generator::{
     generate, max_parts, validate_at, Archetype, Spec, Tier,
 };
-use char_rig_digivolution_plugin::skeleton::{
+use char_rig_metamorphosis_plugin::skeleton::{
     hierarchy_is_sound, min_world_y, world_transforms, Manifest, MAX_PARTS, MONITOR_BUDGET_Y,
     ROOT_SCALE,
 };
@@ -75,7 +75,7 @@ fn every_manifest_is_valid_json_for_the_format() {
         let report = validate_at(&manifest, tier).unwrap_or_else(|err| panic!("{where_}: {err}"));
         assert!(report.bones > 0);
         assert!(report.parts > 0);
-        assert!(report.clips >= 3, "{where_}: breathe, wave and digivolve");
+        assert!(report.clips >= 3, "{where_}: breathe, wave and metamorphose");
     }
 }
 
@@ -136,7 +136,7 @@ fn every_keyframe_names_a_real_bone_and_stays_in_range() {
         let where_ = label(&manifest);
         let ids: HashSet<&str> = manifest.bone_ids().into_iter().collect();
         let clips = manifest.animations.as_ref().expect("clips");
-        for name in ["breathe", "wave", "digivolve"] {
+        for name in ["breathe", "wave", "metamorphose"] {
             let clip = clips
                 .get(name)
                 .unwrap_or_else(|| panic!("{where_}: no {name} clip"));
@@ -161,7 +161,7 @@ fn every_keyframe_names_a_real_bone_and_stays_in_range() {
         // `breathe` loops, the other two do not (a one-shot flourish).
         assert!(clips["breathe"].r#loop);
         assert!(!clips["wave"].r#loop);
-        assert!(!clips["digivolve"].r#loop);
+        assert!(!clips["metamorphose"].r#loop);
     }
 }
 
@@ -338,7 +338,7 @@ fn the_face_uses_split_mouths_ellipse_brows_and_separate_pupils() {
     for (_tier, manifest) in corpus() {
         let where_ = label(&manifest);
         let head = manifest.bone("head").expect("head");
-        let tagged = |tag: &str| -> Vec<&char_rig_digivolution_plugin::skeleton::Part> {
+        let tagged = |tag: &str| -> Vec<&char_rig_metamorphosis_plugin::skeleton::Part> {
             head.parts
                 .iter()
                 .filter(|part| part.tag.as_deref() == Some(tag))
@@ -435,7 +435,7 @@ fn shape_signature(manifest: &Manifest) -> String {
 
 #[test]
 fn each_attribute_grows_a_different_creature() {
-    // The headline rule: Vaccine, Data and Virus are three *forms*, not three
+    // The headline rule: Seraph, Prism and Feral are three *forms*, not three
     // labels. Same seed, same archetype, same tier — different rig.
     for archetype in Archetype::ALL {
         for tier in [Tier::InTraining, Tier::Rookie, Tier::Champion, Tier::Mega] {
@@ -463,9 +463,9 @@ fn each_attribute_grows_a_different_creature() {
 fn the_attribute_shows_up_in_the_parts_not_only_the_colour() {
     // A tint alone would pass a "different manifest" check while looking
     // identical on the desktop, so check the *shape* vocabulary as well.
-    let vaccine = generate(&Spec::with_attribute(11, Archetype::Beast, Tier::Champion, Attribute::Vaccine));
-    let virus = generate(&Spec::with_attribute(11, Archetype::Beast, Tier::Champion, Attribute::Virus));
-    let data = generate(&Spec::with_attribute(11, Archetype::Beast, Tier::Champion, Attribute::Data));
+    let seraph = generate(&Spec::with_attribute(11, Archetype::Beast, Tier::Champion, Attribute::Seraph));
+    let feral = generate(&Spec::with_attribute(11, Archetype::Beast, Tier::Champion, Attribute::Feral));
+    let prism = generate(&Spec::with_attribute(11, Archetype::Beast, Tier::Champion, Attribute::Prism));
 
     let ids = |manifest: &Manifest| -> HashSet<String> {
         manifest
@@ -474,12 +474,12 @@ fn the_attribute_shows_up_in_the_parts_not_only_the_colour() {
             .flat_map(|bone| bone.parts.iter().map(|part| part.id.clone()))
             .collect()
     };
-    let (v, w, d) = (ids(&vaccine), ids(&virus), ids(&data));
-    assert!(v.contains("halo"), "a Vaccine line wears a halo: {v:?}");
+    let (v, w, d) = (ids(&seraph), ids(&feral), ids(&prism));
+    assert!(v.contains("halo"), "a Seraph line wears a halo: {v:?}");
     assert!(v.contains("feather"), "and feathered wings");
-    assert!(w.contains("tooth_l"), "a Virus line grows fangs");
+    assert!(w.contains("tooth_l"), "a Feral line grows fangs");
     assert!(w.contains("spine_l"), "and back spines");
-    assert!(d.contains("crystal_l"), "a Data line grows crystals: {d:?}");
+    assert!(d.contains("crystal_l"), "a Prism line grows crystals: {d:?}");
     assert!(d.contains("circuit_l"), "and circuit traces");
 }
 
@@ -493,7 +493,7 @@ fn different_seeds_build_different_individuals() {
         let mut signatures = HashSet::new();
         let mut variants = HashSet::new();
         for seed in 0..6u64 {
-            let spec = Spec::with_attribute(seed, archetype, Tier::Rookie, Attribute::Data);
+            let spec = Spec::with_attribute(seed, archetype, Tier::Rookie, Attribute::Prism);
             variants.insert(spec.variant());
             signatures.insert(shape_signature(&generate(&spec)));
         }
@@ -576,7 +576,7 @@ fn one_archetype_builds_many_silhouettes() {
                 seed,
                 archetype,
                 Tier::Champion,
-                Attribute::Virus,
+                Attribute::Feral,
             ));
             validate_at(&manifest, Tier::Champion).unwrap_or_else(|err| {
                 panic!("{} seed {seed}: {err}", archetype.as_str())
@@ -612,13 +612,13 @@ fn the_form_is_visible_from_fresh() {
                 seed,
                 archetype,
                 Tier::Fresh,
-                Attribute::Virus,
+                Attribute::Feral,
             ));
             let champion = generate(&Spec::with_attribute(
                 seed,
                 archetype,
                 Tier::Champion,
-                Attribute::Virus,
+                Attribute::Feral,
             ));
             assert_eq!(
                 form_parts(&fresh),
@@ -643,7 +643,7 @@ fn the_same_archetype_at_fresh_is_still_its_own_creature() {
     // itself at stage one, accessory and all.
     let mut shapes = HashSet::new();
     for archetype in Archetype::ALL {
-        let fresh = generate(&Spec::with_attribute(7, archetype, Tier::Fresh, Attribute::Virus));
+        let fresh = generate(&Spec::with_attribute(7, archetype, Tier::Fresh, Attribute::Feral));
         assert!(
             shapes.insert(part_ids(&fresh)),
             "{} shares its Fresh part set with another archetype",
@@ -714,7 +714,7 @@ fn each_tier_carries_the_stage_in_its_identity() {
         let spec = Spec::new(77, Archetype::Holy, tier);
         let manifest = generate(&spec);
         assert_eq!(manifest.name, spec.slug());
-        assert!(manifest.name.starts_with("digi-holy-"));
+        assert!(manifest.name.starts_with("buddy-holy-"));
         assert!(manifest.name.contains(tier.slug()));
         assert_eq!(manifest.label, spec.label());
     }
@@ -735,7 +735,7 @@ fn forty_seeds_of_one_family_are_forty_creatures() {
                 seed,
                 archetype,
                 Tier::Champion,
-                Attribute::Data,
+                Attribute::Prism,
             ));
             validate_at(&manifest, Tier::Champion).unwrap_or_else(|err| {
                 panic!("{} seed {seed}: {err}", archetype.as_str())
@@ -770,7 +770,7 @@ fn every_creature_can_actually_wave() {
                 0x5EED,
                 archetype,
                 tier,
-                Attribute::Data,
+                Attribute::Prism,
             ));
             let strongest = manifest
                 .bones
@@ -892,13 +892,13 @@ fn a_one_hot_blend_generates_the_pure_attribute_rig() {
 
 #[test]
 fn a_blended_lineage_wears_both_attributes_furniture() {
-    // Equal parts Data and a recent Virus: crystal growths, circuit traces *and*
+    // Equal parts Prism and a recent Feral: crystal growths, circuit traces *and*
     // spines, fangs and toxic accents, on one body.
     let manifest = blended(
         0x5EED,
         Archetype::Beast,
         Tier::Champion,
-        &[Attribute::Data, Attribute::Virus],
+        &[Attribute::Prism, Attribute::Feral],
     );
     let report = validate_at(&manifest, Tier::Champion).expect("a blended rig validates");
     // Exact mirroring within the format's bound: the same ~1e-15 FK residue a
@@ -910,10 +910,10 @@ fn a_blended_lineage_wears_both_attributes_furniture() {
 
     let ids = part_ids_of(&manifest);
     for id in ["crystal_l", "circuit_l", "spine_l", "tooth_l"] {
-        assert!(ids.contains(id), "{id} is missing from a Data/Virus blend: {ids:?}");
+        assert!(ids.contains(id), "{id} is missing from a Prism/Feral blend: {ids:?}");
     }
 
-    // The paint is blended too: neither a pure Data nor a pure Virus colour.
+    // The paint is blended too: neither a pure Prism nor a pure Feral colour.
     let skin = |manifest: &Manifest| -> String {
         manifest
             .bones
@@ -923,15 +923,15 @@ fn a_blended_lineage_wears_both_attributes_furniture() {
             .map(|part| part.color.clone())
             .expect("a skull")
     };
-    let data_only = blended(0x5EED, Archetype::Beast, Tier::Champion, &[Attribute::Data]);
-    let virus_only = blended(0x5EED, Archetype::Beast, Tier::Champion, &[Attribute::Virus]);
-    assert_ne!(skin(&manifest), skin(&data_only), "the mix is not a pure Data paint");
-    assert_ne!(skin(&manifest), skin(&virus_only), "nor a pure Virus paint");
+    let data_only = blended(0x5EED, Archetype::Beast, Tier::Champion, &[Attribute::Prism]);
+    let virus_only = blended(0x5EED, Archetype::Beast, Tier::Champion, &[Attribute::Feral]);
+    assert_ne!(skin(&manifest), skin(&data_only), "the mix is not a pure Prism paint");
+    assert_ne!(skin(&manifest), skin(&virus_only), "nor a pure Feral paint");
 }
 
 #[test]
 fn the_quieter_attribute_shrinks_and_loses_its_extra_detail_first() {
-    // Four stages of Data, then a Virus shift: Data dominates (60/40). The viral
+    // Four stages of Prism, then a Feral shift: Prism dominates (60/40). The viral
     // furniture is still there, but smaller, and the viral *ornament* that only
     // a dominant share earns is already gone.
     let dominant_data = blended(
@@ -939,17 +939,17 @@ fn the_quieter_attribute_shrinks_and_loses_its_extra_detail_first() {
         Archetype::Beast,
         Tier::Champion,
         &[
-            Attribute::Data,
-            Attribute::Data,
-            Attribute::Data,
-            Attribute::Virus,
+            Attribute::Prism,
+            Attribute::Prism,
+            Attribute::Prism,
+            Attribute::Feral,
         ],
     );
     validate_at(&dominant_data, Tier::Champion).expect("valid");
 
     let ids = part_ids_of(&dominant_data);
     assert!(ids.contains("spine_l"), "the recent viral spines still show");
-    assert!(ids.contains("crystal_core"), "the dominant data core is kept");
+    assert!(ids.contains("crystal_core"), "the dominant prism core is kept");
     assert!(
         !ids.contains("spine_mid"),
         "the faint attribute loses its extra detail before the dominant one does"
@@ -960,7 +960,7 @@ fn the_quieter_attribute_shrinks_and_loses_its_extra_detail_first() {
         0x5EED,
         Archetype::Beast,
         Tier::Champion,
-        &[Attribute::Data, Attribute::Virus],
+        &[Attribute::Prism, Attribute::Feral],
     );
     let faint = part_size(&dominant_data, "spine_l").expect("faint spine");
     let full = part_size(&equal, "spine_l").expect("full spine");
@@ -972,12 +972,12 @@ fn the_quieter_attribute_shrinks_and_loses_its_extra_detail_first() {
     // A share under the plan threshold does not reach the silhouette at all.
     // (A linear lineage cannot get below `2/(n+1)`, so build the weights.)
     let faint = AttributeBlend::from_weights([0.0, 0.92, 0.08]);
-    assert!(faint.weight(Attribute::Virus) < 0.12, "{}", faint.summary());
+    assert!(faint.weight(Attribute::Feral) < 0.12, "{}", faint.summary());
     let faintest = generate(&Spec::with_blend(
         0x5EED,
         Archetype::Beast,
         Tier::Champion,
-        Attribute::Data,
+        Attribute::Prism,
         faint,
     ));
     assert!(
@@ -988,7 +988,7 @@ fn the_quieter_attribute_shrinks_and_loses_its_extra_detail_first() {
 
 #[test]
 fn a_blend_is_deterministic_and_depends_on_the_lineage() {
-    let lineage = [Attribute::Data, Attribute::Data, Attribute::Virus];
+    let lineage = [Attribute::Prism, Attribute::Prism, Attribute::Feral];
     let a = blended(0xC0FFEE, Archetype::Drake, Tier::Ultimate, &lineage);
     let b = blended(0xC0FFEE, Archetype::Drake, Tier::Ultimate, &lineage);
     assert_eq!(a.to_pretty_json(), b.to_pretty_json());
@@ -998,7 +998,7 @@ fn a_blend_is_deterministic_and_depends_on_the_lineage() {
         0xC0FFEE,
         Archetype::Drake,
         Tier::Ultimate,
-        &[Attribute::Virus, Attribute::Virus, Attribute::Virus],
+        &[Attribute::Feral, Attribute::Feral, Attribute::Feral],
     );
     assert_ne!(a.to_pretty_json(), other.to_pretty_json());
 }
@@ -1006,22 +1006,22 @@ fn a_blend_is_deterministic_and_depends_on_the_lineage() {
 #[test]
 fn blended_rigs_keep_every_rig_invariant() {
     let lineages: [&[Attribute]; 6] = [
-        &[Attribute::Data],
-        &[Attribute::Data, Attribute::Virus],
-        &[Attribute::Virus, Attribute::Data, Attribute::Data],
-        &[Attribute::Vaccine, Attribute::Data, Attribute::Virus],
+        &[Attribute::Prism],
+        &[Attribute::Prism, Attribute::Feral],
+        &[Attribute::Feral, Attribute::Prism, Attribute::Prism],
+        &[Attribute::Seraph, Attribute::Prism, Attribute::Feral],
         &[
-            Attribute::Data,
-            Attribute::Data,
-            Attribute::Data,
-            Attribute::Virus,
+            Attribute::Prism,
+            Attribute::Prism,
+            Attribute::Prism,
+            Attribute::Feral,
         ],
         &[
-            Attribute::Virus,
-            Attribute::Vaccine,
-            Attribute::Data,
-            Attribute::Virus,
-            Attribute::Vaccine,
+            Attribute::Feral,
+            Attribute::Seraph,
+            Attribute::Prism,
+            Attribute::Feral,
+            Attribute::Seraph,
         ],
     ];
     for archetype in Archetype::ALL {
@@ -1051,29 +1051,29 @@ fn blended_rigs_keep_every_rig_invariant() {
 
 #[test]
 fn a_rewind_restores_the_earlier_blend_and_rig() {
-    let mut state = Digivolution::new(0xBEEF, Archetype::Drake, Attribute::Data);
+    let mut state = Metamorphosis::new(0xBEEF, Archetype::Drake, Attribute::Prism);
     let fresh_blend = state.blend();
 
     // Branch 1 is a different attribute, so the line genuinely mixes.
-    let first = state.digivolve(Some(1), true).expect("first evolution");
+    let first = state.metamorphose(Some(1), true).expect("first evolution");
     let rookie_blend = state.blend();
     let rookie_rig = state.manifest().to_pretty_json();
     assert_eq!(state.history.last().unwrap().to_attribute, Some(first.attribute));
     assert_ne!(rookie_blend, fresh_blend);
 
-    state.digivolve(Some(2), true).expect("second evolution");
+    state.metamorphose(Some(2), true).expect("second evolution");
     assert_ne!(state.blend(), rookie_blend, "the second step shifted the mix");
     assert_eq!(state.history.len(), 2);
 
     // One step back: the *exact* earlier body, and the exact earlier mix.
-    let back = state.dedigivolve(1).expect("rewind");
+    let back = state.revert(1).expect("rewind");
     assert_eq!(state.blend(), rookie_blend);
     assert_eq!(back.blend, rookie_blend);
     assert_eq!(state.manifest().to_pretty_json(), rookie_rig);
     assert_eq!(state.history.len(), 1);
 
     // All the way home: the egg is pure again.
-    state.dedigivolve(9).expect("rewind to the egg");
+    state.revert(9).expect("rewind to the egg");
     assert_eq!(state.blend(), fresh_blend);
     assert!(state.history.is_empty());
 }
@@ -1081,19 +1081,19 @@ fn a_rewind_restores_the_earlier_blend_and_rig() {
 #[test]
 fn a_legacy_history_still_resolves_a_lineage() {
     // A save written before `to_attribute` existed: no field on either entry.
-    let state: Digivolution = serde_json::from_str(
+    let state: Metamorphosis = serde_json::from_str(
         r#"{
             "seed": 1234,
             "archetype": "drake",
             "tier": "Champion",
-            "attribute": "Virus",
+            "attribute": "Feral",
             "generation": 2,
-            "slug": "digi-drake-champion-virus-000004d2",
+            "slug": "buddy-drake-champion-feral-000004d2",
             "history": [
                 { "from": "Fresh", "to": "In-Training", "slug": "a", "at_ms": 5,
-                  "from_seed": 1, "from_attribute": "Data" },
+                  "from_seed": 1, "from_attribute": "Prism" },
                 { "from": "In-Training", "to": "Champion", "slug": "b", "at_ms": 6,
-                  "from_seed": 2, "from_attribute": "Data" }
+                  "from_seed": 2, "from_attribute": "Prism" }
             ]
         }"#,
     )
@@ -1102,13 +1102,13 @@ fn a_legacy_history_still_resolves_a_lineage() {
 
     let lineage = state.lineage();
     assert_eq!(lineage.len(), state.history.len() + 1);
-    assert_eq!(lineage[0], Attribute::Data, "the egg's attribute survives");
-    assert_eq!(*lineage.last().unwrap(), Attribute::Virus, "and the live one is newest");
-    // Data twice, Virus once: a 50/50 tie, resolved deterministically by the
+    assert_eq!(lineage[0], Attribute::Prism, "the egg's attribute survives");
+    assert_eq!(*lineage.last().unwrap(), Attribute::Feral, "and the live one is newest");
+    // Prism twice, Feral once: a 50/50 tie, resolved deterministically by the
     // attribute order rather than by float noise.
     let blend = state.blend();
     assert!((blend.sum() - 1.0).abs() < 1e-12);
-    assert_eq!(blend.weight(Attribute::Virus), blend.weight(Attribute::Data));
-    assert!(blend.summary().contains("Virus"), "{}", blend.summary());
+    assert_eq!(blend.weight(Attribute::Feral), blend.weight(Attribute::Prism));
+    assert!(blend.summary().contains("Feral"), "{}", blend.summary());
     validate_at(&state.manifest(), state.tier).expect("a legacy line still generates a valid rig");
 }

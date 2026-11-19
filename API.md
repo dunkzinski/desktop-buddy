@@ -262,8 +262,8 @@ file (gitignored) and is rebuilt silently if it is missing or corrupt.
 `cd src-tauri && cargo run --example model_list_timing` prints those three
 numbers against the current `models/`.
 
-`"generated": true` marks a folder whose name is a digivolution slug
-(`digi-<archetype>-<stage>[-<attribute>]-<8 hex>`) — the procedural creatures the
+`"generated": true` marks a folder whose name is a metamorphosis slug
+(`buddy-<archetype>-<stage>[-<attribute>]-<8 hex>`) — the procedural creatures the
 plugin writes on every stage change. The endpoint lists them like any other
 model (the bridge and the MCP tools still see everything); the desktop model
 picker hides them unless they carry a `rig.json` override (i.e. you edited and
@@ -888,6 +888,59 @@ creates:
 * **`vision.profile_name`** must name an existing `ai_profiles` entry — a name
   that does not resolve is a 400 rather than a screenshot sent to nothing.
 
+
+### `GET /soul` / `POST /soul`
+
+`SOUL.md` is the avatar's durable persona — a plain markdown file the user owns.
+`char-rig-watcher` reads it at the **start of every turn**, so nothing is cached
+and an edit is live on the next reply. `GET` reports the file *and* the persona
+that will actually be used:
+
+```bash
+curl -s localhost:8765/soul
+```
+
+```json
+{
+  "ok": true,
+  "path": "C:\\hermes\\char-rig\\SOUL.md",
+  "exists": true,
+  "is_default": false,
+  "content": "# SOUL.md\n\n…the file exactly as it is on disk…",
+  "persona": "# SOUL.md\n\n…the persona the next turn will inject…",
+  "max_bytes": 65536
+}
+```
+
+`content` is the raw file; `persona` is what the next turn will actually inject:
+the built-in `DEFAULT_SOUL` starter whenever the file is missing, empty,
+unreadable or over the cap — which is exactly what `is_default: true` reports,
+with `exists: false` and `content: ""` once the file is gone. Nothing here is a
+404: the app seeds `SOUL.md` at startup and **Open SOUL.md** re-seeds it on
+demand, but a missing file is a perfectly valid state — the avatar just falls
+back to the built-in persona.
+
+```bash
+curl -s -X POST localhost:8765/soul -H 'content-type: application/json' \
+     -d '{"content": "# SOUL.md\n\nDry, brief, a little odd.\n"}'
+```
+
+The body is `{"content": "…"}` and the reply is the same object `GET` returns, so
+a client repaints straight from the write. Refusals are the writer's own words
+and nothing is written: a missing `content`, a blank one, or anything over
+`max_bytes` is a **400**. The write is a temp file plus a rename, so a
+half-written persona can never land.
+
+**One resolver, both processes.** `src-tauri/src/soul.rs` is compiled into the
+app *and* into `char-rig-watcher` (`#[path = "../soul.rs"]`), so the editor and
+the prompt cannot disagree: `CHAR_RIG_SOUL` → `soul_path` in
+`watcher_rules.json` → `<rules dir>/SOUL.md` → `<app config dir>/SOUL.md`.
+
+The Settings modal's **Open SOUL.md** button is the `open_soul_file` command
+rather than a second route: it seeds a missing file and hands the path to the
+OS's default editor, so the persona can be edited in the user's own editor while
+the textarea stays open. `SOUL.md` stays authoritative over the profile's
+`expression` hints — the persona wins on voice, the contract wins on shape.
 
 ### `GET /survival` / `POST /survival`
 
@@ -1575,19 +1628,19 @@ trigger (speaking `line` as its offline fallback).
 Gives up on the current cast and reports it as a `fishing-result` with
 `reason: "cancelled"`. Nothing to cancel is a **409**.
 
-## Digivolution (the `digivolution` plugin)
+## Metamorphosis (the `metamorphosis` plugin)
 
-The `digivolution` guest owns one procedurally generated creature: a seed, a
+The `metamorphosis` guest owns one procedurally generated creature: a seed, a
 stage, XP, bond and an attribute. Every stage is a complete `char-rig/model@1`
 rig it **generates itself** (no sprites, no AI, no network) and writes into
 `models/<slug>/model.json` through a host import, which validates it with the
-app's own loader before anything lands on disk. `/digivolve` then hot-swaps the
+app's own loader before anything lands on disk. `/metamorphose` then hot-swaps the
 avatar onto the new rig — the same code path `POST /model` takes — and plays the
-`digivolve` clip.
+`metamorphose` clip.
 
 Stages are ordered `Fresh → In-Training → Rookie → Champion → Ultimate → Mega`.
-Each transition has three branches (one per attribute: `Vaccine`, `Data`,
-`Virus`), and the bond/XP state only *seeds* them, so the same creature always
+Each transition has three branches (one per attribute: `Seraph`, `Prism`,
+`Feral`), and the bond/XP state only *seeds* them, so the same creature always
 offers the same three options.
 
 **The attribute is a body plan, not a badge.** It reaches the generator
@@ -1596,22 +1649,22 @@ from one seed:
 
 | attribute | the line grows | reads as |
 | --- | --- | --- |
-| `Vaccine` | wings, a ring of light, feather vanes, a blade crest | haloed, feathered, gentle |
-| `Data` | crystal growths, circuit traces, a visor band, floating bits | crystalline, plated, digital |
-| `Virus` | back spines, fangs, toxic drips, clawed hands | fanged, spiked, toxic |
+| `Seraph` | wings, a ring of light, feather vanes, a blade crest | haloed, feathered, gentle |
+| `Prism` | crystal growths, circuit traces, a visor band, floating bits | crystalline, plated, digital |
+| `Feral` | back spines, fangs, toxic drips, clawed hands | fanged, spiked, toxic |
 
-The colours follow too, but only as a tint: a Vaccine and a Virus Drake differ
+The colours follow too, but only as a tint: a Seraph and a Feral Drake differ
 in silhouette first. On top of the archetype and the attribute, the seed picks
 one of three builds (lean / canonical / broad) and a marking (none / spots /
 stripes), so two Rookies of the same archetype are still two individuals. State is persisted as
-`plugins/digivolution.state.json`, so a restart resumes the same line.
+`plugins/metamorphosis.state.json`, so a restart resumes the same line.
 
-### `GET /digimon/status`
+### `GET /creature/status`
 
 Everything the growth system knows, plus the measurements of the live rig.
 
 ```bash
-curl -s localhost:8765/digimon/status
+curl -s localhost:8765/creature/status
 ```
 
 ```json
@@ -1624,43 +1677,43 @@ curl -s localhost:8765/digimon/status
   "xp_required": 180,
   "xp_to_next": 116,
   "bond": 0.52,
-  "attribute": "Virus",
+  "attribute": "Feral",
   "attribute_blend": {
-    "dominant": "Virus",
-    "weights": { "Vaccine": 0.0, "Data": 0.333333, "Virus": 0.666667 },
-    "percent": { "Vaccine": 0, "Data": 33, "Virus": 67 },
-    "summary": "67% Virus · 33% Data",
+    "dominant": "Feral",
+    "weights": { "Seraph": 0.0, "Prism": 0.333333, "Feral": 0.666667 },
+    "percent": { "Seraph": 0, "Prism": 33, "Feral": 67 },
+    "summary": "67% Feral · 33% Prism",
     "flavour": "fanged, spiked, toxic · crystalline, plated, digital",
     "pure": false,
-    "lineage": ["Data", "Virus"],
+    "lineage": ["Prism", "Feral"],
     "loud": [
-      { "attribute": "Virus", "weight": 0.666667, "percent": 67, "flavour": "fanged, spiked, toxic" },
-      { "attribute": "Data", "weight": 0.333333, "percent": 33, "flavour": "crystalline, plated, digital" }
+      { "attribute": "Feral", "weight": 0.666667, "percent": 67, "flavour": "fanged, spiked, toxic" },
+      { "attribute": "Prism", "weight": 0.333333, "percent": 33, "flavour": "crystalline, plated, digital" }
     ]
   },
-  "slug": "digi-drake-rookie-virus-1f3a9c02",
+  "slug": "buddy-drake-rookie-feral-1f3a9c02",
   "generation": 2,
   "installed": true,
   "can_evolve": false,
   "final_stage": false,
-  "can_dedigivolve": true,
+  "can_revert": true,
   "rewind_depth": 1,
   "previous_stage": "In-Training",
   "last_evolved_ms": 1732000123456,
   "rig": { "bones": 19, "parts": 46, "parts_budget": 100, "clips": 3, "min_world_y": -86.4, "symmetry_error": 0.0 },
-  "attributes": [ { "value": "Virus", "label": "Virus", "flavour": "fanged, spiked, toxic" } ],
+  "attributes": [ { "value": "Feral", "label": "Feral", "flavour": "fanged, spiked, toxic" } ],
   "archetypes": [ { "value": "beast", "label": "Beast" }, { "value": "drake", "label": "Drake" } ],
   "branches": [
-    { "stage": "Champion", "attribute": "Virus", "label": "Drake Champion (Virus)",
-      "slug": "digi-drake-champion-virus-9b21c4d0", "seed": 11166978496, "xp_required": 180,
+    { "stage": "Champion", "attribute": "Feral", "label": "Drake Champion (Feral)",
+      "slug": "buddy-drake-champion-feral-9b21c4d0", "seed": 11166978496, "xp_required": 180,
       "flavour": "fanged, spiked, toxic",
       "blend": { "weights": [0.0, 0.25, 0.75] },
-      "blend_summary": "75% Virus · 25% Data",
+      "blend_summary": "75% Feral · 25% Prism",
       "blended_flavour": "fanged, spiked, toxic · crystalline, plated, digital" }
   ],
-  "history": [ { "from": "In-Training", "to": "Rookie", "slug": "digi-drake-rookie-virus-1f3a9c02",
-                 "at_ms": 1732000123456, "from_seed": 1585367844, "from_attribute": "Data",
-                 "to_attribute": "Virus" } ],
+  "history": [ { "from": "In-Training", "to": "Rookie", "slug": "buddy-drake-rookie-feral-1f3a9c02",
+                 "at_ms": 1732000123456, "from_seed": 1585367844, "from_attribute": "Prism",
+                 "to_attribute": "Feral" } ],
   "last_error": null
 }
 ```
@@ -1681,18 +1734,18 @@ each transition chose; the weights are the linear recency ramp (the oldest stage
 counts `1`, the newest `n`) normalised to sum to `1.0`, so the most recent
 choices lead while every earlier stage stays visible. `weights` are those shares,
 `percent` the same mix as whole numbers that always total `100`, `summary` the
-readout (`"67% Virus · 33% Data"`), `flavour` every contributor's traits
+readout (`"67% Feral · 33% Prism"`), `flavour` every contributor's traits
 loudest-first, `loud` the same data as an ordered array, and `dominant` the
 attribute with the largest share. The rig is generated from this mix: crystals
-and circuit traces from the Data share, spines/fangs/drips from the Virus share,
-halo and feather vanes from the Vaccine share — each scaled by its share, and the
+and circuit traces from the Prism share, spines/fangs/drips from the Feral share,
+halo and feather vanes from the Seraph share — each scaled by its share, and the
 skin painted in a weighted blend of the three palettes. `attribute` (top level)
 stays the single *current* attribute, which is what names the model folder, so
 every older client keeps working. Each branch in `branches` carries its own
 `blend` / `blend_summary` / `blended_flavour`: the mix taking that branch would
 produce.
 
-### `POST /digivolve`
+### `POST /metamorphose`
 
 Advances one stage. Body is optional:
 
@@ -1702,7 +1755,7 @@ Advances one stage. Body is optional:
 | `force` | `true` skips the XP gate (demo/verification; the default honours it) |
 
 ```bash
-curl -s -X POST localhost:8765/digivolve -H 'content-type: application/json' \
+curl -s -X POST localhost:8765/metamorphose -H 'content-type: application/json' \
   -d '{"branch": 1, "force": true}'
 ```
 
@@ -1711,17 +1764,17 @@ curl -s -X POST localhost:8765/digivolve -H 'content-type: application/json' \
   "ok": true,
   "from": "Fresh",
   "stage": "In-Training",
-  "slug": "digi-drake-in-training-3c0f22aa",
+  "slug": "buddy-drake-in-training-3c0f22aa",
   "label": "Drake In-Training",
-  "attribute": "Data",
-  "attribute_blend": { "dominant": "Data", "percent": { "Vaccine": 0, "Data": 67, "Virus": 33 },
-                       "summary": "67% Data · 33% Virus", "lineage": ["Data", "Virus"], "pure": false },
-  "blend_summary": "67% Data · 33% Virus",
-  "animation": "digivolve",
+  "attribute": "Prism",
+  "attribute_blend": { "dominant": "Prism", "percent": { "Seraph": 0, "Prism": 67, "Feral": 33 },
+                       "summary": "67% Prism · 33% Feral", "lineage": ["Prism", "Feral"], "pure": false },
+  "blend_summary": "67% Prism · 33% Feral",
+  "animation": "metamorphose",
   "bones": 13,
   "parts": 31,
   "min_world_y": -74.2,
-  "model_path": "models/digi-drake-in-training-3c0f22aa/model.json",
+  "model_path": "models/buddy-drake-in-training-3c0f22aa/model.json",
   "status": { "stage": "In-Training" }
 }
 ```
@@ -1732,7 +1785,7 @@ so one request repaints a client, plus `attribute_blend` / `blend_summary` — t
 lineage mix the new body was actually generated from (the creature it had been,
 plus the attribute this branch chose).
 
-### `POST /dedigivolve`
+### `POST /revert`
 
 Goes **back** one stage (or several). Body is optional:
 
@@ -1741,7 +1794,7 @@ Goes **back** one stage (or several). Body is optional:
 | `steps` | how many stages to rewind (default `1`, clamped to the recorded history) |
 
 ```bash
-curl -s -X POST localhost:8765/dedigivolve -H 'content-type: application/json' -d '{"steps": 1}'
+curl -s -X POST localhost:8765/revert -H 'content-type: application/json' -d '{"steps": 1}'
 ```
 
 ```json
@@ -1751,17 +1804,17 @@ curl -s -X POST localhost:8765/dedigivolve -H 'content-type: application/json' -
   "steps": 1,
   "from": "In-Training",
   "stage": "Fresh",
-  "slug": "digi-beast-fresh-5eed1234",
+  "slug": "buddy-beast-fresh-5eed1234",
   "label": "Beast Fresh",
-  "attribute": "Data",
-  "attribute_blend": { "dominant": "Data", "percent": { "Vaccine": 0, "Data": 100, "Virus": 0 },
-                       "summary": "100% Data", "lineage": ["Data"], "pure": true },
-  "blend_summary": "100% Data",
-  "animation": "digivolve",
+  "attribute": "Prism",
+  "attribute_blend": { "dominant": "Prism", "percent": { "Seraph": 0, "Prism": 100, "Feral": 0 },
+                       "summary": "100% Prism", "lineage": ["Prism"], "pure": true },
+  "blend_summary": "100% Prism",
+  "animation": "metamorphose",
   "bones": 9,
   "parts": 27,
   "min_world_y": -49.8,
-  "model_path": "models/digi-beast-fresh-5eed1234/model.json",
+  "model_path": "models/buddy-beast-fresh-5eed1234/model.json",
   "status": { "stage": "Fresh" }
 }
 ```
@@ -1784,33 +1837,33 @@ step is refused with a **409** naming the step, rather than silently landing on
 a different creature. Evolving once records it, and the rewind works from then
 on.
 
-### Growth fields on `GET /digimon/status`
+### Growth fields on `GET /creature/status`
 
-`GET /digimon/status` also carries `can_dedigivolve` (is there a parent stage),
+`GET /creature/status` also carries `can_revert` (is there a parent stage),
 `rewind_depth` (how many stages of history exist) and `previous_stage` (the
 stage a single-step rewind returns to), which is what the card's **◀ Back**
 button reads.
 
-A successful transition emits one `digimon` event with `event: "digivolved"`,
+A successful transition emits one `creature` event with `event: "metamorphosed"`,
 `from`, `stage`, `slug`, `attribute`, `bones`, `parts` and a `line` — the
 watcher turns it into a trigger, and with no brain attached the plugin speaks
 the line itself. Growing past the threshold emits the same event with
 `event: "ready"` exactly once per stage.
 
-### `POST /digimon/xp`
+### `POST /creature/xp`
 
 Grants growth directly — `{"xp": 40, "bond": 0.2}` (either field alone works).
 `bond` is clamped to `-1..1` around the current value. Empty body is a **400**.
 
-### `POST /digimon/reset`
+### `POST /creature/reset`
 
-Model ids are `digi-<archetype>-<stage>-<attribute>-<seed>` (`digi-beast-fresh-virus-00001092`).
-The attribute is in the name because it is part of the rig — Vaccine and Virus
+Model ids are `buddy-<archetype>-<stage>-<attribute>-<seed>` (`buddy-beast-fresh-feral-00001092`).
+The attribute is in the name because it is part of the rig — Seraph and Feral
 versions of the same seed are different creatures and must not share a folder.
 
 Starts a new creature, installs its `Fresh` rig **and switches the avatar to it**
-(the `POST /model` path), then plays the `digivolve` clip:
-`{"seed": 1234, "archetype": "cyborg", "attribute": "Virus"}`. `archetype` is
+(the `POST /model` path), then plays the `metamorphose` clip:
+`{"seed": 1234, "archetype": "cyborg", "attribute": "Feral"}`. `archetype` is
 one of `beast`, `drake`, `cyborg`, `holy`, `aqua`, `cervid`, `machine`,
 `alien`, `avian`, `insect`, `serpent`, `golem` (aliases: `fish`, `deer`,
 `robot`, `angel`, `dragon`, `android`, `bird`, `bug`, `snake`, `rock`);
@@ -2198,7 +2251,7 @@ curl -s -X POST localhost:8765/shutdown
 ## Internal (Tauri command) surface
 
 The page talks to Rust through `invoke`; the same mutations are available as
-commands. Arguments are snake_case (`rename_all = "snake_case"`). All 45, in the
+commands. Arguments are snake_case (`rename_all = "snake_case"`). All 46, in the
 order they are registered (ARCHITECTURE.md §6 has the full purpose table):
 
 **State, window & interaction** — `get_avatar_state`, `get_runtime_info`,
@@ -2246,6 +2299,13 @@ status object.
 probe included) and `set_ai_profile(name)` (the **AI Brain** dropdown; persists,
 probes and broadcasts exactly like `POST /ai-profile`, and returns the new
 status; an unknown name is an error).
+
+**Persona** — `open_soul_file` (the Settings modal's **Open SOUL.md** button:
+resolve the persona path exactly as the watcher does, seed a missing file, hand
+it to the OS's default editor — `cmd /C start`, `open`, `xdg-open` — and return
+the path; a file that cannot be created or opened is an error string). The
+persona *content* is the `GET /soul` / `POST /soul` pair, because it is just a
+file the watcher re-reads every turn.
 
 `notify_interaction` takes `kind` ∈ `click | double_click | drag_end` with `x`,
 `y` in CSS pixels relative to the window, and returns

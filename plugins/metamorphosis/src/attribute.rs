@@ -1,8 +1,8 @@
-//! The three Digimon attributes.
+//! The three creature attributes.
 //!
 //! This lives in its own module because **the generator needs it**: an attribute
-//! is not a label on a branch, it is a body-plan modifier. A Vaccine line grows
-//! a halo and feathered tips, a Data line grows crystals and circuitry, a Virus
+//! is not a label on a branch, it is a body-plan modifier. A Seraph line grows
+//! a halo and feathered tips, a Prism line grows crystals and circuitry, a Feral
 //! line grows fangs, back spikes and toxic drips — same archetype, visibly
 //! different creature.
 
@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attribute {
-    Vaccine,
-    Data,
-    Virus,
+    Seraph,
+    Prism,
+    Feral,
 }
 
 impl Serialize for Attribute {
@@ -31,49 +31,49 @@ impl<'de> Deserialize<'de> for Attribute {
 
 impl Default for Attribute {
     fn default() -> Self {
-        Attribute::Data
+        Attribute::Prism
     }
 }
 
 impl Attribute {
-    pub const ALL: [Attribute; 3] = [Attribute::Vaccine, Attribute::Data, Attribute::Virus];
+    pub const ALL: [Attribute; 3] = [Attribute::Seraph, Attribute::Prism, Attribute::Feral];
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Attribute::Vaccine => "Vaccine",
-            Attribute::Data => "Data",
-            Attribute::Virus => "Virus",
+            Attribute::Seraph => "Seraph",
+            Attribute::Prism => "Prism",
+            Attribute::Feral => "Feral",
         }
     }
 
     /// Lowercase, filename-safe spelling.
     pub fn slug(self) -> &'static str {
         match self {
-            Attribute::Vaccine => "vaccine",
-            Attribute::Data => "data",
-            Attribute::Virus => "virus",
+            Attribute::Seraph => "seraph",
+            Attribute::Prism => "prism",
+            Attribute::Feral => "feral",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "vaccine" => Some(Attribute::Vaccine),
-            "data" => Some(Attribute::Data),
-            "virus" => Some(Attribute::Virus),
+            "seraph" => Some(Attribute::Seraph),
+            "prism" => Some(Attribute::Prism),
+            "feral" => Some(Attribute::Feral),
             _ => None,
         }
     }
 
     pub fn index(self) -> u64 {
         match self {
-            Attribute::Vaccine => 0,
-            Attribute::Data => 1,
-            Attribute::Virus => 2,
+            Attribute::Seraph => 0,
+            Attribute::Prism => 1,
+            Attribute::Feral => 2,
         }
     }
 
-    /// The attribute a branch pulls toward: high bond favours Vaccine, a low one
-    /// Virus, and Data is the neutral middle.
+    /// The attribute a branch pulls toward: high bond favours Seraph, a low one
+    /// Feral, and Prism is the neutral middle.
     pub fn shifted(self, bond: f64, step: i64) -> Self {
         let base = self.index() as i64;
         let bias = if bond > 0.66 {
@@ -90,9 +90,9 @@ impl Attribute {
     /// One line describing what this attribute does to a body, for the UI.
     pub fn flavour(self) -> &'static str {
         match self {
-            Attribute::Vaccine => "haloed, feathered, gentle",
-            Attribute::Data => "crystalline, plated, digital",
-            Attribute::Virus => "fanged, spiked, toxic",
+            Attribute::Seraph => "haloed, feathered, gentle",
+            Attribute::Prism => "crystalline, plated, digital",
+            Attribute::Feral => "fanged, spiked, toxic",
         }
     }
 }
@@ -130,7 +130,7 @@ impl AttributeBlend {
     }
 
     /// Normalise any weight vector into a distribution. Negative, NaN and
-    /// infinite entries count as zero; an all-zero vector falls back to Data,
+    /// infinite entries count as zero; an all-zero vector falls back to Prism,
     /// which is the attribute the plugin has always defaulted to.
     pub fn from_weights(weights: [f64; 3]) -> Self {
         let cleaned = weights.map(|weight| {
@@ -177,8 +177,8 @@ impl AttributeBlend {
     /// Linear recency is deliberate. A half-life decays so fast that a six-stage
     /// line forgets its own egg, and the brief was the opposite: the newest
     /// choice leads, and the earlier stages stay *visible*. It also means a
-    /// creature that has been Data for four stages keeps a Data-dominant body
-    /// when it shifts to Virus — 60/40, not 47/53 — while the fresh Virus
+    /// creature that has been Prism for four stages keeps a Prism-dominant body
+    /// when it shifts to Feral — 60/40, not 47/53 — while the fresh Feral
     /// furniture still reads at a glance.
     ///
     /// Deterministic for a given line, which is what lets a rewind reproduce an
@@ -262,7 +262,7 @@ impl AttributeBlend {
         0.6 + 0.4 * (self.weight(attribute) / peak)
     }
 
-    /// `58% Data · 42% Virus`, dropping attributes that round to nothing.
+    /// `58% Prism · 42% Feral`, dropping attributes that round to nothing.
     pub fn summary(self) -> String {
         let percents = self.percentages();
         self.loudest()
@@ -321,33 +321,33 @@ mod tests {
 
     #[test]
     fn bond_shifts_the_family_toward_its_temperament() {
-        // A devoted creature leans Vaccine, a feral one leans Virus.
-        let devoted = Attribute::Virus.shifted(0.9, 0);
-        assert_eq!(devoted, Attribute::Data);
-        let feral = Attribute::Vaccine.shifted(0.05, 0);
-        assert_eq!(feral, Attribute::Data);
+        // A devoted creature leans Seraph, a feral one leans Feral.
+        let devoted = Attribute::Feral.shifted(0.9, 0);
+        assert_eq!(devoted, Attribute::Prism);
+        let feral = Attribute::Seraph.shifted(0.05, 0);
+        assert_eq!(feral, Attribute::Prism);
     }
 
     #[test]
     fn the_newest_stages_weigh_most_and_the_older_ones_stay_visible() {
         // A shift that just happened leads the mix.
-        let shift = AttributeBlend::from_lineage(&[Attribute::Data, Attribute::Virus]);
-        assert_eq!(shift.dominant(), Attribute::Virus);
-        assert!(shift.weight(Attribute::Virus) > shift.weight(Attribute::Data));
+        let shift = AttributeBlend::from_lineage(&[Attribute::Prism, Attribute::Feral]);
+        assert_eq!(shift.dominant(), Attribute::Feral);
+        assert!(shift.weight(Attribute::Feral) > shift.weight(Attribute::Prism));
 
-        // Four stages of Data and then a Virus shift: the long history still
+        // Four stages of Prism and then a Feral shift: the long history still
         // leads (60/40), and the recent shift is plainly on the body.
         let long = AttributeBlend::from_lineage(&[
-            Attribute::Data,
-            Attribute::Data,
-            Attribute::Data,
-            Attribute::Virus,
+            Attribute::Prism,
+            Attribute::Prism,
+            Attribute::Prism,
+            Attribute::Feral,
         ]);
-        assert_eq!(long.dominant(), Attribute::Data);
-        assert!(long.weight(Attribute::Virus) >= 0.35, "the recent shift stays visible");
+        assert_eq!(long.dominant(), Attribute::Prism);
+        assert!(long.weight(Attribute::Feral) >= 0.35, "the recent shift stays visible");
         assert!((long.sum() - 1.0).abs() < 1e-12, "normalised: {}", long.sum());
         assert_eq!(long.percentages().iter().map(|p| *p as u32).sum::<u32>(), 100);
-        assert!(long.summary().contains("Virus"), "{}", long.summary());
+        assert!(long.summary().contains("Feral"), "{}", long.summary());
         assert!(long.blended_flavour().contains("crystalline"));
     }
 
@@ -366,7 +366,7 @@ mod tests {
                 }
             }
         }
-        // An empty line has nothing to mix: Data, the historical default.
+        // An empty line has nothing to mix: Prism, the historical default.
         assert_eq!(
             AttributeBlend::from_lineage(&[]),
             AttributeBlend::pure(Attribute::default())
@@ -377,10 +377,10 @@ mod tests {
     fn the_weights_are_deterministic_monotone_and_sane() {
         assert_eq!(recency_weights(4), vec![1.0, 2.0, 3.0, 4.0]);
         let lineage = [
-            Attribute::Vaccine,
-            Attribute::Data,
-            Attribute::Data,
-            Attribute::Virus,
+            Attribute::Seraph,
+            Attribute::Prism,
+            Attribute::Prism,
+            Attribute::Feral,
         ];
         assert_eq!(
             AttributeBlend::from_lineage(&lineage),

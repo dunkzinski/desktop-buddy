@@ -94,6 +94,34 @@ for name, text in (("API.md", api_md), ("ARCHITECTURE.md", arch_md)):
     if missing:
         problems.append(f"{name}: commands not documented: {sorted(missing)}")
 
+# A passing mention anywhere in the file is not a table row: `open_soul_file` and
+# `pick_config_path` were both registered, both named in passing prose, and both
+# absent from the §6 surface table while the count line went stale. §6 is the
+# authoritative command list, so every registered command must appear in it —
+# grouped rows (`list_models` / `get_model` / `load_model(name)`) are why this is
+# a substring test rather than a row match.
+arch_surface = arch_md.split("## 6.")[1].split("## 7.")[0]
+absent = {c for c in commands if c not in arch_surface}
+if absent:
+    problems.append(
+        f"ARCHITECTURE.md §6: registered commands with no row in the command table: {sorted(absent)}"
+    )
+
+# Both docs state the command count in prose. That number is a claim, so check it
+# against the handler list — otherwise a new command lands undocumented and only
+# the count quietly lies.
+for name, text, pattern in (
+    ("API.md", api_md, r"All (\d+), in the"),
+    ("ARCHITECTURE.md", arch_md, r"^(\d+) commands, registered"),
+):
+    match = re.search(pattern, text, re.M)
+    if not match:
+        problems.append(f"{name}: no registered-command count to check against {len(commands)}")
+    elif int(match.group(1)) != len(commands):
+        problems.append(
+            f"{name}: says {match.group(1)} commands, generate_handler! registers {len(commands)}"
+        )
+
 # commands mentioned in docs that don't exist — only look inside the
 # "Tauri command surface" section of ARCHITECTURE.md (the rest of the document
 # legitimately mentions SDK methods like `primary_monitor()`).
@@ -134,7 +162,7 @@ else:
 # ---------- 4b. every pop-out card is a click target ----------
 # A floating card that is not in `rig.js::wireRegions` looks alive and swallows
 # nothing: the overlay stays click-through over it and every click lands on the
-# desktop behind. The digivolution card shipped exactly that bug once.
+# desktop behind. The metamorphosis card shipped exactly that bug once.
 card_ids = set(re.findall(r'<aside id="([a-z0-9-]+-card)"', (ROOT / "ui/index.html").read_text(encoding="utf-8")))
 rig_js = (ROOT / "ui/js/rig.js").read_text(encoding="utf-8")
 missing_regions = sorted(card_id for card_id in card_ids if f'"{card_id}"' not in rig_js)

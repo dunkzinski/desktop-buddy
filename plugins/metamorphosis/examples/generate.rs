@@ -2,8 +2,8 @@
 //!
 //! ```bash
 //! cargo run --example generate -- 42 drake mega /tmp/drake-mega.json
-//! cargo run --example generate -- 42 drake mega models/digi-drake-mega-0000002a
-//! cargo run --example generate -- 42 drake mega out.json virus   # attribute
+//! cargo run --example generate -- 42 drake mega models/buddy-drake-mega-0000002a
+//! cargo run --example generate -- 42 drake mega out.json feral   # attribute
 //! ```
 //!
 //! The second form writes `model.json` inside the folder, ready to drop into
@@ -13,8 +13,8 @@
 
 use std::path::PathBuf;
 
-use char_rig_digivolution_plugin::attribute::Attribute;
-use char_rig_digivolution_plugin::generator::{generate, validate, Archetype, Spec, Tier};
+use char_rig_metamorphosis_plugin::attribute::Attribute;
+use char_rig_metamorphosis_plugin::generator::{generate, validate, Archetype, Spec, Tier};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -22,7 +22,7 @@ fn main() {
         eprintln!("usage: generate <seed> <archetype> <tier> [out.json|out-dir] [attribute]");
         eprintln!("       archetype: beast | drake | cyborg | holy | aqua | cervid | machine | alien");
         eprintln!("       tier:      fresh | in-training | rookie | champion | ultimate | mega");
-        eprintln!("       attribute: vaccine | data | virus (default data)");
+        eprintln!("       attribute: seraph | prism | feral (default prism)");
         std::process::exit(2);
     }
     let seed: u64 = args[0].parse().expect("seed must be an integer");

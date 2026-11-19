@@ -233,8 +233,8 @@ You do not have tools: you see only the context you are given and you answer wit
 
 /// The creature's current form, as one compact block for the prompt.
 ///
-/// Reads `GET /digimon/status`: the stage, the archetype and the recency-weighted
-/// `attribute_blend` (`Vaccine` / `Data` / `Virus` percentages). The block is
+/// Reads `GET /creature/status`: the stage, the archetype and the recency-weighted
+/// `attribute_blend` (`Seraph` / `Prism` / `Feral` percentages). The block is
 /// *flavour*, not an override — it tells the model which body it is wearing so
 /// its tone and `expression` fit the form, while `SOUL.md` still owns the voice.
 /// A build without the plugin (404) or a status without those keys yields
@@ -258,9 +258,9 @@ fn creature_context(status: &Value) -> Option<String> {
             .and_then(|percent| percent.get(name))
             .and_then(Value::as_u64)
     };
-    let weights = match (percent("Vaccine"), percent("Data"), percent("Virus")) {
-        (Some(vaccine), Some(data), Some(virus)) => {
-            Some(format!("Vaccine {vaccine}% / Data {data}% / Virus {virus}%"))
+    let weights = match (percent("Seraph"), percent("Prism"), percent("Feral")) {
+        (Some(seraph), Some(prism), Some(feral)) => {
+            Some(format!("Seraph {seraph}% / Prism {prism}% / Feral {feral}%"))
         }
         _ => None,
     };
@@ -301,12 +301,12 @@ fn soul_for_turn(ai: &AiShared) -> String {
     soul::ensure_soul(&path)
 }
 
-/// `GET /digimon/status` — the digivolution plugin's status body.
+/// `GET /creature/status` — the metamorphosis plugin's status body.
 ///
 /// The route belongs to a plugin, so a build without it answers 404 and the turn
 /// simply has no creature slot. Never fatal.
-async fn fetch_digimon(client: &reqwest::Client, api_url: &str) -> Result<Value, String> {
-    let url = format!("{api_url}/digimon/status");
+async fn fetch_creature(client: &reqwest::Client, api_url: &str) -> Result<Value, String> {
+    let url = format!("{api_url}/creature/status");
     let response = client
         .get(&url)
         .timeout(CONTEXT_TIMEOUT)
@@ -819,7 +819,7 @@ struct DispatchCtx<'a> {
     /// `SOUL.md` as read at the start of this turn (slot #1 for both backends).
     soul: &'a str,
     /// The creature's stage/archetype/attribute blend, or `""` when the
-    /// digivolution plugin is not loaded.
+    /// metamorphosis plugin is not loaded.
     creature: &'a str,
 }
 
@@ -3835,7 +3835,7 @@ async fn dispatch_vision(
     // like the same creature as a text answer. The creature's form is fetched
     // here as well, so the face the model picks matches the body it is in.
     let soul_text = soul_for_turn(ai);
-    let creature = match fetch_digimon(client, &config.api_url).await {
+    let creature = match fetch_creature(client, &config.api_url).await {
         Ok(status) => creature_context(&status).unwrap_or_default(),
         Err(_) => String::new(),
     };
@@ -4037,7 +4037,7 @@ async fn handle_trigger(
     // applies to the very next trigger, and an evolution changes the body the
     // same way. `""` means "no creature slot" (plugin not loaded).
     let soul_text = soul_for_turn(ai);
-    let creature = match fetch_digimon(client, &config.api_url).await {
+    let creature = match fetch_creature(client, &config.api_url).await {
         Ok(status) => creature_context(&status).unwrap_or_default(),
         Err(_) => String::new(),
     };
@@ -5280,15 +5280,15 @@ mod tests {
             "stage": "Champion",
             "creature": { "archetype": "drake" },
             "attribute_blend": {
-                "percent": { "Vaccine": 60, "Data": 40, "Virus": 0 },
-                "summary": "60% Vaccine · 40% Data",
+                "percent": { "Seraph": 60, "Prism": 40, "Feral": 0 },
+                "summary": "60% Seraph · 40% Prism",
                 "flavour": "haloed, feathered, gentle · crystalline, plated, digital"
             }
         });
         let block = creature_context(&status).expect("a status yields a block");
         assert!(block.starts_with("[Your current form]"), "{block}");
         assert!(block.contains("Champion-stage drake"), "{block}");
-        assert!(block.contains("Vaccine 60% / Data 40% / Virus 0%"), "{block}");
+        assert!(block.contains("Seraph 60% / Prism 40% / Feral 0%"), "{block}");
         assert!(block.contains("haloed"), "{block}");
         // The model is told not to read the numbers back to the user.
         assert!(block.contains("never mention these numbers"), "{block}");

@@ -23,11 +23,11 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | Area | What exists |
 | --- | --- |
 | **Desktop windowing** | Transparent, borderless, always-on-top overlay covering the **whole virtual desktop** (every monitor); selective click-through so the desktop stays usable; custom titlebar with click-through toggle, minimize and close |
-| **UI controls** | Avatar control panel (state/mood readout, a live **Blend** strip showing the creature's recency-weighted attribute mix from `GET /digimon/status`, Wave / Walk / Center, New chat, History, Ask…, walk-speed slider, live position, API URL — no manual expression buttons, expressions are commanded by the AI and by watcher acks), model dropdown, Import…, **chat** and **Settings (gear)** icons in the titlebar, a **Watcher** row: on/off switch, `running`/`off`/`missing` badge and a **Logs ↗** pop-out console, a **Voice** row: the Piper mute switch with an `on`/`muted`/`missing` badge, and a **Push to talk** row: the hold-to-talk button with an `idle`/`listening`/`transcribing`/`missing` badge |
+| **UI controls** | Avatar control panel (state/mood readout, a live **Blend** strip showing the creature's recency-weighted attribute mix from `GET /creature/status`, Wave / Walk / Center, New chat, History, Ask…, walk-speed slider, live position, API URL — no manual expression buttons, expressions are commanded by the AI and by watcher acks), model dropdown, Import…, **chat** and **Settings (gear)** icons in the titlebar, a **Watcher** row: on/off switch, `running`/`off`/`missing` badge and a **Logs ↗** pop-out console, a **Voice** row: the Piper mute switch with an `on`/`muted`/`missing` badge, and a **Push to talk** row: the hold-to-talk button with an `idle`/`listening`/`transcribing`/`missing` badge |
 | **Ask / task from the desktop** | Floating command bar under the avatar — `Enter`/`/`, the titlebar chat icon, the **Ask…** button or a click on the bubble opens it, and a **system-wide hotkey** (`Alt+Space` by default, `hotkey` in `watcher_rules.json`) summons it from any application; type + `Enter` sends a `user_reply`, `Esc` closes it. Quick-task chips come from `quick_tasks` in `watcher_rules.json`, and **↺ / New chat** drops the conversation context (`POST /session/reset`) |
 | **Model importing** | Rig manifests as `.json` or `.toml`; single images (`.png`, `.jpg`/`.jpeg`, `.webp`, `.svg`) as a **new character** or as a **part attached to the current rig**; native file picker; clear validation errors |
 | **Rig Edit Mode** | Bone/joint/pivot/hitbox overlay; drag joints, drag rotation ring (unlimited multi-turn), wheel rotate / shift+wheel scale; re-parent; add bone, add limb, add part, duplicate/delete; inspector for transforms, limits, z-order and animation channels; undo; save to `rig.json`; reset |
-| **Facial system** | Per-part sprite **variants**, 6 expression presets (`neutral`, `happy`, `surprised`, `thinking`, `sad`, `angry`) mapping to eye/mouth variant names, procedural squash/stretch fallback, expression holds with auto-revert. **Nothing on the panel commands a face**: expressions are chosen by the AI (`POST /emote`, `speak`, the watcher's contract and vision prompts all ask for one that matches the tone/outcome), by watcher acks (an `alert`'s severity picks `sad`/`surprised`, per-app rules and survival frames pick their own), and by page-side events (PTT `transcribing` → `thinking`, fishing caught/lost → `happy`/`sad`, digivolution `digivolved`/`ready` → `happy`/`surprised`, send failure / model timeout / AI endpoint offline / watcher crash → `sad`/`surprised`). A face with no explicit hold settles back to `neutral` after `EXPRESSION_SETTLE_SECS` once no bubble, thinking card, walk or recording is in progress |
+| **Facial system** | Per-part sprite **variants**, 6 expression presets (`neutral`, `happy`, `surprised`, `thinking`, `sad`, `angry`) mapping to eye/mouth variant names, procedural squash/stretch fallback, expression holds with auto-revert. **Nothing on the panel commands a face**: expressions are chosen by the AI (`POST /emote`, `speak`, the watcher's contract and vision prompts all ask for one that matches the tone/outcome), by watcher acks (an `alert`'s severity picks `sad`/`surprised`, per-app rules and survival frames pick their own), and by page-side events (PTT `transcribing` → `thinking`, fishing caught/lost → `happy`/`sad`, metamorphosis `metamorphosed`/`ready` → `happy`/`surprised`, send failure / model timeout / AI endpoint offline / watcher crash → `sad`/`surprised`). A face with no explicit hold settles back to `neutral` after `EXPRESSION_SETTLE_SECS` once no bubble, thinking card, walk or recording is in progress |
 | **Custom animations** | Optional `animations` block on the rig root: named keyframe clips (`duration_ms`, `loop`, `keyframes[]`) whose per-bone deltas are sampled with smoothstep easing and composed into the transform pass; timeline bar in Rig Edit Mode (clip CRUD, duration, loop, play/stop, 0–100 % scrubber with keyframe ticks, `+ Keyframe` capture) |
 | **Life signs** | Auto-blink every 3–6 s (~120 ms); **text-driven lip sync** — the mouth follows the typewriter character by character (vowels wide open, soft consonants mid-open, spaces and punctuation closed) for both sprite variants and the procedural shape; **global eye tracking** — the `avatar-cursor` poll publishes a deadbanded `cursor-pos` event (3 CSS px, ~20 Hz), so the pupils follow the **OS cursor anywhere on the virtual desktop**, even while the overlay is click-through and unfocused. Gaze priority: explicit `look_at` (`POST /move`) > focused command bar > perch rectangle > global cursor (for 4 s after it last moved) > idle glance every 2–4 s; pupils are clamped to ±4 px so they never leave the socket. The same eased gaze drives a **head-bone yaw bias** (≤ 0.22 rad, ~13°) that is damped and clamped by the bone's `limits`; **hover response** — an extra soft head tilt when the cursor enters the avatar's bounds |
 | **Speech bubbles** | Head-anchored DOM card, re-anchored to the head **every animation frame** (no lag while the avatar walks), typewriter reveal with caret, word wrap, auto-size, edge clamping / flip, auto-dismiss; the avatar stands still while a bubble is up (automatic wandering is paused — an explicit `/move` or keypress still wins); an optional **quick-reply box** (click the bubble, or just hover) with `Enter` to send and `Esc` to dismiss; an optional **details drawer** — a `details` string renders a monospace, scrollable pre block behind a **Details ▾** toggle plus a **Copy** button, and an open drawer holds the bubble up |
@@ -79,15 +79,15 @@ ui/
     ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), text-driven lip sync (`mouthPoseFor`, `setMouthFrom`, `stepMouth`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
     ├── bridge.js       # Tauri IPC commands, event listeners (`avatar-state-changed`, `emote`, `speak`, `avatar-animate`, etc.), hit-region publishing (`wireRegions`, `setClickThrough`), state sync (`reportState`, `applyRemoteState`, `applyPartPatch`)
     ├── survival.js     # The **Survival** pop-out card and its four tabs: `setupSurvival` (hydrate from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follow the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events, 15 s survival poll floor), `renderSurvival` (tier badge, the two bars and the craving row, from any of the payload shapes), `feed` (the real `POST /survival/feed`), `setCraving` / `clearCraving`, `craft` + `syncCraftButton` (the recipe picker's `can_cook`/`missing`, so a cook the bag cannot pay for is not clickable), `showSurvivalTab` (status / bag / fishing / store), `renderInventory` + `addItem` + `useItem` + `sellPickedItem` (`GET /inventory`, `POST /inventory/add`, `POST /inventory/use`, plus a one-unit `POST /store/sell` straight from the bag at the slot's `sell_price`), `syncInventoryButtons` (Use for edibles, Sell for anything the counter prices), the shop (`renderStore` + `renderWallet` + `pickStoreItem` + `syncStoreButtons` + `trade` over `GET /store`, `POST /store/buy`, `POST /store/sell`), the fishing mini-game (`castLine` / `hookFish` / `reelFish` / `cancelFishing`, a 120 ms `GET /fishing` poll, `startMarker` animating off the plugin's sweep), `toggleSurvivalCard` / `survivalCardOpen`
-    ├── digivolve.js    # The **Digivolution** pop-out card: `setupDigivolve` (hydrate from
-    │                  # `GET /digimon/status`, follow the `digimon` event, 10 s poll), `renderDigimon`
+    ├── metamorphose.js    # The **Metamorphosis** pop-out card: `setupMetamorphose` (hydrate from
+    │                  # `GET /creature/status`, follow the `creature` event, 10 s poll), `renderCreature`
     │                  # (stage badge, XP/bond bars, attribute chip, the live rig's bones/parts/top),
     │                  # `renderBlend` (`blendOf` / `summarise`: the lineage's percentage chips, stacked bar
     │                  # and blended traits), `renderBranches` + `pickEvolveBranch` (the three branches, each
     │                  # with the mix it would produce via `branchMix`), `evolve` (the real
-    │                  # `POST /digivolve` — the plugin writes the model and the
-    │                  # host swaps the avatar, so nothing here touches the rig), `nudge` (`POST /digimon/xp`),
-    │                  # `reset` (`POST /digimon/reset`), `toggleDigivolveCard` / `digivolveCardOpen`
+    │                  # `POST /metamorphose` — the plugin writes the model and the
+    │                  # host swaps the avatar, so nothing here touches the rig), `nudge` (`POST /creature/xp`),
+    │                  # `reset` (`POST /creature/reset`), `toggleMetamorphoseCard` / `metamorphoseCardOpen`
     ├── settings.js     # The **Settings** modal over `GET /config` / `POST /config`: `setupSettings` (build the form from one `FIELDS` spec, hydrate from the server, prime at startup), `renderSettings` (values, per-path ✓/✗, stray-key warnings), `collectPatch` (sends **only** what changed, including `ai.create` / `ai.rename` / `ai.remove` and `discovery_ports`), the AI brain tab's own `renderProfileCards` / `refreshProfileOptions` / `addProfile` / `removeProfile` / `discoverModels` / `importModel` / `renderDiscovery`, `save` (partial `POST /config`, then reports applied vs `restart_required`), `toggleSettings` / `settingsOpen`
     └── main.js         # Entry point: DOM bindings, keyboard shortcuts, gaze targeting (`updateGaze`, `attachGazeTracking`), `window.__avatarDebug`, `requestAnimationFrame` main loop (`step`, `frame` — bubble re-anchor), the ask/task command bar (`openCommandBar`, `sendUserMessage`, quick-task chips, `resetSession`)
 ```
@@ -498,7 +498,7 @@ host_animate(clip)                 -> the POST /animate code path
 ```
 
 **Publishing a rig is a host capability, not a guest one.** A guest has no
-filesystem, so a plugin that generates models (see the digivolution plugin
+filesystem, so a plugin that generates models (see the metamorphosis plugin
 below) hands the manifest over instead of writing it:
 `PluginHost::write_model` runs `models::validate_rig` and then
 `models::install_generated_model`, which writes `models/<slug>/model.json`
@@ -508,7 +508,7 @@ never escape the models root. `activate_model` is `ModelCtx::load` plus the
 `model-changed` frame — literally what `POST /model` does — and `animate` is
 `find_animation` plus `do_animate`, what `POST /animate` does. The host stays
 feature-blind: it knows "install a rig", "activate a rig" and "play a clip",
-never "digivolve".
+never "metamorphose".
 
 **One voice per moment.** Every spontaneous survival line — a tier crossing, a
 starvation reminder, a craving that began / lapsed / was satisfied, a meal
@@ -583,23 +583,23 @@ Then restart `avatar-desktop.exe` — no Rust build of the app, no feature flag.
 The plugin's routes appear in the API, its config block appears in the settings
 modal, and its entry appears in `GET /plugins`. Delete the `.wasm` to remove it.
 
-#### The digivolution plugin (`plugins/digivolution/`)
+#### The metamorphosis plugin (`plugins/metamorphosis/`)
 
 A second guest, and the proof that the host stayed feature-blind: adding it
 touched `mod.rs` (three generic capabilities), `wasm_host.rs` (their imports) and
 `models.rs` (one write helper) — no route, no type, no branch named
-"digivolution" anywhere in the app.
+"metamorphosis" anywhere in the app.
 
 | file | responsibility |
 | --- | --- |
 | `src/rng.rs` | SplitMix64. No dependency, no `getrandom`: `(seed, archetype, tier, attribute)` reproduces the same creature — same bones, same colours — on every machine |
 | `src/skeleton.rs` | the `char-rig/model@1` types, the two mirroring formulas (`atan2(sin θ, −cos θ)` for a chain root, `−θ` for a descendant), `computeWorld`, and the painted-bounds pass |
-| `src/attribute.rs` | `Vaccine` / `Data` / `Virus`: wire spelling, the bond-driven branch shift, the one-line flavour the UI shows, and `AttributeBlend` — the recency-weighted mix of a whole evolution line (linear step weights `1..n`, normalised) plus its percentages, prominence and blended flavour |
+| `src/attribute.rs` | `Seraph` / `Prism` / `Feral`: wire spelling, the bond-driven branch shift, the one-line flavour the UI shows, and `AttributeBlend` — the recency-weighted mix of a whole evolution line (linear step weights `1..n`, normalised) plus its percentages, prominence and blended flavour |
 | `src/plan.rs` | The twelve body plans, each with its own five-form table (`beast_form`, `drake_form`, …), then the attribute's mutations, then the seeded build and the seed's individual layer (`individualise`): head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers, posture, accessory geometry and the family's secondary-trait vocabulary (`secondary_traits`) |
 | `src/generator.rs` | `generate(Spec) -> Manifest`: centerline → tail → right chains → mirror → archetype parts → blended attribute parts → clips → monitor guard → detail trim, plus `validate` / `validate_at(manifest, tier)` and `max_parts(tier)` |
-| `src/evolution.rs` | stage/XP/bond/attribute state, the three-branch table (each branch previews the mix it would produce), and the transitions both ways (generate → host write → host activate; `dedigivolve` regenerates the parent from its recorded seed **and attribute**, and from the *truncated* lineage's blend) |
+| `src/evolution.rs` | stage/XP/bond/attribute state, the three-branch table (each branch previews the mix it would produce), and the transitions both ways (generate → host write → host activate; `revert` regenerates the parent from its recorded seed **and attribute**, and from the *truncated* lineage's blend) |
 | `src/host.rs` | typed wrappers over the host imports (`write_model`, `activate_model`, `animate`, `emit`, `notify`, `log`, `save_state`, `now_ms`); the one place the guest talks to the app |
-| `src/plugin.rs` | live state: passive XP, the one-shot "ready" notice, the 30 s save, `GET /digimon/status`'s body (stage, XP, bond, attribute, rig measurements, branches, history, and the `archetypes` / `attributes` lists the UI builds its pickers from) |
+| `src/plugin.rs` | live state: passive XP, the one-shot "ready" notice, the 30 s save, `GET /creature/status`'s body (stage, XP, bond, attribute, rig measurements, branches, history, and the `archetypes` / `attributes` lists the UI builds its pickers from) |
 | `src/routes.rs` | the `ROUTES` table + dispatcher |
 | `tests/generator_tests.rs` | every tier × archetype × attribute × seed: schema, parents, cycles, limits, FK symmetry, monitor bounds, face tags, z-stack, budget, and the variety rules (three attributes ⇒ three rigs) |
 
@@ -610,9 +610,9 @@ independent choices, so the corpus is large without any of it being hand-drawn:
    arms, legs, tail and trunk, plus proportion multipliers. Twelve of them:
    beast, drake, cyborg, holy, aqua, cervid, machine, alien, avian, insect,
    serpent, golem.
-2. **The attribute mix** (`with_blend`) reshapes that plan: Vaccine grows
-   wings, a halo and feather vanes; Data grows crystals, circuit traces and a
-   visor band; Virus grows spines, fangs and claws. Structural, not a tint.
+2. **The attribute mix** (`with_blend`) reshapes that plan: Seraph grows
+   wings, a halo and feather vanes; Prism grows crystals, circuit traces and a
+   visor band; Feral grows spines, fangs and claws. Structural, not a tint.
    The mix is the creature's whole lineage, not just its current attribute —
    see *Attribute blend* below. A body has one crest and one pair of hands, so
    those two choices belong to the loudest attribute; everything additive is
@@ -682,12 +682,12 @@ and limb parts are not in the trim table at all. Forms add parts, never bones: t
 unchanged, so the mirroring rules and the 40-bone ceiling hold by construction.
 
 **Attribute blend.** A line is not one attribute, it is a history.
-`Digivolution::lineage` returns the egg's attribute followed by the attribute each
+`Metamorphosis::lineage` returns the egg's attribute followed by the attribute each
 transition chose (`HistoryEntry::to_attribute`; a legacy entry without it borrows
 the next entry's parent attribute, or the live one), and `AttributeBlend` weights
 those stages linearly — the oldest counts `1`, the newest `n` — then normalises.
-A creature that has been Data for four stages and has just become Virus therefore
-reads 60/40: Data still owns the body while the fresh viral spines are plainly
+A creature that has been Prism for four stages and has just become Feral therefore
+reads 60/40: Prism still owns the body while the fresh feral spines are plainly
 there. `plan::with_blend` gives the single-slot traits (crest, hands) to the
 loudest attribute and draws every additive one (halo, wings, crystals, circuits,
 spines, fangs, drips) for each attribute above 12%, scaling each group by
@@ -696,12 +696,12 @@ gating the *extra* layer of a group (a core crystal, a second circuit run, a mid
 spine, an inner halo) behind a 0.9 share — the detail-trimming order uses the
 same shares, so a minor contributor loses its ornament before the dominant one
 does. The palette is a weighted mix of the three tints, so the skin is neither
-pure Data nor pure Virus. A one-hot blend is exactly the old single-attribute rig
+pure Prism nor pure Feral. A one-hot blend is exactly the old single-attribute rig
 (asserted byte for byte), which is what keeps hatchlings and legacy saves
 unchanged.
 
 **Names carry the rig.** A model id is
-`digi-<archetype>-<stage>-<attribute>-<seed>`; the attribute is part of the name
+`buddy-<archetype>-<stage>-<attribute>-<seed>`; the attribute is part of the name
 because it is part of the shape, and two attributes of one seed must not share a
 `models/<slug>/` folder. Saved games are migrated on load — the slug is
 re-derived, never trusted.
@@ -717,18 +717,18 @@ handedness. The clips then key `+a` on `_l` and `−a` on `_r`.
 
 | route | what it does |
 | --- | --- |
-| `GET /digimon/status` | stage, XP, bond, attribute, the recency-weighted `attribute_blend`, the live rig's `bones`/`parts`/`parts_budget`/`min_world_y`/`symmetry_error`, the three branches (each with its projected blend) and the transition history |
-| `POST /digivolve` | `{branch?, force?}` → generate the next stage from the extended lineage, `host_model_write`, `host_model_activate` (the `POST /model` path), `host_animate("digivolve")`, then one `digimon` event; the reply carries the shifted `attribute_blend` |
-| `POST /dedigivolve` | `{steps?}` → regenerate the **parent** stage from the history entry's seed/attribute (deterministic, so the exact earlier rig comes back), write it, activate it, play the clip, emit `dedigivolved`; `409` at Fresh |
-| `POST /digimon/xp` | `{xp, bond}` — grant growth directly |
-| `POST /digimon/reset` | `{seed?, archetype?, attribute?}` — a new creature plus its `Fresh` rig, installed **and activated**; omitted fields inherit the current creature |
+| `GET /creature/status` | stage, XP, bond, attribute, the recency-weighted `attribute_blend`, the live rig's `bones`/`parts`/`parts_budget`/`min_world_y`/`symmetry_error`, the three branches (each with its projected blend) and the transition history |
+| `POST /metamorphose` | `{branch?, force?}` → generate the next stage from the extended lineage, `host_model_write`, `host_model_activate` (the `POST /model` path), `host_animate("metamorphose")`, then one `creature` event; the reply carries the shifted `attribute_blend` |
+| `POST /revert` | `{steps?}` → regenerate the **parent** stage from the history entry's seed/attribute (deterministic, so the exact earlier rig comes back), write it, activate it, play the clip, emit `reverted`; `409` at Fresh |
+| `POST /creature/xp` | `{xp, bond}` — grant growth directly |
+| `POST /creature/reset` | `{seed?, archetype?, attribute?}` — a new creature plus its `Fresh` rig, installed **and activated**; omitted fields inherit the current creature |
 
-State lives in `plugins/digivolution.state.json` through `host_state_save`. The
+State lives in `plugins/metamorphosis.state.json` through `host_state_save`. The
 current stage's rig is (re-)published at every `init` — `installed` is a
 per-process hint, never a saved claim, because the guest cannot stat a file and
 a deleted `models/` folder must not leave the plugin pointing at nothing — but
 it is **never activated**, because taking over the user's avatar on startup is
-not a plugin's call. An explicit `POST /digimon/reset` *does* activate: the user
+not a plugin's call. An explicit `POST /creature/reset` *does* activate: the user
 asked for a new creature, so leaving the old body up until the first evolution
 would look like nothing happened.
 
@@ -905,7 +905,7 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar, `H` toggles the History drawer), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), **gaze targeting** (`attachGazeTracking` — page `mousemove` plus the global `cursor-pos` stream; `updateGaze` — `look_at` > focused command bar > perch > global cursor (4 s) > idle glances, plus the eased hover weight and the clamped head-bone yaw bias), `window.__avatarDebug`, the **AI Brain** select (`setAiProfile` + a toast, with `refreshAiProfiles` every 12 s beside the watcher poll), behaviour loop (`step`, `startWalk`, `wander` — held back while a bubble is up), `requestAnimationFrame` driver (`frame`: `step` → `render` → `positionBubble`), play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
 | `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions || `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions |
 | `ui/js/survival.js` | The **Survival** card (top-left pop-out, not a panel section) with four tabs. `setupSurvival` hydrates from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follows the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events with a 15 s survival poll as the floor, `renderSurvival` flattens every payload shape into the tier badge, the two bars and the craving row, `feed` is a real `POST /survival/feed`, `setCraving` / `clearCraving` drive `POST /survival`, `craft` is a real `POST /survival/craft` fed by the recipe picker, which comes from `GET /recipes` with the bag folded in (`can_cook`, `missing`, per-line `held`) so `syncCraftButton` can disable a cook that could not pay (a 409 `missing_ingredients` / refusal prints the API's own prose). `showSurvivalTab` switches status / bag / fishing / store; `renderInventory` draws one cell per slot from `GET /inventory`, `addItem` / `useItem` / `sellPickedItem` are real `POST /inventory/add`, `POST /inventory/use` and a one-unit `POST /store/sell` (the bag's Sell button, enabled for any slot `GET /inventory` gave a `sell_price`); the store pane draws one row per shelf entry from `GET /store` (`renderStore`, grouped by category, with the wallet and each entry's `owned` count), keeps Buy/Sell honest against the purse and the bag (`syncStoreButtons`) and trades for real through `trade` — a 409 `insufficient_coins` / `inventory_full` / `not_enough_items` prints the API's own prose; the fishing pane runs `castLine` / `hookFish` / `reelFish` / `cancelFishing` against the plugin, polls `GET /fishing` at 120 ms so the bobber beats the 1 s host tick, and animates the marker from the published sweep. `toggleSurvivalCard` / `survivalCardOpen` drive the card and Esc chain |
-| `ui/js/digivolve.js` | The **Digivolution** card (a second top-left pop-out, beside Survival). `setupDigivolve` resolves the API base, hydrates from `GET /digimon/status`, follows the plugin's `digimon` event (`ready` / `digivolved` / `reset`) and keeps a 10 s poll as the floor so a stopped plugin shows as `offline` instead of freezing the card. `renderDigimon` paints the stage badge (green when evolvable, gold at Mega), the XP and bond bars, the archetype/attribute/seed chips and the live rig's `bones` / `parts` / `min_world_y`, `renderBlend` turns `status.attribute_blend` into the lineage readout — one percentage chip and one stacked-bar slice per attribute (a plugin too old to send the block falls back to a one-hot mix from `attribute`), plus the blended flavour line — and `renderBranches` draws one row per offered branch (`pickEvolveBranch` selects it) with the mix that branch would produce (`branchMix` over `branch.blend` / `blend_summary`, so taking it visibly shifts the percentages) and `syncEvolveButton` disables Evolve with the exact XP shortfall (and `syncBackButton` labels **◀ Back** with the stage it returns to — a real `POST /dedigivolve`) — the button is a real `POST /digivolve`, whose reply (`from → stage`, bones, parts, `model_path`) lands in the card's note while the host hot-swaps the avatar; `nudge` is `POST /digimon/xp` and `reset` is `POST /digimon/reset` (archetype + optional seed). `toggleDigivolveCard` / `digivolveCardOpen` drive the card and the Esc chain. A 404 on the status route renders the card as offline with the build step |
+| `ui/js/metamorphose.js` | The **Metamorphosis** card (a second top-left pop-out, beside Survival). `setupMetamorphose` resolves the API base, hydrates from `GET /creature/status`, follows the plugin's `creature` event (`ready` / `metamorphosed` / `reset`) and keeps a 10 s poll as the floor so a stopped plugin shows as `offline` instead of freezing the card. `renderCreature` paints the stage badge (green when evolvable, gold at Mega), the XP and bond bars, the archetype/attribute/seed chips and the live rig's `bones` / `parts` / `min_world_y`, `renderBlend` turns `status.attribute_blend` into the lineage readout — one percentage chip and one stacked-bar slice per attribute (a plugin too old to send the block falls back to a one-hot mix from `attribute`), plus the blended flavour line — and `renderBranches` draws one row per offered branch (`pickEvolveBranch` selects it) with the mix that branch would produce (`branchMix` over `branch.blend` / `blend_summary`, so taking it visibly shifts the percentages) and `syncEvolveButton` disables Evolve with the exact XP shortfall (and `syncBackButton` labels **◀ Back** with the stage it returns to — a real `POST /revert`) — the button is a real `POST /metamorphose`, whose reply (`from → stage`, bones, parts, `model_path`) lands in the card's note while the host hot-swaps the avatar; `nudge` is `POST /creature/xp` and `reset` is `POST /creature/reset` (archetype + optional seed). `toggleMetamorphoseCard` / `metamorphoseCardOpen` drive the card and the Esc chain. A 404 on the status route renders the card as offline with the build step |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
 `ipc, state → rig → animator → {renderer, speech, editor, bridge}; editor → bridge; all → main`.
@@ -1181,14 +1181,14 @@ Environment variables: `CHAR_RIG_MODELS` (model root), `CHAR_RIG_API_PORT`
   gear opens the same Settings modal as the panel button, so settings stay
   reachable while the control panel is collapsed.
 * Bottom-right panel: a **Blend** strip (the creature's live recency-weighted
-  attribute mix, e.g. `57% Virus · 43% Data`, hidden until a creature exists),
+  attribute mix, e.g. `57% Feral · 43% Prism`, hidden until a creature exists),
   state/mood readout, model dropdown + **Import…** / **Rig edit**,
   Wave/Walk/Center, a **Watcher** row (switch, badge,
   **Logs ↗**), walk speed, position, API URL. There are no manual expression
   buttons — expressions come from `POST /emote` / `speak` and from watcher acks,
   and the status line only reports the current mood. The dropdown lists the
   models you keep: hand-authored rigs, plus any procedural creature you edited and saved
-  (`has_rig_override`). Everything the digivolution plugin writes per stage is
+  (`has_rig_override`). Everything the metamorphosis plugin writes per stage is
   hidden — except the model currently loaded, which stays listed and is tagged
   `· generated` so the control never goes blank.
 * Empty desktop space is click-through once the page publishes its regions; the
@@ -1761,7 +1761,7 @@ offset, rotation, z-order, scale, tag, state, variant.
 
 ## 6. Tauri command surface (page ⇄ Rust)
 
-44 commands, registered in `generate_handler!`. Most take `tauri::State<Arc<AppCtx>>`
+46 commands, registered in `generate_handler!`. Most take `tauri::State<Arc<AppCtx>>`
 and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated ones.
 
 | Command | Purpose |
@@ -1782,6 +1782,7 @@ and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated o
 | `close_window` / `minimize_window` | window controls (close also requests shutdown) |
 | `list_models` / `get_model` / `load_model(name)` | model catalogue + switching (`load_model` broadcasts `model`/`load`) |
 | `pick_import_file` | native picker → `{path, kind, name}` |
+| `pick_config_path(kind?)` | the Settings modal's **Browse…**: `kind` ∈ `executable` \| `model` \| `folder` \| `any` picks the dialog's filters and whether it returns a directory; resolves to the chosen path or `null` (never validated here — the modal shows `GET /config`'s tick/cross and the write validates with the runtime struct). Drops the overlay's always-on-top flag while the dialog is up, and refuses a second dialog |
 | `import_asset(path, mode?, name?, tag?)` | import (see §5); broadcasts `model`/`import` when it installs a model |
 | `patch_part(target, patch)` | runtime part patch |
 | `set_mouth(state)` | mouth convenience wrapper |
@@ -1803,6 +1804,7 @@ and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated o
 | `ptt_stop` | end the hold: the worker stops the mic, runs Whisper and posts the transcript to `/reply`; returns the live status |
 | `set_stt_enabled(enabled)` | mute/unmute push-to-talk at runtime, emits `stt-status`, returns the new status |
 | `set_ai_profile(name)` | the **AI Brain** dropdown: persists, probes and broadcasts like `POST /ai-profile`, then returns the new status |
+| `open_soul_file` | **Open SOUL.md**: `soul::soul_path` (the same resolution rule the watcher uses), `ensure_soul` to seed a missing file, then the OS opener (`cmd /C start` / `open` / `xdg-open`); returns the path. The modal's hand-editing escape hatch beside the textarea — the content itself is the `GET /soul` / `POST /soul` pair |
 
 Events emitted to the page: `avatar-state-changed`, `api-status`,
 `model-changed`, `rig-pose`, `rig-saved`, `part-patch`, `emote`, `speak`,
@@ -2262,7 +2264,7 @@ built-in persona on empty, missing, unreadable or oversized content.
 role prompt, the JSON action/expression contract and — last — the creature's
 runtime block. `hermes_cli` gets the same persona through
 `Trigger::prompt_with_persona`, so both backends share one voice. The creature
-block comes from `GET /digimon/status` (stage, archetype, recency-weighted
+block comes from `GET /creature/status` (stage, archetype, recency-weighted
 `attribute_blend` percentages) and is flavour only: it colours tone and the
 chosen `expression`, while `SOUL.md` stays authoritative.
 

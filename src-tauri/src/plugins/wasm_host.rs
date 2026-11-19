@@ -1109,12 +1109,12 @@ mod tests {
         }
     }
 
-    /// The digivolution guest: a plugin that owns no config block, generates
+    /// The metamorphosis guest: a plugin that owns no config block, generates
     /// its own rigs, and declares the two endpoints the feature is built on.
     #[test]
-    fn the_digivolution_plugin_loads_and_serves_its_routes() {
+    fn the_metamorphosis_plugin_loads_and_serves_its_routes() {
         let Some(dir) = plugins_dir() else { return };
-        let path = dir.join("digivolution.wasm");
+        let path = dir.join("metamorphosis.wasm");
         if !path.is_file() {
             eprintln!("skipping: {} has not been built yet", path.display());
             return;
@@ -1123,15 +1123,15 @@ mod tests {
         // with the real `host_state_save`, and the file lands beside the `.wasm`
         // — a unit test must not write into the repo's `plugins/`.
         let scratch = std::env::temp_dir().join(format!(
-            "char-rig-digivolution-{}",
+            "char-rig-metamorphosis-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&scratch).expect("scratch dir");
-        let copy = scratch.join("digivolution.wasm");
+        let copy = scratch.join("metamorphosis.wasm");
         std::fs::copy(&path, &copy).expect("copy the plugin");
         let mut plugin = WasmPlugin::load(&copy).expect("load");
-        let _ = std::fs::remove_file(scratch.join("digivolution.state.json"));
-        assert_eq!(plugin.id(), "digivolution");
+        let _ = std::fs::remove_file(scratch.join("metamorphosis.state.json"));
+        assert_eq!(plugin.id(), "metamorphosis");
         assert!(
             plugin.config().is_none(),
             "it owns no watcher_rules.json block"
@@ -1143,7 +1143,7 @@ mod tests {
         {
             let written = recorder.written.lock().expect("written");
             assert_eq!(written.len(), 1, "one fresh rig is installed");
-            assert!(written[0].0.starts_with("digi-"));
+            assert!(written[0].0.starts_with("buddy-"));
             assert_eq!(written[0].1["format"], json!("char-rig/model@1"));
             assert!(written[0].1["bones"].as_array().expect("bones").len() >= 8);
         }
@@ -1158,8 +1158,8 @@ mod tests {
         assert!(status["rig"]["parts"].as_u64().unwrap_or(0) < 100);
 
         let routes: Vec<&str> = plugin.routes().iter().map(|route| route.path).collect();
-        assert!(routes.contains(&"/digimon/status"), "{routes:?}");
-        assert!(routes.contains(&"/digivolve"), "{routes:?}");
+        assert!(routes.contains(&"/creature/status"), "{routes:?}");
+        assert!(routes.contains(&"/metamorphose"), "{routes:?}");
 
         let _ = std::fs::remove_dir_all(&scratch);
     }

@@ -1,9 +1,9 @@
 //! Growth state, evolution branches and the transition itself.
 //!
 //! The state is deliberately plain data: it serialises to the JSON the host
-//! persists as `plugins/digivolution.state.json`, so a restart resumes the same
+//! persists as `plugins/metamorphosis.state.json`, so a restart resumes the same
 //! creature at the same stage. Nothing here touches the filesystem or the
-//! avatar — [`Digivolution::digivolve`] asks the host to write the new rig and
+//! avatar — [`Metamorphosis::metamorphose`] asks the host to write the new rig and
 //! to activate it, in that order, and refuses to advance if either fails.
 
 use serde::{Deserialize, Serialize};
@@ -32,13 +32,13 @@ pub struct Branch {
     /// The lineage mix this branch *would* produce — so the UI can preview how
     /// taking it shifts the creature, not just what it becomes.
     pub blend: AttributeBlend,
-    /// `57% Virus · 43% Data`, the same mix as a readout.
+    /// `57% Feral · 43% Prism`, the same mix as a readout.
     pub blend_summary: String,
     /// Every contributing attribute's traits, loudest first.
     pub blended_flavour: String,
 }
 
-/// A recorded transition, so `GET /digimon/status` can show the line.
+/// A recorded transition, so `GET /creature/status` can show the line.
 ///
 /// It carries the **parent's** seed and attribute as well as the stage: a
 /// rewind has to regenerate the earlier creature, and the stage alone is not
@@ -63,7 +63,7 @@ pub struct HistoryEntry {
     ///
     /// `Option` because saves written before the blend existed have no field. A
     /// missing value is resolved from the next entry's parent attribute (or the
-    /// live attribute) in [`Digivolution::lineage`], so a legacy line still
+    /// live attribute) in [`Metamorphosis::lineage`], so a legacy line still
     /// yields a usable blend instead of failing to load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_attribute: Option<Attribute>,
@@ -71,7 +71,7 @@ pub struct HistoryEntry {
 
 /// The whole growth state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Digivolution {
+pub struct Metamorphosis {
     #[serde(default = "default_version")]
     pub version: u32,
     pub seed: u64,
@@ -113,12 +113,12 @@ fn default_archetype() -> Archetype {
     Archetype::Beast
 }
 fn default_attribute() -> Attribute {
-    Attribute::Data
+    Attribute::Prism
 }
 
-impl Default for Digivolution {
+impl Default for Metamorphosis {
     fn default() -> Self {
-        Self::new(0x5EED_1234, Archetype::Beast, Attribute::Data)
+        Self::new(0x5EED_1234, Archetype::Beast, Attribute::Prism)
     }
 }
 
@@ -134,11 +134,11 @@ pub fn xp_required(tier: Tier) -> u64 {
     }
 }
 
-impl Digivolution {
+impl Metamorphosis {
     /// A fresh creature, at Fresh, with nothing installed yet.
     pub fn new(seed: u64, archetype: Archetype, attribute: Attribute) -> Self {
         // The attribute has to reach the spec here too: `Spec::new` defaults to
-        // Data, which is how every hatchling's folder ended up named "data".
+        // Prism, which is how every hatchling's folder ended up named "data".
         let spec = Spec::with_attribute(seed, archetype, Tier::Fresh, attribute);
         Self {
             version: 1,
@@ -186,7 +186,7 @@ impl Digivolution {
     }
 
     /// The mix this creature would have after choosing `attribute` next. Used by
-    /// the branch preview and by [`Self::digivolve`], so the previewed number and
+    /// the branch preview and by [`Self::metamorphose`], so the previewed number and
     /// the built rig cannot disagree.
     pub fn preview_blend(&self, attribute: Attribute) -> AttributeBlend {
         let mut lineage = self.lineage();
@@ -280,7 +280,7 @@ impl Digivolution {
     /// `branch` picks which of [`Self::branches`] to take (defaults to the
     /// first). `force` skips the XP gate — useful for a demo and for the
     /// verification script, never the default.
-    pub fn digivolve(&mut self, branch: Option<usize>, force: bool) -> Result<Outcome, String> {
+    pub fn metamorphose(&mut self, branch: Option<usize>, force: bool) -> Result<Outcome, String> {
         let branches = self.branches();
         if branches.is_empty() {
             return Err(format!(
@@ -356,7 +356,7 @@ impl Digivolution {
             bones: report.bones,
             parts: report.parts,
             min_world_y: report.min_world_y,
-            animation: "digivolve".to_string(),
+            animation: "metamorphose".to_string(),
         })
     }
 
@@ -374,7 +374,7 @@ impl Digivolution {
     ///
     /// XP is deliberately kept (not refunded and not reset): the creature has
     /// still *grown*, and an immediate re-evolution should be possible.
-    pub fn dedigivolve(&mut self, steps: usize) -> Result<Outcome, String> {
+    pub fn revert(&mut self, steps: usize) -> Result<Outcome, String> {
         if self.history.is_empty() {
             return Err(format!(
                 "{} has no earlier stage to return to",
@@ -395,7 +395,7 @@ impl Digivolution {
 
         let from = self.tier;
         // The attribute belongs to the *parent*, not to the creature doing the
-        // rewind: regenerating a Virus ancestor in the Vaccine family would put
+        // rewind: regenerating a Feral ancestor in the Seraph family would put
         // a different creature back on screen. The mix is the *truncated*
         // lineage, exactly the prefix the parent was built from on the way up.
         let keep = self.history.len() - steps;
@@ -434,7 +434,7 @@ impl Digivolution {
             bones: report.bones,
             parts: report.parts,
             min_world_y: report.min_world_y,
-            animation: "digivolve".to_string(),
+            animation: "metamorphose".to_string(),
         })
     }
 }
@@ -450,7 +450,7 @@ pub struct Outcome {
     pub attribute: Attribute,
     /// The full lineage mix the new body was generated from.
     pub blend: AttributeBlend,
-    /// The same mix as `58% Data · 42% Virus`.
+    /// The same mix as `58% Prism · 42% Feral`.
     pub blend_summary: String,
     pub bones: usize,
     pub parts: usize,
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn a_fresh_creature_has_three_branches_and_no_way_back() {
-        let state = Digivolution::new(1, Archetype::Drake, Attribute::Data);
+        let state = Metamorphosis::new(1, Archetype::Drake, Attribute::Prism);
         let branches = state.branches();
         assert_eq!(branches.len(), 3);
         assert!(branches.iter().all(|branch| branch.stage == Tier::InTraining));
@@ -474,15 +474,15 @@ mod tests {
         attributes.dedup();
         assert_eq!(attributes.len(), 3);
 
-        let mut mega = Digivolution::new(2, Archetype::Holy, Attribute::Vaccine);
+        let mut mega = Metamorphosis::new(2, Archetype::Holy, Attribute::Seraph);
         mega.tier = Tier::Mega;
         assert!(mega.branches().is_empty());
-        assert!(mega.digivolve(None, true).is_err());
+        assert!(mega.metamorphose(None, true).is_err());
     }
 
     #[test]
     fn branch_seeds_are_stable_and_distinct() {
-        let state = Digivolution::new(99, Archetype::Beast, Attribute::Virus);
+        let state = Metamorphosis::new(99, Archetype::Beast, Attribute::Feral);
         let first = state.branches();
         let second = state.branches();
         assert_eq!(first, second);
@@ -492,12 +492,12 @@ mod tests {
 
     #[test]
     fn the_xp_gate_refuses_but_force_does_not() {
-        let mut state = Digivolution::new(3, Archetype::Cyborg, Attribute::Data);
-        let err = state.digivolve(None, false).expect_err("too little xp");
+        let mut state = Metamorphosis::new(3, Archetype::Cyborg, Attribute::Prism);
+        let err = state.metamorphose(None, false).expect_err("too little xp");
         assert!(err.contains("not ready"), "{err}");
         assert_eq!(state.tier, Tier::Fresh);
 
-        let outcome = state.digivolve(None, true).expect("forced");
+        let outcome = state.metamorphose(None, true).expect("forced");
         assert_eq!(outcome.from, Tier::Fresh);
         assert_eq!(outcome.to, Tier::InTraining);
         assert_eq!(state.generation, 1);
@@ -508,10 +508,10 @@ mod tests {
 
     #[test]
     fn a_full_line_reaches_mega_and_installs_every_stage() {
-        let mut state = Digivolution::new(7, Archetype::Holy, Attribute::Vaccine);
+        let mut state = Metamorphosis::new(7, Archetype::Holy, Attribute::Seraph);
         for _ in 0..5 {
-            let outcome = state.digivolve(None, true).expect("evolve");
-            assert_eq!(outcome.animation, "digivolve");
+            let outcome = state.metamorphose(None, true).expect("evolve");
+            assert_eq!(outcome.animation, "metamorphose");
         }
         assert_eq!(state.tier, Tier::Mega);
         assert_eq!(state.generation, 5);
@@ -524,11 +524,11 @@ mod tests {
 
     #[test]
     fn state_round_trips_through_json() {
-        let mut state = Digivolution::new(11, Archetype::Drake, Attribute::Virus);
+        let mut state = Metamorphosis::new(11, Archetype::Drake, Attribute::Feral);
         state.award(500, 0.2);
-        state.digivolve(Some(1), false).expect("evolve");
+        state.metamorphose(Some(1), false).expect("evolve");
         let text = serde_json::to_string(&state).expect("serialise");
-        let restored: Digivolution = serde_json::from_str(&text).expect("deserialise");
+        let restored: Metamorphosis = serde_json::from_str(&text).expect("deserialise");
         assert_eq!(
             serde_json::to_string(&restored).expect("re-serialise"),
             text,
@@ -544,19 +544,19 @@ mod tests {
 
     #[test]
     fn a_rewind_reproduces_the_exact_earlier_creature() {
-        let mut state = Digivolution::new(77, Archetype::Drake, Attribute::Data);
+        let mut state = Metamorphosis::new(77, Archetype::Drake, Attribute::Prism);
         let fresh_seed = state.seed;
         let fresh_slug = state.slug.clone();
 
-        let rookie = state.digivolve(Some(1), true).expect("evolve once");
+        let rookie = state.metamorphose(Some(1), true).expect("evolve once");
         let rookie_slug = state.slug.clone();
         let rookie_manifest = state.manifest().to_pretty_json();
-        let champion = state.digivolve(None, true).expect("evolve twice");
+        let champion = state.metamorphose(None, true).expect("evolve twice");
         assert_eq!(state.generation, 2);
 
         // One step back lands on the *same* creature that evolved into the
         // Champion — generation is deterministic, so the rig is identical.
-        let back = state.dedigivolve(1).expect("one step back");
+        let back = state.revert(1).expect("one step back");
         assert_eq!(back.from, champion.to);
         assert_eq!(back.to, rookie.to);
         assert_eq!(back.slug, rookie_slug);
@@ -567,33 +567,33 @@ mod tests {
         assert_eq!(crate::host::take_recorded().activated.last(), Some(&rookie_slug));
 
         // All the way back to Fresh, with the original seed and no history.
-        let back = state.dedigivolve(9).expect("all the way back (clamped)");
+        let back = state.revert(9).expect("all the way back (clamped)");
         assert_eq!(back.to, Tier::Fresh);
         assert_eq!(state.seed, fresh_seed);
         assert_eq!(state.slug, fresh_slug);
         assert_eq!(state.generation, 0);
         assert!(state.history.is_empty());
-        assert!(state.dedigivolve(1).is_err(), "nothing left to rewind");
+        assert!(state.revert(1).is_err(), "nothing left to rewind");
 
         // And the forward line is unchanged: the same first branch comes back.
-        assert_eq!(state.digivolve(Some(1), true).expect("evolve again").slug, rookie_slug);
+        assert_eq!(state.metamorphose(Some(1), true).expect("evolve again").slug, rookie_slug);
     }
 
     #[test]
     fn a_rewind_keeps_the_xp_so_growth_is_not_lost() {
-        let mut state = Digivolution::new(78, Archetype::Holy, Attribute::Vaccine);
+        let mut state = Metamorphosis::new(78, Archetype::Holy, Attribute::Seraph);
         state.award(500, 0.2);
-        state.digivolve(None, true).expect("evolve");
+        state.metamorphose(None, true).expect("evolve");
         let xp_after = state.xp;
-        state.dedigivolve(1).expect("rewind");
+        state.revert(1).expect("rewind");
         assert_eq!(state.xp, xp_after, "XP is kept, not refunded or reset");
         assert!(state.can_evolve(), "and the creature can grow straight back");
     }
 
     #[test]
     fn dedigivolving_from_fresh_is_refused() {
-        let mut state = Digivolution::new(79, Archetype::Beast, Attribute::Virus);
-        let err = state.dedigivolve(1).expect_err("fresh has no parent");
+        let mut state = Metamorphosis::new(79, Archetype::Beast, Attribute::Feral);
+        let err = state.revert(1).expect_err("fresh has no parent");
         assert!(err.contains("no earlier stage"), "{err}");
         assert_eq!(state.tier, Tier::Fresh);
     }
@@ -601,37 +601,37 @@ mod tests {
     #[test]
     fn a_legacy_history_entry_is_refused_rather_than_inventing_a_seed() {
         // A save from before the rewind existed: the entry has no `from_seed`.
-        let mut state: Digivolution = serde_json::from_str(
+        let mut state: Metamorphosis = serde_json::from_str(
             r#"{
                 "seed": 1234,
                 "archetype": "drake",
                 "tier": "Rookie",
                 "generation": 1,
-                "slug": "digi-drake-rookie-000004d2",
+                "slug": "buddy-drake-rookie-000004d2",
                 "history": [{ "from": "In-Training", "to": "Rookie",
-                              "slug": "digi-drake-rookie-000004d2", "at_ms": 5 }]
+                              "slug": "buddy-drake-rookie-000004d2", "at_ms": 5 }]
             }"#,
         )
         .expect("legacy save");
         assert_eq!(state.history[0].from_seed, None);
 
-        let err = state.dedigivolve(1).expect_err("cannot rebuild the parent");
+        let err = state.revert(1).expect_err("cannot rebuild the parent");
         assert!(err.contains("before rewind existed"), "{err}");
         assert_eq!(state.tier, Tier::Rookie, "a refused rewind changes nothing");
         assert_eq!(state.seed, 1234);
 
         // One real evolution records the seed, and then the rewind works.
         state.award(1000, 0.0);
-        let forward = state.digivolve(None, true).expect("evolve");
+        let forward = state.metamorphose(None, true).expect("evolve");
         assert_eq!(state.history.last().unwrap().from_seed, Some(1234));
-        let back = state.dedigivolve(1).expect("rewind the new step");
+        let back = state.revert(1).expect("rewind the new step");
         assert_eq!(back.to, forward.from);
         assert_eq!(state.seed, 1234, "the parent seed comes back exactly");
     }
 
     #[test]
     fn a_missing_field_falls_back_instead_of_failing() {
-        let restored: Digivolution =
+        let restored: Metamorphosis =
             serde_json::from_str(r#"{"seed": 5, "tier": "Rookie"}"#).expect("partial state");
         assert_eq!(restored.seed, 5);
         assert_eq!(restored.tier, Tier::Rookie);

@@ -30,7 +30,13 @@ for dir in "${DIRS[@]}"; do
   echo "==> building $name ($TARGET)"
   ( cd "$dir" && cargo build --release --target "$TARGET" )
 
-  artifact="$(find "$dir/target/$TARGET/release" -maxdepth 1 -name '*.wasm' | head -n 1)"
+  # Prefer the artifact whose name matches this plugin: a stale `.wasm` from a
+  # previous crate name can still sit in the target dir and would otherwise win
+  # the `head -n 1`.
+  artifact="$(find "$dir/target/$TARGET/release" -maxdepth 1 -name "${name//-/_}*.wasm" | head -n 1)"
+  if [ -z "$artifact" ]; then
+    artifact="$(find "$dir/target/$TARGET/release" -maxdepth 1 -name '*.wasm' | head -n 1)"
+  fi
   if [ -z "$artifact" ]; then
     echo "!! $name produced no .wasm" >&2
     exit 1

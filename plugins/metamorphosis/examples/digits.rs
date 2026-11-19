@@ -11,9 +11,9 @@
 
 use std::path::PathBuf;
 
-use char_rig_digivolution_plugin::attribute::Attribute;
-use char_rig_digivolution_plugin::generator::{generate, Archetype, Spec, Tier};
-use char_rig_digivolution_plugin::plan::{BUILD_COUNT, FORM_COUNT};
+use char_rig_metamorphosis_plugin::attribute::Attribute;
+use char_rig_metamorphosis_plugin::generator::{generate, Archetype, Spec, Tier};
+use char_rig_metamorphosis_plugin::plan::{BUILD_COUNT, FORM_COUNT};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -26,7 +26,7 @@ fn main() {
     let attribute = args
         .get(3)
         .and_then(|raw| Attribute::parse(raw))
-        .unwrap_or(Attribute::Data);
+        .unwrap_or(Attribute::Prism);
     let build: u8 = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(0);
     let want = (form % FORM_COUNT) * BUILD_COUNT + build % BUILD_COUNT;
 
@@ -43,7 +43,7 @@ fn main() {
         let spec = found.expect("no seed reached that variant");
         let manifest = generate(&spec);
         let file = out.join(format!(
-            "digi-{}-form{}-{}.json",
+            "buddy-{}-form{}-{}.json",
             archetype.as_str(),
             form,
             manifest.name.rsplit('-').next().unwrap_or("x")

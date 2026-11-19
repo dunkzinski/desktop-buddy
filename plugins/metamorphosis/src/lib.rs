@@ -1,4 +1,4 @@
-//! `char-rig-digivolution-plugin` — procedural Digivolution & Growth, compiled
+//! `char-rig-metamorphosis-plugin` — procedural Metamorphosis & Growth, compiled
 //! to WebAssembly.
 //!
 //! The plugin owns one creature: its seed, stage, XP, bond and attribute. From
@@ -28,13 +28,13 @@
 //! # Building
 //!
 //! ```bash
-//! cd plugins/digivolution
+//! cd plugins/metamorphosis
 //! cargo build --release --target wasm32-unknown-unknown
-//! cp target/wasm32-unknown-unknown/release/char_rig_digivolution_plugin.wasm \
-//!    ../digivolution.wasm
+//! cp target/wasm32-unknown-unknown/release/char_rig_metamorphosis_plugin.wasm \
+//!    ../metamorphosis.wasm
 //! ```
 //!
-//! `scripts/build-plugin.sh digivolution` does exactly that.
+//! `scripts/build-plugin.sh metamorphosis` does exactly that.
 
 use std::sync::Mutex;
 
@@ -48,7 +48,7 @@ pub mod rng;
 pub mod routes;
 pub mod skeleton;
 
-pub use evolution::{Attribute, Digivolution};
+pub use evolution::{Attribute, Metamorphosis};
 pub use generator::{Archetype, Tier};
 
 /// The expression vocabulary the host validates against. Kept here so the guest
@@ -60,11 +60,11 @@ pub const AVATAR_EXPRESSIONS: [&str; 6] = [
 /// The guest's whole world. `Mutex<Option<_>>` rather than a `static mut`: a
 /// poisoned or uninitialised plugin answers `{"error": "not initialised"}`
 /// instead of invoking undefined behaviour.
-static STATE: Mutex<Option<plugin::Digimon>> = Mutex::new(None);
+static STATE: Mutex<Option<plugin::Creature>> = Mutex::new(None);
 
 pub(crate) fn with_state<F, T>(fallback: T, f: F) -> T
 where
-    F: FnOnce(&mut plugin::Digimon) -> T,
+    F: FnOnce(&mut plugin::Creature) -> T,
 {
     let mut guard = match STATE.lock() {
         Ok(guard) => guard,
@@ -137,7 +137,7 @@ fn parse_request(ptr: u32, len: u32) -> Result<serde_json::Value, String> {
  * Exports: lifecycle
  * ------------------------------------------------------------------ */
 
-/// `{"config": null, "state": <last save>, "state_path": "…/digivolution.state.json"}`
+/// `{"config": null, "state": <last save>, "state_path": "…/metamorphosis.state.json"}`
 #[no_mangle]
 pub extern "C" fn plugin_init(ptr: u32, len: u32) -> i64 {
     let request = match parse_request(ptr, len) {
@@ -146,7 +146,7 @@ pub extern "C" fn plugin_init(ptr: u32, len: u32) -> i64 {
     };
 
     // A fresh creature is a legal start; a saved one resumes the same line.
-    let mut state = plugin::Digimon::new(Digivolution::default());
+    let mut state = plugin::Creature::new(Metamorphosis::default());
     state.adopt_state_path(
         request
             .get("state_path")
@@ -158,7 +158,7 @@ pub extern "C" fn plugin_init(ptr: u32, len: u32) -> i64 {
         None => false,
     };
 
-    // Write the current stage's rig once, so `GET /digimon/status` is honest and
+    // Write the current stage's rig once, so `GET /creature/status` is honest and
     // `POST /model` has something to load. Never activates it: taking over the
     // user's avatar on startup is not this plugin's call.
     let install_error = state.ensure_installed().err();
@@ -185,7 +185,7 @@ pub extern "C" fn plugin_init(ptr: u32, len: u32) -> i64 {
     host::log(
         host::LEVEL_INFO,
         &format!(
-            "digivolution wasm: initialised ({}{})",
+            "metamorphosis wasm: initialised ({}{})",
             if restored {
                 "restored save; "
             } else {
@@ -201,7 +201,7 @@ pub extern "C" fn plugin_init(ptr: u32, len: u32) -> i64 {
 #[no_mangle]
 pub extern "C" fn plugin_tick(dt_ms: i64) -> i64 {
     let dt = (dt_ms.max(0) as f64) / 1000.0;
-    with_state(failure("digivolution plugin is not initialised"), |state| {
+    with_state(failure("metamorphosis plugin is not initialised"), |state| {
         state.tick(dt);
         reply(&serde_json::json!({ "ok": true }))
     })
@@ -210,7 +210,7 @@ pub extern "C" fn plugin_tick(dt_ms: i64) -> i64 {
 /// The plugin's entry in `GET /plugins`.
 #[no_mangle]
 pub extern "C" fn plugin_status() -> i64 {
-    with_state(failure("digivolution plugin is not initialised"), |state| {
+    with_state(failure("metamorphosis plugin is not initialised"), |state| {
         reply(&state.status_json())
     })
 }
@@ -226,7 +226,7 @@ pub extern "C" fn plugin_routes() -> i64 {
 
 /// Proxy one HTTP request into the plugin.
 ///
-/// Request: `{"method": "POST", "path": "/digivolve", "body": {...}}`;
+/// Request: `{"method": "POST", "path": "/metamorphose", "body": {...}}`;
 /// response: `{"status": 200, "body": {...}}`.
 #[no_mangle]
 pub extern "C" fn plugin_http(ptr: u32, len: u32) -> i64 {
@@ -241,7 +241,7 @@ pub extern "C" fn plugin_http(ptr: u32, len: u32) -> i64 {
     with_state(
         reply(&serde_json::json!({
             "status": 503,
-            "body": { "ok": false, "error": "digivolution plugin is not initialised" },
+            "body": { "ok": false, "error": "metamorphosis plugin is not initialised" },
         })),
         |state| reply(&routes::handle(state, &request)),
     )
@@ -260,7 +260,7 @@ pub extern "C" fn plugin_http(ptr: u32, len: u32) -> i64 {
 pub extern "C" fn plugin_config() -> i64 {
     reply(&serde_json::json!({
         "key": "",
-        "title": "Digivolution",
+        "title": "Metamorphosis",
         "describe": serde_json::Value::Null,
     }))
 }
@@ -274,11 +274,11 @@ pub extern "C" fn plugin_config_warnings(_ptr: u32, _len: u32) -> i64 {
 pub extern "C" fn plugin_config_validate(_ptr: u32, _len: u32) -> i64 {
     reply(&serde_json::json!({
         "ok": false,
-        "error": "the digivolution plugin owns no configuration block",
+        "error": "the metamorphosis plugin owns no configuration block",
     }))
 }
 
 #[no_mangle]
 pub extern "C" fn plugin_config_apply(_ptr: u32, _len: u32) -> i64 {
-    failure("the digivolution plugin owns no configuration block")
+    failure("the metamorphosis plugin owns no configuration block")
 }

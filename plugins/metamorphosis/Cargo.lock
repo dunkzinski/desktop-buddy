@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "char-rig-digivolution-plugin"
+name = "char-rig-metamorphosis-plugin"
 version = "0.1.0"
 dependencies = [
  "serde",

@@ -2,33 +2,33 @@
 //!
 //! The host asks for [`ROUTES`] once (as JSON) and builds axum routes from it;
 //! every request then arrives at [`handle`] as `{method, path, body}`. Nothing
-//! in the app names `/digimon/status` or `/digivolve` — they appear the moment
-//! `digivolution.wasm` is in `plugins/`.
+//! in the app names `/creature/status` or `/metamorphose` — they appear the moment
+//! `metamorphosis.wasm` is in `plugins/`.
 //!
 //! The two endpoints the feature is specified around:
 //!
-//! * `GET  /digimon/status` — stage, XP, bond, attribute, the live rig's
+//! * `GET  /creature/status` — stage, XP, bond, attribute, the live rig's
 //!   measurements and the branch table.
-//! * `POST /digivolve` — generate the next stage, write
+//! * `POST /metamorphose` — generate the next stage, write
 //!   `models/<slug>/model.json`, hot-swap the avatar (`POST /model`'s code
-//!   path) and play the `digivolve` clip.
+//!   path) and play the `metamorphose` clip.
 
 use serde_json::{json, Value};
 
 use crate::evolution::Attribute;
 use crate::generator::Archetype;
-use crate::plugin::Digimon;
+use crate::plugin::Creature;
 
 /// The single source of truth for this plugin's endpoints.
 pub const ROUTES: &[(&str, &[&str])] = &[
-    ("/digimon/status", &["GET"]),
-    ("/digivolve", &["POST"]),
-    ("/dedigivolve", &["POST"]),
-    ("/digimon/xp", &["POST"]),
-    ("/digimon/reset", &["POST"]),
+    ("/creature/status", &["GET"]),
+    ("/metamorphose", &["POST"]),
+    ("/revert", &["POST"]),
+    ("/creature/xp", &["POST"]),
+    ("/creature/reset", &["POST"]),
 ];
 
-/// `[{"path": "/digimon/status", "methods": ["GET"]}, …]`
+/// `[{"path": "/creature/status", "methods": ["GET"]}, …]`
 pub fn routes_json() -> Value {
     Value::Array(
         ROUTES
@@ -47,7 +47,7 @@ fn failed(status: u16, body: Value) -> Value {
 }
 
 /// Dispatch one proxied request, then persist any change it made.
-pub fn handle(state: &mut Digimon, request: &Value) -> Value {
+pub fn handle(state: &mut Creature, request: &Value) -> Value {
     let response = dispatch(state, request);
     let method = request
         .get("method")
@@ -59,7 +59,7 @@ pub fn handle(state: &mut Digimon, request: &Value) -> Value {
     response
 }
 
-fn dispatch(state: &mut Digimon, request: &Value) -> Value {
+fn dispatch(state: &mut Creature, request: &Value) -> Value {
     let method = request
         .get("method")
         .and_then(Value::as_str)
@@ -70,14 +70,14 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
     let body = request.get("body").cloned().unwrap_or(Value::Null);
 
     match (method.as_str(), path) {
-        ("GET", "/digimon/status") => ok(state.status_json()),
-        ("POST", "/digivolve") => {
+        ("GET", "/creature/status") => ok(state.status_json()),
+        ("POST", "/metamorphose") => {
             let branch = body.get("branch").and_then(Value::as_u64).map(|v| v as usize);
             let force = body
                 .get("force")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            match state.digivolve(branch, force) {
+            match state.metamorphose(branch, force) {
                 Ok(outcome) => {
                     let mut payload = json!({
                         "ok": true,
@@ -117,7 +117,7 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
                 }
             }
         }
-        ("POST", "/dedigivolve") => {
+        ("POST", "/revert") => {
             let steps = body
                 .get("steps")
                 .and_then(Value::as_u64)
@@ -128,7 +128,7 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
                     json!({ "ok": false, "error": "`steps` must be at least 1" }),
                 );
             }
-            match state.dedigivolve(steps) {
+            match state.revert(steps) {
                 Ok(outcome) => {
                     let mut payload = json!({
                         "ok": true,
@@ -162,7 +162,7 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
                 }
             }
         }
-        ("POST", "/digimon/xp") => {
+        ("POST", "/creature/xp") => {
             let xp = body.get("xp").and_then(Value::as_u64).unwrap_or(0);
             let bond = body
                 .get("bond")
@@ -179,7 +179,7 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
             payload["status"] = state.status_json();
             ok(payload)
         }
-        ("POST", "/digimon/reset") => {
+        ("POST", "/creature/reset") => {
             let seed = body.get("seed").and_then(Value::as_u64);
             let archetype = body
                 .get("archetype")
@@ -208,7 +208,7 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
             if body.get("attribute").is_some() && attribute.is_none() {
                 return failed(
                     400,
-                    json!({ "ok": false, "error": "`attribute` must be Vaccine, Data or Virus" }),
+                    json!({ "ok": false, "error": "`attribute` must be Seraph, Prism or Feral" }),
                 );
             }
             match state.reset(seed, archetype, attribute) {
@@ -228,7 +228,7 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
         }
         _ => failed(
             404,
-            json!({ "ok": false, "error": format!("{method} {path} is not a digivolution route") }),
+            json!({ "ok": false, "error": format!("{method} {path} is not a metamorphosis route") }),
         ),
     }
 }
@@ -236,11 +236,11 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evolution::Digivolution;
+    use crate::evolution::Metamorphosis;
     use crate::generator::Tier;
 
-    fn plugin() -> Digimon {
-        let mut state = Digimon::new(Digivolution::new(31, Archetype::Holy, Attribute::Vaccine));
+    fn plugin() -> Creature {
+        let mut state = Creature::new(Metamorphosis::new(31, Archetype::Holy, Attribute::Seraph));
         state.ensure_installed().expect("install");
         crate::host::take_recorded();
         state
@@ -258,11 +258,11 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                "/digimon/status",
-                "/digivolve",
-                "/dedigivolve",
-                "/digimon/xp",
-                "/digimon/reset"
+                "/creature/status",
+                "/metamorphose",
+                "/revert",
+                "/creature/xp",
+                "/creature/reset"
             ]
         );
     }
@@ -272,23 +272,23 @@ mod tests {
         let mut state = plugin();
         let response = handle(
             &mut state,
-            &json!({ "method": "GET", "path": "/digimon/status" }),
+            &json!({ "method": "GET", "path": "/creature/status" }),
         );
         assert_eq!(response["status"], json!(200));
         let body = &response["body"];
         assert_eq!(body["ok"], json!(true));
         assert_eq!(body["stage"], json!("Fresh"));
-        assert_eq!(body["attribute"], json!("Vaccine"));
+        assert_eq!(body["attribute"], json!("Seraph"));
         assert!(body["branches"].as_array().unwrap().len() == 3);
         assert!(body["rig"]["bones"].as_u64().unwrap() > 0);
 
         // The lineage mix, in the shape the card reads.
         let blend = &body["attribute_blend"];
-        assert_eq!(blend["dominant"], json!("Vaccine"));
-        assert_eq!(blend["percent"]["Vaccine"], json!(100));
-        assert_eq!(blend["summary"], json!("100% Vaccine"));
+        assert_eq!(blend["dominant"], json!("Seraph"));
+        assert_eq!(blend["percent"]["Seraph"], json!(100));
+        assert_eq!(blend["summary"], json!("100% Seraph"));
         assert_eq!(blend["pure"], json!(true));
-        assert_eq!(blend["lineage"], json!(["Vaccine"]));
+        assert_eq!(blend["lineage"], json!(["Seraph"]));
         assert_eq!(body["rig"]["parts_budget"], json!(100), "Fresh is validated at 100");
 
         // Every branch previews the mix it would produce.
@@ -303,11 +303,11 @@ mod tests {
     }
 
     #[test]
-    fn digivolve_refuses_without_xp_and_accepts_with_force() {
+    fn metamorphose_refuses_without_xp_and_accepts_with_force() {
         let mut state = plugin();
         let refused = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/digivolve", "body": {} }),
+            &json!({ "method": "POST", "path": "/metamorphose", "body": {} }),
         );
         assert_eq!(refused["status"], json!(409));
         assert!(refused["body"]["error"]
@@ -317,14 +317,14 @@ mod tests {
 
         let forced = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/digivolve", "body": { "force": true } }),
+            &json!({ "method": "POST", "path": "/metamorphose", "body": { "force": true } }),
         );
         assert_eq!(forced["status"], json!(200));
         let body = &forced["body"];
         assert_eq!(body["ok"], json!(true));
         assert_eq!(body["from"], json!("Fresh"));
         assert_eq!(body["stage"], json!("In-Training"));
-        assert_eq!(body["animation"], json!("digivolve"));
+        assert_eq!(body["animation"], json!("metamorphose"));
         assert_eq!(
             body["model_path"],
             json!(format!("models/{}/model.json", body["slug"].as_str().unwrap()))
@@ -343,11 +343,11 @@ mod tests {
     }
 
     #[test]
-    fn digivolve_rejects_a_branch_out_of_range() {
+    fn metamorphose_rejects_a_branch_out_of_range() {
         let mut state = plugin();
         let response = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/digivolve", "body": { "branch": 9, "force": true } }),
+            &json!({ "method": "POST", "path": "/metamorphose", "body": { "branch": 9, "force": true } }),
         );
         assert_eq!(response["status"], json!(400));
         assert!(response["body"]["error"]
@@ -357,11 +357,11 @@ mod tests {
     }
 
     #[test]
-    fn dedigivolve_rewinds_and_refuses_at_fresh() {
+    fn revert_rewinds_and_refuses_at_fresh() {
         let mut state = plugin();
         let fresh = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/dedigivolve", "body": {} }),
+            &json!({ "method": "POST", "path": "/revert", "body": {} }),
         );
         assert_eq!(fresh["status"], json!(409), "Fresh has no parent");
         assert!(fresh["body"]["error"]
@@ -371,13 +371,13 @@ mod tests {
 
         let evolved = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/digivolve", "body": { "force": true } }),
+            &json!({ "method": "POST", "path": "/metamorphose", "body": { "force": true } }),
         );
         let slug = evolved["body"]["slug"].as_str().unwrap().to_string();
 
         let back = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/dedigivolve", "body": { "steps": 1 } }),
+            &json!({ "method": "POST", "path": "/revert", "body": { "steps": 1 } }),
         );
         assert_eq!(back["status"], json!(200));
         let body = &back["body"];
@@ -388,14 +388,14 @@ mod tests {
         assert_ne!(body["slug"].as_str().unwrap(), slug.as_str());
         assert_eq!(body["model_path"], json!(format!("models/{}/model.json", body["slug"].as_str().unwrap())));
         assert_eq!(body["status"]["stage"], json!("Fresh"));
-        assert_eq!(body["status"]["can_dedigivolve"], json!(false));
+        assert_eq!(body["status"]["can_revert"], json!(false));
         // A rewind puts the earlier mix back on the creature, not just the stage.
         assert_eq!(body["status"]["attribute_blend"]["pure"], json!(true));
-        assert_eq!(body["status"]["attribute_blend"]["lineage"], json!(["Vaccine"]));
+        assert_eq!(body["status"]["attribute_blend"]["lineage"], json!(["Seraph"]));
 
         let zero = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/dedigivolve", "body": { "steps": 0 } }),
+            &json!({ "method": "POST", "path": "/revert", "body": { "steps": 0 } }),
         );
         assert_eq!(zero["status"], json!(400));
     }
@@ -405,32 +405,32 @@ mod tests {
         let mut state = plugin();
         let xp = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/digimon/xp", "body": { "xp": 40, "bond": 0.2 } }),
+            &json!({ "method": "POST", "path": "/creature/xp", "body": { "xp": 40, "bond": 0.2 } }),
         );
         assert_eq!(xp["status"], json!(200));
         assert_eq!(xp["body"]["can_evolve"], json!(true));
 
         let empty = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/digimon/xp", "body": {} }),
+            &json!({ "method": "POST", "path": "/creature/xp", "body": {} }),
         );
         assert_eq!(empty["status"], json!(400));
 
         let bad_archetype = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/digimon/reset", "body": { "archetype": "toaster" } }),
+            &json!({ "method": "POST", "path": "/creature/reset", "body": { "archetype": "toaster" } }),
         );
         assert_eq!(bad_archetype["status"], json!(400));
 
         let reset = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/digimon/reset", "body": { "archetype": "cyborg", "seed": 5 } }),
+            &json!({ "method": "POST", "path": "/creature/reset", "body": { "archetype": "cyborg", "seed": 5 } }),
         );
         assert_eq!(reset["status"], json!(200));
         assert_eq!(reset["body"]["status"]["stage"], json!("Fresh"));
         assert_eq!(
             reset["body"]["attribute_blend"]["summary"],
-            json!("100% Vaccine"),
+            json!("100% Seraph"),
             "a reset reports the new creature's one-hot mix (the inherited attribute)"
         );
         assert_eq!(reset["body"]["status"]["creature"]["archetype"], json!("cyborg"));
@@ -442,13 +442,13 @@ mod tests {
         for _ in 0..5 {
             handle(
                 &mut state,
-                &json!({ "method": "POST", "path": "/digivolve", "body": { "force": true } }),
+                &json!({ "method": "POST", "path": "/metamorphose", "body": { "force": true } }),
             );
         }
         assert_eq!(state.state().tier, Tier::Mega);
         let response = handle(
             &mut state,
-            &json!({ "method": "POST", "path": "/digivolve", "body": { "force": true } }),
+            &json!({ "method": "POST", "path": "/metamorphose", "body": { "force": true } }),
         );
         assert_eq!(response["status"], json!(409));
     }
@@ -458,7 +458,7 @@ mod tests {
         let mut state = plugin();
         let response = handle(
             &mut state,
-            &json!({ "method": "GET", "path": "/digimon/nope" }),
+            &json!({ "method": "GET", "path": "/creature/nope" }),
         );
         assert_eq!(response["status"], json!(404));
     }

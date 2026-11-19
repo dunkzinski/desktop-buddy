@@ -1,23 +1,23 @@
 /**
- * char-rig — digivolution widget
+ * char-rig — metamorphosis widget
  *
- * The pop-out card for the `digivolution` plugin: stage, XP, bond, attribute,
+ * The pop-out card for the `metamorphosis` plugin: stage, XP, bond, attribute,
  * the recency-weighted attribute mix of the whole lineage, the three evolution
  * branches (each with the mix it would produce), the "Evolve" button, and a
  * new-creature row.
  *
  * It is a *client* of the HTTP API, exactly like the survival card: every number
- * is the one `GET /digimon/status` answers, every button really does the POST,
+ * is the one `GET /creature/status` answers, every button really does the POST,
  * and a refusal from the plugin is shown verbatim instead of being smoothed
- * over. The rig itself is never touched here — `POST /digivolve` writes the new
+ * over. The rig itself is never touched here — `POST /metamorphose` writes the new
  * manifest and the host hot-swaps the avatar, which the page already sees as a
  * `model-changed` event.
  *
  * Two update paths, deliberately:
- *   * the `digimon` Tauri event (the plugin emits `ready` / `digivolved` /
+ *   * the `creature` Tauri event (the plugin emits `ready` / `metamorphosed` /
  *     `reset`), and
- *   * a slow `GET /digimon/status` poll, because the plugin can be absent
- *     (`plugins/digivolution.wasm` deleted) and a stale card is worse than a
+ *   * a slow `GET /creature/status` poll, because the plugin can be absent
+ *     (`plugins/metamorphosis.wasm` deleted) and a stale card is worse than a
  *     card that says "no creature".
  *
  * Imports `ipc` and `state` only — no cycles, and nothing here needs the rig.
@@ -47,14 +47,14 @@ const ARCHETYPES = [
 
 /** Attributes, with the shape each one grows. */
 const ATTRIBUTES = [
-  ["Vaccine", "Vaccine · haloed"],
-  ["Data", "Data · crystalline"],
-  ["Virus", "Virus · fanged"],
+  ["Seraph", "Seraph · haloed"],
+  ["Prism", "Prism · crystalline"],
+  ["Feral", "Feral · fanged"],
 ];
 
-const digivolve = {
+const metamorphose = {
   base: DEFAULT_BASE,
-  /** Last `GET /digimon/status` body, or null before the first read. */
+  /** Last `GET /creature/status` body, or null before the first read. */
   status: null,
   /** Index into `status.branches` the user picked. */
   picked: 0,
@@ -70,29 +70,29 @@ const digivolve = {
 };
 
 const el = (id) => document.getElementById(id);
-const card = () => document.getElementById("digivolve-card");
+const card = () => document.getElementById("metamorphose-card");
 
 /** Is the pop-out card on screen? */
-export function digivolveCardOpen() {
+export function metamorphoseCardOpen() {
   const node = card();
   return !!node && !node.classList.contains("hidden");
 }
 
 /** Open/close the card. `force` mirrors `toggleSurvivalCard`, so Esc and ✕
  *  share one path. */
-export function toggleDigivolveCard(force) {
+export function toggleMetamorphoseCard(force) {
   const node = card();
   if (!node) return false;
   const open = typeof force === "boolean" ? force : node.classList.contains("hidden");
   node.classList.toggle("hidden", !open);
   node.setAttribute("aria-hidden", String(!open));
 
-  const button = el("btn-digivolve");
+  const button = el("btn-metamorphose");
   if (button) {
     button.classList.toggle("active", open);
     button.setAttribute("aria-pressed", String(open));
   }
-  if (open) refreshDigimon();
+  if (open) refreshCreature();
   return open;
 }
 
@@ -100,11 +100,11 @@ export function toggleDigivolveCard(force) {
 async function resolveBase() {
   const info = await call("get_runtime_info");
   const url = info && typeof info.api_url === "string" ? info.api_url : "";
-  digivolve.base = /^https?:\/\//.test(url) ? url : DEFAULT_BASE;
+  metamorphose.base = /^https?:\/\//.test(url) ? url : DEFAULT_BASE;
 }
 
 function setNote(text, isError) {
-  const note = el("digivolve-note");
+  const note = el("metamorphose-note");
   if (!note) return;
   note.textContent = text || "";
   note.classList.toggle("error", !!isError);
@@ -114,10 +114,10 @@ function setNote(text, isError) {
  * Rendering
  * ------------------------------------------------------------------ */
 
-/** `Vaccine` / `Data` / `Virus` chip class. */
+/** `Seraph` / `Prism` / `Feral` chip class. */
 function attributeClass(attribute) {
   const value = String(attribute || "").toLowerCase();
-  return value === "vaccine" || value === "data" || value === "virus" ? value : "data";
+  return value === "seraph" || value === "prism" || value === "feral" ? value : "prism";
 }
 
 function pct(part, whole) {
@@ -125,7 +125,7 @@ function pct(part, whole) {
   return Math.max(0, Math.min(100, Math.round((part / whole) * 100)));
 }
 
-const ATTRIBUTE_ORDER = ["Vaccine", "Data", "Virus"];
+const ATTRIBUTE_ORDER = ["Seraph", "Prism", "Feral"];
 
 /**
  * The lineage mix as `[[attribute, percent], …]`, in a fixed attribute order so
@@ -146,7 +146,7 @@ function blendOf(source) {
   return attribute ? [[attribute, 100]] : [];
 }
 
-/** `57% Virus · 43% Data` — the same words the plugin's `summary` uses. */
+/** `57% Feral · 43% Prism` — the same words the plugin's `summary` uses. */
 function summarise(rows) {
   return rows.map(([attribute, percent]) => `${percent}% ${attribute}`).join(" · ");
 }
@@ -175,26 +175,26 @@ function shortfall(status) {
 }
 
 function renderCard(status) {
-  const stage = el("digi-stage");
+  const stage = el("meta-stage");
   if (stage) {
     stage.textContent = status.final_stage ? `${status.stage} · max` : status.stage;
-    stage.className = `digi-stage${status.can_evolve ? " ready" : ""}${status.final_stage ? " max" : ""}`;
+    stage.className = `meta-stage${status.can_evolve ? " ready" : ""}${status.final_stage ? " max" : ""}`;
     stage.title = `Stage ${Number(status.tier_index) + 1} of 6 · generation ${status.generation}`;
   }
 
   // The creature line: archetype, attribute, generation, seed.
-  const line = el("digi-line");
+  const line = el("meta-line");
   if (line) {
     line.innerHTML = "";
     const arche = document.createElement("span");
-    arche.className = "digi-chip";
+    arche.className = "meta-chip";
     // The attribute has its own chip right beside this one.
     arche.textContent = status.creature ? status.creature.archetype : "—";
     const attribute = document.createElement("span");
-    attribute.className = `digi-chip attr ${attributeClass(status.attribute)}`;
+    attribute.className = `meta-chip attr ${attributeClass(status.attribute)}`;
     attribute.textContent = status.attribute || "—";
     const seed = document.createElement("span");
-    seed.className = "digi-seed";
+    seed.className = "meta-seed";
     seed.textContent = status.creature ? `seed ${status.creature.seed_hex}` : "";
     seed.title = "The seed every stage of this creature is derived from";
     line.append(arche, attribute, seed);
@@ -207,12 +207,12 @@ function renderCard(status) {
   const final = !!status.final_stage;
   const whole = final ? 1 : Math.max(1, Number(status.xp_required || 0));
   const have = final ? 1 : Math.min(whole, Number(status.xp || 0));
-  const xpBar = el("digi-xp-bar");
+  const xpBar = el("meta-xp-bar");
   if (xpBar) {
     xpBar.style.width = `${final ? 100 : pct(have, whole)}%`;
     xpBar.classList.toggle("full", !!status.can_evolve);
   }
-  const xpValue = el("digi-xp");
+  const xpValue = el("meta-xp");
   if (xpValue) {
     xpValue.textContent = final
       ? "MAX"
@@ -220,26 +220,26 @@ function renderCard(status) {
     xpValue.title = final
       ? "This creature is at its final stage"
       : status.can_evolve
-        ? `Ready to digivolve (${Math.round(Number(status.xp || 0))} XP)`
+        ? `Ready to metamorphose (${Math.round(Number(status.xp || 0))} XP)`
         : shortfall(status);
   }
 
   const bond = Math.max(0, Math.min(1, Number(status.bond || 0)));
-  const bondBar = el("digi-bond-bar");
+  const bondBar = el("meta-bond-bar");
   if (bondBar) bondBar.style.width = `${Math.round(bond * 100)}%`;
-  const bondValue = el("digi-bond");
+  const bondValue = el("meta-bond");
   if (bondValue) {
     bondValue.textContent = bond.toFixed(2);
     bondValue.title = bond > 0.66
-      ? "High bond — branches lean Vaccine"
+      ? "High bond — branches lean Seraph"
       : bond < 0.33
-        ? "Low bond — branches lean Virus"
-        : "Neutral bond — Data sits in the middle";
+        ? "Low bond — branches lean Feral"
+        : "Neutral bond — Prism sits in the middle";
   }
 
   // The "new creature" picker follows the live creature until the user picks
   // something, so resetting does not silently change the archetype.
-  const attribute = el("digi-attribute");
+  const attribute = el("meta-attribute");
   if (attribute && Array.isArray(status.attributes) && status.attributes.length) {
     const wanted = status.attributes.map((entry) => entry.value).join(",");
     const have = [...attribute.options].map((option) => option.value).join(",");
@@ -254,11 +254,11 @@ function renderCard(status) {
       }
     }
   }
-  if (attribute && !digivolve.attributeTouched && status.attribute) {
+  if (attribute && !metamorphose.attributeTouched && status.attribute) {
     attribute.value = status.attribute;
   }
 
-  const archetype = el("digi-archetype");
+  const archetype = el("meta-archetype");
   if (archetype && Array.isArray(status.archetypes) && status.archetypes.length) {
     // Rebuild only when the list really changed, or the poll would wipe the
     // user's pick every ten seconds.
@@ -269,11 +269,11 @@ function renderCard(status) {
       fillArchetypes(archetype, status.archetypes);
     }
   }
-  if (archetype && !digivolve.archetypeTouched && status.creature) {
+  if (archetype && !metamorphose.archetypeTouched && status.creature) {
     archetype.value = status.creature.archetype;
   }
 
-  const meta = el("digi-meta");
+  const meta = el("meta-meta");
   if (meta) {
     const rig = status.rig || {};
     const bits = [];
@@ -296,7 +296,7 @@ function renderBlend(status) {
   const rows = blendOf(status);
   const blend = status && status.attribute_blend;
 
-  const bar = el("digi-blend-bar");
+  const bar = el("meta-blend-bar");
   if (bar) {
     bar.innerHTML = "";
     for (const [attribute, percent] of rows) {
@@ -309,12 +309,12 @@ function renderBlend(status) {
     bar.setAttribute("aria-label", `Attribute mix: ${summarise(rows) || "unknown"}`);
   }
 
-  const chips = el("digi-blend-chips");
+  const chips = el("meta-blend-chips");
   if (chips) {
     chips.innerHTML = "";
     for (const [attribute, percent] of rows) {
       const chip = document.createElement("span");
-      chip.className = `digi-chip attr ${attributeClass(attribute)} digi-blend-chip`;
+      chip.className = `meta-chip attr ${attributeClass(attribute)} meta-blend-chip`;
       chip.textContent = `${percent}% ${attribute}`;
       chip.title = blend && blend.lineage && blend.lineage.length
         ? `Evolution line: ${blend.lineage.join(" → ")}`
@@ -324,13 +324,13 @@ function renderBlend(status) {
     // A pure creature still gets one chip, so the readout is never blank.
     if (!rows.length) {
       const chip = document.createElement("span");
-      chip.className = "digi-chip digi-blend-chip";
+      chip.className = "meta-chip meta-blend-chip";
       chip.textContent = "no attribute";
       chips.appendChild(chip);
     }
   }
 
-  const traits = el("digi-blend-traits");
+  const traits = el("meta-blend-traits");
   if (traits) {
     const text = (blend && blend.flavour) || (status && status.attribute) || "";
     traits.textContent = text;
@@ -339,19 +339,19 @@ function renderBlend(status) {
       : "The traits this creature's attribute grows";
   }
 
-  const block = el("digi-blend");
+  const block = el("meta-blend");
   if (block) block.dataset.dominant = (blend && blend.dominant) || (status && status.attribute) || "";
 }
 
 function renderBranches(status) {
-  const list = el("digi-branches");
+  const list = el("meta-branches");
   if (!list) return;
   const branches = Array.isArray(status.branches) ? status.branches : [];
   list.innerHTML = "";
 
   if (!branches.length) {
     const empty = document.createElement("div");
-    empty.className = "digi-empty";
+    empty.className = "meta-empty";
     empty.textContent = status.final_stage
       ? "Final stage — nothing left to become."
       : "No branches offered.";
@@ -361,33 +361,33 @@ function renderBranches(status) {
     return;
   }
 
-  digivolve.picked = Math.max(0, Math.min(branches.length - 1, digivolve.picked));
+  metamorphose.picked = Math.max(0, Math.min(branches.length - 1, metamorphose.picked));
 
   branches.forEach((branch, index) => {
     const row = document.createElement("button");
     row.type = "button";
-    row.className = `digi-branch${index === digivolve.picked ? " picked" : ""}`;
+    row.className = `meta-branch${index === metamorphose.picked ? " picked" : ""}`;
     row.dataset.branch = String(index);
     row.setAttribute("role", "radio");
-    row.setAttribute("aria-checked", String(index === digivolve.picked));
+    row.setAttribute("aria-checked", String(index === metamorphose.picked));
     const projected = branchMix(branch);
     row.title =
       `Evolve into ${branch.label} (${branch.attribute}) — branch seed ${branch.seed}` +
       (projected.length ? `\nMix after evolving: ${summarise(projected)}` : "");
 
     const name = document.createElement("span");
-    name.className = "digi-branch-name";
+    name.className = "meta-branch-name";
     name.textContent = branch.stage || "";
 
     const attribute = document.createElement("span");
-    attribute.className = `digi-chip attr ${attributeClass(branch.attribute)}`;
+    attribute.className = `meta-chip attr ${attributeClass(branch.attribute)}`;
     attribute.textContent = branch.attribute || "";
 
     // The branch's own seed suffix is what distinguishes the three rows (the
     // stage and attribute are already labelled); the full slug lives in the
     // tooltip. A 31-character slug would only ever render as an ellipsis here.
     const detail = document.createElement("span");
-    detail.className = "digi-branch-detail";
+    detail.className = "meta-branch-detail";
     // What the attribute does to the body, not just which letter it is: the
     // three branches are three different creatures now.
     detail.textContent = branch.flavour
@@ -403,7 +403,7 @@ function renderBranches(status) {
     // (`blend_summary`), so the preview cannot drift from what evolution does.
     if (projected.length) {
       const mix = document.createElement("span");
-      mix.className = "digi-branch-mix";
+      mix.className = "meta-branch-mix";
       const text = branch.blend_summary || summarise(projected);
       mix.textContent = `→ ${text}`;
       if (branch.blended_flavour) mix.title = branch.blended_flavour;
@@ -412,10 +412,10 @@ function renderBranches(status) {
 
     row.addEventListener("click", (event) => {
       event.preventDefault();
-      digivolve.picked = index;
-      renderBranches(digivolve.status || status);
-      syncEvolveButton(digivolve.status || status);
-      syncBackButton(digivolve.status || status);
+      metamorphose.picked = index;
+      renderBranches(metamorphose.status || status);
+      syncEvolveButton(metamorphose.status || status);
+      syncBackButton(metamorphose.status || status);
     });
     list.appendChild(row);
   });
@@ -426,13 +426,13 @@ function renderBranches(status) {
 
 /** Enable/disable "Back" and say which stage it returns to. */
 function syncBackButton(status) {
-  const button = el("btn-digi-back");
+  const button = el("btn-meta-back");
   if (!button) return;
-  const can = !!(status && status.can_dedigivolve);
+  const can = !!(status && status.can_revert);
   const previous = status && status.previous_stage;
   button.disabled = !can;
   button.title = can
-    ? `Return to ${previous || "the previous stage"} — POST /dedigivolve ` +
+    ? `Return to ${previous || "the previous stage"} — POST /revert ` +
       `(${status.rewind_depth} step${status.rewind_depth === 1 ? "" : "s"} of history; ` +
       "the attribute mix rewinds with it)"
     : "This creature is at its first stage";
@@ -440,10 +440,10 @@ function syncBackButton(status) {
 }
 
 function syncEvolveButton(status) {
-  const button = el("btn-digivolve-go");
+  const button = el("btn-metamorphose-go");
   if (!button) return;
   const branches = (status && status.branches) || [];
-  const branch = branches[digivolve.picked];
+  const branch = branches[metamorphose.picked];
   const ready = !!(status && status.can_evolve && branch);
   button.disabled = !ready;
   button.textContent = ready
@@ -452,7 +452,7 @@ function syncEvolveButton(status) {
       ? "Final stage"
       : "Not ready";
   button.title = ready
-    ? `Digivolve into ${branch.stage} (${branch.attribute}) — POST /digivolve`
+    ? `Metamorphose into ${branch.stage} (${branch.attribute}) — POST /metamorphose`
     : status && status.final_stage
       ? "Mega is the last stage"
       : status
@@ -462,8 +462,8 @@ function syncEvolveButton(status) {
 
 /**
  * The control panel's header strip: the same recency-weighted mix, compressed
- * to one summary line and a 4 px stacked bar. `digivolve` already owns the
- * `/digimon/status` poll and the blend maths, so the panel header is filled
+ * to one summary line and a 4 px stacked bar. `metamorphose` already owns the
+ * `/creature/status` poll and the blend maths, so the panel header is filled
  * from here rather than running a second fetch. Hidden whenever there is no
  * creature — a permanent "—" would read as a broken readout.
  */
@@ -505,33 +505,33 @@ function renderHeaderBlend(status) {
 
 /** The whole card when the route is not served (plugin removed). */
 function renderMissing(detail) {
-  digivolve.missing = true;
-  digivolve.status = null;
+  metamorphose.missing = true;
+  metamorphose.status = null;
   el("blend-readout")?.classList.add("hidden");
-  const stage = el("digi-stage");
+  const stage = el("meta-stage");
   if (stage) {
     stage.textContent = "offline";
-    stage.className = "digi-stage off";
+    stage.className = "meta-stage off";
     stage.title = detail || "";
   }
-  for (const id of ["digi-xp-bar", "digi-bond-bar"]) {
+  for (const id of ["meta-xp-bar", "meta-bond-bar"]) {
     const bar = el(id);
     if (bar) bar.style.width = "0%";
   }
-  for (const id of ["digi-xp", "digi-bond"]) {
+  for (const id of ["meta-xp", "meta-bond"]) {
     const node = el(id);
     if (node) node.textContent = "—";
   }
-  const line = el("digi-line");
-  if (line) line.textContent = "The digivolution plugin is not loaded.";
-  const meta = el("digi-meta");
-  if (meta) meta.textContent = detail || "plugins/digivolution.wasm is missing";
-  const list = el("digi-branches");
+  const line = el("meta-line");
+  if (line) line.textContent = "The metamorphosis plugin is not loaded.";
+  const meta = el("meta-meta");
+  if (meta) meta.textContent = detail || "plugins/metamorphosis.wasm is missing";
+  const list = el("meta-branches");
   if (list) {
     list.innerHTML = "";
     const empty = document.createElement("div");
-    empty.className = "digi-empty";
-    empty.textContent = "Build it with ./scripts/build-plugin.sh digivolution, then restart.";
+    empty.className = "meta-empty";
+    empty.textContent = "Build it with ./scripts/build-plugin.sh metamorphosis, then restart.";
     list.appendChild(empty);
   }
   syncEvolveButton(null);
@@ -550,19 +550,19 @@ function fillArchetypes(select, pairs) {
   }
 }
 
-/** Public render entry (used by the `digimon` event and the poll). */
-export function renderDigimon(status) {
+/** Public render entry (used by the `creature` event and the poll). */
+export function renderCreature(status) {
   if (!status || typeof status !== "object" || status.ok === false) {
     renderMissing(status && status.error);
     return;
   }
-  digivolve.missing = false;
+  metamorphose.missing = false;
   const stageKey = String(status.slug || status.stage || "");
-  if (stageKey !== digivolve.stageKey) {
-    digivolve.stageKey = stageKey;
-    digivolve.picked = 0;
+  if (stageKey !== metamorphose.stageKey) {
+    metamorphose.stageKey = stageKey;
+    metamorphose.picked = 0;
   }
-  digivolve.status = status;
+  metamorphose.status = status;
   renderCard(status);
 }
 
@@ -570,15 +570,15 @@ export function renderDigimon(status) {
  * Reads and actions
  * ------------------------------------------------------------------ */
 
-async function refreshDigimon() {
+async function refreshCreature() {
   try {
-    const res = await fetch(`${digivolve.base}/digimon/status`, { cache: "no-store" });
+    const res = await fetch(`${metamorphose.base}/creature/status`, { cache: "no-store" });
     if (res.status === 404) {
-      renderMissing("GET /digimon/status → 404");
+      renderMissing("GET /creature/status → 404");
       return;
     }
     const body = await res.json();
-    renderDigimon(body);
+    renderCreature(body);
   } catch (err) {
     // The API can be down while the app is starting; the poll retries.
     renderMissing(String(err));
@@ -588,7 +588,7 @@ async function refreshDigimon() {
 /** POST JSON, then re-read. A refusal is shown, never swallowed. */
 async function post(path, body, okText) {
   try {
-    const res = await fetch(`${digivolve.base}${path}`, {
+    const res = await fetch(`${metamorphose.base}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body || {}),
@@ -596,11 +596,11 @@ async function post(path, body, okText) {
     const payload = await res.json().catch(() => ({}));
     if (!res.ok || payload.ok === false) {
       setNote(payload.error || `${path} → ${res.status}`, true);
-      refreshDigimon();
+      refreshCreature();
       return null;
     }
     setNote(typeof okText === "function" ? okText(payload) : okText || "");
-    refreshDigimon();
+    refreshCreature();
     return payload;
   } catch (err) {
     setNote(String(err), true);
@@ -609,12 +609,12 @@ async function post(path, body, okText) {
 }
 
 function evolve() {
-  const status = digivolve.status;
-  const branch = status && (status.branches || [])[digivolve.picked];
+  const status = metamorphose.status;
+  const branch = status && (status.branches || [])[metamorphose.picked];
   if (!status || !branch) return;
   post(
-    "/digivolve",
-    { branch: digivolve.picked },
+    "/metamorphose",
+    { branch: metamorphose.picked },
     (payload) =>
       `${payload.from} → ${payload.stage}: ${payload.bones} bones, ${payload.parts} parts` +
       ` · ${payload.blend_summary || payload.attribute} · ${payload.model_path}`,
@@ -628,25 +628,25 @@ function evolve() {
   });
 }
 
-/** Go back one stage: `POST /dedigivolve`. */
+/** Go back one stage: `POST /revert`. */
 function rewind() {
-  const status = digivolve.status;
-  if (!status || !status.can_dedigivolve) return;
-  post("/dedigivolve", { steps: 1 }, (payload) =>
+  const status = metamorphose.status;
+  if (!status || !status.can_revert) return;
+  post("/revert", { steps: 1 }, (payload) =>
     `${payload.from} → ${payload.stage} (back) · ${payload.bones} bones, ${payload.parts} parts` +
     ` · ${payload.blend_summary || payload.attribute}`,
   );
 }
 
-/** The growth nudge: `POST /digimon/xp`. Labelled as the API it is. */
+/** The growth nudge: `POST /creature/xp`. Labelled as the API it is. */
 function nudge(xp, bond) {
-  post("/digimon/xp", { xp, bond }, xp ? `+${xp} XP` : `bond ${bond > 0 ? "+" : ""}${bond}`);
+  post("/creature/xp", { xp, bond }, xp ? `+${xp} XP` : `bond ${bond > 0 ? "+" : ""}${bond}`);
 }
 
 function reset() {
-  const archetype = el("digi-archetype") ? el("digi-archetype").value : "";
-  const attribute = el("digi-attribute") ? el("digi-attribute").value : "";
-  const rawSeed = el("digi-seed") ? el("digi-seed").value.trim() : "";
+  const archetype = el("meta-archetype") ? el("meta-archetype").value : "";
+  const attribute = el("meta-attribute") ? el("meta-attribute").value : "";
+  const rawSeed = el("meta-seed") ? el("meta-seed").value.trim() : "";
   const body = {};
   if (archetype) body.archetype = archetype;
   if (attribute) body.attribute = attribute;
@@ -658,8 +658,8 @@ function reset() {
     }
     body.seed = Math.floor(seed);
   }
-  digivolve.picked = 0;
-  post("/digimon/reset", body, (payload) =>
+  metamorphose.picked = 0;
+  post("/creature/reset", body, (payload) =>
     `new ${payload.status.creature.archetype} · ${payload.status.stage} · ${payload.status.slug}`,
   );
 }
@@ -668,51 +668,51 @@ function reset() {
  * Setup
  * ------------------------------------------------------------------ */
 
-export async function setupDigivolve() {
-  if (digivolve.ready) return;
+export async function setupMetamorphose() {
+  if (metamorphose.ready) return;
   if (!card()) return; // the markup is missing — nothing to wire.
 
-  el("btn-digivolve")?.addEventListener("click", (event) => {
+  el("btn-metamorphose")?.addEventListener("click", (event) => {
     event.preventDefault();
-    toggleDigivolveCard();
+    toggleMetamorphoseCard();
   });
-  el("btn-digi-close")?.addEventListener("click", (event) => {
+  el("btn-meta-close")?.addEventListener("click", (event) => {
     event.preventDefault();
-    toggleDigivolveCard(false);
+    toggleMetamorphoseCard(false);
   });
-  el("btn-digi-reload")?.addEventListener("click", (event) => {
+  el("btn-meta-reload")?.addEventListener("click", (event) => {
     event.preventDefault();
-    refreshDigimon();
+    refreshCreature();
   });
-  el("btn-digivolve-go")?.addEventListener("click", (event) => {
+  el("btn-metamorphose-go")?.addEventListener("click", (event) => {
     event.preventDefault();
     evolve();
   });
-  el("btn-digi-back")?.addEventListener("click", (event) => {
+  el("btn-meta-back")?.addEventListener("click", (event) => {
     event.preventDefault();
     rewind();
   });
-  el("btn-digi-xp")?.addEventListener("click", (event) => {
+  el("btn-meta-xp")?.addEventListener("click", (event) => {
     event.preventDefault();
     nudge(60, 0);
   });
-  el("btn-digi-bond")?.addEventListener("click", (event) => {
+  el("btn-meta-bond")?.addEventListener("click", (event) => {
     event.preventDefault();
     nudge(0, 0.1);
   });
-  el("btn-digi-reset")?.addEventListener("click", (event) => {
+  el("btn-meta-reset")?.addEventListener("click", (event) => {
     event.preventDefault();
     reset();
   });
 
   // The archetype picker prefills from the live creature once we know it.
-  const archetype = el("digi-archetype");
+  const archetype = el("meta-archetype");
   archetype?.addEventListener("change", () => {
-    digivolve.archetypeTouched = true;
+    metamorphose.archetypeTouched = true;
   });
-  const attribute = el("digi-attribute");
+  const attribute = el("meta-attribute");
   attribute?.addEventListener("change", () => {
-    digivolve.attributeTouched = true;
+    metamorphose.attributeTouched = true;
   });
   if (attribute && !attribute.options.length) {
     for (const [value, label] of ATTRIBUTES) {
@@ -729,18 +729,18 @@ export async function setupDigivolve() {
 
   await resolveBase();
 
-  // The plugin's own frames: `ready` (XP threshold crossed), `digivolved`,
+  // The plugin's own frames: `ready` (XP threshold crossed), `metamorphosed`,
   // `reset`. Any of them changes the card, so one listener covers all three.
-  await listen("digimon", (event) => {
+  await listen("creature", (event) => {
     const payload = event && event.payload ? event.payload : {};
-    if (payload.event === "digivolved") {
+    if (payload.event === "metamorphosed") {
       setNote(
         `${payload.from} → ${payload.stage} (${payload.blend_summary || payload.attribute})`,
       );
-      toast(`Digivolved into ${payload.stage}`);
+      toast(`Metamorphosed into ${payload.stage}`);
       // Growth is the good news of this whole plugin — show it on the face.
       reactExpression("happy", 5);
-    } else if (payload.event === "dedigivolved") {
+    } else if (payload.event === "reverted") {
       setNote(`${payload.from} → ${payload.stage} (back to an earlier form)`);
       toast(`Back to ${payload.stage}`);
     } else if (payload.event === "ready") {
@@ -750,43 +750,43 @@ export async function setupDigivolve() {
       // A brand-new hatchling is worth a startled look.
       reactExpression("surprised", 4);
     }
-    refreshDigimon();
+    refreshCreature();
   });
   // A new model means the plugin may have been the one that swapped it.
   await listen("model-changed", (event) => {
     const model = event && event.payload ? event.payload : {};
-    if (digivolveCardOpen() || String(model.name || "").startsWith("digi-")) {
-      refreshDigimon();
+    if (metamorphoseCardOpen() || String(model.name || "").startsWith("buddy-")) {
+      refreshCreature();
     }
   });
 
-  setInterval(refreshDigimon, POLL_MS);
-  digivolve.ready = true;
-  await refreshDigimon();
-  if (digivolve.status && digivolve.status.creature && archetype) {
-    archetype.value = digivolve.status.creature.archetype;
+  setInterval(refreshCreature, POLL_MS);
+  metamorphose.ready = true;
+  await refreshCreature();
+  if (metamorphose.status && metamorphose.status.creature && archetype) {
+    archetype.value = metamorphose.status.creature.archetype;
   }
 
   // CDP surface: read the card's state without a screenshot.
   if (window.__avatarDebug) {
-    window.__avatarDebug.digivolve = () => ({
-      base: digivolve.base,
-      ready: digivolve.ready,
-      open: digivolveCardOpen(),
-      missing: digivolve.missing,
-      stage: digivolve.status ? digivolve.status.stage : null,
-      xp: digivolve.status ? digivolve.status.xp : null,
-      xp_required: digivolve.status ? digivolve.status.xp_required : null,
-      bond: digivolve.status ? digivolve.status.bond : null,
-      attribute: digivolve.status ? digivolve.status.attribute : null,
-      blend: digivolve.status
-        ? (digivolve.status.attribute_blend || {
-            dominant: digivolve.status.attribute,
-            percent: Object.fromEntries(blendOf(digivolve.status)),
-            summary: summarise(blendOf(digivolve.status)),
+    window.__avatarDebug.metamorphose = () => ({
+      base: metamorphose.base,
+      ready: metamorphose.ready,
+      open: metamorphoseCardOpen(),
+      missing: metamorphose.missing,
+      stage: metamorphose.status ? metamorphose.status.stage : null,
+      xp: metamorphose.status ? metamorphose.status.xp : null,
+      xp_required: metamorphose.status ? metamorphose.status.xp_required : null,
+      bond: metamorphose.status ? metamorphose.status.bond : null,
+      attribute: metamorphose.status ? metamorphose.status.attribute : null,
+      blend: metamorphose.status
+        ? (metamorphose.status.attribute_blend || {
+            dominant: metamorphose.status.attribute,
+            percent: Object.fromEntries(blendOf(metamorphose.status)),
+            summary: summarise(blendOf(metamorphose.status)),
           })
         : null,
-      blendChips: [...document.querySelectorAll("#digi-blend-chips .digi-blend-chip")].map(
+      blendChips: [...document.querySelectorAll("#meta-blend-chips .meta-blend-chip")].map(
         (node) => node.textContent,
       ),
       /** The control panel's compact header readout (null when hidden). */
@@ -800,21 +800,21 @@ export async function setupDigivolve() {
           ),
         };
       })(),
-      can_evolve: digivolve.status ? digivolve.status.can_evolve : false,
-      picked: digivolve.picked,
-      branches: digivolve.status
-        ? (digivolve.status.branches || []).map(
+      can_evolve: metamorphose.status ? metamorphose.status.can_evolve : false,
+      picked: metamorphose.picked,
+      branches: metamorphose.status
+        ? (metamorphose.status.branches || []).map(
             (b) => `${b.stage}:${b.attribute}:${b.blend_summary || ""}`,
           )
         : [],
-      rig: digivolve.status ? digivolve.status.rig : null,
-      can_dedigivolve: digivolve.status ? digivolve.status.can_dedigivolve : false,
-      previous_stage: digivolve.status ? digivolve.status.previous_stage : null,
-      backDisabled: !!((el("btn-digi-back") || {}).disabled),
-      backLabel: (el("btn-digi-back") || {}).textContent || "",
-      note: (el("digivolve-note") || {}).textContent || "",
-      rows: [...document.querySelectorAll(".digi-branch")].length,
-      evolveDisabled: !!((el("btn-digivolve-go") || {}).disabled),
+      rig: metamorphose.status ? metamorphose.status.rig : null,
+      can_revert: metamorphose.status ? metamorphose.status.can_revert : false,
+      previous_stage: metamorphose.status ? metamorphose.status.previous_stage : null,
+      backDisabled: !!((el("btn-meta-back") || {}).disabled),
+      backLabel: (el("btn-meta-back") || {}).textContent || "",
+      note: (el("metamorphose-note") || {}).textContent || "",
+      rows: [...document.querySelectorAll(".meta-branch")].length,
+      evolveDisabled: !!((el("btn-metamorphose-go") || {}).disabled),
     });
   }
 }

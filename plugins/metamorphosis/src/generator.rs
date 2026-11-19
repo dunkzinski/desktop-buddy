@@ -218,7 +218,7 @@ impl<'de> Deserialize<'de> for Tier {
 
 /// Everything a creature's shape is derived from.
 ///
-/// The attribute belongs here, not on the branch: a Vaccine Rookie and a Virus
+/// The attribute belongs here, not on the branch: a Seraph Rookie and a Feral
 /// Rookie are different *rigs*, so the attribute has to reach the generator —
 /// and so does the lineage `blend`, because a stage is shaped by every attribute
 /// its line has been, not just the one it is now.
@@ -301,14 +301,14 @@ impl Spec {
         rng.below(u32::from(plan::VARIANT_COUNT)) as u8
     }
 
-    /// `digi-drake-champion-virus-1f3a9c02` — stable, lowercase, filesystem-safe.
+    /// `buddy-drake-champion-feral-1f3a9c02` — stable, lowercase, filesystem-safe.
     ///
     /// The attribute is part of the name because it is part of the rig: without
-    /// it, a Vaccine and a Virus creature of the same seed/archetype/stage are
+    /// it, a Seraph and a Feral creature of the same seed/archetype/stage are
     /// two different monsters fighting over one `models/<slug>/` folder.
     pub fn slug(&self) -> String {
         format!(
-            "digi-{}-{}-{}-{:08x}",
+            "buddy-{}-{}-{}-{:08x}",
             self.archetype.as_str(),
             self.tier.slug(),
             self.attribute.slug(),
@@ -476,11 +476,11 @@ fn base_palette(archetype: Archetype) -> Palette {
 fn attribute_paint(attribute: Attribute) -> (&'static str, &'static str, &'static str, f64) {
     match attribute {
         // Blessed lines lift toward light.
-        Attribute::Vaccine => ("#fff4d0", "#ffe9a3", "#fffbe8", 0.22),
+        Attribute::Seraph => ("#fff4d0", "#ffe9a3", "#fffbe8", 0.22),
         // Crypto lines cool toward signal blue.
-        Attribute::Data => ("#6fd8ff", "#48e0ff", "#b8f4ff", 0.20),
+        Attribute::Prism => ("#6fd8ff", "#48e0ff", "#b8f4ff", 0.20),
         // Viral lines sink into rot.
-        Attribute::Virus => ("#2a0d1d", "#ff3d81", "#9dff4a", 0.24),
+        Attribute::Feral => ("#2a0d1d", "#ff3d81", "#9dff4a", 0.24),
     }
 }
 
@@ -534,7 +534,7 @@ fn palette_for(archetype: Archetype, blend: AttributeBlend, tier: Tier, rng: &mu
     let metal = shade(&base.metal, darken * jitter(rng));
     // The attribute *mix* tints the family. Only a fraction, or every archetype
     // would end up the same three colours again — but the fraction itself is
-    // blended, so a Data body with a recent Virus shift is cool *and* bruised
+    // blended, so a Prism body with a recent Feral shift is cool *and* bruised
     // rather than one flat colour.
     let tint = blend_paint(blend, 0);
     let accent_tint = blend_paint(blend, 1);
@@ -1303,7 +1303,7 @@ pub fn generate(spec: &Spec) -> Manifest {
     let mut animations = BTreeMap::new();
     animations.insert("breathe".to_string(), breathe_clip(&manifest, spec.tier));
     animations.insert("wave".to_string(), wave_clip(&manifest));
-    animations.insert("digivolve".to_string(), digivolve_clip(&manifest, spec.tier));
+    animations.insert("metamorphose".to_string(), metamorphose_clip(&manifest, spec.tier));
     manifest.animations = Some(animations);
 
     enforce_monitor_budget(&mut manifest);
@@ -1635,17 +1635,17 @@ const DECORATION: [(&str, Option<Attribute>); 38] = [
     ("tail_blade", None),
     ("mane", None),
     ("ridge", None),
-    ("halo_in", Some(Attribute::Vaccine)),
-    ("circuit2_l", Some(Attribute::Data)),
-    ("circuit2_r", Some(Attribute::Data)),
-    ("circuit_l", Some(Attribute::Data)),
-    ("circuit_r", Some(Attribute::Data)),
-    ("crystal_core", Some(Attribute::Data)),
-    ("tooth_more_l", Some(Attribute::Virus)),
-    ("tooth_more_r", Some(Attribute::Virus)),
-    ("drip_l", Some(Attribute::Virus)),
-    ("drip_r", Some(Attribute::Virus)),
-    ("spine_mid", Some(Attribute::Virus)),
+    ("halo_in", Some(Attribute::Seraph)),
+    ("circuit2_l", Some(Attribute::Prism)),
+    ("circuit2_r", Some(Attribute::Prism)),
+    ("circuit_l", Some(Attribute::Prism)),
+    ("circuit_r", Some(Attribute::Prism)),
+    ("crystal_core", Some(Attribute::Prism)),
+    ("tooth_more_l", Some(Attribute::Feral)),
+    ("tooth_more_r", Some(Attribute::Feral)),
+    ("drip_l", Some(Attribute::Feral)),
+    ("drip_r", Some(Attribute::Feral)),
+    ("spine_mid", Some(Attribute::Feral)),
 ];
 
 fn trim_details(manifest: &mut Manifest, spec: &Spec) {
@@ -2175,11 +2175,11 @@ fn push_wing_bud(bones: &mut Vec<Bone>, pal: &Palette, dims: Dims, plan: Plan) {
 const FULL_DETAIL: f64 = 0.9;
 
 /// What the **attribute mix** puts on the trunk: crystals, circuit traces,
-/// spines, markings. Shared by every plan, so a Virus deer and a Virus robot are
+/// spines, markings. Shared by every plan, so a Feral deer and a Feral robot are
 /// both unmistakably viral while staying a deer and a robot.
 ///
 /// Every part an attribute owns is scaled by that attribute's prominence in the
-/// lineage. A Data body with a recent Virus shift therefore keeps full-size
+/// lineage. A Prism body with a recent Feral shift therefore keeps full-size
 /// crystal growths *and* grows visibly prominent spines, with the older/quieter
 /// contributor smaller and losing its optional detail first.
 fn aspect_torso_parts(
@@ -2192,8 +2192,8 @@ fn aspect_torso_parts(
     let w = dims.torso_w;
     let h = dims.torso_h;
     let t = features.tier_index;
-    let data = blend.prominence(Attribute::Data);
-    let virus = blend.prominence(Attribute::Virus);
+    let prism = blend.prominence(Attribute::Prism);
+    let feral = blend.prominence(Attribute::Feral);
     let mut parts = Vec::new();
 
     if plan.crystals {
@@ -2203,7 +2203,7 @@ fn aspect_torso_parts(
                 Part::ellipse(
                     id,
                     &pal.accent,
-                    [round4(w * 0.3 * data), round4(h * 0.16 * data)],
+                    [round4(w * 0.3 * prism), round4(h * 0.16 * prism)],
                     [round4(sign * w * 0.42), round4(-h * 0.34)],
                     6,
                     None,
@@ -2211,11 +2211,11 @@ fn aspect_torso_parts(
                 .turned(round4(sign * 0.7)),
             );
         }
-        if t >= 3 && data >= FULL_DETAIL {
+        if t >= 3 && prism >= FULL_DETAIL {
             parts.push(Part::ellipse(
                 "crystal_core",
                 &pal.glow,
-                [round4(w * 0.16 * data), round4(h * 0.12 * data)],
+                [round4(w * 0.16 * prism), round4(h * 0.12 * prism)],
                 [0.0, round4(-h * 0.44)],
                 7,
                 None,
@@ -2227,20 +2227,20 @@ fn aspect_torso_parts(
             parts.push(Part::ellipse(
                 if index < 0.0 { "circuit_l" } else { "circuit_r" },
                 &pal.glow,
-                [round4(w * 0.5 * data), round4(3.0 * data).max(1.0)],
+                [round4(w * 0.5 * prism), round4(3.0 * prism).max(1.0)],
                 [0.0, round4(sign * h)],
                 5,
                 None,
             ));
         }
-        // A dominant Data line runs a second pair of traces across the belly:
+        // A dominant Prism line runs a second pair of traces across the belly:
         // part *count*, not just size, follows the share.
-        if data >= FULL_DETAIL {
+        if prism >= FULL_DETAIL {
             for sign in [-0.12f64, 0.12] {
                 parts.push(Part::ellipse(
                     if sign < 0.0 { "circuit2_l" } else { "circuit2_r" },
                     &pal.accent,
-                    [round4(w * 0.34 * data), 2.0],
+                    [round4(w * 0.34 * prism), 2.0],
                     [0.0, round4(sign * h)],
                     4,
                     None,
@@ -2254,7 +2254,7 @@ fn aspect_torso_parts(
                 Part::ellipse(
                     id,
                     &pal.accent,
-                    [round4(w * 0.22 * virus), round4(h * 0.1 * virus)],
+                    [round4(w * 0.22 * feral), round4(h * 0.1 * feral)],
                     [round4(sign * w * 0.3), round4(-h * 0.5)],
                     6,
                     None,
@@ -2262,12 +2262,12 @@ fn aspect_torso_parts(
                 .turned(round4(sign * -0.8)),
             );
         }
-        if t >= 3 && virus >= FULL_DETAIL {
+        if t >= 3 && feral >= FULL_DETAIL {
             parts.push(
                 Part::ellipse(
                     "spine_mid",
                     &pal.accent,
-                    [round4(w * 0.18 * virus), round4(h * 0.08 * virus)],
+                    [round4(w * 0.18 * feral), round4(h * 0.08 * feral)],
                     [0.0, round4(-h * 0.58)],
                     6,
                     None,
@@ -2344,16 +2344,16 @@ fn aspect_head_parts(
     let w = dims.head_w;
     let h = dims.head_h;
     let t = features.tier_index;
-    let vaccine = blend.prominence(Attribute::Vaccine);
-    let data = blend.prominence(Attribute::Data);
-    let virus = blend.prominence(Attribute::Virus);
+    let seraph = blend.prominence(Attribute::Seraph);
+    let prism = blend.prominence(Attribute::Prism);
+    let feral = blend.prominence(Attribute::Feral);
     let mut parts = Vec::new();
 
     if plan.halo_ring {
         parts.push(Part::ellipse(
             "halo",
             &pal.glow,
-            [round4(w * 0.86 * vaccine), round4(16.0 * vaccine).max(2.0)],
+            [round4(w * 0.86 * seraph), round4(16.0 * seraph).max(2.0)],
             [0.0, round4(-h * 0.86)],
             Z_HEIGHT,
             None,
@@ -2363,7 +2363,7 @@ fn aspect_head_parts(
         parts.push(Part::ellipse(
             "halo_in",
             &pal.body_dark,
-            [round4(w * 0.6 * vaccine), round4(8.0 * vaccine).max(1.0)],
+            [round4(w * 0.6 * seraph), round4(8.0 * seraph).max(1.0)],
             [0.0, round4(-h * 0.86)],
             Z_HEIGHT + 1,
             None,
@@ -2374,14 +2374,14 @@ fn aspect_head_parts(
             parts.push(Part::ellipse(
                 id,
                 &pal.eye,
-                [round4(w * 0.05 * virus).max(0.5), round4(h * 0.1 * virus).max(0.5)],
+                [round4(w * 0.05 * feral).max(0.5), round4(h * 0.1 * feral).max(0.5)],
                 [round4(sign * w * 0.14), round4(h * 0.46)],
                 9,
                 None,
             ));
         }
         // A dominant viral line grows a second, smaller pair behind the first.
-        if virus >= FULL_DETAIL {
+        if feral >= FULL_DETAIL {
             for (id, sign) in [("tooth_more_l", -1.0), ("tooth_more_r", 1.0)] {
                 parts.push(Part::ellipse(
                     id,
@@ -2394,13 +2394,13 @@ fn aspect_head_parts(
             }
         }
     }
-    if plan.crystals && t >= 3 && data >= FULL_DETAIL {
+    if plan.crystals && t >= 3 && prism >= FULL_DETAIL {
         for (id, sign) in [("bit_l", -1.0), ("bit_r", 1.0)] {
             parts.push(
                 Part::ellipse(
                     id,
                     &pal.glow,
-                    [round4(w * 0.14 * data), round4(h * 0.14 * data)],
+                    [round4(w * 0.14 * prism), round4(h * 0.14 * prism)],
                     [round4(sign * w * 0.66), round4(-h * 0.16)],
                     Z_HEIGHT,
                     None,
@@ -2414,7 +2414,7 @@ fn aspect_head_parts(
             parts.push(Part::circle(
                 id,
                 &pal.glow,
-                round4(w * 0.05 * virus).max(0.5),
+                round4(w * 0.05 * feral).max(0.5),
                 [round4(sign * w * 0.3), round4(h * 0.5)],
                 9,
                 None,
@@ -3777,7 +3777,7 @@ fn wave_clip(manifest: &Manifest) -> Clip {
 }
 
 /// The stage transition: crouch, flare, then settle bigger than it started.
-fn digivolve_clip(manifest: &Manifest, tier: Tier) -> Clip {
+fn metamorphose_clip(manifest: &Manifest, tier: Tier) -> Clip {
     let pairs = pairs(manifest);
 
     let mut crouch = BTreeMap::new();
@@ -3865,7 +3865,7 @@ fn enforce_monitor_budget(manifest: &mut Manifest) {
 
 /// Structural checks the generator promises its callers, against the part budget
 /// of the **base** stages (100). Prefer [`validate_at`] when the tier is known;
-/// `POST /digivolve` and the plugin's status/install paths use that.
+/// `POST /metamorphose` and the plugin's status/install paths use that.
 pub fn validate(manifest: &Manifest) -> Result<Report, String> {
     validate_at(manifest, Tier::Champion)
 }
@@ -3981,7 +3981,7 @@ pub fn validate_at(manifest: &Manifest, tier: Tier) -> Result<Report, String> {
     })
 }
 
-/// What [`validate`] measured — handy for logs and `GET /digimon/status`.
+/// What [`validate`] measured — handy for logs and `GET /creature/status`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Report {
     pub bones: usize,
@@ -4166,9 +4166,9 @@ mod tests {
     }
 
     #[test]
-    fn the_digivolve_clip_mirrors_its_deltas() {
+    fn the_metamorphose_clip_mirrors_its_deltas() {
         let manifest = generate(&Spec::new(5, Archetype::Drake, Tier::Ultimate));
-        let clip = manifest.animations.as_ref().unwrap().get("digivolve").unwrap();
+        let clip = manifest.animations.as_ref().unwrap().get("metamorphose").unwrap();
         let mut checked = 0;
         for frame in &clip.keyframes {
             for (id, delta) in &frame.bones {

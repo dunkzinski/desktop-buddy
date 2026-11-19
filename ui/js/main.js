@@ -57,7 +57,7 @@ import {
 
 import { setupSurvival, toggleSurvivalCard, survivalCardOpen } from "./survival.js";
 
-import { setupDigivolve, toggleDigivolveCard, digivolveCardOpen } from "./digivolve.js";
+import { setupMetamorphose, toggleMetamorphoseCard, metamorphoseCardOpen } from "./metamorphose.js";
 
 import {
   setupSettings, toggleSettings, settingsOpen, onSettingsSaved,
@@ -1008,7 +1008,7 @@ function setupUI() {
         if (settingsOpen()) toggleSettings(false);
         else if (commandBarVisible()) closeCommandBar();
         else if (historyOpen()) toggleHistoryDrawer(false);
-        else if (digivolveCardOpen()) toggleDigivolveCard(false);
+        else if (metamorphoseCardOpen()) toggleMetamorphoseCard(false);
         else if (survivalCardOpen()) toggleSurvivalCard(false);
         else if (RT.rigMode) setRigMode(false);
         else if (isWatcherDrawerOpen()) toggleWatcherDrawer(false);
@@ -1288,9 +1288,9 @@ async function init() {
   // Hunger / saturation / tier, hydrated over HTTP from `GET /survival` and the
   // `GET /foods` catalog. Must not hold up the first paint if the API is slow.
   setupSurvival().catch((err) => console.error("[avatar] survival widget:", err));
-  // Stage / growth / evolution branches over `GET /digimon/status`. Same rule as
+  // Stage / growth / evolution branches over `GET /creature/status`. Same rule as
   // survival: a slow API must not hold up the first paint.
-  setupDigivolve().catch((err) => console.error("[avatar] digivolve widget:", err));
+  setupMetamorphose().catch((err) => console.error("[avatar] metamorphose widget:", err));
   // Settings: the modal over `GET/POST /config`. A save can change a path, an
   // AI endpoint or the survival rates, so the panel's own badges are refreshed
   // from the server rather than trusted to update themselves.

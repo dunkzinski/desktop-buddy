@@ -103,7 +103,7 @@ Run the unit tests with `cd src-tauri && cargo test`.
 | Control panel | |
 | --- | --- |
 | Model dropdown + **Import…** | switch models, import a rig or an image |
-| **Blend** strip | the creature's live recency-weighted attribute mix (`57% Virus · 43% Data`), read from `GET /digimon/status` |
+| **Blend** strip | the creature's live recency-weighted attribute mix (`57% Feral · 43% Prism`), read from `GET /creature/status` |
 | Wave / Walk / Center | triggers, with a walk-speed slider |
 | **New chat** | wipe the conversation context (`POST /session/reset`) and empty the History drawer |
 | **History** | open the session's conversation log (see [Reading the conversation back](#reading-the-conversation-back)) |
@@ -214,8 +214,8 @@ paths, profiles or secrets; those stay in `watcher_rules.json`.
   without restarting anything. It is injected as the **first section** of the
   system prompt, ahead of the role prompt, the JSON action/expression contract
   and the creature's runtime state. The vision path uses the same slot order.
-* **Creature flavour** — when the digivolution plugin is loaded, the buddy's
-  current stage, archetype and recency-weighted `Vaccine` / `Data` / `Virus`
+* **Creature flavour** — when the metamorphosis plugin is loaded, the buddy's
+  current stage, archetype and recency-weighted `Seraph` / `Prism` / `Feral`
   blend are appended as a compact runtime block, so its speech and chosen
   `expression` match its current form without overriding `SOUL.md`.
 * **Both backends** — `openai_compat` gets it as system-prompt slot #1;
@@ -261,7 +261,7 @@ plugins/
 │                        cravings, fishing and inventory)
 ├── survival.wasm        the built artifact — this is what the app loads
 │
-├── digivolution/        procedural growth: generates its own rigs per stage
+├── metamorphosis/        procedural growth: generates its own rigs per stage
 │   ├── Cargo.toml       same shape (own workspace, cdylib + rlib)
 │   └── src/
 │       ├── lib.rs       the ABI (5 exports + config stubs; no config block)
@@ -270,9 +270,9 @@ plugins/
 │       ├── generator.rs seed × archetype × tier -> a complete manifest
 │       ├── evolution.rs stage/XP/bond/attribute state and the branch table
 │       ├── plugin.rs    live state: XP drift, the "ready" notice, the save
-│       └── routes.rs    ROUTES = [("/digimon/status", …), …] + dispatcher
-├── digivolution.wasm    the built artifact
-└── digivolution.state.json   its save (gitignored)
+│       └── routes.rs    ROUTES = [("/creature/status", …), …] + dispatcher
+├── metamorphosis.wasm    the built artifact
+└── metamorphosis.state.json   its save (gitignored)
 ```
 
 The guest talks to the app through exactly nine imports (`host_emit_event`,
@@ -311,17 +311,17 @@ ticker, and a `.wasm` that will not load is logged and skipped. `survival.enable
 false` keeps the plugin installed but idle — the bars freeze and the routes keep
 answering with `"enabled": false`.
 
-### Digivolution: a creature that grows
+### Metamorphosis: a creature that grows
 
-`plugins/digivolution` is a second guest with a different job: instead of
+`plugins/metamorphosis` is a second guest with a different job: instead of
 tracking bars it **writes new characters**. One creature is a seed, a stage, XP,
-a bond, an attribute (`Vaccine` / `Data` / `Virus`) and the *mix* of attributes
+a bond, an attribute (`Seraph` / `Data` / `Feral`) and the *mix* of attributes
 its evolution line has accumulated — every transition records what it chose, and
 the stage is generated from all of it, recency-weighted. Each of the six stages
 (`Fresh → In-Training → Rookie → Champion → Ultimate → Mega`) is a complete
 `char-rig/model@1` rig the plugin generates itself — no sprites, no textures, no
 network — with tier-scaled bone counts, wings, crests, armour and palettes, three
-procedural clips (`breathe`, `wave`, `digivolve`) and exact left/right symmetry:
+procedural clips (`breathe`, `wave`, `metamorphose`) and exact left/right symmetry:
 only the centerline and the `*_r` chains are authored, and the `*_l` twins are
 computed with `atan2(sin θ, −cos θ)` (chain roots) and `−θ` (descendants).
 
@@ -350,9 +350,9 @@ three colours:
 
 | attribute | grows | reads as |
 | --- | --- | --- |
-| `Vaccine` | wings, a ring of light, feather vanes, a blade crest | haloed, feathered, gentle |
-| `Data` | crystal growths, circuit traces, a visor band, floating bits | crystalline, plated, digital |
-| `Virus` | back spines, fangs, toxic drips, clawed hands | fanged, spiked, toxic |
+| `Seraph` | wings, a ring of light, feather vanes, a blade crest | haloed, feathered, gentle |
+| `Prism` | crystal growths, circuit traces, a visor band, floating bits | crystalline, plated, digital |
+| `Feral` | back spines, fangs, toxic drips, clawed hands | fanged, spiked, toxic |
 
 …today's plan-first, **individuated** creature: the seed picks one of **fifteen
 variants** (one of the archetype's five *forms*, one of three builds — lean /
@@ -406,23 +406,23 @@ decoration is trimmed before any limb, and a faint attribute's decoration before
 the dominant one's), still mirrored exactly, and still inside the monitor's top
 clip budget — variety changes the shape, never the rules. Attributes **blend
 across the evolution line**: the newest stage weighs most (linear `1..n`), so a
-Data creature that just shifted to Virus grows crystal growths *and* spines,
+Prism creature that just shifted to Feral grows crystal growths *and* spines,
 painted in a mixture of both palettes.
 
 ```bash
-curl -s localhost:8765/digimon/status        # stage, XP, bond, branches, rig stats
-curl -s -X POST localhost:8765/digivolve \
+curl -s localhost:8765/creature/status        # stage, XP, bond, branches, rig stats
+curl -s -X POST localhost:8765/metamorphose \
   -H 'content-type: application/json' -d '{"force": true}'
 ```
 
-`POST /digivolve` generates the next stage from the extended lineage, has the
+`POST /metamorphose` generates the next stage from the extended lineage, has the
 **host** validate and write `models/<slug>/model.json` (a guest cannot touch the
 filesystem — and the host re-loads the file before keeping it), hot-swaps the
 avatar through the same code path as `POST /model`, and plays the new rig's
-`digivolve` clip. `GET /digimon/status` and every transition reply carry
+`metamorphose` clip. `GET /creature/status` and every transition reply carry
 `attribute_blend`: the percentages, the blended traits and the lineage they came
-from, which the **Digivolve** card shows as chips and a stacked bar (each branch
-previews the mix it would produce). `POST /dedigivolve` walks the same path
+from, which the **Metamorphosis** card shows as chips and a stacked bar (each branch
+previews the mix it would produce). `POST /revert` walks the same path
 **backwards**: every history entry remembers the parent's seed *and* attribute,
 and generation is deterministic, so a rewind brings back the exact earlier
 creature — and its earlier attribute mix — even across a change of attribute (XP
@@ -430,13 +430,13 @@ is kept, so it can grow straight back). Determinism is per **generator version**
 changing the form table or the individual layer (as the variety pass did) means
 a creature generated before the change rebuilds with the new rules — its seed is
 unchanged, its body is not. The
-**Digivolve** card in the control panel does all of it by hand, and the *New*
+**Metamorphosis** card in the control panel does all of it by hand, and the *New*
 row offers the archetype **and the attribute** for the next hatchling — the
 picker is filled from `status.archetypes` / `status.attributes`, so adding a body
 plan never leaves a stale list in the UI. Growth state persists in
-`plugins/digivolution.state.json`, so a restart resumes the same line; `POST
-/digimon/xp` and `POST /digimon/reset` drive it by hand. Model ids are
-`digi-<archetype>-<stage>-<attribute>-<seed>` — the attribute is part of the rig,
+`plugins/metamorphosis.state.json`, so a restart resumes the same line; `POST
+/creature/xp` and `POST /creature/reset` drive it by hand. Model ids are
+`buddy-<archetype>-<stage>-<attribute>-<seed>` — the attribute is part of the rig,
 so it is part of the folder name.
 
 ### The economy loop

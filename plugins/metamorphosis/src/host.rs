@@ -144,7 +144,7 @@ pub fn save_state(bytes: &[u8]) -> bool {
 /// Install a generated manifest as `models/<slug>/model.json`.
 ///
 /// The host validates it with the app's loader before writing, so a rejected rig
-/// never lands on disk. `Err` carries a readable reason for `POST /digivolve`.
+/// never lands on disk. `Err` carries a readable reason for `POST /metamorphose`.
 pub fn write_model(slug: &str, manifest: &serde_json::Value) -> Result<(), String> {
     #[cfg(target_arch = "wasm32")]
     {

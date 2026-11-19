@@ -2211,7 +2211,7 @@ impl plugins::PluginHost for AppHost {
             log::warn!("failed to emit model-changed: {err}");
         }
         self.ctx
-            .emit_event("model", model_event_payload(&model, "digivolve"));
+            .emit_event("model", model_event_payload(&model, "metamorphose"));
         log::info!("plugin host: activated model {slug:?}");
         Ok(())
     }

@@ -229,19 +229,19 @@ pub struct Plan {
     pub engine: bool,
     pub spots: bool,
     // ---- what the attribute adds on top of the plan ----
-    /// A ring of light above the head (Vaccine).
+    /// A ring of light above the head (Seraph).
     pub halo_ring: bool,
-    /// Feather tips on the wings (Vaccine).
+    /// Feather tips on the wings (Seraph).
     pub feathers: bool,
-    /// Crystal growth on the shoulders and back (Data).
+    /// Crystal growth on the shoulders and back (Prism).
     pub crystals: bool,
-    /// Circuit traces on the trunk (Data).
+    /// Circuit traces on the trunk (Prism).
     pub circuit: bool,
-    /// A row of spines down the back (Virus).
+    /// A row of spines down the back (Feral).
     pub back_spikes: bool,
-    /// Extra fangs and a clawed grip (Virus).
+    /// Extra fangs and a clawed grip (Feral).
     pub fangs: bool,
-    /// Toxic drips from the jaw and tail (Virus).
+    /// Toxic drips from the jaw and tail (Feral).
     pub drips: bool,
     /// Seeded marking: 0 none, 1 spots, 2 stripes, 3 patches.
     pub marking: u8,
@@ -300,22 +300,22 @@ const fn base() -> Plan {
     }
 }
 
-/// Which family the attribute forms. The element is what makes a Vaccine line
-/// and a Virus line of the *same* archetype look like different creatures.
+/// Which family the attribute forms. The element is what makes a Seraph line
+/// and a Feral line of the *same* archetype look like different creatures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Element {
     Plain,
-    Blessed,
-    Crypto,
-    Viral,
+    Seraph,
+    Prism,
+    Feral,
 }
 
 impl Element {
     pub fn of(attribute: Attribute) -> Self {
         match attribute {
-            Attribute::Vaccine => Element::Blessed,
-            Attribute::Data => Element::Crypto,
-            Attribute::Virus => Element::Viral,
+            Attribute::Seraph => Element::Seraph,
+            Attribute::Prism => Element::Prism,
+            Attribute::Feral => Element::Feral,
         }
     }
 }
@@ -1363,8 +1363,8 @@ impl Plan {
     /// What a *mix* of attributes does to this body — the whole lineage at once.
     ///
     /// The mutations are deliberately *structural* (a new crest, wings, claws,
-    /// crystals) rather than a colour swap: Vaccine, Data and Virus have to
-    /// digivolve into visibly different creatures, and a tint alone would not
+    /// crystals) rather than a colour swap: Seraph, Prism and Feral have to
+    /// metamorphose into visibly different creatures, and a tint alone would not
     /// survive a five-second look at the desktop.
     ///
     /// A body has exactly one crest and one pair of hands, so those two choices
@@ -1392,7 +1392,7 @@ impl Plan {
     /// One attribute's mutations at a given share (`0..=1`).
     ///
     /// `weight == 1.0` reproduces the pre-blend single-attribute plan exactly,
-    /// which is what keeps a purely Vaccine creature the creature it always was.
+    /// which is what keeps a purely Seraph creature the creature it always was.
     fn with_element_weighted(
         mut self,
         attribute: Attribute,
@@ -1403,10 +1403,10 @@ impl Plan {
         let weight = weight.clamp(0.0, 1.0);
         match Element::of(attribute) {
             Element::Plain => {}
-            Element::Blessed => {
+            Element::Seraph => {
                 self.halo_ring = true;
                 self.feathers = true;
-                // Wings are the Vaccine signature; every blessed line flies.
+                // Wings are the Seraph signature; every blessed line flies.
                 self.wings = true;
                 if claim_crest {
                     // Spikes and antennae become a swept blade of light.
@@ -1418,15 +1418,15 @@ impl Plan {
                 self.head_h *= 1.0 + 0.05 * weight;
                 self.torso_w *= 1.0 - 0.03 * weight;
             }
-            Element::Crypto => {
+            Element::Prism => {
                 self.crystals = true;
                 self.circuit = true;
-                // Every Data line gets a sensor band across the face: it is the
+                // Every Prism line gets a sensor band across the face: it is the
                 // one read that separates Crypto from Blessed at a glance, when
                 // both wear wings and a ring of light.
                 self.visor = true;
                 if claim_crest {
-                    // Nothing on a Data line is organic tusk; it hardens into a
+                    // Nothing on a Prism line is organic tusk; it hardens into a
                     // blade or a sensor mast.
                     self.crest = match self.crest {
                         CrestKind::Horns | CrestKind::Antlers | CrestKind::Spikes => {
@@ -1437,7 +1437,7 @@ impl Plan {
                 }
                 self.head_w *= 1.0 + 0.03 * weight;
             }
-            Element::Viral => {
+            Element::Feral => {
                 self.back_spikes = true;
                 self.fangs = true;
                 self.drips = true;
@@ -1719,7 +1719,7 @@ mod tests {
 
     #[test]
     fn every_attribute_gives_each_archetype_a_different_body() {
-        // The headline promise: for one archetype, Vaccine/Data/Virus are three
+        // The headline promise: for one archetype, Seraph/Prism/Feral are three
         // different creatures, not three tints of one.
         for archetype in Archetype::ALL {
             let mut seen = Vec::new();
@@ -1745,9 +1745,9 @@ mod tests {
     #[test]
     fn the_three_builds_are_three_shapes() {
         for archetype in Archetype::ALL {
-            let lean = plan_for(archetype, Attribute::Data, 1);
-            let plain = plan_for(archetype, Attribute::Data, 0);
-            let broad = plan_for(archetype, Attribute::Data, 2);
+            let lean = plan_for(archetype, Attribute::Prism, 1);
+            let plain = plan_for(archetype, Attribute::Prism, 0);
+            let broad = plan_for(archetype, Attribute::Prism, 2);
             assert!(lean.torso_w < plain.torso_w, "leaner trunk");
             assert!(broad.torso_w > plain.torso_w, "broader trunk");
             assert!(lean.leg_len > broad.leg_len, "leggier than broad");
@@ -1954,12 +1954,12 @@ mod tests {
         // seed must rebuild the same individual, and a neighbouring seed must
         // not.
         for archetype in Archetype::ALL {
-            let a = plan_for_seed(archetype, Attribute::Data, 3, 1234);
-            let b = plan_for_seed(archetype, Attribute::Data, 3, 1234);
+            let a = plan_for_seed(archetype, Attribute::Prism, 3, 1234);
+            let b = plan_for_seed(archetype, Attribute::Prism, 3, 1234);
             assert_eq!(silhouette(&a), silhouette(&b), "{} is not reproducible", archetype.as_str());
             let mut different = 0;
             for seed in 0..8u64 {
-                let other = plan_for_seed(archetype, Attribute::Data, 3, seed);
+                let other = plan_for_seed(archetype, Attribute::Prism, 3, seed);
                 if silhouette(&other) == silhouette(&a) {
                     different += 1;
                 }
@@ -1980,7 +1980,7 @@ mod tests {
             let pool = secondary_traits(archetype);
             let mut second_traits = 0;
             for seed in 0..200u64 {
-                let p = plan_for_seed(archetype, Attribute::Virus, 7, seed);
+                let p = plan_for_seed(archetype, Attribute::Feral, 7, seed);
                 if p.accessory2 == Accessory::None {
                     continue;
                 }

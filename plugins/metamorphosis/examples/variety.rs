@@ -15,8 +15,8 @@
 
 use std::collections::HashSet;
 
-use char_rig_digivolution_plugin::attribute::Attribute;
-use char_rig_digivolution_plugin::generator::{generate, Archetype, Manifest, Spec, Tier};
+use char_rig_metamorphosis_plugin::attribute::Attribute;
+use char_rig_metamorphosis_plugin::generator::{generate, Archetype, Manifest, Spec, Tier};
 
 fn silhouette(manifest: &Manifest) -> String {
     let mut sig = String::new();
@@ -78,7 +78,7 @@ fn main() {
     let attribute = std::env::args()
         .nth(3)
         .and_then(|raw| Attribute::parse(&raw))
-        .unwrap_or(Attribute::Data);
+        .unwrap_or(Attribute::Prism);
 
     println!(
         "{n} seeds per archetype, {} {}, attribute {}",

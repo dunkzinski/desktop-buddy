@@ -1,19 +1,19 @@
 //! The plugin's live state: growth bookkeeping, persistence and telemetry.
 //!
-//! [`Digimon`] owns one [`Digivolution`] plus the little that is *not* part of
+//! [`Creature`] owns one [`Metamorphosis`] plus the little that is *not* part of
 //! the save (where the host wants it written, when it was last flushed, which
 //! notices have already gone out).
 
 use serde_json::{json, Value};
 
 use crate::attribute::{Attribute, AttributeBlend};
-use crate::evolution::{Digivolution, Outcome};
+use crate::evolution::{Metamorphosis, Outcome};
 use crate::generator;
 use crate::host;
 
 /// The one event name this plugin publishes. `event` inside the payload names
-/// the moment (`installed`, `ready`, `digivolved`, `reset`).
-pub const EVENT_DIGIMON: &str = "digimon";
+/// the moment (`installed`, `ready`, `metamorphosed`, `reset`).
+pub const EVENT_CREATURE: &str = "creature";
 
 /// How often an idle session is flushed, in ms.
 pub const SAVE_INTERVAL_MS: u64 = 30_000;
@@ -66,9 +66,9 @@ pub fn blend_json(blend: AttributeBlend, lineage: &[Attribute]) -> Value {
     })
 }
 
-pub struct Digimon {
-    state: Digivolution,
-    /// Where the host writes the save (`plugins/digivolution.state.json`). The
+pub struct Creature {
+    state: Metamorphosis,
+    /// Where the host writes the save (`plugins/metamorphosis.state.json`). The
     /// guest never touches the path itself; it only hands bytes back.
     state_path: Option<String>,
     dirty: bool,
@@ -78,8 +78,8 @@ pub struct Digimon {
     last_error: Option<String>,
 }
 
-impl Digimon {
-    pub fn new(state: Digivolution) -> Self {
+impl Creature {
+    pub fn new(state: Metamorphosis) -> Self {
         Self {
             state,
             state_path: None,
@@ -90,7 +90,7 @@ impl Digimon {
         }
     }
 
-    pub fn state(&self) -> &Digivolution {
+    pub fn state(&self) -> &Metamorphosis {
         &self.state
     }
 
@@ -101,7 +101,7 @@ impl Digimon {
     /// Adopt a previously saved session. Returns `true` when the save was
     /// usable; a malformed one is ignored (a fresh creature) rather than fatal.
     pub fn restore_state(&mut self, value: &Value) -> bool {
-        match serde_json::from_value::<Digivolution>(value.clone()) {
+        match serde_json::from_value::<Metamorphosis>(value.clone()) {
             Ok(mut state) => {
                 // Re-derive the slug rather than trusting the save: the naming
                 // scheme now carries the attribute, and a save written before
@@ -117,7 +117,7 @@ impl Digimon {
             Err(err) => {
                 host::log(
                     host::LEVEL_WARN,
-                    &format!("digivolution: saved state ignored ({err})"),
+                    &format!("metamorphosis: saved state ignored ({err})"),
                 );
                 false
             }
@@ -145,7 +145,7 @@ impl Digimon {
         host::log(
             host::LEVEL_INFO,
             &format!(
-                "digivolution: installed {} ({} bones, {} parts, top {:.1} px)",
+                "metamorphosis: installed {} ({} bones, {} parts, top {:.1} px)",
                 self.state.slug, report.bones, report.parts, report.min_world_y
             ),
         );
@@ -174,7 +174,7 @@ impl Digimon {
                     self.state.branches()[0].label
                 ),
             });
-            host::emit(EVENT_DIGIMON, &payload);
+            host::emit(EVENT_CREATURE, &payload);
             if !host::ai_attached() {
                 host::notify(payload["line"].as_str().unwrap_or(""), "happy");
             }
@@ -204,14 +204,14 @@ impl Digimon {
                     // Keep the dirty flag: the next flush retries.
                     host::log(
                         host::LEVEL_WARN,
-                        "digivolution: the host could not write the save",
+                        "metamorphosis: the host could not write the save",
                     );
                 }
             }
             Err(err) => {
                 host::log(
                     host::LEVEL_ERROR,
-                    &format!("digivolution: could not serialise the save ({err})"),
+                    &format!("metamorphosis: could not serialise the save ({err})"),
                 );
             }
         }
@@ -233,8 +233,8 @@ impl Digimon {
     }
 
     /// Perform the transition and publish it.
-    pub fn digivolve(&mut self, branch: Option<usize>, force: bool) -> Result<Outcome, String> {
-        let outcome = self.state.digivolve(branch, force)?;
+    pub fn metamorphose(&mut self, branch: Option<usize>, force: bool) -> Result<Outcome, String> {
+        let outcome = self.state.metamorphose(branch, force)?;
         self.announced_ready = false;
         self.dirty = true;
         self.flush_state();
@@ -244,7 +244,7 @@ impl Digimon {
         if !host::animate(&outcome.animation) {
             host::log(
                 host::LEVEL_WARN,
-                &format!("digivolution: {} has no {} clip", outcome.slug, outcome.animation),
+                &format!("metamorphosis: {} has no {} clip", outcome.slug, outcome.animation),
             );
         }
 
@@ -255,9 +255,9 @@ impl Digimon {
             outcome.label
         );
         host::emit(
-            EVENT_DIGIMON,
+            EVENT_CREATURE,
             &json!({
-                "event": "digivolved",
+                "event": "metamorphosed",
                 "from": outcome.from.as_str(),
                 "stage": outcome.to.as_str(),
                 "slug": outcome.slug,
@@ -278,8 +278,8 @@ impl Digimon {
     /// This is the *same* write/activate path as evolution — only the direction
     /// differs — so a rewind can never leave the avatar on a rig that is not on
     /// disk. XP is kept, so a creature can grow straight back.
-    pub fn dedigivolve(&mut self, steps: usize) -> Result<Outcome, String> {
-        let outcome = self.state.dedigivolve(steps)?;
+    pub fn revert(&mut self, steps: usize) -> Result<Outcome, String> {
+        let outcome = self.state.revert(steps)?;
         self.announced_ready = false;
         self.dirty = true;
         self.flush_state();
@@ -287,7 +287,7 @@ impl Digimon {
         if !host::animate(&outcome.animation) {
             host::log(
                 host::LEVEL_WARN,
-                &format!("digivolution: {} has no {} clip", outcome.slug, outcome.animation),
+                &format!("metamorphosis: {} has no {} clip", outcome.slug, outcome.animation),
             );
         }
 
@@ -297,9 +297,9 @@ impl Digimon {
             outcome.label
         );
         host::emit(
-            EVENT_DIGIMON,
+            EVENT_CREATURE,
             &json!({
-                "event": "dedigivolved",
+                "event": "reverted",
                 "from": outcome.from.as_str(),
                 "stage": outcome.to.as_str(),
                 "slug": outcome.slug,
@@ -331,24 +331,24 @@ impl Digimon {
         let seed = seed.unwrap_or_else(|| host::now_ms());
         let archetype = archetype.unwrap_or(self.state.archetype);
         let attribute = attribute.unwrap_or(self.state.attribute);
-        self.state = Digivolution::new(seed, archetype, attribute);
+        self.state = Metamorphosis::new(seed, archetype, attribute);
         self.announced_ready = false;
         self.dirty = true;
         self.ensure_installed()?;
 
         // `POST /model`'s path, so the new egg is on screen immediately.
         host::activate_model(&self.state.slug)?;
-        if !host::animate("digivolve") {
+        if !host::animate("metamorphose") {
             host::log(
                 host::LEVEL_WARN,
-                &format!("digivolution: {} has no digivolve clip", self.state.slug),
+                &format!("metamorphosis: {} has no metamorphose clip", self.state.slug),
             );
         }
         self.flush_state();
 
         let line = format!("A new {} hatched — {} form.", archetype.as_str(), crate::generator::Tier::Fresh.as_str());
         host::emit(
-            EVENT_DIGIMON,
+            EVENT_CREATURE,
             &json!({
                 "event": "reset",
                 "stage": self.state.tier.as_str(),
@@ -363,13 +363,13 @@ impl Digimon {
         Ok(self.status_json())
     }
 
-    /// Store an error so `GET /digimon/status` can show the last failure.
+    /// Store an error so `GET /creature/status` can show the last failure.
     pub fn record_error(&mut self, message: String) {
-        host::log(host::LEVEL_WARN, &format!("digivolution: {message}"));
+        host::log(host::LEVEL_WARN, &format!("metamorphosis: {message}"));
         self.last_error = Some(message);
     }
 
-    /// The `GET /digimon/status` body.
+    /// The `GET /creature/status` body.
     pub fn status_json(&self) -> Value {
         let manifest = self.state.manifest();
         let report = generator::validate_at(&manifest, self.state.tier).ok();
@@ -398,7 +398,7 @@ impl Digimon {
             "installed": self.state.installed,
             "can_evolve": self.state.can_evolve(),
             "final_stage": self.state.tier.next().is_none(),
-            "can_dedigivolve": !self.state.history.is_empty(),
+            "can_revert": !self.state.history.is_empty(),
             "rewind_depth": self.state.rewind_depth(),
             "previous_stage": self.state.history.last().map(|entry| entry.from.as_str()),
             "last_evolved_ms": self.state.last_evolved_ms,
@@ -442,8 +442,8 @@ mod tests {
     use crate::evolution::Attribute;
     use crate::generator::{Archetype, Tier};
 
-    fn plugin() -> Digimon {
-        Digimon::new(Digivolution::new(4, Archetype::Drake, Attribute::Data))
+    fn plugin() -> Creature {
+        Creature::new(Metamorphosis::new(4, Archetype::Drake, Attribute::Prism))
     }
 
     #[test]
@@ -454,7 +454,7 @@ mod tests {
         let recorded = host::take_recorded();
         assert_eq!(recorded.written.len(), 1, "only the first call writes");
         assert!(recorded.activated.is_empty(), "install must not steal the avatar");
-        assert!(recorded.written[0].0.starts_with("digi-drake-fresh-"));
+        assert!(recorded.written[0].0.starts_with("buddy-drake-fresh-"));
     }
 
     #[test]
@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(status["rig"]["parts"].as_u64().unwrap() < 100, true);
         assert_eq!(status["rig"]["parts_budget"], json!(100));
         assert_eq!(status["branches"].as_array().unwrap().len(), 3);
-        assert_eq!(status["attribute_blend"]["percent"]["Data"], json!(100));
+        assert_eq!(status["attribute_blend"]["percent"]["Prism"], json!(100));
         assert!(status["rig"]["min_world_y"].as_f64().unwrap() >= -170.0);
     }
 
@@ -486,7 +486,7 @@ mod tests {
             .events
             .iter()
             .find(|(name, payload)| {
-                name == EVENT_DIGIMON && payload["event"] == json!("ready")
+                name == EVENT_CREATURE && payload["event"] == json!("ready")
             })
             .expect("a ready notice");
         assert_eq!(ready.1["stage"], json!("Fresh"));
@@ -504,16 +504,16 @@ mod tests {
     #[test]
     fn digivolving_flushes_animates_and_installs() {
         let mut state = plugin();
-        state.adopt_state_path(Some("plugins/digivolution.state.json".to_string()));
+        state.adopt_state_path(Some("plugins/metamorphosis.state.json".to_string()));
         state.ensure_installed().expect("install");
         host::take_recorded();
         state.award(100, 0.0);
-        let outcome = state.digivolve(None, false).expect("evolve");
+        let outcome = state.metamorphose(None, false).expect("evolve");
         assert_eq!(outcome.to, Tier::InTraining);
         let recorded = host::take_recorded();
         assert_eq!(recorded.written.len(), 1);
         assert_eq!(recorded.activated, vec![state.state().slug.clone()]);
-        assert_eq!(recorded.animated, vec!["digivolve".to_string()]);
+        assert_eq!(recorded.animated, vec!["metamorphose".to_string()]);
         assert_eq!(recorded.states.len(), 1, "the save is flushed at once");
         let saved: Value = serde_json::from_slice(&recorded.states[0]).expect("json");
         assert_eq!(saved["tier"], json!("In-Training"));
@@ -528,13 +528,13 @@ mod tests {
             "seed": 31337u64,
             "archetype": "beast",
             "tier": "Rookie",
-            "attribute": "Virus",
-            "slug": "digi-beast-rookie-00007a69",
+            "attribute": "Feral",
+            "slug": "buddy-beast-rookie-00007a69",
         });
         assert!(state.restore_state(&old));
         assert_eq!(
             state.state().slug,
-            "digi-beast-rookie-virus-00007a69",
+            "buddy-beast-rookie-feral-00007a69",
             "the old name is migrated, not kept"
         );
         // A save that is already correct is left exactly as it is.
@@ -542,11 +542,11 @@ mod tests {
             "seed": 31337u64,
             "archetype": "beast",
             "tier": "Rookie",
-            "attribute": "Virus",
-            "slug": "digi-beast-rookie-virus-00007a69",
+            "attribute": "Feral",
+            "slug": "buddy-beast-rookie-feral-00007a69",
         });
         assert!(state.restore_state(&correct));
-        assert_eq!(state.state().slug, "digi-beast-rookie-virus-00007a69");
+        assert_eq!(state.state().slug, "buddy-beast-rookie-feral-00007a69");
     }
 
     #[test]
@@ -554,27 +554,27 @@ mod tests {
         // The card used to send seed + archetype only, so `reset` inherited the
         // current attribute and every new creature came out the same family.
         let mut state = plugin();
-        let status = state.reset(Some(7), None, Some(Attribute::Virus)).expect("reset");
-        assert_eq!(status["attribute"], json!("Virus"));
-        assert_eq!(state.state().attribute, Attribute::Virus);
+        let status = state.reset(Some(7), None, Some(Attribute::Feral)).expect("reset");
+        assert_eq!(status["attribute"], json!("Feral"));
+        assert_eq!(state.state().attribute, Attribute::Feral);
 
         // An explicit ask wins even over a creature that was something else.
-        let status = state.reset(Some(8), None, Some(Attribute::Vaccine)).expect("reset");
-        assert_eq!(status["attribute"], json!("Vaccine"));
+        let status = state.reset(Some(8), None, Some(Attribute::Seraph)).expect("reset");
+        assert_eq!(status["attribute"], json!("Seraph"));
 
         // And omitting it still inherits, which is what the API documents.
         let status = state.reset(Some(9), None, None).expect("reset");
-        assert_eq!(status["attribute"], json!("Vaccine"));
+        assert_eq!(status["attribute"], json!("Seraph"));
 
         // The rig's folder name carries the attribute too — a Fresh creature
-        // built as Virus must not be written into the "data" slug.
-        let status = state.reset(Some(99), None, Some(Attribute::Virus)).expect("reset");
+        // built as Feral must not be written into the "data" slug.
+        let status = state.reset(Some(99), None, Some(Attribute::Feral)).expect("reset");
         let slug = status["slug"].as_str().expect("slug");
         assert!(
-            slug.contains("-virus-"),
+            slug.contains("-feral-"),
             "the slug must name the attribute: {slug}"
         );
-        assert_eq!(slug, "digi-drake-fresh-virus-00000063");
+        assert_eq!(slug, "buddy-drake-fresh-feral-00000063");
     }
 
     #[test]
@@ -598,8 +598,8 @@ mod tests {
         // reads: the mix must follow the history, and the rig must carry it.
         let mut state = plugin();
         state.ensure_installed().expect("install");
-        state.digivolve(Some(1), true).expect("evolve to a second attribute");
-        state.digivolve(Some(2), true).expect("evolve to a third");
+        state.metamorphose(Some(1), true).expect("evolve to a second attribute");
+        state.metamorphose(Some(2), true).expect("evolve to a third");
         let status = state.status_json();
         let blend = &status["attribute_blend"];
         assert_eq!(
@@ -608,7 +608,7 @@ mod tests {
             "egg + two transitions"
         );
         assert_eq!(blend["pure"], json!(false));
-        let total: u64 = ["Vaccine", "Data", "Virus"]
+        let total: u64 = ["Seraph", "Prism", "Feral"]
             .iter()
             .map(|name| blend["percent"][*name].as_u64().unwrap())
             .sum();
@@ -621,10 +621,10 @@ mod tests {
     #[test]
     fn a_reset_produces_a_new_fresh_creature() {
         let mut state = plugin();
-        state.adopt_state_path(Some("plugins/digivolution.state.json".to_string()));
+        state.adopt_state_path(Some("plugins/metamorphosis.state.json".to_string()));
         state.award(200, 0.0);
         host::take_recorded();
-        state.digivolve(None, true).expect("evolve");
+        state.metamorphose(None, true).expect("evolve");
         let before = state.state().slug.clone();
         host::take_recorded();
         let status = state.reset(Some(1234), None, None).expect("reset");
@@ -643,7 +643,7 @@ mod tests {
             vec![slug.clone()],
             "and the avatar switches to it at once"
         );
-        assert_eq!(recorded.animated, vec!["digivolve".to_string()]);
+        assert_eq!(recorded.animated, vec!["metamorphose".to_string()]);
         assert_eq!(recorded.states.len(), 1, "the new line is saved");
     }
 

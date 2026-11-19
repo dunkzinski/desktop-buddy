@@ -121,7 +121,7 @@ export function applyModel(model) {
     // A procedural creature is deliberately absent from the picker (see
     // refreshModelList), but the loaded model still has to be *in* the control
     // or it would sit there showing another rig's name — or nothing at all.
-    // So: drop the entry the *previous* model left behind (every digivolution
+    // So: drop the entry the *previous* model left behind (every metamorphosis
     // used to add one, and they piled up until the next restart), then add this
     // one if the picker does not already list it.
     for (const option of [...select.options]) {
@@ -137,7 +137,7 @@ export function applyModel(model) {
         // says the rest.
         option.textContent = model.name;
         option.title =
-          "Procedural creature (digivolution) — the picker lists custom models only";
+          "Procedural creature (metamorphosis) — the picker lists custom models only";
         select.insertBefore(option, select.firstChild);
       }
       select.value = model.name;
@@ -162,7 +162,7 @@ export async function refreshModelList(selectName) {
   if (!select) return;
   // The picker is for models you keep: hand-authored rigs, and generated ones
   // you have edited and saved (they carry a rig.json override). Procedural
-  // creatures are the digivolution line's business — the Digivolve card names
+  // creatures are the metamorphosis line's business — the Metamorphose card names
   // the current one — so listing every stage of every line here only buried
   // the two or three rigs a person actually switches between.
   const kept = (models || []).filter(
@@ -468,7 +468,7 @@ export function wireRegions() {
   // accept clicks over the click-through desktop, so each box goes in only
   // while that card is open. Forgetting this makes the card *look* live while
   // every click falls through to whatever is behind it.
-  for (const id of ["survival-card", "digivolve-card"]) {
+  for (const id of ["survival-card", "metamorphose-card"]) {
     const card = document.getElementById(id);
     if (card && !card.classList.contains("hidden")) push(card);
   }

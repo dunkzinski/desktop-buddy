@@ -19,11 +19,11 @@ plugins/*.wasm
 # ...and the session each plugin saves beside its .wasm
 plugins/*.state.json
 plugins/*.state.json.tmp
-# Rigs the digivolution plugin generates: reproducible from (seed, archetype,
+# Rigs the metamorphosis plugin generates: reproducible from (seed, archetype,
 # tier) with `cargo run --example generate`, so they are runtime output, not
 # source. `git add -f` one to ship a creature line on purpose.
-models/digi-*/
-models/digi-*/*.tmp
+models/buddy-*/
+models/buddy-*/*.tmp
 
 # Runtime state: the app rewrites these at every model switch / settings save,
 # so they are machine-local, not source.
