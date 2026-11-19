@@ -28,6 +28,8 @@ models/digi-*/*.tmp
 # Runtime state: the app rewrites these at every model switch / settings save,
 # so they are machine-local, not source.
 models/.state.json
+models/.model-index.json
+models/.model-index.json.tmp
 watcher_rules.json.bak
 # Python bytecode from the model build scripts
 __pycache__/

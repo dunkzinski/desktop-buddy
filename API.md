@@ -246,6 +246,22 @@ See [MODEL_FORMAT.md](MODEL_FORMAT.md) for the manifest schema.
 
 Broken folders appear with `"error": "<reason>"` instead of failing the request.
 
+The response is served from `models/.model-index.json`, a cache keyed by a
+fingerprint of each folder's `model.json`/`rig.json` (size + mtime):
+
+* **warm** — a directory walk plus one `stat` per folder: ~24 ms for 249 models;
+* **cold** — every manifest parsed, none of their sprites read: ~280 ms (one
+  archive-wide rebuild after the cache is deleted or invalidated);
+* **what it replaced** — `load_model` for every folder on every call, sprites
+  included: ~250 ms *per call*, which the startup and every `rig-saved` event
+  paid.
+
+Only the folder that changed is re-read, so saving a rig or installing a
+generated model costs one parse, not the whole archive. The cache is a plain
+file (gitignored) and is rebuilt silently if it is missing or corrupt.
+`cd src-tauri && cargo run --example model_list_timing` prints those three
+numbers against the current `models/`.
+
 `"generated": true` marks a folder whose name is a digivolution slug
 (`digi-<archetype>-<stage>[-<attribute>]-<8 hex>`) — the procedural creatures the
 plugin writes on every stage change. The endpoint lists them like any other

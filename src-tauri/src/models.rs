@@ -9,7 +9,14 @@
 //!     rig.json          optional override written by the rig editor
 //!     parts/*.png       sprite parts referenced by relative path
 //!   .state.json         { "current": "<model name>" }  (persists the selection)
+//!   .model-index.json   cached bone/part counts for `GET /models`
 //! ```
+//!
+//! Listing is deliberately cheap: the index above remembers each folder's
+//! counts against a fingerprint of its manifest files, so a startup with 200
+//! procedural creatures costs a directory walk plus a `stat` per folder, not a
+//! parse of 200 rigs (and certainly not their sprites — only the model that is
+//! actually loaded has its images read).
 //!
 //! `model.json` and `rig.json` share one schema; the editor writes `rig.json`
 //! and never touches the shipped manifest, so "reset" is just "drop the
@@ -19,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -32,7 +39,7 @@ pub const FORMAT_TAG: &str = "char-rig/model@1";
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// One entry of `GET /models`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ModelEntry {
     pub name: String,
     pub label: String,
@@ -393,24 +400,6 @@ pub fn validate_rig(rig: &Value) -> Result<(usize, usize), String> {
     Ok((bones.len(), parts))
 }
 
-/// Count every part in the rig (image and shape parts alike).
-fn count_parts(rig: &Value) -> usize {
-    rig.get("bones")
-        .and_then(Value::as_array)
-        .map(|bones| {
-            bones
-                .iter()
-                .map(|bone| {
-                    bone.get("parts")
-                        .and_then(Value::as_array)
-                        .map(Vec::len)
-                        .unwrap_or(0)
-                })
-                .sum()
-        })
-        .unwrap_or(0)
-}
-
 fn part_images(rig: &Value) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(bones) = rig.get("bones").and_then(Value::as_array) {
@@ -494,8 +483,14 @@ fn inline_images(dir: &Path, rig: &Value) -> Result<BTreeMap<String, String>, St
  * load / list
  * ------------------------------------------------------------------ */
 
-/// Load one model by directory name.
-pub fn load_model(root: &Path, name: &str) -> Result<LoadedModel, String> {
+/// Read the document a model is drawn from — `rig.json` when the editor saved an
+/// override, else `model.json` — with the override's missing identity keys
+/// borrowed from the shipped manifest.
+///
+/// Sprites are **not** read here: inlining them is the expensive half and only
+/// the model that is actually loaded needs it. That split is what lets
+/// `list_models` describe 200 creatures without touching a single `parts/*.png`.
+fn read_rig_document(root: &Path, name: &str) -> Result<(Value, PathBuf, bool), String> {
     let dir = root.join(name);
     if !dir.is_dir() {
         return Err(format!("model {name:?} not found in {}", root.display()));
@@ -504,7 +499,11 @@ pub fn load_model(root: &Path, name: &str) -> Result<LoadedModel, String> {
     let manifest_path = dir.join("model.json");
     let override_path = dir.join("rig.json");
     let is_override = override_path.is_file();
-    let rig_path = if is_override { override_path } else { manifest_path.clone() };
+    let rig_path = if is_override {
+        override_path
+    } else {
+        manifest_path.clone()
+    };
 
     let text = fs::read_to_string(&rig_path)
         .map_err(|err| format!("cannot read {}: {err}", rig_path.display()))?;
@@ -529,14 +528,24 @@ pub fn load_model(root: &Path, name: &str) -> Result<LoadedModel, String> {
     }
 
     normalize_rig(&mut rig);
-    let (bones, parts) = validate_rig(&rig)?;
-    let images = inline_images(&dir, &rig)?;
-    let label = rig
-        .get("label")
+    Ok((rig, rig_path, is_override))
+}
+
+fn rig_label(rig: &Value, name: &str) -> String {
+    rig.get("label")
         .and_then(Value::as_str)
         .or_else(|| rig.get("name").and_then(Value::as_str))
         .unwrap_or(name)
-        .to_string();
+        .to_string()
+}
+
+/// Load one model by directory name.
+pub fn load_model(root: &Path, name: &str) -> Result<LoadedModel, String> {
+    let dir = root.join(name);
+    let (mut rig, rig_path, is_override) = read_rig_document(root, name)?;
+    let (bones, parts) = validate_rig(&rig)?;
+    let images = inline_images(&dir, &rig)?;
+    let label = rig_label(&rig, name);
 
     if let Some(object) = rig.as_object_mut() {
         object.insert("name".to_string(), json!(name));
@@ -563,55 +572,204 @@ pub fn load_model(root: &Path, name: &str) -> Result<LoadedModel, String> {
 }
 
 /// Enumerate every model folder under `root`.
-pub fn list_models(root: &Path) -> Vec<ModelEntry> {
-    let mut entries = Vec::new();
-    let Ok(read_dir) = fs::read_dir(root) else {
-        return entries;
-    };
+/* ------------------------------------------------------------------ *
+ * the model index
+ * ------------------------------------------------------------------ */
 
-    for entry in read_dir.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
+/// Cache file beside the model folders (a *file*, so the scan skips it).
+const INDEX_FILE: &str = ".model-index.json";
+/// Bump when a cached field or a fingerprint changes meaning.
+const INDEX_VERSION: u32 = 1;
+
+/// One cached folder: what `GET /models` needs, plus the fingerprint of the
+/// files it was derived from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct IndexRow {
+    fingerprint: u64,
+    label: String,
+    bones: usize,
+    parts: usize,
+    has_rig_override: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ModelIndex {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    entries: BTreeMap<String, IndexRow>,
+}
+
+/// What a listing actually cost. Logged, and asserted by the tests — a cache
+/// nobody measures is a cache nobody notices going cold.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListStats {
+    pub entries: usize,
+    pub parsed: usize,
+    pub cached: usize,
+    pub removed: usize,
+}
+
+fn file_fingerprint(path: &Path) -> u64 {
+    let (len, mtime) = match fs::metadata(path) {
+        Ok(meta) => {
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|delta| delta.as_nanos() as u64)
+                .unwrap_or(0);
+            (meta.len(), mtime)
         }
-        let name = match path.file_name().and_then(|name| name.to_str()) {
-            Some(name) if !name.starts_with('.') => name.to_string(),
-            _ => continue,
-        };
+        Err(_) => (0, 0),
+    };
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for part in [len, mtime] {
+        hash ^= part;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
 
-        match load_model(root, &name) {
-            Ok(model) => {
-                let bones = model.rig.get("bones").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
-                let parts = count_parts(&model.rig);
-                entries.push(ModelEntry {
-                    name: model.name.clone(),
-                    label: model.label,
-                    path: model.dir,
-                    bones,
-                    parts,
-                    has_rig_override: model.is_override,
-                    generated: is_generated_name(&model.name),
-                    error: None,
-                });
-            }
-            Err(err) => {
-                log::warn!("model {name:?} is unusable: {err}");
-                entries.push(ModelEntry {
-                    name: name.clone(),
-                    label: name.clone(),
-                    path: path.display().to_string(),
-                    bones: 0,
-                    parts: 0,
-                    has_rig_override: path.join("rig.json").is_file(),
-                    generated: is_generated_name(&name),
-                    error: Some(err),
-                });
+/// Fingerprint of the pair of files a row is built from, so editing `rig.json`
+/// — or deleting it, which falls back to `model.json` — invalidates the row.
+fn dir_fingerprint(dir: &Path) -> u64 {
+    let manifest = file_fingerprint(&dir.join("model.json"));
+    let overlay = file_fingerprint(&dir.join("rig.json"));
+    manifest
+        .wrapping_mul(31)
+        .wrapping_add(overlay.rotate_left(17))
+}
+
+fn read_index(path: &Path) -> ModelIndex {
+    let Ok(text) = fs::read_to_string(path) else {
+        return ModelIndex::default();
+    };
+    match serde_json::from_str::<ModelIndex>(&text) {
+        Ok(index) if index.version == INDEX_VERSION => index,
+        // A stale or corrupt cache is not an error — it is just a cold start.
+        _ => ModelIndex::default(),
+    }
+}
+
+fn write_index(path: &Path, index: &ModelIndex) {
+    let Ok(text) = serde_json::to_string(index) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if fs::write(&tmp, text).is_ok() {
+        let _ = fs::rename(&tmp, path);
+    }
+}
+
+/// One folder: from the manifest when it is new or changed, from the cache when
+/// its fingerprint still matches.
+fn stat_row(root: &Path, name: &str, dir: &Path, fingerprint: u64) -> IndexRow {
+    let parsed = read_rig_document(root, name).and_then(|(rig, _, is_override)| {
+        validate_rig(&rig).map(|(bones, parts)| (rig, bones, parts, is_override))
+    });
+    match parsed {
+        Ok((rig, bones, parts, is_override)) => IndexRow {
+            fingerprint,
+            label: rig_label(&rig, name),
+            bones,
+            parts,
+            has_rig_override: is_override,
+            error: None,
+        },
+        Err(err) => {
+            log::warn!("model {name:?} is unusable: {err}");
+            IndexRow {
+                fingerprint,
+                label: name.to_string(),
+                bones: 0,
+                parts: 0,
+                has_rig_override: dir.join("rig.json").is_file(),
+                error: Some(err),
             }
         }
     }
+}
 
+/// `GET /models`: every folder, described from the index when it is warm.
+pub fn list_models(root: &Path) -> Vec<ModelEntry> {
+    list_models_with_stats(root).0
+}
+
+/// `list_models`, plus what it had to re-read.
+pub fn list_models_with_stats(root: &Path) -> (Vec<ModelEntry>, ListStats) {
+    let started = std::time::Instant::now();
+    let index_path = root.join(INDEX_FILE);
+    let previous = read_index(&index_path);
+
+    let mut entries = Vec::new();
+    let mut fresh = ModelIndex {
+        version: INDEX_VERSION,
+        entries: BTreeMap::new(),
+    };
+    let mut stats = ListStats::default();
+    let mut dirty = false;
+
+    if let Ok(read_dir) = fs::read_dir(root) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+
+            let fingerprint = dir_fingerprint(&path);
+            let row = match previous.entries.get(name) {
+                Some(row) if row.fingerprint == fingerprint => {
+                    stats.cached += 1;
+                    row.clone()
+                }
+                _ => {
+                    stats.parsed += 1;
+                    stat_row(root, name, &path, fingerprint)
+                }
+            };
+            if previous.entries.get(name) != Some(&row) {
+                dirty = true;
+            }
+            fresh.entries.insert(name.to_string(), row.clone());
+            entries.push(ModelEntry {
+                name: name.to_string(),
+                label: row.label,
+                path: path.display().to_string(),
+                bones: row.bones,
+                parts: row.parts,
+                has_rig_override: row.has_rig_override,
+                generated: is_generated_name(name),
+                error: row.error,
+            });
+        }
+    }
+
+    stats.removed = previous
+        .entries
+        .keys()
+        .filter(|name| !fresh.entries.contains_key(*name))
+        .count();
+    if dirty || stats.removed > 0 {
+        write_index(&index_path, &fresh);
+    }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
-    entries
+    stats.entries = entries.len();
+    log::info!(
+        "listed {} model(s) in {:.1} ms ({} parsed, {} cached)",
+        stats.entries,
+        started.elapsed().as_secs_f64() * 1000.0,
+        stats.parsed,
+        stats.cached
+    );
+    (entries, stats)
 }
 
 /* ------------------------------------------------------------------ *
@@ -1427,4 +1585,151 @@ mod tests {
 
         fs::remove_dir_all(&root).ok();
     }
+
+    /* ---------- the model index ---------- */
+
+    /// A tiny but structurally valid model folder.
+    fn write_model(root: &Path, name: &str, bones: usize) {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).expect("model dir");
+        let mut list = Vec::new();
+        for index in 0..bones {
+            list.push(json!({
+                "id": format!("b{index}"),
+                "parent": if index == 0 { Value::Null } else { json!("b0") },
+                "pos": [0, 0],
+                "parts": [{ "id": format!("p{index}"), "shape": "ellipse" }],
+            }));
+        }
+        let rig = json!({
+            "format": FORMAT_TAG,
+            "name": name,
+            "label": format!("Label {name}"),
+            "bones": list,
+        });
+        fs::write(dir.join("model.json"), serde_json::to_vec_pretty(&rig).expect("json"))
+            .expect("write manifest");
+    }
+
+    #[test]
+    fn the_model_index_only_rereads_what_changed() {
+        let scratch = scratch_dir("index-cache");
+        let root = scratch.join("models");
+        write_model(&root, "alpha", 2);
+        write_model(&root, "beta", 3);
+
+        let (first, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.parsed, 2, "a cold index reads every manifest");
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].label, "Label alpha");
+
+        let (again, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.parsed, 0, "a warm index must not touch a manifest");
+        assert_eq!(stats.cached, 2);
+        assert_eq!(again, first);
+
+        // Same folder, different body: the fingerprint has to notice.
+        write_model(&root, "beta", 6);
+        let (third, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.parsed, 1, "only the changed folder is re-read");
+        let beta = third.iter().find(|entry| entry.name == "beta").expect("beta");
+        assert_eq!(beta.bones, 6);
+        assert_eq!(beta.parts, 6);
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn saving_a_rig_override_invalidates_only_its_own_row() {
+        let scratch = scratch_dir("index-override");
+        let root = scratch.join("models");
+        write_model(&root, "alpha", 2);
+        write_model(&root, "beta", 3);
+        let (_, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.parsed, 2);
+
+        // The editor writes rig.json beside the shipped manifest.
+        let rig = json!({
+            "format": FORMAT_TAG,
+            "bones": (0..4)
+                .map(|index| json!({
+                    "id": format!("b{index}"),
+                    "parent": if index == 0 { Value::Null } else { json!("b0") },
+                    "pos": [0, 0],
+                    "parts": [{ "id": format!("p{index}"), "shape": "ellipse" }],
+                }))
+                .collect::<Vec<_>>(),
+        });
+        fs::write(root.join("alpha/rig.json"), serde_json::to_vec_pretty(&rig).expect("json"))
+            .expect("write override");
+
+        let (entries, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.parsed, 1, "the override is a change too");
+        let alpha = entries.iter().find(|entry| entry.name == "alpha").expect("alpha");
+        assert_eq!(alpha.bones, 4);
+        assert!(alpha.has_rig_override);
+        // The override borrows its identity from the shipped manifest.
+        assert_eq!(alpha.label, "Label alpha");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_corrupt_index_is_rebuilt_instead_of_failing() {
+        let scratch = scratch_dir("index-corrupt");
+        let root = scratch.join("models");
+        write_model(&root, "alpha", 2);
+        let (_, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.parsed, 1);
+
+        fs::write(root.join(INDEX_FILE), b"{ this is not json").expect("corrupt it");
+        let (entries, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.parsed, 1, "a corrupt cache is a cold start, not an error");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].bones, 2);
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_deleted_model_leaves_the_index() {
+        let scratch = scratch_dir("index-removed");
+        let root = scratch.join("models");
+        write_model(&root, "alpha", 2);
+        write_model(&root, "beta", 3);
+        let (_, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.entries, 2);
+
+        fs::remove_dir_all(root.join("beta")).expect("remove beta");
+        let (entries, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.removed, 1);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "alpha");
+        // …and the row is gone from the file, not just from the answer.
+        let cached = read_index(&root.join(INDEX_FILE));
+        assert!(!cached.entries.contains_key("beta"));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_broken_folder_is_cached_as_broken() {
+        let scratch = scratch_dir("index-broken");
+        let root = scratch.join("models");
+        fs::create_dir_all(root.join("half-written")).expect("dir");
+        fs::write(root.join("half-written/model.json"), br#"{ "bones": ["#).expect("write");
+
+        let (entries, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.parsed, 1);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].error.is_some(), "a broken folder must say so");
+
+        // Cached as broken: the second listing does not re-read it either.
+        let (again, stats) = list_models_with_stats(&root);
+        assert_eq!(stats.parsed, 0);
+        assert_eq!(again[0].error, entries[0].error);
+
+        fs::remove_dir_all(&root).ok();
+    }
+
 }
