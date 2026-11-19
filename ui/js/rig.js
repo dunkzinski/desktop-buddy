@@ -117,22 +117,31 @@ export function applyModel(model) {
   setDirty(false);
 
   const select = document.getElementById("model-select");
-  if (select && model.name) {
+  if (select) {
     // A procedural creature is deliberately absent from the picker (see
-    // refreshModelList), but the loaded model still has to be *in* the control,
-    // or it would sit there showing some other rig's name — or nothing at all.
-    if (![...select.options].some((option) => option.value === model.name)) {
-      const option = document.createElement("option");
-      option.value = model.name;
-      // Name only: the control is narrow, and "· generated" pushed the seed
-      // (the part that identifies the creature) out of view. The tooltip says
-      // the rest.
-      option.textContent = model.name;
-      option.title =
-        "Procedural creature (digivolution) — the picker lists custom models only";
-      select.insertBefore(option, select.firstChild);
+    // refreshModelList), but the loaded model still has to be *in* the control
+    // or it would sit there showing another rig's name — or nothing at all.
+    // So: drop the entry the *previous* model left behind (every digivolution
+    // used to add one, and they piled up until the next restart), then add this
+    // one if the picker does not already list it.
+    for (const option of [...select.options]) {
+      if (option.dataset.adHoc === "1") option.remove();
     }
-    select.value = model.name;
+    if (model.name) {
+      if (![...select.options].some((option) => option.value === model.name)) {
+        const option = document.createElement("option");
+        option.value = model.name;
+        option.dataset.adHoc = "1";
+        // Name only: the control is narrow, and "· generated" pushed the seed
+        // (the part that identifies the creature) out of view. The tooltip
+        // says the rest.
+        option.textContent = model.name;
+        option.title =
+          "Procedural creature (digivolution) — the picker lists custom models only";
+        select.insertBefore(option, select.firstChild);
+      }
+      select.value = model.name;
+    }
   }
   const brand = document.getElementById("brand");
   if (brand) brand.textContent = model.label || model.name || "Avatar";
@@ -169,6 +178,7 @@ export async function refreshModelList(selectName) {
   for (const entry of kept) {
     const option = document.createElement("option");
     option.value = entry.name;
+    if (entry.generated) option.dataset.adHoc = "1";
     option.textContent = entry.error
       ? entry.name + " (broken)"
       : entry.name +

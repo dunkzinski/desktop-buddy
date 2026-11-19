@@ -693,6 +693,45 @@ const Z_HEAD: i32 = 31;
  * Generator
  * ------------------------------------------------------------------ */
 
+/// The wave gesture.
+///
+/// The desktop page adds `anim.wave` to a bone's rotation while the avatar is
+/// in `waving` mode (`ui/js/rig.js`), so a rig whose `wave` is 0 stands still
+/// and "waving" is a button that does nothing — which is exactly what every
+/// procedural creature did. The amplitudes match the hand-authored rigs (0.9 rad
+/// on the shoulder, tapering down the arm), and the forearm and hand trail the
+/// shoulder by a beat so it reads as a wave instead of a twitch.
+///
+/// The `phase` stagger is shared with the `walk` channel — the format gives a
+/// bone one phase — so the arm swing also lands slightly out of step with the
+/// legs, which is what the hand-drawn rigs do.
+fn give_wave(bones: &mut [Bone]) {
+    for (id, wave) in [
+        ("arm_r", 0.9),
+        ("arm_l", 0.9),
+        ("forearm_r", 0.45),
+        ("forearm_l", 0.45),
+        ("hand_r", 0.22),
+        ("hand_l", 0.22),
+        ("wing_r", 0.5),
+        ("wing_l", 0.5),
+    ] {
+        if let Some(bone) = bones.iter_mut().find(|bone| bone.id == id) {
+            bone.anim.wave = wave;
+        }
+    }
+    for (id, phase) in [
+        ("forearm_r", 0.35),
+        ("forearm_l", 0.35),
+        ("hand_r", 0.6),
+        ("hand_l", 0.6),
+    ] {
+        if let Some(bone) = bones.iter_mut().find(|bone| bone.id == id) {
+            bone.anim.phase = phase;
+        }
+    }
+}
+
 /// Build the manifest for `spec`.
 pub fn generate(spec: &Spec) -> Manifest {
     let mut rng = Rng::new(mix_seed(
@@ -722,7 +761,13 @@ pub fn generate(spec: &Spec) -> Manifest {
     bones.push(
         Bone::new("root", None, [0.0, 0.0], Z_TORSO)
             .scaled(ROOT_SCALE)
-            .anim(Anim::default()),
+            // The idle bob. Without it the creature is nailed to its footprint
+            // and reads as a drawing rather than as something breathing — the
+            // hand-authored rigs all carry 3-7 px here.
+            .anim(Anim {
+                bob: 5.0,
+                ..Anim::default()
+            }),
     );
 
     let mut pelvis = Bone::new("pelvis", Some("root"), [0.0, 50.0], Z_PELVIS);
@@ -1129,6 +1174,11 @@ pub fn generate(spec: &Spec) -> Manifest {
         push_wing_bud(&mut bones, &pal, dims, plan);
         mirror_chain(&mut bones, mark);
     }
+
+    // Every bone exists now; the wave gesture is per-bone animation data, not
+    // geometry, so it is applied last — after the arms (whatever kind they are)
+    // and before the clips read the skeleton.
+    give_wave(&mut bones);
 
     let mut manifest = Manifest {
         format: "char-rig/model@1".to_string(),

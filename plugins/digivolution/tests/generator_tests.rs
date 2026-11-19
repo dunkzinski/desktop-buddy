@@ -749,3 +749,40 @@ fn forty_seeds_of_one_family_are_forty_creatures() {
         );
     }
 }
+
+#[test]
+fn every_creature_can_actually_wave() {
+    // The wave button is not a clip: the page adds a bone's `anim.wave` to its
+    // rotation while the avatar is in `waving` mode (`ui/js/rig.js`). A rig that
+    // ships `wave: 0` on every bone therefore answers the button by standing
+    // still — which is what every procedurally generated creature did.
+    for archetype in Archetype::ALL {
+        for tier in Tier::ALL {
+            let manifest = generate(&Spec::with_attribute(
+                0x5EED,
+                archetype,
+                tier,
+                Attribute::Data,
+            ));
+            let strongest = manifest
+                .bones
+                .iter()
+                .map(|bone| bone.anim.wave)
+                .fold(0.0_f64, f64::max);
+            assert!(
+                strongest >= 0.5,
+                "{} {}: the strongest wave is {strongest} rad — nothing would move",
+                archetype.as_str(),
+                tier.as_str()
+            );
+            // …and the body has to be alive at rest too, or it reads as a
+            // drawing rather than a creature.
+            let root = manifest
+                .bones
+                .iter()
+                .find(|bone| bone.id == "root")
+                .expect("root");
+            assert!(root.anim.bob > 0.0, "{} {}: no idle bob", archetype.as_str(), tier.as_str());
+        }
+    }
+}

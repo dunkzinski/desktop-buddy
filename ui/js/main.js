@@ -1045,6 +1045,8 @@ function installDebugSurface() {
     ready: false,
     setExpression: setExpression,
     speak: speak,
+    /** Motion state: `mode` turns "waving" on, `wavePhase` proves it advances. */
+    anim: () => ({ mode: avatar.mode, wavePhase: avatar.wavePhase, time: avatar.time }),
     hideSpeech: hideSpeech,
     /** Open the bubble's quick-reply box (CDP tests can drive it from here). */
     openReply: () => openReply(),
