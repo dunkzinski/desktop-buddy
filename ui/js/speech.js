@@ -115,6 +115,21 @@ function bubbleAnchor() {
   return world ? { x: world.x, y: world.y } : { x: avatar.x, y: avatar.y - 70 };
 }
 
+/** Space the card keeps above the top edge before it has to flip below. */
+const FLIP_MARGIN = 8;
+/**
+ * Dead band around the flip threshold. The above-the-head placement is
+ * `anchor.y - height - 30`, and `anchor.y` is the head bone's *world* y, which
+ * the idle bob (`anim.bob`, ±2 px, sin at 1.8 rad/s) and the hover/gaze tilt
+ * move every frame — plus the card's own height steps as the typewriter wraps
+ * text onto another line. Without a dead band an avatar parked near the top of
+ * the screen sits exactly on the threshold, so the card flips above → below →
+ * above several times a second, bouncing from over the head to under the chin.
+ * Once flipped it therefore stays below until the space above clears the top
+ * edge by this much, which no bob or line-wrap step can span.
+ */
+const FLIP_HYSTERESIS = 24;
+
 export function positionBubble() {
   if (!speech.visible) return;
   const el = document.getElementById("speech");
@@ -125,12 +140,16 @@ export function positionBubble() {
   const height = Math.max(30, rect.height);
   const anchor = bubbleAnchor();
 
-  let top = anchor.y - height - 30;
-  let flipped = false;
-  if (top < 8) {
-    top = anchor.y + 46;
+  // Sticky placement: the flip is a decision with hysteresis, not a pure
+  // function of this frame's anchor, so head bob cannot flicker it.
+  const aboveTop = anchor.y - height - 30;
+  let flipped = !!speech.flipped;
+  if (flipped) {
+    if (aboveTop >= FLIP_MARGIN + FLIP_HYSTERESIS) flipped = false;
+  } else if (aboveTop < FLIP_MARGIN) {
     flipped = true;
   }
+  const top = flipped ? anchor.y + 46 : aboveTop;
   const left = clamp(anchor.x - width / 2, 8, Math.max(8, viewport.w - width - 8));
   el.style.left = Math.round(left) + "px";
   el.style.top = Math.round(top) + "px";
