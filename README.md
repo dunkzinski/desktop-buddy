@@ -314,17 +314,42 @@ three colours:
 | `Data` | crystal growths, circuit traces, a visor band, floating bits | crystalline, plated, digital |
 | `Virus` | back spines, fangs, toxic drips, clawed hands | fanged, spiked, toxic |
 
-…and then the seed picks one of **twelve variants**: one of the archetype's four
-*forms* (its own structural silhouettes), one of three builds (lean / canonical /
-broad) and one of four markings (none / spots / stripes / patches). A form moves
-the things that read at a glance — ear and crest scale and sweep, overall limb
-length *and* where each limb bends (upper arm vs forearm, thigh vs shin), arm and
-leg stance, muzzle length, tail length and arc — and hangs one accessory on the
-body (a mane, a dorsal ridge, shoulder spurs, hip fins, a jaw frill, a second
-sensor pair, a throat collar or tail blades). That is **1,728 silhouettes**
-before the palette is touched at all.
+…today's plan-first, **individuated** creature: the seed picks one of **fifteen
+variants** (one of the archetype's five *forms*, one of three builds — lean /
+canonical / broad — plus a marking), and then a per-seed **individual layer**
+deforms that variant so no two seeds share a body.
 
-Each archetype's four forms live in **its own table** in `src/plan.rs`
+A *form* is the archetype's own structural silhouette, and it moves what reads at
+a glance: ear and crest scale and sweep, overall limb length *and* where each
+limb bends (upper arm vs forearm, thigh vs shin), arm and leg stance, muzzle
+length, tail length and arc, and one accessory hung on the body (a mane, a
+dorsal ridge, shoulder spurs, hip fins, a jaw frill, a second sensor pair, a
+throat collar or tail blades). The fifth form of each family is its **odd one
+out** — a kind swap rather than another set of proportions: a Machine that walks
+on legs, a Serpent that hovers instead of coiling, a Holy warden in stone
+greaves, a Golem with carved arm-cannons.
+
+The **individual layer** (`Plan::individualise`) is what the seed alone decides,
+and it is why two creatures of the same form are the same *kind* of animal
+rather than the same animal. It
+
+* moves every proportion and posture angle inside the armature's safe band
+  (trunk, skull, limb lengths, joint ratios, ear/crest/tail scale and sweep,
+  stance, muzzle), so one Beast is lanky and another is squat;
+* grows a **second family trait** just under half the time — a mane *and* a
+  dorsal ridge — drawn only from that archetype's own accessory vocabulary, so
+  individuality can never blur two families together;
+* rerolls the marking half the time, decoupling pattern from build;
+* turns the **hue**: a seeded drift on the body and a larger one on the accent,
+  because two littermates are not one animal in the same paint.
+
+That is **2,160 base silhouettes** (12 families x 5 forms x 3 builds x 4 markings
+x 3 attributes) before the individual layer — which is continuous, not a table —
+is applied. Measured over 40 seeds per family, distinct structural templates per
+family went from 12 to ~29, and every one of those 40 creatures is unique in
+proportion and colour (`cargo run --example variety -- 40`).
+
+Each archetype's five forms live in **its own table** in `src/plan.rs`
 (`beast_form`, `drake_form`, …). They are not a shared template with per-body
 numbers: a form only ever returns the plan it was handed, so one archetype's
 mutations cannot reach another's and the twelve body plans stay twelve.
@@ -353,7 +378,10 @@ path as `POST /model`, and plays the new rig's `digivolve` clip. `POST
 /dedigivolve` walks the same path **backwards**: every history entry remembers
 the parent's seed *and* attribute, and generation is deterministic, so a rewind
 brings back the exact earlier creature even across a change of attribute (XP is
-kept, so it can grow straight back). The
+kept, so it can grow straight back). Determinism is per **generator version**:
+changing the form table or the individual layer (as the variety pass did) means
+a creature generated before the change rebuilds with the new rules — its seed is
+unchanged, its body is not. The
 **Digivolve** card in the control panel does all of it by hand, and the *New*
 row offers the archetype **and the attribute** for the next hatchling — the
 picker is filled from `status.archetypes` / `status.attributes`, so adding a body

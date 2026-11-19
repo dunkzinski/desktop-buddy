@@ -711,3 +711,41 @@ fn each_tier_carries_the_stage_in_its_identity() {
         assert_eq!(manifest.label, spec.label());
     }
 }
+
+#[test]
+fn forty_seeds_of_one_family_are_forty_creatures() {
+    // The variety promise, measured the way a viewer would: count distinct
+    // *structural templates* (which parts exist at all — form accessory,
+    // second trait, marking), not hash-everything distinctness, which a 1%
+    // shade of brown already satisfies. Before the individual layer this
+    // plateaued at the twelve seeded variants (four forms x three builds).
+    for archetype in Archetype::ALL {
+        let mut templates = HashSet::new();
+        let mut poses = HashSet::new();
+        for seed in 0..40u64 {
+            let manifest = generate(&Spec::with_attribute(
+                seed,
+                archetype,
+                Tier::Champion,
+                Attribute::Data,
+            ));
+            validate(&manifest).unwrap_or_else(|err| {
+                panic!("{} seed {seed}: {err}", archetype.as_str())
+            });
+            templates.insert(part_ids(&manifest));
+            poses.insert(bind_pose(&manifest));
+        }
+        assert!(
+            templates.len() >= 18,
+            "{}: forty seeds grew only {} distinct templates",
+            archetype.as_str(),
+            templates.len()
+        );
+        assert_eq!(
+            poses.len(),
+            40,
+            "{}: two of forty individuals share a bind pose",
+            archetype.as_str()
+        );
+    }
+}

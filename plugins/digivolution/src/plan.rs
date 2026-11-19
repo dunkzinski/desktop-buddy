@@ -5,11 +5,14 @@
 //! is the missing layer: it decides *what shape* the creature is, while
 //! [`crate::generator`] decides how much of it exists at each tier.
 //!
-//! Everything here is a pure constant table — no RNG, no clock — so
-//! `(seed, archetype, tier)` still reproduces a creature byte for byte.
+//! The table itself is pure constant data — no clock, no host call. Only one
+//! function here draws from an RNG: [`Plan::individualise`], and it draws from a
+//! stream seeded by the creature's own seed, so `(seed, archetype, tier)` still
+//! reproduces a creature byte for byte.
 
 use crate::attribute::Attribute;
 use crate::generator::Archetype;
+use crate::rng::{mix_seed, Rng};
 
 /// Skull and face construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +217,11 @@ pub struct Plan {
     pub snout: f64,
     /// The form's secondary silhouette furniture.
     pub accessory: Accessory,
+    /// A *second* piece of the family's furniture, grown by some individuals
+    /// only (a mane *and* a ridge, a collar *and* spurs). Drawn by
+    /// [`Plan::individualise`] from [`secondary_traits`], so it can only ever be
+    /// something the family already knows how to wear.
+    pub accessory2: Accessory,
     // Details that only some plans carry.
     pub dorsal_fin: bool,
     pub gills: bool,
@@ -273,6 +281,7 @@ const fn base() -> Plan {
         leg_segment: 1.0,
         snout: 1.0,
         accessory: Accessory::None,
+        accessory2: Accessory::None,
         dorsal_fin: false,
         gills: false,
         visor: false,
@@ -540,10 +549,13 @@ pub fn plan(archetype: Archetype) -> Plan {
 pub const VARIANT_COUNT: u8 = BUILD_COUNT * FORM_COUNT;
 /// Proportions and markings: canonical, lean, broad.
 pub const BUILD_COUNT: u8 = 3;
-/// Structural forms inside one archetype. Four is enough that a Beast, a Drake
-/// and a Serpent each get a recognisable family, and small enough that every
-/// form stays hand-tuned instead of generated into mush.
-pub const FORM_COUNT: u8 = 4;
+/// Structural forms inside one archetype. Five is still small enough that every
+/// form stays hand-tuned instead of generated into mush, and the fifth is the
+/// family's *odd one out*: a kind swap (a Machine with legs, a Serpent that
+/// hovers, a Holy warden in stone greaves) rather than one more set of
+/// proportions. Twelve families x five forms x three builds is sixty
+/// silhouettes before the seed's own individual layer is even applied.
+pub const FORM_COUNT: u8 = 5;
 
 /// The form table for one archetype.
 ///
@@ -608,7 +620,7 @@ fn beast_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — sabre: narrow skull, a fan of spikes, a whip tail, shoulder spurs.
-        _ => Plan {
+        3 => Plan {
             leg_segment: 0.95,
             snout: 1.3,
             crest: CrestKind::Spikes,
@@ -622,6 +634,24 @@ fn beast_form(p: Plan, form: u8) -> Plan {
             tail_arc: 0.16,
             arm_stance: -0.08,
             accessory: Accessory::Spurs,
+            ..p
+        },
+        // 4 — mole: earless, blunt-faced and broad, built for digging.
+        _ => Plan {
+            ears: EarKind::None,
+            snout: 0.78,
+            arm_segment: 1.18,
+            leg_segment: 0.9,
+            crest_scale: 0.62,
+            torso_w: p.torso_w * 1.14,
+            torso_h: p.torso_h * 0.96,
+            head_w: p.head_w * 1.08,
+            head_h: p.head_h * 0.9,
+            arm_len: p.arm_len * 1.12,
+            leg_len: p.leg_len * 0.82,
+            leg_stance: 0.08,
+            tail_scale: 0.6,
+            accessory: Accessory::Ridge,
             ..p
         },
     }
@@ -664,7 +694,7 @@ fn drake_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — serpentine: a low narrow trunk, a long bladed tail, a long neck.
-        _ => Plan {
+        3 => Plan {
             snout: 1.3,
             crest_scale: 0.8,
             neck: 20.0,
@@ -673,6 +703,22 @@ fn drake_form(p: Plan, form: u8) -> Plan {
             tail_scale: 1.3,
             tail_arc: 0.2,
             accessory: Accessory::TailBlades,
+            ..p
+        },
+        // 4 — tide: a sail instead of spikes, a fan tail and a jaw frill.
+        _ => Plan {
+            crest: CrestKind::Fin,
+            crest_scale: 1.25,
+            crest_spread: 0.16,
+            snout: 1.2,
+            neck: 6.0,
+            torso_w: p.torso_w * 0.96,
+            torso_h: p.torso_h * 1.1,
+            head_w: p.head_w * 1.12,
+            head_h: p.head_h * 0.92,
+            tail_scale: 1.25,
+            tail_arc: 0.06,
+            accessory: Accessory::Frill,
             ..p
         },
     }
@@ -708,7 +754,7 @@ fn cyborg_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — scout: leggier, narrower, a short blade and small receivers.
-        _ => Plan {
+        3 => Plan {
             leg_segment: 1.12,
             snout: 1.2,
             crest_scale: 0.8,
@@ -718,6 +764,23 @@ fn cyborg_form(p: Plan, form: u8) -> Plan {
             torso_h: p.torso_h * 1.03,
             leg_len: p.leg_len * 1.12,
             accessory: Accessory::Collar,
+            ..p
+        },
+        // 4 — drone: sensor stalks on a domed housing, a low radiator stack.
+        _ => Plan {
+            head: HeadKind::Dome,
+            ears: EarKind::Stalk,
+            ear_scale: 1.3,
+            ear_angle: -0.12,
+            crest: CrestKind::Antenna,
+            crest_scale: 1.1,
+            torso_w: p.torso_w * 0.9,
+            torso_h: p.torso_h * 1.04,
+            head_w: p.head_w * 0.9,
+            head_h: p.head_h * 1.08,
+            leg_len: p.leg_len * 1.08,
+            arm_len: p.arm_len * 0.92,
+            accessory: Accessory::Ridge,
             ..p
         },
     }
@@ -753,7 +816,7 @@ fn holy_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — oracle: a tall narrow skull on a long neck, an upright stance.
-        _ => Plan {
+        3 => Plan {
             arm_segment: 1.12,
             leg_segment: 1.05,
             snout: 1.1,
@@ -765,6 +828,23 @@ fn holy_form(p: Plan, form: u8) -> Plan {
             torso_w: p.torso_w * 0.88,
             torso_h: p.torso_h * 1.1,
             leg_len: p.leg_len * 1.06,
+            ..p
+        },
+        // 4 — warden: armoured greaves, a swept blade, a stubbed tail.
+        _ => Plan {
+            crest: CrestKind::Blade,
+            crest_scale: 1.45,
+            crest_spread: -0.16,
+            arms: ArmKind::Claw,
+            legs: LegKind::Stonework,
+            tail: TailKind::Stub,
+            arm_segment: 1.14,
+            torso_w: p.torso_w * 1.1,
+            torso_h: p.torso_h * 0.98,
+            arm_len: p.arm_len * 1.1,
+            leg_len: p.leg_len * 1.04,
+            leg_stance: 0.1,
+            accessory: Accessory::HipFins,
             ..p
         },
     }
@@ -805,7 +885,7 @@ fn aqua_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — pike: a narrow head and body, a jaw frill, sharper fins.
-        _ => Plan {
+        3 => Plan {
             snout: 1.35,
             crest_scale: 0.8,
             head_w: p.head_w * 0.96,
@@ -815,6 +895,24 @@ fn aqua_form(p: Plan, form: u8) -> Plan {
             arm_len: p.arm_len * 0.8,
             tail_scale: 0.95,
             accessory: Accessory::Frill,
+            ..p
+        },
+        // 4 — turtle: a slab shell, a boxy skull and stumpy flippers.
+        _ => Plan {
+            head: HeadKind::Boxy,
+            ears: EarKind::None,
+            crest: CrestKind::Fin,
+            crest_scale: 0.7,
+            legs: LegKind::Stonework,
+            torso: TorsoKind::Slab,
+            snout: 0.8,
+            torso_w: p.torso_w * 1.12,
+            torso_h: p.torso_h * 1.14,
+            head_w: p.head_w * 0.9,
+            head_h: p.head_h * 0.94,
+            leg_len: p.leg_len * 1.1,
+            arm_len: p.arm_len * 0.9,
+            accessory: Accessory::Collar,
             ..p
         },
     }
@@ -850,7 +948,7 @@ fn cervid_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — moose: a heavy head with a dewlap, a stockier frame.
-        _ => Plan {
+        3 => Plan {
             snout: 1.3,
             arm_segment: 1.1,
             crest_scale: 1.2,
@@ -862,6 +960,23 @@ fn cervid_form(p: Plan, form: u8) -> Plan {
             head_h: p.head_h * 1.06,
             ear_scale: 0.85,
             accessory: Accessory::Frill,
+            ..p
+        },
+        // 4 — ram: curled horns, a heavy brow, a short thick neck.
+        _ => Plan {
+            crest: CrestKind::Horns,
+            crest_scale: 1.4,
+            crest_spread: 0.16,
+            ears: EarKind::Pointed,
+            ear_scale: 0.8,
+            ear_angle: 0.12,
+            neck: 6.0,
+            snout: 1.12,
+            torso_w: p.torso_w * 1.12,
+            torso_h: p.torso_h * 0.98,
+            head_w: p.head_w * 1.12,
+            leg_len: p.leg_len * 0.92,
+            accessory: Accessory::Collar,
             ..p
         },
     }
@@ -896,13 +1011,28 @@ fn machine_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — crawler: narrow and long, short arms, a sensor collar.
-        _ => Plan {
+        3 => Plan {
             snout: 1.15,
             torso_w: p.torso_w * 0.9,
             torso_h: p.torso_h * 1.08,
             arm_len: p.arm_len * 0.85,
             head_w: p.head_w * 0.94,
             accessory: Accessory::Collar,
+            ..p
+        },
+        // 4 — walker: legs instead of treads, no antennae, a low blade.
+        _ => Plan {
+            ears: EarKind::None,
+            legs: LegKind::Hoofed,
+            crest: CrestKind::Blade,
+            crest_scale: 1.15,
+            arm_segment: 1.08,
+            torso_w: p.torso_w * 0.94,
+            torso_h: p.torso_h * 1.06,
+            head_w: p.head_w * 0.92,
+            leg_len: p.leg_len * 1.35,
+            arm_len: p.arm_len * 0.95,
+            accessory: Accessory::Ridge,
             ..p
         },
     }
@@ -940,7 +1070,7 @@ fn alien_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — watcher: an even wider skull, longer eye stalks, swept hip fins.
-        _ => Plan {
+        3 => Plan {
             snout: 1.1,
             head_w: p.head_w * 1.15,
             torso_w: p.torso_w * 0.92,
@@ -950,6 +1080,22 @@ fn alien_form(p: Plan, form: u8) -> Plan {
             tail_scale: 1.2,
             leg_stance: 0.04,
             accessory: Accessory::HipFins,
+            ..p
+        },
+        // 4 — hive: a domed carapace, antennae in place of eye stalks, thin legs.
+        _ => Plan {
+            head: HeadKind::Dome,
+            ears: EarKind::Antenna,
+            ear_scale: 0.9,
+            arms: ArmKind::Claw,
+            legs: LegKind::Insectoid,
+            tail: TailKind::Stub,
+            torso_h: p.torso_h * 1.1,
+            head_w: p.head_w * 0.82,
+            head_h: p.head_h * 0.9,
+            arm_len: p.arm_len * 1.1,
+            leg_len: p.leg_len * 1.2,
+            accessory: Accessory::Collar,
             ..p
         },
     }
@@ -989,7 +1135,7 @@ fn avian_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — crane: a long neck and legs, a big comb, long tail plumes.
-        _ => Plan {
+        3 => Plan {
             snout: 1.3,
             leg_segment: 1.15,
             crest_scale: 1.35,
@@ -1000,6 +1146,23 @@ fn avian_form(p: Plan, form: u8) -> Plan {
             tail_scale: 1.15,
             tail_arc: 0.1,
             accessory: Accessory::TailBlades,
+            ..p
+        },
+        // 4 — penguin: a heavy body on finned feet, a flat comb, a stub tail.
+        _ => Plan {
+            head: HeadKind::Round,
+            crest: CrestKind::Comb,
+            crest_scale: 0.6,
+            legs: LegKind::Finned,
+            tail: TailKind::Stub,
+            snout: 1.15,
+            neck: 6.0,
+            torso_w: p.torso_w * 1.16,
+            torso_h: p.torso_h * 1.06,
+            head_w: p.head_w * 1.06,
+            arm_len: p.arm_len * 1.12,
+            leg_len: p.leg_len * 0.8,
+            accessory: Accessory::Collar,
             ..p
         },
     }
@@ -1037,7 +1200,7 @@ fn insect_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — wasp: a narrow thorax and a long bladed abdomen.
-        _ => Plan {
+        3 => Plan {
             leg_segment: 1.1,
             crest_scale: 0.9,
             ear_scale: 0.8,
@@ -1047,6 +1210,21 @@ fn insect_form(p: Plan, form: u8) -> Plan {
             tail_scale: 1.3,
             tail_arc: 0.14,
             accessory: Accessory::TailBlades,
+            ..p
+        },
+        // 4 — hopper: long jumping legs, a round skull, folded wing cases.
+        _ => Plan {
+            head: HeadKind::Round,
+            legs: LegKind::Hoofed,
+            tail: TailKind::Stub,
+            leg_segment: 1.2,
+            crest_scale: 0.7,
+            ear_scale: 1.25,
+            torso_w: p.torso_w * 0.92,
+            torso_h: p.torso_h * 0.94,
+            leg_len: p.leg_len * 1.45,
+            arm_len: p.arm_len * 0.86,
+            accessory: Accessory::Frill,
             ..p
         },
     }
@@ -1082,7 +1260,7 @@ fn serpent_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — viper: a narrow raised head over a coiled, bladed tail.
-        _ => Plan {
+        3 => Plan {
             snout: 1.3,
             crest_scale: 1.1,
             head_w: p.head_w * 0.96,
@@ -1092,6 +1270,22 @@ fn serpent_form(p: Plan, form: u8) -> Plan {
             tail_scale: 0.95,
             tail_arc: 0.18,
             accessory: Accessory::TailBlades,
+            ..p
+        },
+        // 4 — leviathan: no coil at all — a floating body, tendrils, a neck ring.
+        _ => Plan {
+            head: HeadKind::Bulbous,
+            arms: ArmKind::Tentacle,
+            legs: LegKind::Hover,
+            snout: 1.25,
+            head_w: p.head_w * 1.06,
+            head_h: p.head_h * 1.1,
+            torso_w: p.torso_w * 1.06,
+            torso_h: p.torso_h * 1.12,
+            arm_len: p.arm_len * 1.2,
+            tail_scale: 1.35,
+            tail_arc: -0.1,
+            accessory: Accessory::Collar,
             ..p
         },
     }
@@ -1127,7 +1321,7 @@ fn golem_form(p: Plan, form: u8) -> Plan {
             ..p
         },
         // 3 — boulder: a squat boulder of a body, huge arms, a back ridge.
-        _ => Plan {
+        3 => Plan {
             arm_segment: 1.2,
             snout: 0.9,
             crest_scale: 1.0,
@@ -1139,6 +1333,21 @@ fn golem_form(p: Plan, form: u8) -> Plan {
             head_h: p.head_h * 0.9,
             arm_stance: -0.1,
             accessory: Accessory::Ridge,
+            ..p
+        },
+        // 4 — idol: a domed head, disc ears, carved arm-cannons, a chain tail.
+        _ => Plan {
+            head: HeadKind::Dome,
+            ears: EarKind::Disc,
+            crest: CrestKind::Blade,
+            arms: ArmKind::Cannon,
+            tail: TailKind::Cable,
+            torso_w: p.torso_w * 0.94,
+            torso_h: p.torso_h * 1.1,
+            head_w: p.head_w * 0.9,
+            arm_len: p.arm_len * 0.92,
+            leg_len: p.leg_len * 1.06,
+            accessory: Accessory::Frill,
             ..p
         },
     }
@@ -1255,6 +1464,165 @@ pub fn plan_for(archetype: Archetype, attribute: Attribute, variant: u8) -> Plan
         .with_variant(variant)
 }
 
+/* ------------------------------------------------------------------ *
+ * The individual layer
+ * ------------------------------------------------------------------ */
+
+/// The furniture a family knows how to wear: the union of its four forms'
+/// accessories.
+///
+/// [`Plan::individualise`] draws a *second* trait from this list and never from
+/// the global [`Accessory`] table. A mane on a Beast is in character; a mane on
+/// a Machine would just blur two families into one, which is the exact failure
+/// the per-archetype form tables exist to prevent.
+pub fn secondary_traits(archetype: Archetype) -> &'static [Accessory] {
+    match archetype {
+        Archetype::Beast => &[Accessory::Mane, Accessory::Spurs, Accessory::Ridge],
+        Archetype::Drake => &[
+            Accessory::Ridge,
+            Accessory::HipFins,
+            Accessory::TailBlades,
+            Accessory::Frill,
+        ],
+        Archetype::Cyborg => &[
+            Accessory::Antennae,
+            Accessory::Spurs,
+            Accessory::Collar,
+            Accessory::Ridge,
+        ],
+        Archetype::Holy => &[Accessory::Frill, Accessory::Collar, Accessory::HipFins],
+        Archetype::Aqua => &[
+            Accessory::HipFins,
+            Accessory::Spurs,
+            Accessory::Frill,
+            Accessory::Collar,
+        ],
+        Archetype::Cervid => &[Accessory::Mane, Accessory::Frill, Accessory::Collar],
+        Archetype::Machine => &[
+            Accessory::Spurs,
+            Accessory::Antennae,
+            Accessory::Collar,
+            Accessory::Ridge,
+        ],
+        Archetype::Alien => &[
+            Accessory::Frill,
+            Accessory::Ridge,
+            Accessory::HipFins,
+            Accessory::Collar,
+        ],
+        Archetype::Avian => &[Accessory::Frill, Accessory::TailBlades, Accessory::Collar],
+        Archetype::Insect => &[
+            Accessory::Ridge,
+            Accessory::Spurs,
+            Accessory::TailBlades,
+            Accessory::Frill,
+        ],
+        Archetype::Serpent => &[
+            Accessory::Frill,
+            Accessory::Ridge,
+            Accessory::TailBlades,
+            Accessory::Collar,
+        ],
+        Archetype::Golem => &[
+            Accessory::Spurs,
+            Accessory::Collar,
+            Accessory::Ridge,
+            Accessory::Frill,
+        ],
+    }
+}
+
+/// Multipliers and offsets the individual layer is allowed to apply.
+///
+/// The bands are the ones `proportions_stay_in_a_sane_band` enforces: a seed may
+/// make a creature lankier or squatter, it may never make it a deformity. Shared
+/// by the jitter below and by that test so the two cannot drift apart.
+pub const BAND_PROPORTION: (f64, f64) = (0.4, 1.7);
+pub const BAND_SCALE: (f64, f64) = (0.6, 1.5);
+pub const BAND_SEGMENT: (f64, f64) = (0.8, 1.25);
+pub const BAND_SNOUT: (f64, f64) = (0.75, 1.4);
+
+/// `value × U(1 ± spread)`, clamped into the armature's band.
+fn scaled(rng: &mut Rng, value: f64, spread: f64, band: (f64, f64)) -> f64 {
+    (value * rng.range(1.0 - spread, 1.0 + spread)).clamp(band.0, band.1)
+}
+
+/// `value + U(±spread)` radians/pixels, clamped into the armature's band.
+fn offset(rng: &mut Rng, value: f64, spread: f64, band: (f64, f64)) -> f64 {
+    (value + rng.range(-spread, spread)).clamp(band.0, band.1)
+}
+
+impl Plan {
+    /// Deform this silhouette into *this particular individual*.
+    ///
+    /// The variant decides which of the family's twelve silhouettes a seed gets;
+    /// that is a lookup table, so twelve seeds in a row can hand back the same
+    /// body. This layer is the fix: the seed then moves every proportion, every
+    /// posture angle and the limb-segment ratio, and (a bit under half the time)
+    /// grows a second family trait. Two creatures that share a variant are the
+    /// same *kind* of animal, not the same animal.
+    ///
+    /// Order of draws is fixed, so the same seed always produces the same body.
+    pub fn individualise(mut self, archetype: Archetype, rng: &mut Rng) -> Self {
+        // Build: the trunk and the head are the silhouette at arm's length, so
+        // they move the most.
+        self.torso_w = scaled(rng, self.torso_w, 0.11, BAND_PROPORTION);
+        self.torso_h = scaled(rng, self.torso_h, 0.10, BAND_PROPORTION);
+        self.head_w = scaled(rng, self.head_w, 0.13, BAND_PROPORTION);
+        self.head_h = scaled(rng, self.head_h, 0.12, BAND_PROPORTION);
+        self.arm_len = scaled(rng, self.arm_len, 0.10, BAND_PROPORTION);
+        self.leg_len = scaled(rng, self.leg_len, 0.12, BAND_PROPORTION);
+        self.neck = offset(rng, self.neck, 5.0, (0.0, 30.0));
+        // Joints: where a limb bends is as individual as how long it is.
+        self.arm_segment = scaled(rng, self.arm_segment, 0.07, BAND_SEGMENT);
+        self.leg_segment = scaled(rng, self.leg_segment, 0.07, BAND_SEGMENT);
+        // Signature furniture: ears, crest, tail and muzzle.
+        self.ear_scale = scaled(rng, self.ear_scale, 0.13, BAND_SCALE);
+        self.ear_angle = offset(rng, self.ear_angle, 0.05, (-0.25, 0.2));
+        self.crest_scale = scaled(rng, self.crest_scale, 0.13, BAND_SCALE);
+        self.crest_spread = offset(rng, self.crest_spread, 0.04, (-0.2, 0.2));
+        self.tail_scale = scaled(rng, self.tail_scale, 0.13, BAND_SCALE);
+        self.tail_arc = offset(rng, self.tail_arc, 0.05, (-0.25, 0.25));
+        self.snout = scaled(rng, self.snout, 0.10, BAND_SNOUT);
+        // Posture: how the creature carries its arms and legs.
+        self.arm_stance = offset(rng, self.arm_stance, 0.035, (-0.15, 0.15));
+        self.leg_stance = offset(rng, self.leg_stance, 0.035, (-0.15, 0.15));
+
+        // Pattern. The variant already pairs a marking with a build, so a seed
+        // that rerolls is the difference between "the lean, spotted one" and
+        // "the lean, striped one" — the combos multiply without a new form.
+        if rng.chance(0.5) {
+            self.marking = rng.below(4) as u8;
+        }
+
+        // The second trait. `TailBlades` counts here too — the generator grows it
+        // on the tail segments rather than hanging it off a bone.
+        if rng.chance(0.45) {
+            let available: Vec<Accessory> = secondary_traits(archetype)
+                .iter()
+                .copied()
+                .filter(|trait_| *trait_ != self.accessory)
+                .collect();
+            if !available.is_empty() {
+                self.accessory2 = *rng.pick(&available);
+            }
+        }
+        self
+    }
+}
+
+/// The plan the generator actually builds: the variant table plus the seed's own
+/// individual layer.
+pub fn plan_for_seed(
+    archetype: Archetype,
+    attribute: Attribute,
+    variant: u8,
+    seed: u64,
+) -> Plan {
+    let mut rng = Rng::new(mix_seed(seed, &[0x1D1F_D0A1, archetype as u64]));
+    plan_for(archetype, attribute, variant).individualise(archetype, &mut rng)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1353,9 +1721,9 @@ mod tests {
     }
 
     #[test]
-    fn every_archetype_has_four_distinct_forms() {
+    fn every_archetype_has_five_distinct_forms() {
         // The headline of this layer: the same archetype, same attribute, same
-        // build, four different creatures — before a colour is chosen.
+        // build, five different creatures — before a colour is chosen.
         for archetype in Archetype::ALL {
             let mut seen = Vec::new();
             for form in 0..FORM_COUNT {
@@ -1509,4 +1877,102 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn the_individual_layer_is_deterministic_and_seed_sensitive() {
+        // Reproducibility is the promise the whole plugin rests on: the same
+        // seed must rebuild the same individual, and a neighbouring seed must
+        // not.
+        for archetype in Archetype::ALL {
+            let a = plan_for_seed(archetype, Attribute::Data, 3, 1234);
+            let b = plan_for_seed(archetype, Attribute::Data, 3, 1234);
+            assert_eq!(silhouette(&a), silhouette(&b), "{} is not reproducible", archetype.as_str());
+            let mut different = 0;
+            for seed in 0..8u64 {
+                let other = plan_for_seed(archetype, Attribute::Data, 3, seed);
+                if silhouette(&other) == silhouette(&a) {
+                    different += 1;
+                }
+            }
+            assert_eq!(
+                different, 0,
+                "{}: eight seeds produced one individual",
+                archetype.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn a_second_trait_always_comes_from_the_familys_own_vocabulary() {
+        // The accessory layer is allowed to be generous, never foreign: a Beast
+        // may wear a mane, a Machine may not.
+        for archetype in Archetype::ALL {
+            let pool = secondary_traits(archetype);
+            let mut second_traits = 0;
+            for seed in 0..200u64 {
+                let p = plan_for_seed(archetype, Attribute::Virus, 7, seed);
+                if p.accessory2 == Accessory::None {
+                    continue;
+                }
+                second_traits += 1;
+                assert!(
+                    pool.contains(&p.accessory2),
+                    "{}: {:?} is not in the family's vocabulary",
+                    archetype.as_str(),
+                    p.accessory2
+                );
+                assert_ne!(
+                    p.accessory2, p.accessory,
+                    "{}: an individual cannot wear its form's accessory twice",
+                    archetype.as_str()
+                );
+            }
+            // Both states have to occur, or the layer is decoration in the code
+            // and invisible on the desktop.
+            assert!(
+                (40..160).contains(&second_traits),
+                "{}: {} of 200 individuals grew a second trait",
+                archetype.as_str(),
+                second_traits
+            );
+        }
+    }
+
+    #[test]
+    fn the_individual_layer_never_leaves_the_bands() {
+        // `individualise` clamps with the same constants this asserts against:
+        // the check is that the clamp is applied to the *seed-driven* plan too,
+        // which is where a spread could otherwise stack with a form's own
+        // multiplication and push a creature into deformity.
+        for archetype in Archetype::ALL {
+            for attribute in Attribute::ALL {
+                for seed in 0..24u64 {
+                    let p = plan_for_seed(archetype, attribute, seed as u8, seed);
+                    for (name, value, band) in [
+                        ("torso_w", p.torso_w, BAND_PROPORTION),
+                        ("torso_h", p.torso_h, BAND_PROPORTION),
+                        ("head_w", p.head_w, BAND_PROPORTION),
+                        ("head_h", p.head_h, BAND_PROPORTION),
+                        ("arm_len", p.arm_len, BAND_PROPORTION),
+                        ("leg_len", p.leg_len, BAND_PROPORTION),
+                        ("ear_scale", p.ear_scale, BAND_SCALE),
+                        ("crest_scale", p.crest_scale, BAND_SCALE),
+                        ("tail_scale", p.tail_scale, BAND_SCALE),
+                        ("arm_segment", p.arm_segment, BAND_SEGMENT),
+                        ("leg_segment", p.leg_segment, BAND_SEGMENT),
+                        ("snout", p.snout, BAND_SNOUT),
+                    ] {
+                        assert!(
+                            value.is_finite() && (band.0..=band.1).contains(&value),
+                            "{} {} seed {seed}: {name} = {value} is outside {:?}",
+                            archetype.as_str(),
+                            attribute.as_str(),
+                            band
+                        );
+                    }
+                }
+            }
+        }
+    }
+
 }

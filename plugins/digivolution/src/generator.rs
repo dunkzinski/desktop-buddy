@@ -454,15 +454,68 @@ fn palette_for(archetype: Archetype, attribute: Attribute, tier: Tier, rng: &mut
         Attribute::Data => ("#6fd8ff", 0.20, "#48e0ff", "#b8f4ff"),
         Attribute::Virus => ("#2a0d1d", 0.24, "#ff3d81", "#9dff4a"),
     };
+    let body = mix(&body, tint, strength);
+    let body_dark = mix(&body_dark, tint, strength * 0.8);
+    let accent = mix(&accent, accent_tint, strength * 1.4);
+    let glow = mix(&glow, glow_tint, strength * 1.2);
+    // The last degree of freedom: hue. Without it two individuals of one
+    // archetype under one attribute are the same animal in the same paint. The
+    // body drifts a little (a littermate, not a new species); the accent travels
+    // further, because the accent is what the eye reads first.
+    let body_hue = rng.range(-0.045, 0.045);
+    let accent_hue = rng.range(-0.11, 0.11);
+    let saturation = rng.range(0.90, 1.12);
     Palette {
-        body: mix(&body, tint, strength),
-        body_dark: mix(&body_dark, tint, strength * 0.8),
-        accent: mix(&accent, accent_tint, strength * 1.4),
-        glow: mix(&glow, glow_tint, strength * 1.2),
+        body: shift_hsv(&body, body_hue, saturation, 1.0),
+        body_dark: shift_hsv(&body_dark, body_hue, saturation, 1.0),
+        accent: shift_hsv(&accent, accent_hue, 1.0, 1.0),
+        glow: shift_hsv(&glow, accent_hue * 0.5, 1.0, 1.0),
         eye: base.eye,
         pupil: base.pupil,
         metal,
     }
+}
+
+/// Rotate an `#rrggbb` colour's hue by `turns` (1.0 is a full turn) and scale
+/// its saturation, keeping the value — the seeded paint job.
+fn shift_hsv(hex: &str, turns: f64, sat_mul: f64, val_mul: f64) -> String {
+    let digits = hex.trim_start_matches('#');
+    if digits.len() != 6 {
+        return hex.to_string();
+    }
+    let channel = |start: usize| -> f64 {
+        u8::from_str_radix(&digits[start..start + 2], 16).unwrap_or(0) as f64 / 255.0
+    };
+    let (r, g, b) = (channel(0), channel(2), channel(4));
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let chroma = max - min;
+    let hue = if chroma == 0.0 {
+        0.0
+    } else if max == r {
+        ((g - b) / chroma).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / chroma + 2.0
+    } else {
+        (r - g) / chroma + 4.0
+    } / 6.0;
+    let sector = (hue + turns).rem_euclid(1.0) * 6.0;
+    let saturation = if max == 0.0 { 0.0 } else { chroma / max };
+    let value = (max * val_mul).clamp(0.0, 1.0);
+    let saturation = (saturation * sat_mul).clamp(0.0, 1.0);
+    let c = value * saturation;
+    let x = c * (1.0 - ((sector % 2.0) - 1.0).abs());
+    let (r1, g1, b1) = match sector as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = value - c;
+    let byte = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    format!("#{:02x}{:02x}{:02x}", byte(r1), byte(g1), byte(b1))
 }
 
 /// Blend `#rrggbb` `a` toward `b` by `t` (0 = a, 1 = b).
@@ -646,14 +699,21 @@ pub fn generate(spec: &Spec) -> Manifest {
         spec.seed,
         &[spec.archetype as u64, spec.tier.index() as u64 + 1],
     ));
-    let plan = plan::plan_for(spec.archetype, spec.attribute, spec.variant());
+    let plan = plan::plan_for_seed(spec.archetype, spec.attribute, spec.variant(), spec.seed);
     let pal = palette_for(spec.archetype, spec.attribute, spec.tier, &mut rng);
     let dims = Dims::for_tier(spec.tier, plan, &mut rng);
     let features = Features::for_spec(spec, plan);
     // The form's secondary geometry. It is authored as parts (not a bone), so it
     // costs no joint, appears at every tier from `Fresh`, and grows with the
     // tier because every size below is a fraction of the tier-scaled `Dims`.
-    let (accessory_bone, accessory) = accessory_parts(&pal, dims, plan);
+    // A creature may wear two pieces of family furniture — the plan's own
+    // accessory and the individual's second trait.
+    let accessories: Vec<(&'static str, Vec<Part>)> = std::iter::once(plan.accessory)
+        .chain(std::iter::once(plan.accessory2))
+        .filter(|kind| *kind != Accessory::None)
+        .map(|kind| accessory_parts(&pal, dims, Plan { accessory: kind, ..plan }))
+        .filter(|(_, parts)| !parts.is_empty())
+        .collect();
 
     let mut bones: Vec<Bone> = Vec::new();
 
@@ -719,8 +779,10 @@ pub fn generate(spec: &Spec) -> Manifest {
             None,
         ));
     }
-    if accessory_bone == "pelvis" {
-        pelvis.parts.extend(accessory.iter().cloned());
+    for (bone_id, parts) in &accessories {
+        if *bone_id == "pelvis" {
+            pelvis.parts.extend(parts.iter().cloned());
+        }
     }
     pelvis.anim = Anim::sway(0.01, 0.0);
     bones.push(pelvis);
@@ -931,8 +993,10 @@ pub fn generate(spec: &Spec) -> Manifest {
         }
     }
     torso.parts.extend(aspect_torso_parts(&pal, dims, plan, features));
-    if accessory_bone == "torso" {
-        torso.parts.extend(accessory.iter().cloned());
+    for (bone_id, parts) in &accessories {
+        if *bone_id == "torso" {
+            torso.parts.extend(parts.iter().cloned());
+        }
     }
     if plan.spots && features.armor {
         for index in 0..3 {
@@ -993,8 +1057,10 @@ pub fn generate(spec: &Spec) -> Manifest {
     head.anim = Anim::sway(0.012, 0.9);
     head.parts = head_parts(&pal, dims, features, plan);
     head.parts.extend(aspect_head_parts(&pal, dims, plan, features));
-    if accessory_bone == "head" {
-        head.parts.extend(accessory.iter().cloned());
+    for (bone_id, parts) in &accessories {
+        if *bone_id == "head" {
+            head.parts.extend(parts.iter().cloned());
+        }
     }
     if features.halo {
         head.parts.insert(
@@ -2611,7 +2677,7 @@ fn push_tail(
             ));
         }
 
-        if plan.accessory == Accessory::TailBlades {
+        if plan.accessory == Accessory::TailBlades || plan.accessory2 == Accessory::TailBlades {
             // The blade rides every segment, so a longer tail grows more of it.
             parts.push(
                 Part::ellipse(
