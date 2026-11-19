@@ -10,7 +10,7 @@
 //! stream seeded by the creature's own seed, so `(seed, archetype, tier)` still
 //! reproduces a creature byte for byte.
 
-use crate::attribute::Attribute;
+use crate::attribute::{Attribute, AttributeBlend};
 use crate::generator::Archetype;
 use crate::rng::{mix_seed, Rng};
 
@@ -1354,27 +1354,69 @@ fn golem_form(p: Plan, form: u8) -> Plan {
 }
 
 impl Plan {
-    /// What the attribute does to this body.
+    /// Weights below this are too faint to change the silhouette at all.
+    ///
+    /// Written as an associated const so the threshold sits beside the code it
+    /// gates: a secondary attribute at 10% adds a tint, not a wing.
+    const BLEND_STRUCTURE_THRESHOLD: f64 = 0.12;
+
+    /// What a *mix* of attributes does to this body — the whole lineage at once.
     ///
     /// The mutations are deliberately *structural* (a new crest, wings, claws,
-    /// crystals) rather than a colour swap: the request was that Vaccine, Data
-    /// and Virus digivolve into visibly different creatures, and a tint alone
-    /// would not survive a five-second look at the desktop.
-    fn with_element(mut self, element: Element) -> Self {
-        match element {
+    /// crystals) rather than a colour swap: Vaccine, Data and Virus have to
+    /// digivolve into visibly different creatures, and a tint alone would not
+    /// survive a five-second look at the desktop.
+    ///
+    /// A body has exactly one crest and one pair of hands, so those two choices
+    /// belong to the loudest attribute — the one the creature most recently and
+    /// most strongly became. Everything additive (halo, wings, crystals,
+    /// circuits, spines, fangs, drips) is drawn for *every* attribute above the
+    /// threshold, and the continuous proportions are interpolated by weight, so
+    /// a mixed line is a chimera rather than a recoloured single attribute.
+    fn with_blend(mut self, blend: AttributeBlend) -> Self {
+        let mut claim_crest = true;
+        let mut claim_arms = true;
+        for (attribute, weight) in blend.loudest() {
+            if weight < Self::BLEND_STRUCTURE_THRESHOLD {
+                continue;
+            }
+            self = self.with_element_weighted(attribute, weight, claim_crest, claim_arms);
+            // The loudest attribute has spoken for the single-slot traits; the
+            // rest may add furniture but may not rewrite a head or a hand.
+            claim_crest = false;
+            claim_arms = false;
+        }
+        self
+    }
+
+    /// One attribute's mutations at a given share (`0..=1`).
+    ///
+    /// `weight == 1.0` reproduces the pre-blend single-attribute plan exactly,
+    /// which is what keeps a purely Vaccine creature the creature it always was.
+    fn with_element_weighted(
+        mut self,
+        attribute: Attribute,
+        weight: f64,
+        claim_crest: bool,
+        claim_arms: bool,
+    ) -> Self {
+        let weight = weight.clamp(0.0, 1.0);
+        match Element::of(attribute) {
             Element::Plain => {}
             Element::Blessed => {
                 self.halo_ring = true;
                 self.feathers = true;
                 // Wings are the Vaccine signature; every blessed line flies.
                 self.wings = true;
-                // Spikes and antennae become a swept blade of light.
-                self.crest = match self.crest {
-                    CrestKind::Spikes | CrestKind::Antenna | CrestKind::None => CrestKind::Blade,
-                    other => other,
-                };
-                self.head_h *= 1.05;
-                self.torso_w *= 0.97;
+                if claim_crest {
+                    // Spikes and antennae become a swept blade of light.
+                    self.crest = match self.crest {
+                        CrestKind::Spikes | CrestKind::Antenna | CrestKind::None => CrestKind::Blade,
+                        other => other,
+                    };
+                }
+                self.head_h *= 1.0 + 0.05 * weight;
+                self.torso_w *= 1.0 - 0.03 * weight;
             }
             Element::Crypto => {
                 self.crystals = true;
@@ -1383,30 +1425,38 @@ impl Plan {
                 // one read that separates Crypto from Blessed at a glance, when
                 // both wear wings and a ring of light.
                 self.visor = true;
-                // Nothing on a Data line is organic tusk; it hardens into a
-                // blade or a sensor mast.
-                self.crest = match self.crest {
-                    CrestKind::Horns | CrestKind::Antlers | CrestKind::Spikes => CrestKind::Blade,
-                    other => other,
-                };
-                self.head_w *= 1.03;
+                if claim_crest {
+                    // Nothing on a Data line is organic tusk; it hardens into a
+                    // blade or a sensor mast.
+                    self.crest = match self.crest {
+                        CrestKind::Horns | CrestKind::Antlers | CrestKind::Spikes => {
+                            CrestKind::Blade
+                        }
+                        other => other,
+                    };
+                }
+                self.head_w *= 1.0 + 0.03 * weight;
             }
             Element::Viral => {
                 self.back_spikes = true;
                 self.fangs = true;
                 self.drips = true;
-                // Fangs and spines instead of ornament; claws instead of hands.
-                self.crest = match self.crest {
-                    CrestKind::Blade | CrestKind::Antenna | CrestKind::None => CrestKind::Spikes,
-                    other => other,
-                };
-                self.arms = match self.arms {
-                    ArmKind::Hand => ArmKind::Claw,
-                    other => other,
-                };
+                if claim_crest {
+                    // Fangs and spines instead of ornament.
+                    self.crest = match self.crest {
+                        CrestKind::Blade | CrestKind::Antenna | CrestKind::None => CrestKind::Spikes,
+                        other => other,
+                    };
+                }
+                if claim_arms {
+                    self.arms = match self.arms {
+                        ArmKind::Hand => ArmKind::Claw,
+                        other => other,
+                    };
+                }
                 // A viral line is heavier in the chest and lower in the head.
-                self.torso_w *= 1.04;
-                self.head_h *= 0.96;
+                self.torso_w *= 1.0 + 0.04 * weight;
+                self.head_h *= 1.0 - 0.04 * weight;
             }
         }
         self
@@ -1454,14 +1504,22 @@ impl Plan {
     }
 }
 
-/// The whole plan: archetype, then its form, then attribute, then seeded build.
+/// The whole plan: archetype, then its form, then the attribute mix, then the
+/// seeded build.
 pub fn plan_for(archetype: Archetype, attribute: Attribute, variant: u8) -> Plan {
+    plan_for_blend(archetype, AttributeBlend::pure(attribute), variant)
+}
+
+/// [`plan_for`] for a creature whose lineage mixes attributes.
+///
+/// The plan is the same body either way — only the element layer differs — so a
+/// one-hot blend produces the identical plan the pre-blend code did.
+pub fn plan_for_blend(archetype: Archetype, blend: AttributeBlend, variant: u8) -> Plan {
     let variant = variant % VARIANT_COUNT;
     let mut plan = plan(archetype);
     plan.form = (variant / BUILD_COUNT) % FORM_COUNT;
     plan = form_of(archetype, plan, plan.form);
-    plan.with_element(Element::of(attribute))
-        .with_variant(variant)
+    plan.with_blend(blend).with_variant(variant)
 }
 
 /* ------------------------------------------------------------------ *
@@ -1619,8 +1677,20 @@ pub fn plan_for_seed(
     variant: u8,
     seed: u64,
 ) -> Plan {
+    plan_for_seed_blend(archetype, AttributeBlend::pure(attribute), variant, seed)
+}
+
+/// [`plan_for_seed`] for a blended lineage. The individual layer draws from a
+/// stream seeded by the creature's own seed, so `(seed, archetype, blend,
+/// variant)` still reproduces a body byte for byte.
+pub fn plan_for_seed_blend(
+    archetype: Archetype,
+    blend: AttributeBlend,
+    variant: u8,
+    seed: u64,
+) -> Plan {
     let mut rng = Rng::new(mix_seed(seed, &[0x1D1F_D0A1, archetype as u64]));
-    plan_for(archetype, attribute, variant).individualise(archetype, &mut rng)
+    plan_for_blend(archetype, blend, variant).individualise(archetype, &mut rng)
 }
 
 #[cfg(test)]

@@ -86,6 +86,13 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
                         "slug": outcome.slug,
                         "label": outcome.label,
                         "attribute": outcome.attribute.as_str(),
+                        // How the lineage mix shifted: the mixed rig's weights,
+                        // percentages and blended traits.
+                        "attribute_blend": crate::plugin::blend_json(
+                            outcome.blend,
+                            &state.state().lineage(),
+                        ),
+                        "blend_summary": outcome.blend_summary,
                         "animation": outcome.animation,
                         "bones": outcome.bones,
                         "parts": outcome.parts,
@@ -132,6 +139,13 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
                         "slug": outcome.slug,
                         "label": outcome.label,
                         "attribute": outcome.attribute.as_str(),
+                        // The mix the creature returns to — the truncated
+                        // lineage's weights, not the mix it had a moment ago.
+                        "attribute_blend": crate::plugin::blend_json(
+                            outcome.blend,
+                            &state.state().lineage(),
+                        ),
+                        "blend_summary": outcome.blend_summary,
                         "animation": outcome.animation,
                         "bones": outcome.bones,
                         "parts": outcome.parts,
@@ -198,7 +212,14 @@ fn dispatch(state: &mut Digimon, request: &Value) -> Value {
                 );
             }
             match state.reset(seed, archetype, attribute) {
-                Ok(status) => ok(json!({ "ok": true, "status": status })),
+                Ok(status) => {
+                    // A fresh creature is a one-hot blend of whichever attribute
+                    // was asked for; report it at the top level like the other
+                    // transitions do, as well as inside `status`.
+                    let blend =
+                        crate::plugin::blend_json(state.state().blend(), &state.state().lineage());
+                    ok(json!({ "ok": true, "attribute_blend": blend, "status": status }))
+                }
                 Err(err) => {
                     state.record_error(err.clone());
                     failed(500, json!({ "ok": false, "error": err }))
@@ -260,6 +281,25 @@ mod tests {
         assert_eq!(body["attribute"], json!("Vaccine"));
         assert!(body["branches"].as_array().unwrap().len() == 3);
         assert!(body["rig"]["bones"].as_u64().unwrap() > 0);
+
+        // The lineage mix, in the shape the card reads.
+        let blend = &body["attribute_blend"];
+        assert_eq!(blend["dominant"], json!("Vaccine"));
+        assert_eq!(blend["percent"]["Vaccine"], json!(100));
+        assert_eq!(blend["summary"], json!("100% Vaccine"));
+        assert_eq!(blend["pure"], json!(true));
+        assert_eq!(blend["lineage"], json!(["Vaccine"]));
+        assert_eq!(body["rig"]["parts_budget"], json!(100), "Fresh is validated at 100");
+
+        // Every branch previews the mix it would produce.
+        for branch in body["branches"].as_array().unwrap() {
+            assert!(branch["blend"]["weights"].is_array(), "{branch}");
+            assert!(
+                branch["blend_summary"].as_str().map(|s| s.contains('%')).unwrap_or(false),
+                "{branch}"
+            );
+            assert!(!branch["blended_flavour"].as_str().unwrap_or("").is_empty());
+        }
     }
 
     #[test]
@@ -290,6 +330,16 @@ mod tests {
             json!(format!("models/{}/model.json", body["slug"].as_str().unwrap()))
         );
         assert_eq!(body["status"]["stage"], json!("In-Training"));
+
+        // The reply names the mix the new body was generated from: the egg's
+        // attribute plus the one this branch just chose.
+        assert_eq!(body["blend_summary"], body["attribute_blend"]["summary"]);
+        assert_eq!(
+            body["attribute_blend"]["lineage"].as_array().unwrap().len(),
+            2,
+            "the lineage grew by the chosen attribute"
+        );
+        assert_eq!(body["attribute_blend"]["pure"], json!(true), "one step of three attributes");
     }
 
     #[test]
@@ -339,6 +389,9 @@ mod tests {
         assert_eq!(body["model_path"], json!(format!("models/{}/model.json", body["slug"].as_str().unwrap())));
         assert_eq!(body["status"]["stage"], json!("Fresh"));
         assert_eq!(body["status"]["can_dedigivolve"], json!(false));
+        // A rewind puts the earlier mix back on the creature, not just the stage.
+        assert_eq!(body["status"]["attribute_blend"]["pure"], json!(true));
+        assert_eq!(body["status"]["attribute_blend"]["lineage"], json!(["Vaccine"]));
 
         let zero = handle(
             &mut state,
@@ -375,6 +428,11 @@ mod tests {
         );
         assert_eq!(reset["status"], json!(200));
         assert_eq!(reset["body"]["status"]["stage"], json!("Fresh"));
+        assert_eq!(
+            reset["body"]["attribute_blend"]["summary"],
+            json!("100% Vaccine"),
+            "a reset reports the new creature's one-hot mix (the inherited attribute)"
+        );
         assert_eq!(reset["body"]["status"]["creature"]["archetype"], json!("cyborg"));
     }
 

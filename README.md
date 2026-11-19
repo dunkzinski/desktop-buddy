@@ -277,7 +277,9 @@ answering with `"enabled": false`.
 
 `plugins/digivolution` is a second guest with a different job: instead of
 tracking bars it **writes new characters**. One creature is a seed, a stage, XP,
-a bond and an attribute (`Vaccine` / `Data` / `Virus`). Each of the six stages
+a bond, an attribute (`Vaccine` / `Data` / `Virus`) and the *mix* of attributes
+its evolution line has accumulated — every transition records what it chose, and
+the stage is generated from all of it, recency-weighted. Each of the six stages
 (`Fresh → In-Training → Rookie → Champion → Ultimate → Mega`) is a complete
 `char-rig/model@1` rig the plugin generates itself — no sprites, no textures, no
 network — with tier-scaled bone counts, wings, crests, armour and palettes, three
@@ -360,10 +362,14 @@ of waiting for In-Training; the attribute's marker (halo, visor, fangs) and the
 form's accessory are there too. A hatchling is a bird or a bug or a rock, not a
 blob that becomes one.
 
-Every one is still a pure function of `(seed, archetype, tier, attribute)`, still
-under the 100-part budget (decoration is trimmed before any limb), still mirrored
-exactly, and still inside the monitor's top clip budget — variety changes the
-shape, never the rules.
+Every one is still a pure function of `(seed, archetype, tier, lineage)`, still
+under its stage's part budget (100 through Champion, 150 for Ultimate and Mega;
+decoration is trimmed before any limb, and a faint attribute's decoration before
+the dominant one's), still mirrored exactly, and still inside the monitor's top
+clip budget — variety changes the shape, never the rules. Attributes **blend
+across the evolution line**: the newest stage weighs most (linear `1..n`), so a
+Data creature that just shifted to Virus grows crystal growths *and* spines,
+painted in a mixture of both palettes.
 
 ```bash
 curl -s localhost:8765/digimon/status        # stage, XP, bond, branches, rig stats
@@ -371,14 +377,18 @@ curl -s -X POST localhost:8765/digivolve \
   -H 'content-type: application/json' -d '{"force": true}'
 ```
 
-`POST /digivolve` generates the next stage, has the **host** validate and write
-`models/<slug>/model.json` (a guest cannot touch the filesystem — and the host
-re-loads the file before keeping it), hot-swaps the avatar through the same code
-path as `POST /model`, and plays the new rig's `digivolve` clip. `POST
-/dedigivolve` walks the same path **backwards**: every history entry remembers
-the parent's seed *and* attribute, and generation is deterministic, so a rewind
-brings back the exact earlier creature even across a change of attribute (XP is
-kept, so it can grow straight back). Determinism is per **generator version**:
+`POST /digivolve` generates the next stage from the extended lineage, has the
+**host** validate and write `models/<slug>/model.json` (a guest cannot touch the
+filesystem — and the host re-loads the file before keeping it), hot-swaps the
+avatar through the same code path as `POST /model`, and plays the new rig's
+`digivolve` clip. `GET /digimon/status` and every transition reply carry
+`attribute_blend`: the percentages, the blended traits and the lineage they came
+from, which the **Digivolve** card shows as chips and a stacked bar (each branch
+previews the mix it would produce). `POST /dedigivolve` walks the same path
+**backwards**: every history entry remembers the parent's seed *and* attribute,
+and generation is deterministic, so a rewind brings back the exact earlier
+creature — and its earlier attribute mix — even across a change of attribute (XP
+is kept, so it can grow straight back). Determinism is per **generator version**:
 changing the form table or the individual layer (as the variety pass did) means
 a creature generated before the change rebuilds with the new rules — its seed is
 unchanged, its body is not. The

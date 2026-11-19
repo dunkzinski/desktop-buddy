@@ -450,6 +450,15 @@
   <div class="survival-body">
     <div class="digi-line" id="digi-line">—</div>
 
+    <!-- The lineage mix: recency-weighted attribute percentages and the traits
+         they actually grow. Filled from `status.attribute_blend`. -->
+    <div class="digi-blend" id="digi-blend"
+         title="Recency-weighted attribute mix across this creature's whole evolution line — the newest stage counts most, older stages stay visible">
+      <div class="digi-blend-bar" id="digi-blend-bar" role="img" aria-label="Attribute mix"></div>
+      <div class="digi-blend-chips" id="digi-blend-chips"></div>
+      <div class="digi-blend-traits" id="digi-blend-traits"></div>
+    </div>
+
     <div class="survival-bar-row" title="Growth toward the next stage — earned by simply existing">
       <span class="survival-bar-name">XP</span>
       <div class="survival-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"

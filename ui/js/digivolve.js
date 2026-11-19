@@ -2,7 +2,9 @@
  * char-rig — digivolution widget
  *
  * The pop-out card for the `digivolution` plugin: stage, XP, bond, attribute,
- * the three evolution branches, the "Evolve" button, and a new-creature row.
+ * the recency-weighted attribute mix of the whole lineage, the three evolution
+ * branches (each with the mix it would produce), the "Evolve" button, and a
+ * new-creature row.
  *
  * It is a *client* of the HTTP API, exactly like the survival card: every number
  * is the one `GET /digimon/status` answers, every button really does the POST,
@@ -123,6 +125,49 @@ function pct(part, whole) {
   return Math.max(0, Math.min(100, Math.round((part / whole) * 100)));
 }
 
+const ATTRIBUTE_ORDER = ["Vaccine", "Data", "Virus"];
+
+/**
+ * The lineage mix as `[[attribute, percent], …]`, in a fixed attribute order so
+ * the stacked bar's colour order never jumps between polls.
+ *
+ * `status.attribute_blend` is the plugin's word; a plugin built before the blend
+ * existed only reports a single `attribute`, so the fallback is a one-hot mix
+ * rather than an empty card.
+ */
+function blendOf(source) {
+  const blend = source && source.attribute_blend;
+  if (blend && blend.percent) {
+    const rows = ATTRIBUTE_ORDER.map((name) => [name, Number(blend.percent[name]) || 0]);
+    const total = rows.reduce((sum, [, value]) => sum + value, 0);
+    return total > 0 ? rows.filter(([, value]) => value > 0) : [];
+  }
+  const attribute = source && source.attribute;
+  return attribute ? [[attribute, 100]] : [];
+}
+
+/** `57% Virus · 43% Data` — the same words the plugin's `summary` uses. */
+function summarise(rows) {
+  return rows.map(([attribute, percent]) => `${percent}% ${attribute}`).join(" · ");
+}
+
+/** The mix a branch would produce, from its own preview fields. */
+function branchMix(branch) {
+  if (!branch) return [];
+  if (Array.isArray(branch.blend && branch.blend.weights)) {
+    const weights = branch.blend.weights;
+    const rows = ATTRIBUTE_ORDER.map((name, index) => [name, Math.round((weights[index] || 0) * 100)]);
+    const total = rows.reduce((sum, [, value]) => sum + value, 0);
+    if (total > 0) {
+      // Fold the rounding into the loudest share so the readout says 100%.
+      const loudest = rows.reduce((best, row) => (row[1] > best[1] ? row : best), rows[0]);
+      loudest[1] += 100 - total;
+      return rows.filter(([, value]) => value > 0);
+    }
+  }
+  return branch.attribute ? [[branch.attribute, 100]] : [];
+}
+
 /** Human shortfall for the XP gate: `needs 90 XP (have 20)`. */
 function shortfall(status) {
   const missing = Math.max(0, Number(status.xp_required || 0) - Number(status.xp || 0));
@@ -154,6 +199,8 @@ function renderCard(status) {
     seed.title = "The seed every stage of this creature is derived from";
     line.append(arche, attribute, seed);
   }
+
+  renderBlend(status);
 
   // XP: at the last stage there is no next tier, so the bar is simply full.
   const final = !!status.final_stage;
@@ -240,6 +287,61 @@ function renderCard(status) {
   renderBranches(status);
 }
 
+/**
+ * The lineage mix: a stacked bar (each attribute's width is its share), a chip
+ * per attribute with its percentage, and the traits the mix grows.
+ */
+function renderBlend(status) {
+  const rows = blendOf(status);
+  const blend = status && status.attribute_blend;
+
+  const bar = el("digi-blend-bar");
+  if (bar) {
+    bar.innerHTML = "";
+    for (const [attribute, percent] of rows) {
+      const slice = document.createElement("span");
+      slice.className = attributeClass(attribute);
+      slice.style.width = `${percent}%`;
+      slice.title = `${attribute} ${percent}%`;
+      bar.appendChild(slice);
+    }
+    bar.setAttribute("aria-label", `Attribute mix: ${summarise(rows) || "unknown"}`);
+  }
+
+  const chips = el("digi-blend-chips");
+  if (chips) {
+    chips.innerHTML = "";
+    for (const [attribute, percent] of rows) {
+      const chip = document.createElement("span");
+      chip.className = `digi-chip attr ${attributeClass(attribute)} digi-blend-chip`;
+      chip.textContent = `${percent}% ${attribute}`;
+      chip.title = blend && blend.lineage && blend.lineage.length
+        ? `Evolution line: ${blend.lineage.join(" → ")}`
+        : `${attribute} share of this creature's lineage`;
+      chips.appendChild(chip);
+    }
+    // A pure creature still gets one chip, so the readout is never blank.
+    if (!rows.length) {
+      const chip = document.createElement("span");
+      chip.className = "digi-chip digi-blend-chip";
+      chip.textContent = "no attribute";
+      chips.appendChild(chip);
+    }
+  }
+
+  const traits = el("digi-blend-traits");
+  if (traits) {
+    const text = (blend && blend.flavour) || (status && status.attribute) || "";
+    traits.textContent = text;
+    traits.title = blend && blend.lineage && blend.lineage.length
+      ? `Recency-weighted across ${blend.lineage.length} stages — the newest stage counts most`
+      : "The traits this creature's attribute grows";
+  }
+
+  const block = el("digi-blend");
+  if (block) block.dataset.dominant = (blend && blend.dominant) || (status && status.attribute) || "";
+}
+
 function renderBranches(status) {
   const list = el("digi-branches");
   if (!list) return;
@@ -267,7 +369,10 @@ function renderBranches(status) {
     row.dataset.branch = String(index);
     row.setAttribute("role", "radio");
     row.setAttribute("aria-checked", String(index === digivolve.picked));
-    row.title = `Evolve into ${branch.label} (${branch.attribute}) — branch seed ${branch.seed}`;
+    const projected = branchMix(branch);
+    row.title =
+      `Evolve into ${branch.label} (${branch.attribute}) — branch seed ${branch.seed}` +
+      (projected.length ? `\nMix after evolving: ${summarise(projected)}` : "");
 
     const name = document.createElement("span");
     name.className = "digi-branch-name";
@@ -292,6 +397,18 @@ function renderBranches(status) {
     if (branch.slug) detail.title = branch.slug;
 
     row.append(name, attribute, detail);
+
+    // What the mix becomes if this branch is taken. Precomputed by the plugin
+    // (`blend_summary`), so the preview cannot drift from what evolution does.
+    if (projected.length) {
+      const mix = document.createElement("span");
+      mix.className = "digi-branch-mix";
+      const text = branch.blend_summary || summarise(projected);
+      mix.textContent = `→ ${text}`;
+      if (branch.blended_flavour) mix.title = branch.blended_flavour;
+      row.append(mix);
+    }
+
     row.addEventListener("click", (event) => {
       event.preventDefault();
       digivolve.picked = index;
@@ -315,7 +432,8 @@ function syncBackButton(status) {
   button.disabled = !can;
   button.title = can
     ? `Return to ${previous || "the previous stage"} — POST /dedigivolve ` +
-      `(${status.rewind_depth} step${status.rewind_depth === 1 ? "" : "s"} of history)`
+      `(${status.rewind_depth} step${status.rewind_depth === 1 ? "" : "s"} of history; ` +
+      "the attribute mix rewinds with it)"
     : "This creature is at its first stage";
   button.textContent = can ? `◀ ${previous || "Back"}` : "◀ Back";
 }
@@ -454,12 +572,12 @@ function evolve() {
     { branch: digivolve.picked },
     (payload) =>
       `${payload.from} → ${payload.stage}: ${payload.bones} bones, ${payload.parts} parts` +
-      ` · ${payload.model_path}`,
+      ` · ${payload.blend_summary || payload.attribute} · ${payload.model_path}`,
   ).then((payload) => {
     if (payload) {
       setNote(
         `${payload.from} → ${payload.stage}: ${payload.bones} bones, ${payload.parts} parts ` +
-          `(${payload.attribute})`,
+          `(${payload.blend_summary || payload.attribute})`,
       );
     }
   });
@@ -470,7 +588,8 @@ function rewind() {
   const status = digivolve.status;
   if (!status || !status.can_dedigivolve) return;
   post("/dedigivolve", { steps: 1 }, (payload) =>
-    `${payload.from} → ${payload.stage} (back) · ${payload.bones} bones, ${payload.parts} parts`,
+    `${payload.from} → ${payload.stage} (back) · ${payload.bones} bones, ${payload.parts} parts` +
+    ` · ${payload.blend_summary || payload.attribute}`,
   );
 }
 
@@ -570,7 +689,9 @@ export async function setupDigivolve() {
   await listen("digimon", (event) => {
     const payload = event && event.payload ? event.payload : {};
     if (payload.event === "digivolved") {
-      setNote(`${payload.from} → ${payload.stage} (${payload.attribute})`);
+      setNote(
+        `${payload.from} → ${payload.stage} (${payload.blend_summary || payload.attribute})`,
+      );
       toast(`Digivolved into ${payload.stage}`);
     } else if (payload.event === "dedigivolved") {
       setNote(`${payload.from} → ${payload.stage} (back to an earlier form)`);
@@ -607,10 +728,22 @@ export async function setupDigivolve() {
       xp_required: digivolve.status ? digivolve.status.xp_required : null,
       bond: digivolve.status ? digivolve.status.bond : null,
       attribute: digivolve.status ? digivolve.status.attribute : null,
+      blend: digivolve.status
+        ? (digivolve.status.attribute_blend || {
+            dominant: digivolve.status.attribute,
+            percent: Object.fromEntries(blendOf(digivolve.status)),
+            summary: summarise(blendOf(digivolve.status)),
+          })
+        : null,
+      blendChips: [...document.querySelectorAll("#digi-blend-chips .digi-blend-chip")].map(
+        (node) => node.textContent,
+      ),
       can_evolve: digivolve.status ? digivolve.status.can_evolve : false,
       picked: digivolve.picked,
       branches: digivolve.status
-        ? (digivolve.status.branches || []).map((b) => `${b.stage}:${b.attribute}`)
+        ? (digivolve.status.branches || []).map(
+            (b) => `${b.stage}:${b.attribute}:${b.blend_summary || ""}`,
+          )
         : [],
       rig: digivolve.status ? digivolve.status.rig : null,
       can_dedigivolve: digivolve.status ? digivolve.status.can_dedigivolve : false,

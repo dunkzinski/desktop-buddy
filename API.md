@@ -1625,6 +1625,19 @@ curl -s localhost:8765/digimon/status
   "xp_to_next": 116,
   "bond": 0.52,
   "attribute": "Virus",
+  "attribute_blend": {
+    "dominant": "Virus",
+    "weights": { "Vaccine": 0.0, "Data": 0.333333, "Virus": 0.666667 },
+    "percent": { "Vaccine": 0, "Data": 33, "Virus": 67 },
+    "summary": "67% Virus · 33% Data",
+    "flavour": "fanged, spiked, toxic · crystalline, plated, digital",
+    "pure": false,
+    "lineage": ["Data", "Virus"],
+    "loud": [
+      { "attribute": "Virus", "weight": 0.666667, "percent": 67, "flavour": "fanged, spiked, toxic" },
+      { "attribute": "Data", "weight": 0.333333, "percent": 33, "flavour": "crystalline, plated, digital" }
+    ]
+  },
   "slug": "digi-drake-rookie-virus-1f3a9c02",
   "generation": 2,
   "installed": true,
@@ -1634,15 +1647,20 @@ curl -s localhost:8765/digimon/status
   "rewind_depth": 1,
   "previous_stage": "In-Training",
   "last_evolved_ms": 1732000123456,
-  "rig": { "bones": 19, "parts": 46, "clips": 3, "min_world_y": -86.4, "symmetry_error": 0.0 },
+  "rig": { "bones": 19, "parts": 46, "parts_budget": 100, "clips": 3, "min_world_y": -86.4, "symmetry_error": 0.0 },
   "attributes": [ { "value": "Virus", "label": "Virus", "flavour": "fanged, spiked, toxic" } ],
   "archetypes": [ { "value": "beast", "label": "Beast" }, { "value": "drake", "label": "Drake" } ],
   "branches": [
     { "stage": "Champion", "attribute": "Virus", "label": "Drake Champion (Virus)",
       "slug": "digi-drake-champion-virus-9b21c4d0", "seed": 11166978496, "xp_required": 180,
-      "flavour": "fanged, spiked, toxic" }
+      "flavour": "fanged, spiked, toxic",
+      "blend": { "weights": [0.0, 0.25, 0.75] },
+      "blend_summary": "75% Virus · 25% Data",
+      "blended_flavour": "fanged, spiked, toxic · crystalline, plated, digital" }
   ],
-  "history": [ { "from": "In-Training", "to": "Rookie", "slug": "digi-drake-rookie-virus-1f3a9c02", "at_ms": 1732000123456 } ],
+  "history": [ { "from": "In-Training", "to": "Rookie", "slug": "digi-drake-rookie-virus-1f3a9c02",
+                 "at_ms": 1732000123456, "from_seed": 1585367844, "from_attribute": "Data",
+                 "to_attribute": "Virus" } ],
   "last_error": null
 }
 ```
@@ -1650,9 +1668,29 @@ curl -s localhost:8765/digimon/status
 `rig.min_world_y` is the highest pixel the current stage paints (world space,
 root at `scale: 0.55`); the generator keeps it at or below `-170` so the
 artwork never clips the top of the monitor. `rig.symmetry_error` is the worst
-left/right disagreement in the skeleton — `0.0` means the mirrored chains are
-exact. `installed` says the stage's rig has been published by **this** run (the
-plugin re-writes it at startup rather than trusting a saved claim).
+left/right disagreement in the skeleton — the format's bound is `1e-6`, and the
+generator lands at zero to the last bit of the pose arithmetic. `rig.parts_budget`
+is the cap that stage was validated against: `100` for Fresh through Champion,
+`150` for Ultimate and Mega. `installed` says the stage's rig has been published
+by **this** run (the plugin re-writes it at startup rather than trusting a saved
+claim).
+
+**`attribute_blend`** is the creature's whole *lineage*, not just its current
+attribute. `lineage` reads oldest-first: the egg's attribute, then the attribute
+each transition chose; the weights are the linear recency ramp (the oldest stage
+counts `1`, the newest `n`) normalised to sum to `1.0`, so the most recent
+choices lead while every earlier stage stays visible. `weights` are those shares,
+`percent` the same mix as whole numbers that always total `100`, `summary` the
+readout (`"67% Virus · 33% Data"`), `flavour` every contributor's traits
+loudest-first, `loud` the same data as an ordered array, and `dominant` the
+attribute with the largest share. The rig is generated from this mix: crystals
+and circuit traces from the Data share, spines/fangs/drips from the Virus share,
+halo and feather vanes from the Vaccine share — each scaled by its share, and the
+skin painted in a weighted blend of the three palettes. `attribute` (top level)
+stays the single *current* attribute, which is what names the model folder, so
+every older client keeps working. Each branch in `branches` carries its own
+`blend` / `blend_summary` / `blended_flavour`: the mix taking that branch would
+produce.
 
 ### `POST /digivolve`
 
@@ -1676,6 +1714,9 @@ curl -s -X POST localhost:8765/digivolve -H 'content-type: application/json' \
   "slug": "digi-drake-in-training-3c0f22aa",
   "label": "Drake In-Training",
   "attribute": "Data",
+  "attribute_blend": { "dominant": "Data", "percent": { "Vaccine": 0, "Data": 67, "Virus": 33 },
+                       "summary": "67% Data · 33% Virus", "lineage": ["Data", "Virus"], "pure": false },
+  "blend_summary": "67% Data · 33% Virus",
   "animation": "digivolve",
   "bones": 13,
   "parts": 31,
@@ -1687,7 +1728,9 @@ curl -s -X POST localhost:8765/digivolve -H 'content-type: application/json' \
 
 An insufficient XP is a **409** (`"not ready: 20 xp of 90 …"`); `Mega` is the
 last stage and also a **409**. The reply carries the full post-transition status
-so one request repaints a client.
+so one request repaints a client, plus `attribute_blend` / `blend_summary` — the
+lineage mix the new body was actually generated from (the creature it had been,
+plus the attribute this branch chose).
 
 ### `POST /dedigivolve`
 
@@ -1711,6 +1754,9 @@ curl -s -X POST localhost:8765/dedigivolve -H 'content-type: application/json' -
   "slug": "digi-beast-fresh-5eed1234",
   "label": "Beast Fresh",
   "attribute": "Data",
+  "attribute_blend": { "dominant": "Data", "percent": { "Vaccine": 0, "Data": 100, "Virus": 0 },
+                       "summary": "100% Data", "lineage": ["Data"], "pure": true },
+  "blend_summary": "100% Data",
   "animation": "digivolve",
   "bones": 9,
   "parts": 27,
@@ -1724,8 +1770,11 @@ Because generation is deterministic and each history entry records the
 **parent's** seed and attribute — and both are used when rebuilding, so rewinding
 across a change of attribute lands on the creature that was actually there — a
 rewind regenerates the *exact* creature the
-line had before — same bones, colours and clips — then writes it and hot-swaps
-the avatar through the same `POST /model` path as evolution. XP is kept (a
+line had before — same bones, colours and clips, and the same attribute **mix**
+(the blend of the truncated lineage, which is the prefix that stage was built
+from) — then writes it and hot-swaps the avatar through the same `POST /model`
+path as evolution. The reply's `attribute_blend` is therefore the mix the
+creature returns *to*, not the one it had a moment ago. XP is kept (a
 creature has still grown), so it can evolve straight back. At `Fresh` — or with
 no history — the answer is a **409**; `steps: 0` is a **400**.
 

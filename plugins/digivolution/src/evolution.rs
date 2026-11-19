@@ -13,8 +13,9 @@ use crate::host;
 use crate::rng::mix_seed;
 
 /// The attribute now lives in its own module because the *generator* needs it
-// (an attribute is a body plan modifier, not just a branch label).
-pub use crate::attribute::Attribute;
+/// (an attribute is a body plan modifier, not just a branch label), and the
+/// blend of the whole lineage is what the generator actually builds from.
+pub use crate::attribute::{Attribute, AttributeBlend};
 
 /// One possible next stage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,6 +29,13 @@ pub struct Branch {
     /// What this attribute does to the body, so the choice is legible before it
     /// is made ("crystalline, plated, digital").
     pub flavour: String,
+    /// The lineage mix this branch *would* produce — so the UI can preview how
+    /// taking it shifts the creature, not just what it becomes.
+    pub blend: AttributeBlend,
+    /// `57% Virus · 43% Data`, the same mix as a readout.
+    pub blend_summary: String,
+    /// Every contributing attribute's traits, loudest first.
+    pub blended_flavour: String,
 }
 
 /// A recorded transition, so `GET /digimon/status` can show the line.
@@ -51,6 +59,14 @@ pub struct HistoryEntry {
     pub from_seed: Option<u64>,
     #[serde(default = "default_attribute")]
     pub from_attribute: Attribute,
+    /// The attribute this transition **chose** — the child's own attribute.
+    ///
+    /// `Option` because saves written before the blend existed have no field. A
+    /// missing value is resolved from the next entry's parent attribute (or the
+    /// live attribute) in [`Digivolution::lineage`], so a legacy line still
+    /// yields a usable blend instead of failing to load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_attribute: Option<Attribute>,
 }
 
 /// The whole growth state.
@@ -140,9 +156,53 @@ impl Digivolution {
         }
     }
 
+    /// The attributes across the whole line, oldest first: the initial stage's
+    /// attribute, then the attribute each transition chose.
+    ///
+    /// Legacy entries (recorded before `to_attribute` existed) borrow the next
+    /// entry's parent attribute, or the live attribute for the newest one — the
+    /// same value that entry would have recorded, so an old save blends sanely.
+    pub fn lineage(&self) -> Vec<Attribute> {
+        let Some(first) = self.history.first() else {
+            return vec![self.attribute];
+        };
+        let mut out = Vec::with_capacity(self.history.len() + 1);
+        // The oldest recorded transition still knows its parent's attribute.
+        out.push(first.from_attribute);
+        for (index, entry) in self.history.iter().enumerate() {
+            let chosen = entry
+                .to_attribute
+                .or_else(|| self.history.get(index + 1).map(|next| next.from_attribute))
+                .unwrap_or(self.attribute);
+            out.push(chosen);
+        }
+        out
+    }
+
+    /// The recency-weighted mix of [`Self::lineage`] — what this stage's body is
+    /// generated from.
+    pub fn blend(&self) -> AttributeBlend {
+        AttributeBlend::from_lineage(&self.lineage())
+    }
+
+    /// The mix this creature would have after choosing `attribute` next. Used by
+    /// the branch preview and by [`Self::digivolve`], so the previewed number and
+    /// the built rig cannot disagree.
+    pub fn preview_blend(&self, attribute: Attribute) -> AttributeBlend {
+        let mut lineage = self.lineage();
+        lineage.push(attribute);
+        AttributeBlend::from_lineage(&lineage)
+    }
+
     /// The manifest for the current stage.
     pub fn spec(&self) -> Spec {
-        Spec::with_attribute(self.seed, self.archetype, self.tier, self.attribute)
+        Spec::with_blend(
+            self.seed,
+            self.archetype,
+            self.tier,
+            self.attribute,
+            self.blend(),
+        )
     }
 
     pub fn manifest(&self) -> generator::Manifest {
@@ -182,6 +242,9 @@ impl Digivolution {
                 ],
             );
             let spec = Spec::with_attribute(seed, self.archetype, next, attribute);
+            // The mix this branch would produce, computed exactly as the
+            // transition itself will compute it.
+            let blend = self.preview_blend(attribute);
             out.push(Branch {
                 stage: next,
                 attribute,
@@ -190,6 +253,9 @@ impl Digivolution {
                 seed,
                 xp_required: xp_required(self.tier),
                 flavour: attribute.flavour().to_string(),
+                blend,
+                blend_summary: blend.summary(),
+                blended_flavour: blend.blended_flavour(),
             });
         }
         out
@@ -235,14 +301,18 @@ impl Digivolution {
             ));
         }
 
-        let spec = Spec::with_attribute(
+        // The *new* body is generated from the whole lineage: the creature it
+        // has been plus the attribute it just chose. That is the blend.
+        let blend = self.preview_blend(chosen.attribute);
+        let spec = Spec::with_blend(
             chosen.seed,
             self.archetype,
             chosen.stage,
             chosen.attribute,
+            blend,
         );
         let manifest = generator::generate(&spec);
-        let report = generator::validate(&manifest)?;
+        let report = generator::validate_at(&manifest, chosen.stage)?;
 
         // The host validates again with the app's own loader and writes
         // `models/<slug>/model.json` atomically.
@@ -266,6 +336,7 @@ impl Digivolution {
             at_ms: self.last_evolved_ms,
             from_seed: Some(previous_seed),
             from_attribute: previous_attribute,
+            to_attribute: Some(chosen.attribute),
         });
         if self.history.len() > 32 {
             self.history.remove(0);
@@ -280,6 +351,8 @@ impl Digivolution {
             slug: self.slug.clone(),
             label: spec.label(),
             attribute: self.attribute,
+            blend,
+            blend_summary: blend.summary(),
             bones: report.bones,
             parts: report.parts,
             min_world_y: report.min_world_y,
@@ -310,6 +383,7 @@ impl Digivolution {
         }
         let steps = steps.clamp(1, self.history.len());
         let entry = self.history[self.history.len() - steps].clone();
+        let lineage = self.lineage();
         let Some(parent_seed) = entry.from_seed else {
             return Err(format!(
                 "the {}→{} step was recorded before rewind existed, and a parent seed \
@@ -322,15 +396,19 @@ impl Digivolution {
         let from = self.tier;
         // The attribute belongs to the *parent*, not to the creature doing the
         // rewind: regenerating a Virus ancestor in the Vaccine family would put
-        // a different creature back on screen.
-        let spec = Spec::with_attribute(
+        // a different creature back on screen. The mix is the *truncated*
+        // lineage, exactly the prefix the parent was built from on the way up.
+        let keep = self.history.len() - steps;
+        let blend = AttributeBlend::from_lineage(&lineage[..=keep]);
+        let spec = Spec::with_blend(
             parent_seed,
             self.archetype,
             entry.from,
             entry.from_attribute,
+            blend,
         );
         let manifest = generator::generate(&spec);
-        let report = generator::validate(&manifest)?;
+        let report = generator::validate_at(&manifest, entry.from)?;
         host::write_model(&spec.slug(), &serde_json::to_value(&manifest).unwrap_or_default())?;
 
         self.tier = entry.from;
@@ -340,7 +418,6 @@ impl Digivolution {
         self.generation = self.generation.saturating_sub(steps as u32);
         self.last_evolved_ms = host::now_ms();
         self.installed = true;
-        let keep = self.history.len() - steps;
         self.history.truncate(keep);
 
         // `POST /model`'s path, exactly as forward evolution uses.
@@ -352,6 +429,8 @@ impl Digivolution {
             slug: self.slug.clone(),
             label: spec.label(),
             attribute: self.attribute,
+            blend,
+            blend_summary: blend.summary(),
             bones: report.bones,
             parts: report.parts,
             min_world_y: report.min_world_y,
@@ -367,7 +446,12 @@ pub struct Outcome {
     pub to: Tier,
     pub slug: String,
     pub label: String,
+    /// The creature's single *current* attribute (it names the rig's folder).
     pub attribute: Attribute,
+    /// The full lineage mix the new body was generated from.
+    pub blend: AttributeBlend,
+    /// The same mix as `58% Data · 42% Virus`.
+    pub blend_summary: String,
     pub bones: usize,
     pub parts: usize,
     pub min_world_y: f64,

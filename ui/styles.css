@@ -850,13 +850,34 @@ input[type="range"]::-webkit-slider-thumb {
   letter-spacing: 0.02em;
 }
 
+/* The lineage mix: a stacked bar (share = width), percentage chips, traits. */
+.digi-blend { margin: 0 0 9px; }
+.digi-blend-bar {
+  display: flex; height: 6px; border-radius: 999px; overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+}
+.digi-blend-bar span { display: block; height: 100%; }
+.digi-blend-bar span.vaccine { background: linear-gradient(90deg, #4a90d9, #7ab6f0); }
+.digi-blend-bar span.data { background: linear-gradient(90deg, #2fae6c, #3ddc84); }
+.digi-blend-bar span.virus { background: linear-gradient(90deg, #c01526, #ff6b75); }
+.digi-blend-chips { display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap; }
+.digi-blend-chip { font-variant-numeric: tabular-nums; }
+.digi-blend-traits {
+  margin-top: 4px; font-size: 9px; color: #6e6e85; line-height: 1.4;
+}
+/* The projected mix for one branch: a full-width second line under the row. */
+.digi-branch-mix {
+  flex: 0 0 100%; margin-top: 3px;
+  font-size: 9px; color: #6e6e85; font-variant-numeric: tabular-nums;
+}
+
 .digi-branches-label {
   margin: 11px 0 5px; font-size: 9.5px; font-weight: 600;
   letter-spacing: 0.07em; text-transform: uppercase; color: #6e6e85;
 }
 .digi-branches { display: flex; flex-direction: column; gap: 5px; }
 .digi-branch {
-  display: flex; align-items: center; gap: 7px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
   padding: 6px 8px; text-align: left;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.09);

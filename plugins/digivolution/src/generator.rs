@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::attribute::Attribute;
+use crate::attribute::{Attribute, AttributeBlend};
 use crate::plan::{
     self, Accessory, ArmKind, CrestKind, EarKind, HeadKind, LegKind, Plan, TailKind, TorsoKind,
 };
@@ -219,16 +219,26 @@ impl<'de> Deserialize<'de> for Tier {
 /// Everything a creature's shape is derived from.
 ///
 /// The attribute belongs here, not on the branch: a Vaccine Rookie and a Virus
-/// Rookie are different *rigs*, so the attribute has to reach the generator.
+/// Rookie are different *rigs*, so the attribute has to reach the generator —
+/// and so does the lineage `blend`, because a stage is shaped by every attribute
+/// its line has been, not just the one it is now.
 /// The variant is the seeded build (lean / canonical / broad) and is derived
 /// from the seed so it costs the caller nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Spec {
     pub seed: u64,
     pub archetype: Archetype,
     pub tier: Tier,
     #[serde(default)]
     pub attribute: Attribute,
+    /// The recency-weighted lineage mix, when the creature has a history.
+    ///
+    /// `None` means "exactly `attribute`" — the pre-blend spelling — so a
+    /// hatchling, a legacy save and every existing caller generate through the
+    /// identical code path with a one-hot mix. (This one field is why `Spec` is
+    /// `PartialEq` and not `Eq`: a blend is three floats.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<AttributeBlend>,
 }
 
 impl Spec {
@@ -247,7 +257,35 @@ impl Spec {
             archetype,
             tier,
             attribute,
+            blend: None,
         }
+    }
+
+    /// A stage of a creature whose evolution line mixed attributes.
+    ///
+    /// `attribute` stays the creature's *current* attribute (it names the
+    /// folder), while `blend` carries the history that shapes the body.
+    pub fn with_blend(
+        seed: u64,
+        archetype: Archetype,
+        tier: Tier,
+        attribute: Attribute,
+        blend: AttributeBlend,
+    ) -> Self {
+        Self {
+            seed,
+            archetype,
+            tier,
+            attribute,
+            blend: Some(blend),
+        }
+    }
+
+    /// The mix this rig is generated from; falls back to the single attribute,
+    /// which is what `generate` did before the blend existed.
+    pub fn blend(&self) -> AttributeBlend {
+        self.blend
+            .unwrap_or_else(|| AttributeBlend::pure(self.attribute))
     }
 
     /// The seeded variant: one of `plan::VARIANT_COUNT` numbers, packing an
@@ -433,10 +471,58 @@ fn base_palette(archetype: Archetype) -> Palette {
     }
 }
 
+/// What one attribute does to the paint job: body tint, accent tint, glow tint,
+/// and how hard each is mixed in.
+fn attribute_paint(attribute: Attribute) -> (&'static str, &'static str, &'static str, f64) {
+    match attribute {
+        // Blessed lines lift toward light.
+        Attribute::Vaccine => ("#fff4d0", "#ffe9a3", "#fffbe8", 0.22),
+        // Crypto lines cool toward signal blue.
+        Attribute::Data => ("#6fd8ff", "#48e0ff", "#b8f4ff", 0.20),
+        // Viral lines sink into rot.
+        Attribute::Virus => ("#2a0d1d", "#ff3d81", "#9dff4a", 0.24),
+    }
+}
+
+/// `#rrggbb` → three bytes. Malformed input is black, matching [`mix`].
+fn hex_rgb(hex: &str) -> [u8; 3] {
+    let digits = hex.trim_start_matches('#');
+    if digits.len() != 6 {
+        return [0, 0, 0];
+    }
+    let at = |start: usize| u8::from_str_radix(&digits[start..start + 2], 16).unwrap_or(0);
+    [at(0), at(2), at(4)]
+}
+
+/// Mix one paint channel (0 body, 1 accent, 2 glow) across the lineage by
+/// weight. A one-hot blend returns that attribute's exact colour, so a pure
+/// creature's paint is byte-identical to the pre-blend palette.
+fn blend_paint(blend: AttributeBlend, channel: usize) -> String {
+    let mut acc = [0.0f64; 3];
+    for attribute in Attribute::ALL {
+        let weight = blend.weight(attribute);
+        if weight <= 0.0 {
+            continue;
+        }
+        let paint = attribute_paint(attribute);
+        let hex = match channel {
+            0 => paint.0,
+            1 => paint.1,
+            _ => paint.2,
+        };
+        let rgb = hex_rgb(hex);
+        for (slot, value) in acc.iter_mut().zip(rgb) {
+            *slot += value as f64 * weight;
+        }
+    }
+    let byte = |value: f64| value.clamp(0.0, 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", byte(acc[0]), byte(acc[1]), byte(acc[2]))
+}
+
 /// Tier and seed both move the palette: later stages sit darker and richer (a
 /// Mega should not be pastel), and the seed jitters each channel a little so two
 /// Rookies with different seeds read as different creatures.
-fn palette_for(archetype: Archetype, attribute: Attribute, tier: Tier, rng: &mut Rng) -> Palette {
+fn palette_for(archetype: Archetype, blend: AttributeBlend, tier: Tier, rng: &mut Rng) -> Palette {
     let base = base_palette(archetype);
     let step = tier.index() as f64;
     let darken = 1.0 - step * 0.035;
@@ -446,18 +532,21 @@ fn palette_for(archetype: Archetype, attribute: Attribute, tier: Tier, rng: &mut
     let accent = shade(&base.accent, (1.0 + step * 0.012) * jitter(rng));
     let glow = shade(&base.glow, (1.0 + step * 0.02) * jitter(rng));
     let metal = shade(&base.metal, darken * jitter(rng));
-    // The attribute tints the family: blessed lines lift toward light, crypto
-    // lines cool toward signal blue, viral lines sink into rot. Only a fraction,
-    // or every archetype would end up the same three colours again.
-    let (tint, strength, accent_tint, glow_tint) = match attribute {
-        Attribute::Vaccine => ("#fff4d0", 0.22, "#ffe9a3", "#fffbe8"),
-        Attribute::Data => ("#6fd8ff", 0.20, "#48e0ff", "#b8f4ff"),
-        Attribute::Virus => ("#2a0d1d", 0.24, "#ff3d81", "#9dff4a"),
-    };
-    let body = mix(&body, tint, strength);
-    let body_dark = mix(&body_dark, tint, strength * 0.8);
-    let accent = mix(&accent, accent_tint, strength * 1.4);
-    let glow = mix(&glow, glow_tint, strength * 1.2);
+    // The attribute *mix* tints the family. Only a fraction, or every archetype
+    // would end up the same three colours again — but the fraction itself is
+    // blended, so a Data body with a recent Virus shift is cool *and* bruised
+    // rather than one flat colour.
+    let tint = blend_paint(blend, 0);
+    let accent_tint = blend_paint(blend, 1);
+    let glow_tint = blend_paint(blend, 2);
+    let strength: f64 = Attribute::ALL
+        .iter()
+        .map(|attribute| blend.weight(*attribute) * attribute_paint(*attribute).3)
+        .sum();
+    let body = mix(&body, &tint, strength);
+    let body_dark = mix(&body_dark, &tint, strength * 0.8);
+    let accent = mix(&accent, &accent_tint, strength * 1.4);
+    let glow = mix(&glow, &glow_tint, strength * 1.2);
     // The last degree of freedom: hue. Without it two individuals of one
     // archetype under one attribute are the same animal in the same paint. The
     // body drifts a little (a littermate, not a new species); the accent travels
@@ -738,8 +827,12 @@ pub fn generate(spec: &Spec) -> Manifest {
         spec.seed,
         &[spec.archetype as u64, spec.tier.index() as u64 + 1],
     ));
-    let plan = plan::plan_for_seed(spec.archetype, spec.attribute, spec.variant(), spec.seed);
-    let pal = palette_for(spec.archetype, spec.attribute, spec.tier, &mut rng);
+    // The lineage mix is resolved once, here, and handed to every layer that
+    // cares: the plan (which furniture exists), the palette (how it is painted)
+    // and the detail trimmers. One value, one meaning.
+    let blend = spec.blend();
+    let plan = plan::plan_for_seed_blend(spec.archetype, blend, spec.variant(), spec.seed);
+    let pal = palette_for(spec.archetype, blend, spec.tier, &mut rng);
     let dims = Dims::for_tier(spec.tier, plan, &mut rng);
     let features = Features::for_spec(spec, plan);
     // The form's secondary geometry. It is authored as parts (not a bone), so it
@@ -1037,7 +1130,7 @@ pub fn generate(spec: &Spec) -> Manifest {
             ));
         }
     }
-    torso.parts.extend(aspect_torso_parts(&pal, dims, plan, features));
+    torso.parts.extend(aspect_torso_parts(&pal, dims, plan, features, blend));
     for (bone_id, parts) in &accessories {
         if *bone_id == "torso" {
             torso.parts.extend(parts.iter().cloned());
@@ -1101,7 +1194,7 @@ pub fn generate(spec: &Spec) -> Manifest {
     );
     head.anim = Anim::sway(0.012, 0.9);
     head.parts = head_parts(&pal, dims, features, plan);
-    head.parts.extend(aspect_head_parts(&pal, dims, plan, features));
+    head.parts.extend(aspect_head_parts(&pal, dims, plan, features, blend));
     for (bone_id, parts) in &accessories {
         if *bone_id == "head" {
             head.parts.extend(parts.iter().cloned());
@@ -1184,12 +1277,23 @@ pub fn generate(spec: &Spec) -> Manifest {
         format: "char-rig/model@1".to_string(),
         name: spec.slug(),
         label: spec.label(),
-        notes: Some(format!(
-            "procedurally generated: seed={} archetype={} tier={}",
-            spec.seed,
-            spec.archetype.as_str(),
-            spec.tier.as_str()
-        )),
+        notes: Some(match spec.blend {
+            // A one-hot mix *is* the single attribute, so it keeps the old note
+            // (and therefore the old bytes) rather than announcing a blend.
+            Some(blend) if !blend.is_pure() => format!(
+                "procedurally generated: seed={} archetype={} tier={} blend={}",
+                spec.seed,
+                spec.archetype.as_str(),
+                spec.tier.as_str(),
+                blend.summary()
+            ),
+            _ => format!(
+                "procedurally generated: seed={} archetype={} tier={}",
+                spec.seed,
+                spec.archetype.as_str(),
+                spec.tier.as_str()
+            ),
+        }),
         animations: None,
         bones,
     };
@@ -1203,7 +1307,7 @@ pub fn generate(spec: &Spec) -> Manifest {
     manifest.animations = Some(animations);
 
     enforce_monitor_budget(&mut manifest);
-    trim_details(&mut manifest);
+    trim_details(&mut manifest, spec);
     manifest
 }
 
@@ -1477,58 +1581,99 @@ fn accessory_parts(pal: &Palette, dims: Dims, plan: Plan) -> (&'static str, Vec<
     }
 }
 
-/// Parts that carry no silhouette. When a rich plan (a Mega machine under a rich
-/// attribute) runs into the 100-part budget, these go first — the creature must
-/// lose decoration, never a limb.
+/// The part budget for a stage.
 ///
-/// Order is the removal order: markings and tiny trim first, the form's
-/// accessory last (it is the silhouette, but it is also the only thing left once
-/// the rest is gone, and a rig over the cap is worse than a bare one).
-const DECORATION: [&str; 34] = [
-    "spot",
-    "stripe",
-    "patch",
-    "patch_l",
-    "patch_r",
-    "seam",
-    "barrel_ring",
-    "halo_in",
-    "drip_l",
-    "drip_r",
-    "circuit_l",
-    "circuit_r",
-    "crystal_core",
-    "spine_mid",
-    "feather_more",
-    "mane_tip",
-    "ridge_tip",
-    "frill_mid",
-    "ant2_tip",
-    "mane_mid",
-    "ridge_mid",
-    "spur_l",
-    "spur_r",
-    "hipfin_l",
-    "hipfin_r",
-    "frill_l",
-    "frill_r",
-    "ant2_l",
-    "ant2_r",
-    "collar_in",
-    "collar_ring",
-    "tail_blade",
-    "mane",
-    "ridge",
+/// Fresh through Champion keep the format's 100-part ceiling. Ultimate and Mega
+/// get 150: a six-stage line that has mixed two or three attributes genuinely
+/// has more silhouette to draw, and holding it to a Rookie's budget was deleting
+/// exactly the layered detail the blend exists to show.
+pub fn max_parts(tier: Tier) -> usize {
+    match tier {
+        Tier::Fresh | Tier::InTraining | Tier::Rookie | Tier::Champion => MAX_PARTS,
+        Tier::Ultimate | Tier::Mega => 150,
+    }
+}
+
+/// Parts that carry no silhouette. When a rich plan (a Mega machine under a rich
+/// attribute mix) runs into the budget, these go first — the creature must lose
+/// decoration, never a limb.
+///
+/// Each entry is tagged with the attribute whose **share of the lineage** decides
+/// how soon it is sacrificed: the faintest/oldest attribute's decoration goes
+/// before the dominant/latest attribute loses anything. `None` marks seed and
+/// tier decoration (markings, seams, the form's own furniture) which carries no
+/// attribute identity, so it is sacrificed ahead of every attribute's share.
+/// Within one share the authored order below is the removal order.
+///
+/// Structural and limb parts are deliberately absent from this table: they are
+/// not decoration, so no blend can ever trim them.
+const DECORATION: [(&str, Option<Attribute>); 38] = [
+    ("spot", None),
+    ("stripe", None),
+    ("patch", None),
+    ("patch_l", None),
+    ("patch_r", None),
+    ("seam", None),
+    ("barrel_ring", None),
+    ("feather_more", None),
+    ("mane_tip", None),
+    ("ridge_tip", None),
+    ("frill_mid", None),
+    ("ant2_tip", None),
+    ("mane_mid", None),
+    ("ridge_mid", None),
+    ("spur_l", None),
+    ("spur_r", None),
+    ("hipfin_l", None),
+    ("hipfin_r", None),
+    ("frill_l", None),
+    ("frill_r", None),
+    ("ant2_l", None),
+    ("ant2_r", None),
+    ("collar_in", None),
+    ("collar_ring", None),
+    ("tail_blade", None),
+    ("mane", None),
+    ("ridge", None),
+    ("halo_in", Some(Attribute::Vaccine)),
+    ("circuit2_l", Some(Attribute::Data)),
+    ("circuit2_r", Some(Attribute::Data)),
+    ("circuit_l", Some(Attribute::Data)),
+    ("circuit_r", Some(Attribute::Data)),
+    ("crystal_core", Some(Attribute::Data)),
+    ("tooth_more_l", Some(Attribute::Virus)),
+    ("tooth_more_r", Some(Attribute::Virus)),
+    ("drip_l", Some(Attribute::Virus)),
+    ("drip_r", Some(Attribute::Virus)),
+    ("spine_mid", Some(Attribute::Virus)),
 ];
 
-fn trim_details(manifest: &mut Manifest) {
-    // Four parts of headroom under the cap, so the caller never gets a rig that
-    // passes today and fails after one more detail is added.
-    let budget = MAX_PARTS.saturating_sub(4);
-    for id in DECORATION {
+fn trim_details(manifest: &mut Manifest, spec: &Spec) {
+    // Four parts of headroom under the tier's cap, so the caller never gets a rig
+    // that passes today and fails after one more detail is added.
+    let budget = max_parts(spec.tier).saturating_sub(4);
+    if manifest.part_count() <= budget {
+        return;
+    }
+    let blend = spec.blend();
+    // Sacrifice the faintest attribute's decoration first. An attribute that has
+    // almost left the lineage must not cost the dominant one its silhouette.
+    let mut order: Vec<usize> = (0..DECORATION.len()).collect();
+    order.sort_by(|left, right| {
+        let share = |index: usize| match DECORATION[index].1 {
+            Some(attribute) => blend.weight(attribute),
+            None => -1.0,
+        };
+        share(*left)
+            .partial_cmp(&share(*right))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(left.cmp(right))
+    });
+    for index in order {
         if manifest.part_count() <= budget {
             return;
         }
+        let id = DECORATION[index].0;
         for bone in manifest.bones.iter_mut() {
             bone.parts.retain(|part| part.id != id);
         }
@@ -2019,13 +2164,36 @@ fn push_wing_bud(bones: &mut Vec<Bone>, pal: &Palette, dims: Dims, plan: Plan) {
     }
 }
 
-/// What the **attribute** puts on the trunk: crystals, circuit traces, spines,
-/// markings. Shared by every plan, so a Virus deer and a Virus robot are both
-/// unmistakably viral while staying a deer and a robot.
-fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features) -> Vec<Part> {
+/// The share of an attribute above which its *extra* detail (a second layer of
+/// spikes, a second circuit run, a core crystal, an inner halo) is worth the
+/// parts budget.
+///
+/// Proportional prominence means a faint contributor still gets its silhouette,
+/// just not its ornament — and a genuinely minor share (40% against a 60%
+/// dominant one) loses that ornament first, which is what keeps the dominant
+/// attribute's identity intact when a rig does run into the cap.
+const FULL_DETAIL: f64 = 0.9;
+
+/// What the **attribute mix** puts on the trunk: crystals, circuit traces,
+/// spines, markings. Shared by every plan, so a Virus deer and a Virus robot are
+/// both unmistakably viral while staying a deer and a robot.
+///
+/// Every part an attribute owns is scaled by that attribute's prominence in the
+/// lineage. A Data body with a recent Virus shift therefore keeps full-size
+/// crystal growths *and* grows visibly prominent spines, with the older/quieter
+/// contributor smaller and losing its optional detail first.
+fn aspect_torso_parts(
+    pal: &Palette,
+    dims: Dims,
+    plan: Plan,
+    features: Features,
+    blend: AttributeBlend,
+) -> Vec<Part> {
     let w = dims.torso_w;
     let h = dims.torso_h;
     let t = features.tier_index;
+    let data = blend.prominence(Attribute::Data);
+    let virus = blend.prominence(Attribute::Virus);
     let mut parts = Vec::new();
 
     if plan.crystals {
@@ -2035,7 +2203,7 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
                 Part::ellipse(
                     id,
                     &pal.accent,
-                    [round4(w * 0.3), round4(h * 0.16)],
+                    [round4(w * 0.3 * data), round4(h * 0.16 * data)],
                     [round4(sign * w * 0.42), round4(-h * 0.34)],
                     6,
                     None,
@@ -2043,11 +2211,11 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
                 .turned(round4(sign * 0.7)),
             );
         }
-        if t >= 3 {
+        if t >= 3 && data >= FULL_DETAIL {
             parts.push(Part::ellipse(
                 "crystal_core",
                 &pal.glow,
-                [round4(w * 0.16), round4(h * 0.12)],
+                [round4(w * 0.16 * data), round4(h * 0.12 * data)],
                 [0.0, round4(-h * 0.44)],
                 7,
                 None,
@@ -2059,11 +2227,25 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
             parts.push(Part::ellipse(
                 if index < 0.0 { "circuit_l" } else { "circuit_r" },
                 &pal.glow,
-                [round4(w * 0.5), 3.0],
+                [round4(w * 0.5 * data), round4(3.0 * data).max(1.0)],
                 [0.0, round4(sign * h)],
                 5,
                 None,
             ));
+        }
+        // A dominant Data line runs a second pair of traces across the belly:
+        // part *count*, not just size, follows the share.
+        if data >= FULL_DETAIL {
+            for sign in [-0.12f64, 0.12] {
+                parts.push(Part::ellipse(
+                    if sign < 0.0 { "circuit2_l" } else { "circuit2_r" },
+                    &pal.accent,
+                    [round4(w * 0.34 * data), 2.0],
+                    [0.0, round4(sign * h)],
+                    4,
+                    None,
+                ));
+            }
         }
     }
     if plan.back_spikes && t >= 1 {
@@ -2072,7 +2254,7 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
                 Part::ellipse(
                     id,
                     &pal.accent,
-                    [round4(w * 0.22), round4(h * 0.1)],
+                    [round4(w * 0.22 * virus), round4(h * 0.1 * virus)],
                     [round4(sign * w * 0.3), round4(-h * 0.5)],
                     6,
                     None,
@@ -2080,12 +2262,12 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
                 .turned(round4(sign * -0.8)),
             );
         }
-        if t >= 3 {
+        if t >= 3 && virus >= FULL_DETAIL {
             parts.push(
                 Part::ellipse(
                     "spine_mid",
                     &pal.accent,
-                    [round4(w * 0.18), round4(h * 0.08)],
+                    [round4(w * 0.18 * virus), round4(h * 0.08 * virus)],
                     [0.0, round4(-h * 0.58)],
                     6,
                     None,
@@ -2150,26 +2332,38 @@ fn aspect_torso_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features)
     parts
 }
 
-/// What the attribute puts on the head: a ring of light, fangs, drips.
-fn aspect_head_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features) -> Vec<Part> {
+/// What the attribute *mix* puts on the head: a ring of light, fangs, drips,
+/// each scaled and gated by its share of the lineage.
+fn aspect_head_parts(
+    pal: &Palette,
+    dims: Dims,
+    plan: Plan,
+    features: Features,
+    blend: AttributeBlend,
+) -> Vec<Part> {
     let w = dims.head_w;
     let h = dims.head_h;
     let t = features.tier_index;
+    let vaccine = blend.prominence(Attribute::Vaccine);
+    let data = blend.prominence(Attribute::Data);
+    let virus = blend.prominence(Attribute::Virus);
     let mut parts = Vec::new();
 
     if plan.halo_ring {
         parts.push(Part::ellipse(
             "halo",
             &pal.glow,
-            [round4(w * 0.86), 16.0],
+            [round4(w * 0.86 * vaccine), round4(16.0 * vaccine).max(2.0)],
             [0.0, round4(-h * 0.86)],
             Z_HEIGHT,
             None,
         ));
+        // The inner disc is what makes the halo read as a ring rather than a
+        // glowing plate, so it follows the halo itself (scaled), not the share.
         parts.push(Part::ellipse(
             "halo_in",
             &pal.body_dark,
-            [round4(w * 0.6), 8.0],
+            [round4(w * 0.6 * vaccine), round4(8.0 * vaccine).max(1.0)],
             [0.0, round4(-h * 0.86)],
             Z_HEIGHT + 1,
             None,
@@ -2180,20 +2374,33 @@ fn aspect_head_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features) 
             parts.push(Part::ellipse(
                 id,
                 &pal.eye,
-                [round4(w * 0.05), round4(h * 0.1)],
+                [round4(w * 0.05 * virus).max(0.5), round4(h * 0.1 * virus).max(0.5)],
                 [round4(sign * w * 0.14), round4(h * 0.46)],
                 9,
                 None,
             ));
         }
+        // A dominant viral line grows a second, smaller pair behind the first.
+        if virus >= FULL_DETAIL {
+            for (id, sign) in [("tooth_more_l", -1.0), ("tooth_more_r", 1.0)] {
+                parts.push(Part::ellipse(
+                    id,
+                    &pal.eye,
+                    [round4(w * 0.035), round4(h * 0.07)],
+                    [round4(sign * w * 0.26), round4(h * 0.42)],
+                    9,
+                    None,
+                ));
+            }
+        }
     }
-    if plan.crystals && t >= 3 {
+    if plan.crystals && t >= 3 && data >= FULL_DETAIL {
         for (id, sign) in [("bit_l", -1.0), ("bit_r", 1.0)] {
             parts.push(
                 Part::ellipse(
                     id,
                     &pal.glow,
-                    [round4(w * 0.14), round4(h * 0.14)],
+                    [round4(w * 0.14 * data), round4(h * 0.14 * data)],
                     [round4(sign * w * 0.66), round4(-h * 0.16)],
                     Z_HEIGHT,
                     None,
@@ -2207,7 +2414,7 @@ fn aspect_head_parts(pal: &Palette, dims: Dims, plan: Plan, features: Features) 
             parts.push(Part::circle(
                 id,
                 &pal.glow,
-                round4(w * 0.05),
+                round4(w * 0.05 * virus).max(0.5),
                 [round4(sign * w * 0.3), round4(h * 0.5)],
                 9,
                 None,
@@ -3656,17 +3863,29 @@ fn enforce_monitor_budget(manifest: &mut Manifest) {
     }
 }
 
-/// Structural checks the generator promises its callers. The tests call this for
-/// every tier; `POST /digivolve` calls it before writing anything to disk.
+/// Structural checks the generator promises its callers, against the part budget
+/// of the **base** stages (100). Prefer [`validate_at`] when the tier is known;
+/// `POST /digivolve` and the plugin's status/install paths use that.
 pub fn validate(manifest: &Manifest) -> Result<Report, String> {
+    validate_at(manifest, Tier::Champion)
+}
+
+/// Structural checks against the budget of `tier` — the same checks, but a Mega
+/// is allowed the 150 parts [`max_parts`] grants it.
+pub fn validate_at(manifest: &Manifest, tier: Tier) -> Result<Report, String> {
     if manifest.format != "char-rig/model@1" {
         return Err(format!("unexpected format {:?}", manifest.format));
     }
     hierarchy_is_sound(&manifest.bones)?;
 
     let parts = manifest.part_count();
-    if parts > MAX_PARTS {
-        return Err(format!("{parts} parts exceeds the {MAX_PARTS}-part budget"));
+    let budget = max_parts(tier);
+    if parts > budget {
+        return Err(format!(
+            "{parts} parts exceeds the {}-part budget for {}",
+            budget,
+            tier.as_str()
+        ));
     }
 
     for bone in &manifest.bones {
@@ -3758,6 +3977,7 @@ pub fn validate(manifest: &Manifest) -> Result<Report, String> {
         clips,
         min_world_y: top,
         symmetry_error: worst,
+        budget,
     })
 }
 
@@ -3769,6 +3989,8 @@ pub struct Report {
     pub clips: usize,
     pub min_world_y: f64,
     pub symmetry_error: f64,
+    /// The part cap this rig was validated against (see [`max_parts`]).
+    pub budget: usize,
 }
 
 /// Left ids that exist for a right chain, used by the tests.
@@ -3785,10 +4007,11 @@ mod tests {
         for archetype in Archetype::ALL {
             for tier in Tier::ALL {
                 let manifest = generate(&Spec::new(0xC0FFEE, archetype, tier));
-                let report = validate(&manifest).unwrap_or_else(|err| {
+                let report = validate_at(&manifest, tier).unwrap_or_else(|err| {
                     panic!("{} {}: {err}", archetype.as_str(), tier.as_str())
                 });
-                assert!(report.parts < MAX_PARTS);
+                assert!(report.parts <= max_parts(tier));
+                assert_eq!(report.budget, max_parts(tier));
                 assert!(report.min_world_y >= MONITOR_BUDGET_Y);
             }
         }

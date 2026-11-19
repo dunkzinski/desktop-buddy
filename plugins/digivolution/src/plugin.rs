@@ -6,6 +6,7 @@
 
 use serde_json::{json, Value};
 
+use crate::attribute::{Attribute, AttributeBlend};
 use crate::evolution::{Digivolution, Outcome};
 use crate::generator;
 use crate::host;
@@ -16,6 +17,54 @@ pub const EVENT_DIGIMON: &str = "digimon";
 
 /// How often an idle session is flushed, in ms.
 pub const SAVE_INTERVAL_MS: u64 = 30_000;
+
+/// The `attribute_blend` block every status/branch payload carries.
+///
+/// Shaped for two readers: a client that wants numbers (`percent` always adds to
+/// 100, `weights` are the raw shares) and one that wants words (`summary`,
+/// `flavour`, `dominant`). `lineage` is the whole history, oldest first, so a UI
+/// can show *why* the mix looks the way it does.
+pub fn blend_json(blend: AttributeBlend, lineage: &[Attribute]) -> Value {
+    let percents = blend.percentages();
+    let weights: serde_json::Map<String, Value> = Attribute::ALL
+        .iter()
+        .map(|attribute| {
+            (
+                attribute.as_str().to_string(),
+                json!(blend.weight(*attribute)),
+            )
+        })
+        .collect();
+    let percent: serde_json::Map<String, Value> = Attribute::ALL
+        .iter()
+        .map(|attribute| {
+            (
+                attribute.as_str().to_string(),
+                json!(percents[attribute.index() as usize]),
+            )
+        })
+        .collect();
+    json!({
+        "dominant": blend.dominant().as_str(),
+        "weights": weights,
+        "percent": percent,
+        "summary": blend.summary(),
+        "flavour": blend.blended_flavour(),
+        "pure": blend.is_pure(),
+        "lineage": lineage.iter().map(|attribute| attribute.as_str()).collect::<Vec<_>>(),
+        "loud": blend
+            .loudest()
+            .into_iter()
+            .filter(|(_, weight)| *weight > 0.0)
+            .map(|(attribute, weight)| json!({
+                "attribute": attribute.as_str(),
+                "weight": weight,
+                "percent": percents[attribute.index() as usize],
+                "flavour": attribute.flavour(),
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
 
 pub struct Digimon {
     state: Digivolution,
@@ -86,7 +135,7 @@ impl Digimon {
             return Ok(());
         }
         let manifest = self.state.manifest();
-        let report = generator::validate(&manifest)?;
+        let report = generator::validate_at(&manifest, self.state.tier)?;
         host::write_model(
             &self.state.slug,
             &serde_json::to_value(&manifest).unwrap_or_default(),
@@ -323,8 +372,9 @@ impl Digimon {
     /// The `GET /digimon/status` body.
     pub fn status_json(&self) -> Value {
         let manifest = self.state.manifest();
-        let report = generator::validate(&manifest).ok();
+        let report = generator::validate_at(&manifest, self.state.tier).ok();
         let branches = self.state.branches();
+        let blend = self.state.blend();
         json!({
             "ok": true,
             "creature": {
@@ -339,6 +389,10 @@ impl Digimon {
             "xp_to_next": self.state.xp_to_next(),
             "bond": self.state.bond,
             "attribute": self.state.attribute.as_str(),
+            // The whole recency-weighted lineage: percentages, blended traits
+            // and the history they came from. `attribute` above stays the
+            // single current attribute for every existing client.
+            "attribute_blend": blend_json(blend, &self.state.lineage()),
             "slug": self.state.slug,
             "generation": self.state.generation,
             "installed": self.state.installed,
@@ -351,6 +405,7 @@ impl Digimon {
             "rig": report.map(|report| json!({
                 "bones": report.bones,
                 "parts": report.parts,
+                "parts_budget": report.budget,
                 "clips": report.clips,
                 "min_world_y": report.min_world_y,
                 "symmetry_error": report.symmetry_error,
@@ -411,7 +466,9 @@ mod tests {
         assert_eq!(status["stage"], json!("Fresh"));
         assert_eq!(status["xp_required"], json!(40));
         assert_eq!(status["rig"]["parts"].as_u64().unwrap() < 100, true);
+        assert_eq!(status["rig"]["parts_budget"], json!(100));
         assert_eq!(status["branches"].as_array().unwrap().len(), 3);
+        assert_eq!(status["attribute_blend"]["percent"]["Data"], json!(100));
         assert!(status["rig"]["min_world_y"].as_f64().unwrap() >= -170.0);
     }
 
@@ -533,6 +590,32 @@ mod tests {
                 "every attribute needs a flavour line for the picker"
             );
         }
+    }
+
+    #[test]
+    fn a_full_line_reports_a_blended_lineage() {
+        // Grow a line that changes attribute twice, then read the status the UI
+        // reads: the mix must follow the history, and the rig must carry it.
+        let mut state = plugin();
+        state.ensure_installed().expect("install");
+        state.digivolve(Some(1), true).expect("evolve to a second attribute");
+        state.digivolve(Some(2), true).expect("evolve to a third");
+        let status = state.status_json();
+        let blend = &status["attribute_blend"];
+        assert_eq!(
+            blend["lineage"].as_array().unwrap().len(),
+            3,
+            "egg + two transitions"
+        );
+        assert_eq!(blend["pure"], json!(false));
+        let total: u64 = ["Vaccine", "Data", "Virus"]
+            .iter()
+            .map(|name| blend["percent"][*name].as_u64().unwrap())
+            .sum();
+        assert_eq!(total, 100, "the percentages always add up");
+        // The current attribute stays the single one (it names the folder).
+        assert!(status["attribute"].is_string());
+        assert_eq!(status["attribute"], blend["dominant"]);
     }
 
     #[test]

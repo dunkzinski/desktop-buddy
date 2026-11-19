@@ -82,8 +82,10 @@ ui/
     ├── digivolve.js    # The **Digivolution** pop-out card: `setupDigivolve` (hydrate from
     │                  # `GET /digimon/status`, follow the `digimon` event, 10 s poll), `renderDigimon`
     │                  # (stage badge, XP/bond bars, attribute chip, the live rig's bones/parts/top),
-    │                  # `renderBranches` + `pickEvolveBranch` (the three branches, from the plugin's own
-    │                  # table), `evolve` (the real `POST /digivolve` — the plugin writes the model and the
+    │                  # `renderBlend` (`blendOf` / `summarise`: the lineage's percentage chips, stacked bar
+    │                  # and blended traits), `renderBranches` + `pickEvolveBranch` (the three branches, each
+    │                  # with the mix it would produce via `branchMix`), `evolve` (the real
+    │                  # `POST /digivolve` — the plugin writes the model and the
     │                  # host swaps the avatar, so nothing here touches the rig), `nudge` (`POST /digimon/xp`),
     │                  # `reset` (`POST /digimon/reset`), `toggleDigivolveCard` / `digivolveCardOpen`
     ├── settings.js     # The **Settings** modal over `GET /config` / `POST /config`: `setupSettings` (build the form from one `FIELDS` spec, hydrate from the server, prime at startup), `renderSettings` (values, per-path ✓/✗, stray-key warnings), `collectPatch` (sends **only** what changed, including `ai.create` / `ai.rename` / `ai.remove` and `discovery_ports`), the AI brain tab's own `renderProfileCards` / `refreshProfileOptions` / `addProfile` / `removeProfile` / `discoverModels` / `importModel` / `renderDiscovery`, `save` (partial `POST /config`, then reports applied vs `restart_required`), `toggleSettings` / `settingsOpen`
@@ -575,10 +577,10 @@ touched `mod.rs` (three generic capabilities), `wasm_host.rs` (their imports) an
 | --- | --- |
 | `src/rng.rs` | SplitMix64. No dependency, no `getrandom`: `(seed, archetype, tier, attribute)` reproduces the same creature — same bones, same colours — on every machine |
 | `src/skeleton.rs` | the `char-rig/model@1` types, the two mirroring formulas (`atan2(sin θ, −cos θ)` for a chain root, `−θ` for a descendant), `computeWorld`, and the painted-bounds pass |
-| `src/attribute.rs` | `Vaccine` / `Data` / `Virus`: wire spelling, the bond-driven branch shift, and the one-line flavour the UI shows |
+| `src/attribute.rs` | `Vaccine` / `Data` / `Virus`: wire spelling, the bond-driven branch shift, the one-line flavour the UI shows, and `AttributeBlend` — the recency-weighted mix of a whole evolution line (linear step weights `1..n`, normalised) plus its percentages, prominence and blended flavour |
 | `src/plan.rs` | The twelve body plans, each with its own five-form table (`beast_form`, `drake_form`, …), then the attribute's mutations, then the seeded build and the seed's individual layer (`individualise`): head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers, posture, accessory geometry and the family's secondary-trait vocabulary (`secondary_traits`) |
-| `src/generator.rs` | `generate(Spec) -> Manifest`: centerline → tail → right chains → mirror → archetype parts → attribute parts → clips → monitor guard → detail trim, plus `validate` |
-| `src/evolution.rs` | stage/XP/bond/attribute state, the three-branch table, and the transitions both ways (generate → host write → host activate; `dedigivolve` regenerates the parent from its recorded seed **and attribute**) |
+| `src/generator.rs` | `generate(Spec) -> Manifest`: centerline → tail → right chains → mirror → archetype parts → blended attribute parts → clips → monitor guard → detail trim, plus `validate` / `validate_at(manifest, tier)` and `max_parts(tier)` |
+| `src/evolution.rs` | stage/XP/bond/attribute state, the three-branch table (each branch previews the mix it would produce), and the transitions both ways (generate → host write → host activate; `dedigivolve` regenerates the parent from its recorded seed **and attribute**, and from the *truncated* lineage's blend) |
 | `src/host.rs` | typed wrappers over the host imports (`write_model`, `activate_model`, `animate`, `emit`, `notify`, `log`, `save_state`, `now_ms`); the one place the guest talks to the app |
 | `src/plugin.rs` | live state: passive XP, the one-shot "ready" notice, the 30 s save, `GET /digimon/status`'s body (stage, XP, bond, attribute, rig measurements, branches, history, and the `archetypes` / `attributes` lists the UI builds its pickers from) |
 | `src/routes.rs` | the `ROUTES` table + dispatcher |
@@ -591,9 +593,13 @@ independent choices, so the corpus is large without any of it being hand-drawn:
    arms, legs, tail and trunk, plus proportion multipliers. Twelve of them:
    beast, drake, cyborg, holy, aqua, cervid, machine, alien, avian, insect,
    serpent, golem.
-2. **The attribute** (`Element::of(attribute)`) reshapes that plan: Vaccine
-   grows wings, a halo and feather vanes; Data grows crystals, circuit traces
-   and a visor band; Virus grows spines, fangs and claws. Structural, not a tint.
+2. **The attribute mix** (`with_blend`) reshapes that plan: Vaccine grows
+   wings, a halo and feather vanes; Data grows crystals, circuit traces and a
+   visor band; Virus grows spines, fangs and claws. Structural, not a tint.
+   The mix is the creature's whole lineage, not just its current attribute —
+   see *Attribute blend* below. A body has one crest and one pair of hands, so
+   those two choices belong to the loudest attribute; everything additive is
+   drawn for every attribute above the visibility threshold.
 3. **The seed** (`Spec::variant`, fifteen values) picks one of five *forms* —
    the archetype's own structural silhouettes (a Beast is classic, lupine,
    ursine, sabre or mole; a Drake is spiked, a wyrm, a wyvern, serpentine or a
@@ -628,7 +634,7 @@ unique in proportion and colour. `examples/digits.rs` dumps one rig per family
 by form index so the form table can be rendered as a contact sheet and eyeballed.
 
 **The forms are per-archetype functions, not a template.** `plan_for` composes
-`plan(archetype)` → `<archetype>_form(plan, form)` → `with_element` →
+`plan(archetype)` → `<archetype>_form(plan, form)` → `with_blend` →
 `with_build`, and each of the twelve form tables in `src/plan.rs` returns the
 plan it was handed with only that archetype's numbers changed. Nothing is shared
 between two archetypes' forms, so a Beast's mane can never appear on a Drake by
@@ -641,7 +647,9 @@ bind poses.
 **Generation, not authoring.** Each stage is built from tier-scaled dimensions:
 bone count, limb segments (forearm / shin / hand / foot), wings (and a second
 wing segment), armour plates, tail segments, eyespots, halo and aura grow as the
-tier rises, while the part count stays under the 100-part budget (`MAX_PARTS`).
+tier rises, while the part count stays under the stage's budget — `MAX_PARTS`
+(100) for Fresh through Champion, 150 for Ultimate and Mega, because a line that
+has mixed two or three attributes genuinely has more layered silhouette to draw.
 The archetype's signature is present from `Fresh` — a small crest, ears, gills,
 treads, coil or folded wing buds — because hiding it until In-Training made every
 hatchling the same blob; the tier scales those parts instead of introducing them.
@@ -649,10 +657,31 @@ Coordinates are authored in local pixels with the root at `scale: 0.55`, and
 `enforce_monitor_budget` verifies `min_world_y >= -170` over every painted corner
 — the format's top-clip budget — shifting the pelvis down if a hand-tuned number
 ever exceeded it. `trim_details` then drops decoration (`spot`, `stripe`,
-`patch_*`, `circuit_*`, `crystal_core`, the form's accessory last, …) in a fixed
-order until the rig fits four parts under the cap, so a rich plan loses
-decoration, never a limb. Forms add parts, never bones: the joint count is
+`patch_*`, `circuit_*`, `crystal_core`, the form's accessory last, …) until the
+rig fits four parts under the cap — ordered by the **attribute's share of the
+lineage**, so a minor/older contributor loses its decoration before the
+dominant/latest one does. A rich plan loses decoration, never a limb: structural
+and limb parts are not in the trim table at all. Forms add parts, never bones: the joint count is
 unchanged, so the mirroring rules and the 40-bone ceiling hold by construction.
+
+**Attribute blend.** A line is not one attribute, it is a history.
+`Digivolution::lineage` returns the egg's attribute followed by the attribute each
+transition chose (`HistoryEntry::to_attribute`; a legacy entry without it borrows
+the next entry's parent attribute, or the live one), and `AttributeBlend` weights
+those stages linearly — the oldest counts `1`, the newest `n` — then normalises.
+A creature that has been Data for four stages and has just become Virus therefore
+reads 60/40: Data still owns the body while the fresh viral spines are plainly
+there. `plan::with_blend` gives the single-slot traits (crest, hands) to the
+loudest attribute and draws every additive one (halo, wings, crystals, circuits,
+spines, fangs, drips) for each attribute above 12%, scaling each group by
+`AttributeBlend::prominence` (1.0 at the loudest share, ~0.6 at the faint end) and
+gating the *extra* layer of a group (a core crystal, a second circuit run, a mid
+spine, an inner halo) behind a 0.9 share — the detail-trimming order uses the
+same shares, so a minor contributor loses its ornament before the dominant one
+does. The palette is a weighted mix of the three tints, so the skin is neither
+pure Data nor pure Virus. A one-hot blend is exactly the old single-attribute rig
+(asserted byte for byte), which is what keeps hatchlings and legacy saves
+unchanged.
 
 **Names carry the rig.** A model id is
 `digi-<archetype>-<stage>-<attribute>-<seed>`; the attribute is part of the name
@@ -671,8 +700,8 @@ handedness. The clips then key `+a` on `_l` and `−a` on `_r`.
 
 | route | what it does |
 | --- | --- |
-| `GET /digimon/status` | stage, XP, bond, attribute, the live rig's `bones`/`parts`/`min_world_y`/`symmetry_error`, the three branches and the transition history |
-| `POST /digivolve` | `{branch?, force?}` → generate the next stage, `host_model_write`, `host_model_activate` (the `POST /model` path), `host_animate("digivolve")`, then one `digimon` event |
+| `GET /digimon/status` | stage, XP, bond, attribute, the recency-weighted `attribute_blend`, the live rig's `bones`/`parts`/`parts_budget`/`min_world_y`/`symmetry_error`, the three branches (each with its projected blend) and the transition history |
+| `POST /digivolve` | `{branch?, force?}` → generate the next stage from the extended lineage, `host_model_write`, `host_model_activate` (the `POST /model` path), `host_animate("digivolve")`, then one `digimon` event; the reply carries the shifted `attribute_blend` |
 | `POST /dedigivolve` | `{steps?}` → regenerate the **parent** stage from the history entry's seed/attribute (deterministic, so the exact earlier rig comes back), write it, activate it, play the clip, emit `dedigivolved`; `409` at Fresh |
 | `POST /digimon/xp` | `{xp, bond}` — grant growth directly |
 | `POST /digimon/reset` | `{seed?, archetype?, attribute?}` — a new creature plus its `Fresh` rig, installed **and activated**; omitted fields inherit the current creature |
@@ -859,7 +888,7 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar, `H` toggles the History drawer), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), **gaze targeting** (`attachGazeTracking` — page `mousemove` plus the global `cursor-pos` stream; `updateGaze` — `look_at` > focused command bar > perch > global cursor (4 s) > idle glances, plus the eased hover weight and the clamped head-bone yaw bias), `window.__avatarDebug`, the **AI Brain** select (`setAiProfile` + a toast, with `refreshAiProfiles` every 12 s beside the watcher poll), behaviour loop (`step`, `startWalk`, `wander` — held back while a bubble is up), `requestAnimationFrame` driver (`frame`: `step` → `render` → `positionBubble`), play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
 | `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions || `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions |
 | `ui/js/survival.js` | The **Survival** card (top-left pop-out, not a panel section) with four tabs. `setupSurvival` hydrates from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follows the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events with a 15 s survival poll as the floor, `renderSurvival` flattens every payload shape into the tier badge, the two bars and the craving row, `feed` is a real `POST /survival/feed`, `setCraving` / `clearCraving` drive `POST /survival`, `craft` is a real `POST /survival/craft` fed by the recipe picker, which comes from `GET /recipes` with the bag folded in (`can_cook`, `missing`, per-line `held`) so `syncCraftButton` can disable a cook that could not pay (a 409 `missing_ingredients` / refusal prints the API's own prose). `showSurvivalTab` switches status / bag / fishing / store; `renderInventory` draws one cell per slot from `GET /inventory`, `addItem` / `useItem` / `sellPickedItem` are real `POST /inventory/add`, `POST /inventory/use` and a one-unit `POST /store/sell` (the bag's Sell button, enabled for any slot `GET /inventory` gave a `sell_price`); the store pane draws one row per shelf entry from `GET /store` (`renderStore`, grouped by category, with the wallet and each entry's `owned` count), keeps Buy/Sell honest against the purse and the bag (`syncStoreButtons`) and trades for real through `trade` — a 409 `insufficient_coins` / `inventory_full` / `not_enough_items` prints the API's own prose; the fishing pane runs `castLine` / `hookFish` / `reelFish` / `cancelFishing` against the plugin, polls `GET /fishing` at 120 ms so the bobber beats the 1 s host tick, and animates the marker from the published sweep. `toggleSurvivalCard` / `survivalCardOpen` drive the card and Esc chain |
-| `ui/js/digivolve.js` | The **Digivolution** card (a second top-left pop-out, beside Survival). `setupDigivolve` resolves the API base, hydrates from `GET /digimon/status`, follows the plugin's `digimon` event (`ready` / `digivolved` / `reset`) and keeps a 10 s poll as the floor so a stopped plugin shows as `offline` instead of freezing the card. `renderDigimon` paints the stage badge (green when evolvable, gold at Mega), the XP and bond bars, the archetype/attribute/seed chips and the live rig's `bones` / `parts` / `min_world_y`, `renderBranches` draws one row per offered branch (`pickEvolveBranch` selects it) and `syncEvolveButton` disables Evolve with the exact XP shortfall (and `syncBackButton` labels **◀ Back** with the stage it returns to — a real `POST /dedigivolve`) — the button is a real `POST /digivolve`, whose reply (`from → stage`, bones, parts, `model_path`) lands in the card's note while the host hot-swaps the avatar; `nudge` is `POST /digimon/xp` and `reset` is `POST /digimon/reset` (archetype + optional seed). `toggleDigivolveCard` / `digivolveCardOpen` drive the card and the Esc chain. A 404 on the status route renders the card as offline with the build step |
+| `ui/js/digivolve.js` | The **Digivolution** card (a second top-left pop-out, beside Survival). `setupDigivolve` resolves the API base, hydrates from `GET /digimon/status`, follows the plugin's `digimon` event (`ready` / `digivolved` / `reset`) and keeps a 10 s poll as the floor so a stopped plugin shows as `offline` instead of freezing the card. `renderDigimon` paints the stage badge (green when evolvable, gold at Mega), the XP and bond bars, the archetype/attribute/seed chips and the live rig's `bones` / `parts` / `min_world_y`, `renderBlend` turns `status.attribute_blend` into the lineage readout — one percentage chip and one stacked-bar slice per attribute (a plugin too old to send the block falls back to a one-hot mix from `attribute`), plus the blended flavour line — and `renderBranches` draws one row per offered branch (`pickEvolveBranch` selects it) with the mix that branch would produce (`branchMix` over `branch.blend` / `blend_summary`, so taking it visibly shifts the percentages) and `syncEvolveButton` disables Evolve with the exact XP shortfall (and `syncBackButton` labels **◀ Back** with the stage it returns to — a real `POST /dedigivolve`) — the button is a real `POST /digivolve`, whose reply (`from → stage`, bones, parts, `model_path`) lands in the card's note while the host hot-swaps the avatar; `nudge` is `POST /digimon/xp` and `reset` is `POST /digimon/reset` (archetype + optional seed). `toggleDigivolveCard` / `digivolveCardOpen` drive the card and the Esc chain. A 404 on the status route renders the card as offline with the build step |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
 `ipc, state → rig → animator → {renderer, speech, editor, bridge}; editor → bridge; all → main`.
