@@ -11,7 +11,7 @@
 import {
   avatar, RT, speech,
   clamp, viewport, updateStatusUI,
-  setExpression, toast,
+  setExpression, reactExpression, toast,
 } from "./state.js";
 
 import { call } from "./ipc.js";
@@ -442,7 +442,8 @@ function armThinkingTimeout() {
     // An answer (`speak`) or an explicit end already cleared the card.
     if (!speech.thinking) return;
     endThinking();
-    setExpression("neutral");
+    // A model that never answered is a failure: wear it briefly, then settle.
+    reactExpression("sad", 5);
     toast("No answer came back — cleared the thinking card.", true);
   }, THINKING_TIMEOUT_MS);
 }

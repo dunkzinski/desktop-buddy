@@ -95,6 +95,7 @@ Run the unit tests with `cd src-tauri && cargo test`.
 | Titlebar | |
 | --- | --- |
 | 🛠 wrench | toggle **Rig Edit Mode** (`R`) |
+| ⚙ gear | open **Settings** — works even with the control panel collapsed |
 | ↖ cursor | toggle click-through on empty space |
 | — | minimize |
 | ✕ | close (stops the API too) |
@@ -102,8 +103,8 @@ Run the unit tests with `cd src-tauri && cargo test`.
 | Control panel | |
 | --- | --- |
 | Model dropdown + **Import…** | switch models, import a rig or an image |
-| Expression buttons | neutral / happy / sad / surprised |
-| Wave / Idle / Walk / Center | triggers, with a walk-speed slider |
+| **Blend** strip | the creature's live recency-weighted attribute mix (`57% Virus · 43% Data`), read from `GET /digimon/status` |
+| Wave / Walk / Center | triggers, with a walk-speed slider |
 | **New chat** | wipe the conversation context (`POST /session/reset`) and empty the History drawer |
 | **History** | open the session's conversation log (see [Reading the conversation back](#reading-the-conversation-back)) |
 | **Ask…** | open the command bar (same as `Enter` / `/`) |
@@ -129,8 +130,11 @@ a `0..100%` scrubber with keyframe ticks, and `+ Keyframe` to capture the pose o
 screen at the playhead. Clips are saved by the same **Save rig** and played over
 HTTP (`POST /animate`) or by an agent (`avatar_animate`).
 
-Play-mode shortcuts: `1`–`4` expressions · `W` wander · `I` idle · `C` centre ·
-`Space` wave · `R` rig mode · `H` conversation history · `Esc` close.
+Play-mode shortcuts: `W` wander · `I` idle · `C` centre · `Space` wave ·
+`R` rig mode · `H` conversation history · `Esc` close. There are no keys for
+expressions, and no buttons either: the face is chosen by the AI (`speak` /
+`emote`), by watcher acks, and by program events like push-to-talk and a fishing
+outcome — and it eases back to `neutral` on its own once the moment is over.
 
 Clicking or double-clicking the avatar does not make it react on its own — the
 page reports the interaction to Rust, which pushes an `interaction` frame on
@@ -812,8 +816,11 @@ processes is the one failure mode that actually costs money:
   plus `avatar_get_context()` for the focused window / `process_name` / recent
   events and `avatar_get_clipboard()` for the last-copied text) so the very first
   turn can act without a `tool_describe` round-trip. It also tells the model to
-  **chain calls** in one turn (an emote or clip *and* a line of speech), to keep
-  the bubble **under 180 characters**, and to put multi-line code, diffs or logs
+  **chain calls** in one turn (an emote or clip *and* a line of speech), to
+  **always pick an expression that matches the outcome** (happy for success,
+  sad for a failure, surprised for the unexpected, thinking while it works,
+  neutral only when calm), to keep the bubble **under 180 characters**, and to
+  put multi-line code, diffs or logs
   in `details` (a scrollable drawer with a Copy button) or on the clipboard. That matters
   most on a local model, where every extra round-trip eats the timeout.
 * The wait is wrapped in a timeout (`--hermes-timeout`, default `120` s, also
@@ -831,7 +838,7 @@ processes is the one failure mode that actually costs money:
 | `--rules <PATH>` | `./watcher_rules.json`, then next to the exe | rules file (see below) |
 | `--context-interval <SECS>` | `20` | how often `GET /context` is polled |
 | `--trigger-single-click` | off | also fire on plain `click` interactions |
-| `--ack-emote <EXPR>` | `thinking` | expression shown the moment a trigger fires |
+| `--ack-emote <EXPR>` | `thinking` | expression shown the moment a trigger fires (an `alert`'s severity overrides it: `error` → `sad`, `warn` → `surprised`) |
 | `--no-ack-emote` | — | disable the ack emote entirely |
 | `--hermes-cmd <CMD>` | `$CHAR_RIG_HERMES_CMD` | command spawned with the prompt |
 | `--hermes-timeout <SECS>` | `120` | kill a spawned `--hermes-cmd` after this long |

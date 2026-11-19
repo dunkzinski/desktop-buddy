@@ -177,7 +177,7 @@ const DEFAULT_VISION_TRIGGER_PHRASES: [&str; 7] = [
 /// says "this one needs the big agent".
 const AI_REPLY_CONTRACT: &str = "Reply with ONE JSON object and nothing else: \
 {\"speech\": string (the short bubble, under 180 characters), \
-\"expression\"?: \"neutral\"|\"happy\"|\"sad\"|\"surprised\"|\"thinking\"|\"angry\", \
+\"expression\"?: \"neutral\"|\"happy\"|\"sad\"|\"surprised\"|\"thinking\"|\"angry\" (how your face should look while you answer -- always pick the one that matches the tone and the outcome of your speech: happy for success, thanks or good news; sad for failure, loss or an apology; surprised for something unexpected or alarming; thinking while you are unsure or still working it out; angry for a real annoyance; neutral only when the moment is calm), \
 \"perch_edge\"?: \"top_left\"|\"top_right\"|\"left\"|\"right\"|\"bottom\", \
 \"window_process\"?: string (only with perch_edge; a substring of the executable name, e.g. \"code\"), \
 \"animate\"?: string (play one of the rig's clips — use EXACTLY one of the clip names listed in the context, e.g. \"wave\"), \
@@ -1206,7 +1206,7 @@ const SURVIVAL_DIRECTIVE: &str = "This is a survival event -- hunger, a meal, a 
 \
 avatar's own body, not the user's work, so do not offer to help with anything on screen. From here, without \
 \
-waiting for input: react in character with ONE short line (under 120 characters) and, at most, one matching \
+waiting for input: react in character with ONE short line (under 120 characters) and exactly one face that matches the moment -- happy for an accepted meal or a landed fish, sad for a lost one or a lapsed craving, surprised for a shock, thinking for a nibble that got away -- plus at most one \
 \
 expression or animation. Never quote the numbers, the bars, percentages or the event's field names, and never \
 \
@@ -1252,7 +1252,7 @@ mcp__char_rig__avatar_set_clipboard(text) to put a full snippet, command or log 
 mcp__char_rig__avatar_get_context() for the foreground window title, the owning process_name (e.g. Code.exe), \
 idle_secs and the recent events, and mcp__char_rig__avatar_get_clipboard() for the text the user last copied. \
 Chain several calls in one turn when it helps: an avatar_emote or avatar_animate for the feeling plus an \
-avatar_speak for the words, then exit. Keep the speech bubble under 180 characters (1-2 sentences) so it never \
+avatar_speak for the words, then exit. ALWAYS choose an expression that matches the outcome: happy for success, good news or a thank-you; sad for a failure, a loss or an apology; surprised for something unexpected or alarming; thinking while you are still investigating; angry for a real annoyance; neutral only when the moment is calm. Pass it to avatar_speak(expression=...) when the words and the face belong together, and call avatar_emote first when the feeling should land before the sentence. Keep the speech bubble under 180 characters (1-2 sentences) so it never \
 overflows the screen; put multi-line code, diffs or logs in avatar_speak's `details` or on the clipboard with \
 avatar_set_clipboard, never in the bubble text.]";
 
@@ -2171,7 +2171,9 @@ impl Trigger {
         prompt.push_str(&format!(
             "You are looking at a screenshot of their {mode}. Answer the question from what is actually \
 visible, quote real text when asked to read it, and never invent UI that is not in the image. \
-Keep the speech under 180 characters."
+Keep the speech under 180 characters. Pick an expression that matches what you found: \
+surprised for an error or something unexpected, happy when it all looks fine, sad when something is broken, \
+thinking while you are still unsure."
         ));
         prompt
     }
@@ -3481,6 +3483,17 @@ fn ack_plan(trigger: &Trigger, config: &Config) -> Option<Ack> {
         } else {
             Ack::Animate(animation.to_string())
         });
+    }
+    // An alert says what kind of moment it is (`POST /alert` severity), so an
+    // error wears a worried face and a warning a startled one instead of the
+    // generic "something happened" emote. The AI's own `expression`, when it
+    // answers, is applied *after* this ack and replaces it.
+    if trigger.event_type == "alert" {
+        match trigger.severity.as_deref().map(str::trim) {
+            Some("error") | Some("critical") => return Some(Ack::Emote("sad".to_string())),
+            Some("warn") | Some("warning") => return Some(Ack::Emote("surprised".to_string())),
+            _ => {}
+        }
     }
     if config.ack_emote.is_empty() {
         None
@@ -5684,6 +5697,110 @@ mod tests {
     }
 
     #[test]
+    fn ack_plan_wears_a_face_that_matches_the_alert_severity() {
+        let config = Config::resolve(CliConfig::default(), rules(r#"{"ack_emote":"thinking"}"#));
+
+        // An error is a sad moment, a warning a startling one — the generic
+        // "thinking" ack reads as a non sequitur next to either.
+        let mut alert = Trigger {
+            event_type: "alert".to_string(),
+            detail: "guardian reported an error alert: the box is down".to_string(),
+            severity: Some("error".to_string()),
+            ..Trigger::default()
+        };
+        assert_eq!(ack_plan(&alert, &config), Some(Ack::Emote("sad".to_string())));
+
+        alert.severity = Some("warn".to_string());
+        assert_eq!(ack_plan(&alert, &config), Some(Ack::Emote("surprised".to_string())));
+
+        // `info` is just news: the configured generic ack still applies.
+        alert.severity = Some("info".to_string());
+        assert_eq!(ack_plan(&alert, &config), Some(Ack::Emote("thinking".to_string())));
+
+        // A matched app rule is more specific than the severity, so it wins.
+        alert.severity = Some("error".to_string());
+        alert.animation = Some("angry".to_string());
+        assert_eq!(ack_plan(&alert, &config), Some(Ack::Emote("angry".to_string())));
+
+        // Non-alert triggers never take this branch (`severity` rides on alerts).
+        let mut reply = Trigger {
+            event_type: "user_reply".to_string(),
+            text: Some("what is on my screen?".to_string()),
+            severity: Some("error".to_string()),
+            ..Trigger::default()
+        };
+        assert_eq!(ack_plan(&reply, &config), Some(Ack::Emote("thinking".to_string())));
+        reply.animation = None;
+        assert_eq!(ack_plan(&reply, &config), Some(Ack::Emote("thinking".to_string())));
+    }
+
+    #[test]
+    fn an_ai_chosen_expression_reaches_both_the_face_and_the_bubble() {
+        let reply = AiReply::parse(
+            r#"{"speech":"Pulled the last commit and the build is green.","expression":"Happy"}"#,
+        )
+        .expect("valid reply");
+
+        // Case is normalised to the enum `EXPRESSIONS` / `POST /emote` accept.
+        assert_eq!(reply.expression.as_deref(), Some("happy"));
+        assert_eq!(
+            reply.actions(),
+            vec![
+                AvatarAction::Emote { expression: "happy".to_string() },
+                AvatarAction::Speak {
+                    text: "Pulled the last commit and the build is green.".to_string(),
+                    // The bubble carries the same face, so `POST /speak` cannot
+                    // put a different expression on screen than the emote did.
+                    expression: Some("happy".to_string()),
+                    details: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_invalid_expression_is_dropped_rather_than_guessed() {
+        // A bogus enum must not reach `POST /emote` (the API would 400) and must
+        // not be silently swapped for a "happy"/"sad" guess either: the reply
+        // simply carries no face and `/speak` keeps the avatar's current one.
+        for bogus in ["ecstatic", "", "HAPPY-ISH"] {
+            let reply = AiReply::parse(&format!(
+                r#"{{"speech":"done","expression":"{bogus}"}}"#
+            ))
+            .expect("valid JSON");
+            assert_eq!(reply.expression, None, "expression {bogus:?} must be dropped");
+            assert_eq!(
+                reply.actions(),
+                vec![AvatarAction::Speak {
+                    text: "done".to_string(),
+                    expression: None,
+                    details: None,
+                }],
+                "no Emote action for {bogus:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_reply_contract_teaches_expression_selection() {
+        let contract = AI_REPLY_CONTRACT;
+        for expression in EXPRESSIONS {
+            assert!(contract.contains(expression), "contract is missing {expression}");
+        }
+        for needle in [
+            "expression",
+            "matches the tone",
+            "happy for success",
+            "sad for failure",
+            "surprised for something unexpected",
+            "thinking while you are unsure",
+            "neutral only when the moment is calm",
+        ] {
+            assert!(contract.contains(needle), "contract is missing {needle:?}: {contract}");
+        }
+    }
+
+    #[test]
     fn payload_exposes_the_rule_fields_and_omits_empty_ones() {
         let trigger = Trigger {
             event_type: "window_title".to_string(),
@@ -6255,6 +6372,66 @@ mod tests {
             prompt.contains("never in the bubble text"),
             "the directive must say where long output goes: {prompt}"
         );
+    }
+
+    #[test]
+    fn headless_directive_asks_for_a_matching_expression() {
+        let prompt = Trigger::default().prompt();
+        for needle in [
+            "ALWAYS choose an expression that matches the outcome",
+            "avatar_speak(expression=...)",
+            "avatar_emote first",
+            "happy for success",
+            "sad for a failure",
+            "surprised for something unexpected",
+            "thinking while you are still investigating",
+            "neutral only when the moment is calm",
+        ] {
+            assert!(prompt.contains(needle), "missing {needle:?} in {prompt}");
+        }
+        // The directive is where the six enum names are spelled out for the
+        // agent, next to the signature it must pass one to.
+        for expression in EXPRESSIONS {
+            assert!(prompt.contains(expression), "the directive must name {expression}");
+        }
+    }
+
+    #[test]
+    fn the_vision_prompt_asks_for_an_expression_matching_the_screen() {
+        let trigger = Trigger {
+            event_type: "user_reply".to_string(),
+            text: Some("what's on my screen?".to_string()),
+            include_screen: true,
+            ..Trigger::default()
+        };
+        let prompt = trigger.vision_prompt("window");
+        for needle in [
+            "Pick an expression",
+            "surprised for an error",
+            "happy when it all looks fine",
+            "sad when something is broken",
+            "thinking while you are still unsure",
+        ] {
+            assert!(prompt.contains(needle), "missing {needle:?} in {prompt}");
+        }
+    }
+
+    #[test]
+    fn the_survival_directive_names_the_face_for_each_body_event() {
+        let trigger = Trigger {
+            event_type: "survival-meal".to_string(),
+            detail: "the user fed you a cooked dish".to_string(),
+            quiet_failure: true,
+            ..Trigger::default()
+        };
+        let prompt = trigger.prompt();
+        for needle in [
+            "exactly one face that matches the moment",
+            "happy for an accepted meal or a landed fish",
+            "sad for a lost one or a lapsed craving",
+        ] {
+            assert!(prompt.contains(needle), "missing {needle:?} in {prompt}");
+        }
     }
 
     /* ---------- sessions ---------- */

@@ -93,7 +93,7 @@ const CREATE_KEYS: &[&str] = &[
 /// `{"speech": …}` and can drive the face on the first trigger instead of
 /// chatting in prose. `GET /config` hands this same string to the modal, so
 /// there is exactly one copy of it.
-pub const DEFAULT_AVATAR_SYSTEM_PROMPT: &str = r#"You are a tiny, fast desktop avatar assistant. Do not output thinking tags. Respond ONLY with a valid JSON object using this exact schema: {"speech": "short reply under 180 chars", "expression": "neutral", "animate": "clip name"}. Valid expressions: neutral, happy, sad, surprised, thinking, angry. Act yourself: use "animate" with a clip name from the list in the context (for example wave), or "wave": true for the built-in wave. Add "escalate": true ONLY for multi-step or external-tool tasks (clipboard contents, network scan, files, terminal); answer everything else yourself."#;
+pub const DEFAULT_AVATAR_SYSTEM_PROMPT: &str = r#"You are a tiny, fast desktop avatar assistant with a face. Do not output thinking tags. Respond ONLY with a valid JSON object using this exact schema: {"speech": "short reply under 180 chars", "expression": "neutral", "animate": "clip name"}. "expression" is how you look while you answer: always pick the one that matches the tone and outcome of your speech - happy for success, thanks or good news; sad for failure, loss or an apology; surprised for something unexpected or alarming; thinking while you are unsure or investigating; angry for a real annoyance; neutral only when the moment is calm. Valid expressions: neutral, happy, sad, surprised, thinking, angry. Act yourself: use "animate" with a clip name from the list in the context (for example wave), or "wave": true for the built-in wave. Add "escalate": true ONLY for multi-step or external-tool tasks (clipboard contents, network scan, files, terminal); answer everything else yourself."#;
 
 /// Ports the **Discover models** button probes when the rules file says nothing.
 pub const DEFAULT_DISCOVERY_PORTS: &[u16] = &[8001, 9931, 9932, 11434, 8080, 1234];
@@ -1558,6 +1558,29 @@ mod tests {
 
     fn read(path: &Path) -> Value {
         serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("parse")
+    }
+
+    #[test]
+    fn the_default_avatar_prompt_teaches_expression_selection() {
+        for needle in [
+            "\"expression\": \"neutral\"",
+            "always pick the one that matches the tone and outcome",
+            "happy for success",
+            "sad for failure",
+            "surprised for something unexpected",
+            "thinking while you are unsure",
+            "neutral only when the moment is calm",
+        ] {
+            assert!(
+                DEFAULT_AVATAR_SYSTEM_PROMPT.contains(needle),
+                "the default prompt is missing {needle:?}"
+            );
+        }
+        // Every name a model may answer with is in the vocabulary list, so the
+        // JSON it writes always validates against `AVATAR_EXPRESSIONS`.
+        for expression in ["neutral", "happy", "sad", "surprised", "thinking", "angry"] {
+            assert!(DEFAULT_AVATAR_SYSTEM_PROMPT.contains(expression));
+        }
     }
 
     #[test]

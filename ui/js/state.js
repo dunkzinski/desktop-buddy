@@ -55,6 +55,10 @@ export const avatar = {
   // expression / life-signs
   expressionHold: 0,      // seconds remaining before reverting
   expressionRevert: "neutral",
+  // `avatar.time` of the last expression change. A face applied by the AI or by
+  // program logic that carries no explicit hold eases back to neutral after
+  // EXPRESSION_SETTLE_SECS once the moment is over (see settleExpression).
+  expressionSetAt: 0,
   blinkUntil: 0,
   nextBlink: 3,
   talk: false,
@@ -406,9 +410,6 @@ export function updateStatusUI() {
   if (exprEl) exprEl.textContent = avatar.expression.charAt(0).toUpperCase() + avatar.expression.slice(1);
   const dot = document.getElementById("status-dot");
   if (dot) dot.classList.toggle("busy", avatar.mode !== "idle");
-  document.querySelectorAll("[data-expression]").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.expression === avatar.expression);
-  });
   const posEl = document.getElementById("position-display");
   if (posEl) {
     posEl.textContent = "pos (" + Math.round(avatar.x) + ", " + Math.round(avatar.y) + ") -> (" +
@@ -429,6 +430,7 @@ export function setExpression(name, options) {
     return;
   }
   avatar.expression = name;
+  avatar.expressionSetAt = avatar.time;
   // Copy every channel the preset declares (all but `time`), so adding a
   // blendshape to EXPRESSIONS needs no change here.
   const target = {};
@@ -453,6 +455,48 @@ export function setExpression(name, options) {
   avatar.expressionHold = holdMs > 0 ? holdMs / 1000 : 0;
   avatar.expressionRevert = (options && options.revert) || "neutral";
   updateStatusUI();
+}
+
+/**
+ * How long a program- or AI-chosen face lingers when nothing gave it an explicit
+ * hold, before it eases back to neutral. Long enough to read as a reaction (and
+ * to survive a slow model turn), short enough that the avatar does not sit
+ * frozen in one mood for minutes.
+ */
+export const EXPRESSION_SETTLE_SECS = 6;
+
+/**
+ * Wear `name` for a moment: program- and event-driven reactions go through here
+ * so every one of them reverts to neutral instead of leaving a face stuck on.
+ * It reuses `setExpression`'s hold machinery, so a `POST /emote` with its own
+ * duration (or a `speak` carrying an expression) simply replaces this one.
+ */
+export function reactExpression(name, seconds) {
+  if (!EXPRESSIONS[name]) return false;
+  const hold = Number.isFinite(seconds) ? seconds : EXPRESSION_SETTLE_SECS;
+  setExpression(name, { durationMs: Math.max(1, hold) * 1000, revert: "neutral" });
+  return true;
+}
+
+/**
+ * Ease an AI/program face back to neutral once the moment is actually over.
+ *
+ * Called every frame. The guards are what keep it from stealing a face the user
+ * is meant to see: an explicit hold wins (it reverts on its own schedule), a
+ * bubble or the "Thinking…" card *is* the moment, a walk/wave is still running,
+ * and push-to-talk is still listening or transcribing. It only ever calls
+ * `setExpression`, the same local path the `/emote` event uses, so `revision` /
+ * `expression_commanded_at` / `report_state` semantics are untouched.
+ */
+export function settleExpression() {
+  if (avatar.expression === "neutral") return false;
+  if (avatar.expressionHold > 0) return false;
+  if (speech.visible) return false;
+  if (avatar.mode !== "idle") return false;
+  if (stt.state !== "idle") return false;
+  if (avatar.time - avatar.expressionSetAt < EXPRESSION_SETTLE_SECS) return false;
+  setExpression("neutral");
+  return true;
 }
 
 /* ---------- undo history ---------- */

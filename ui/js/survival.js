@@ -22,7 +22,7 @@
  */
 
 import { call, listen } from "./ipc.js";
-import { toast } from "./state.js";
+import { reactExpression, toast } from "./state.js";
 
 const DEFAULT_BASE = "http://127.0.0.1:8765";
 const POLL_MS = 15000;
@@ -1376,9 +1376,12 @@ function applyFishingResult(payload) {
   if (payload.caught) {
     setFishingNote(`Caught a ${payload.label}! It's in the bag.`);
     toast(`${payload.icon || "🐟"} ${payload.label} caught`);
+    // The outcome is worth a face even when no AI brain is attached.
+    reactExpression("happy", 4);
   } else {
     const reason = ESCAPE_PROSE[payload.reason] || `Nothing landed (${payload.reason || "lost"}).`;
     setFishingNote(reason, payload.reason === "inventory_full");
+    reactExpression("sad", 4);
   }
   refreshInventory();
 }

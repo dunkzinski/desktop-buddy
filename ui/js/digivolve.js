@@ -24,7 +24,7 @@
  */
 
 import { call, listen } from "./ipc.js";
-import { toast } from "./state.js";
+import { reactExpression, toast } from "./state.js";
 
 const DEFAULT_BASE = "http://127.0.0.1:8765";
 const POLL_MS = 10000;
@@ -201,6 +201,7 @@ function renderCard(status) {
   }
 
   renderBlend(status);
+  renderHeaderBlend(status);
 
   // XP: at the last stage there is no next tier, so the bar is simply full.
   const final = !!status.final_stage;
@@ -459,10 +460,54 @@ function syncEvolveButton(status) {
         : "No creature yet";
 }
 
+/**
+ * The control panel's header strip: the same recency-weighted mix, compressed
+ * to one summary line and a 4 px stacked bar. `digivolve` already owns the
+ * `/digimon/status` poll and the blend maths, so the panel header is filled
+ * from here rather than running a second fetch. Hidden whenever there is no
+ * creature — a permanent "—" would read as a broken readout.
+ */
+function renderHeaderBlend(status) {
+  const strip = el("blend-readout");
+  if (!strip) return;
+  const rows = blendOf(status);
+  const blend = status && status.attribute_blend;
+  if (!rows.length) {
+    strip.classList.add("hidden");
+    return;
+  }
+  strip.classList.remove("hidden");
+  const summary = summarise(rows);
+  strip.title =
+    blend && blend.lineage && blend.lineage.length
+      ? `Recency-weighted across ${blend.lineage.length} stage(s): ${blend.lineage.join(" → ")}`
+      : "Recency-weighted attribute mix across this creature's evolution line";
+
+  const text = el("blend-readout-summary");
+  if (text) {
+    text.textContent = summary;
+    text.title = blend && blend.flavour ? blend.flavour : summary;
+  }
+
+  const bar = el("blend-readout-bar");
+  if (bar) {
+    bar.innerHTML = "";
+    for (const [attribute, percent] of rows) {
+      const slice = document.createElement("span");
+      slice.className = attributeClass(attribute);
+      slice.style.width = `${percent}%`;
+      slice.title = `${attribute} ${percent}%`;
+      bar.appendChild(slice);
+    }
+    bar.setAttribute("aria-label", `Attribute blend: ${summary}`);
+  }
+}
+
 /** The whole card when the route is not served (plugin removed). */
 function renderMissing(detail) {
   digivolve.missing = true;
   digivolve.status = null;
+  el("blend-readout")?.classList.add("hidden");
   const stage = el("digi-stage");
   if (stage) {
     stage.textContent = "offline";
@@ -693,11 +738,17 @@ export async function setupDigivolve() {
         `${payload.from} → ${payload.stage} (${payload.blend_summary || payload.attribute})`,
       );
       toast(`Digivolved into ${payload.stage}`);
+      // Growth is the good news of this whole plugin — show it on the face.
+      reactExpression("happy", 5);
     } else if (payload.event === "dedigivolved") {
       setNote(`${payload.from} → ${payload.stage} (back to an earlier form)`);
       toast(`Back to ${payload.stage}`);
     } else if (payload.event === "ready") {
       setNote(`Growth complete — ${payload.stage} can evolve.`);
+      reactExpression("surprised", 4);
+    } else if (payload.event === "reset") {
+      // A brand-new hatchling is worth a startled look.
+      reactExpression("surprised", 4);
     }
     refreshDigimon();
   });
@@ -738,6 +789,17 @@ export async function setupDigivolve() {
       blendChips: [...document.querySelectorAll("#digi-blend-chips .digi-blend-chip")].map(
         (node) => node.textContent,
       ),
+      /** The control panel's compact header readout (null when hidden). */
+      panelBlend: (() => {
+        const strip = el("blend-readout");
+        if (!strip || strip.classList.contains("hidden")) return null;
+        return {
+          summary: (el("blend-readout-summary") || {}).textContent || "",
+          slices: [...document.querySelectorAll("#blend-readout-bar span")].map(
+            (node) => `${node.className}:${node.style.width}`,
+          ),
+        };
+      })(),
       can_evolve: digivolve.status ? digivolve.status.can_evolve : false,
       picked: digivolve.picked,
       branches: digivolve.status

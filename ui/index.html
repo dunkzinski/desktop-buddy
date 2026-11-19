@@ -18,6 +18,10 @@
     <button class="window-btn" id="btn-rig" title="Rig edit mode (R)" aria-label="Rig edit mode">
       <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 1 5.4-5.4l-2.6 2.6 2 2 2.6-2.6z"/></svg>
     </button>
+    <button class="window-btn" id="btn-settings-top" aria-pressed="false"
+            title="Settings: paths, AI profiles and survival (Esc closes)" aria-label="Settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
     <button class="window-btn" id="btn-clickthrough" title="Toggle click-through on empty space" aria-label="Toggle click-through">
       <svg viewBox="0 0 24 24"><path d="M4 4l7 16 2.2-6.4L20 11 4 4z"/></svg>
     </button>
@@ -38,6 +42,19 @@
     </button>
   </header>
 
+  <!-- The creature's live recency-weighted attribute mix. digivolve.js fills
+       this from `GET /digimon/status` (`attribute_blend`) on its existing poll,
+       so the panel runs no fetch of its own; it stays hidden while there is no
+       creature (or the digivolution plugin is not loaded). -->
+  <div class="blend-readout hidden" id="blend-readout"
+       title="Recency-weighted attribute mix across this creature's whole evolution line — the newest stage counts most">
+    <div class="blend-readout-head">
+      <span class="blend-readout-label">Blend</span>
+      <span class="blend-readout-summary" id="blend-readout-summary">—</span>
+    </div>
+    <div class="blend-readout-bar" id="blend-readout-bar" role="img" aria-label="Attribute blend"></div>
+  </div>
+
   <div class="status">
     <div class="status-dot" id="status-dot"></div>
     <div class="status-text">
@@ -56,20 +73,9 @@
   </div>
 
   <div class="section">
-    <label>Expression</label>
-    <div class="btn-grid">
-      <button class="control-btn" data-expression="neutral" title="Neutral">Neutral</button>
-      <button class="control-btn" data-expression="happy" title="Happy">Happy</button>
-      <button class="control-btn" data-expression="sad" title="Sad">Sad</button>
-      <button class="control-btn" data-expression="surprised" title="Surprised">Surprised</button>
-    </div>
-  </div>
-
-  <div class="section">
     <label>Actions</label>
     <div class="btn-grid">
       <button class="control-btn primary" id="btn-wave" title="Wave">Wave</button>
-      <button class="control-btn" id="btn-idle" title="Return to idle">Idle</button>
       <button class="control-btn" id="btn-walk-random" title="Walk somewhere random">Walk</button>
       <button class="control-btn danger" id="btn-center" title="Walk back to center">Center</button>
       <button class="control-btn" id="btn-new-chat" title="Start a new chat: reset the conversation context">New chat ↺</button>

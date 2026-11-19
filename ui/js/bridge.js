@@ -8,7 +8,7 @@
 import {
   avatar, RT, speech, watcher, ai, tts, stt,
   round,
-  toast, setExpression, markManual, updateStatusUI,
+  toast, setExpression, markManual, updateStatusUI, reactExpression,
 } from "./state.js";
 
 import {
@@ -322,6 +322,9 @@ export function aiActiveLabel() {
  */
 export function applyAiProfiles(payload) {
   if (!payload || typeof payload !== "object") return;
+  // Read the *old* health before overwriting it: only a real transition is a
+  // moment worth a face (`ai.checked` false is the first status, not a drop).
+  const wasOnline = ai.checked && aiHealthStatus() !== "offline";
   if (typeof payload.active_profile === "string") ai.active = payload.active_profile;
   if (Array.isArray(payload.profiles)) {
     ai.profiles = payload.profiles.filter((entry) => entry && typeof entry.name === "string");
@@ -331,6 +334,9 @@ export function applyAiProfiles(payload) {
   }
   ai.checked = true;
   renderAiProfiles();
+  // A brain that just stopped answering is a failure the user should see on the
+  // face instead of a silent "offline" badge in a panel they may not be looking at.
+  if (wasOnline && aiHealthStatus() === "offline") reactExpression("sad", 5);
 }
 
 export function renderAiProfiles() {
@@ -403,6 +409,8 @@ export function watcherBadge() {
 /** Apply one `watcher-status` payload: full status or a single log line. */
 export function applyWatcherStatus(payload) {
   if (!payload) return;
+  const wasRunning = watcher.running;
+  const wasChecked = watcher.checked;
   if (payload.kind === "log" && typeof payload.line === "string") {
     pushWatcherLine(payload.line);
   } else {
@@ -428,6 +436,11 @@ export function applyWatcherStatus(payload) {
   if (typeof payload.enabled === "boolean") watcher.enabled = payload.enabled;
   if (typeof payload.running === "boolean") watcher.running = payload.running;
   renderWatcher();
+  // The app supervises the watcher, so "switched on but no longer running" is a
+  // crash/restart, not a user action: show the surprise rather than staying blank.
+  if (wasChecked && wasRunning && !watcher.running && watcher.enabled) {
+    reactExpression("surprised", 5);
+  }
 }
 
 function pushWatcherLine(line) {
@@ -550,6 +563,7 @@ export async function refreshTts() {
 /** Apply a `get_stt_status` / `GET /stt` / `stt-status` payload. */
 export function applySttStatus(payload) {
   if (!payload || typeof payload !== "object" || payload.__error) return;
+  const before = stt.state;
   if (typeof payload.enabled === "boolean") stt.enabled = payload.enabled;
   if (typeof payload.ready === "boolean") stt.ready = payload.ready;
   if (typeof payload.state === "string") stt.state = payload.state;
@@ -558,6 +572,18 @@ export function applySttStatus(payload) {
   stt.reason = typeof payload.reason === "string" ? payload.reason : "";
   stt.checked = true;
   renderStt();
+  reactToStt(before, stt.state);
+}
+
+/**
+ * The face follows the microphone. Whisper transcribing is a "let me work it
+ * out" moment, so the avatar looks thoughtful while the transcript is written;
+ * listening itself is not a mood (the user is the one doing the talking), and
+ * the transcript goes on to raise its own thinking card via `notify_reply`.
+ */
+function reactToStt(before, after) {
+  if (after === before) return;
+  if (after === "transcribing") reactExpression("thinking", 8);
 }
 
 /** The Push-to-talk row: badge text, button label and the reason it is off. */

@@ -1138,14 +1138,20 @@ export function settingsOpen() {
   return !!node && !node.classList.contains("hidden");
 }
 
+/** The Settings entry points: the ACTIONS button and the titlebar gear. */
+function settingsButtons() {
+  return [el("btn-settings"), el("btn-settings-top")].filter(Boolean);
+}
+
 export function toggleSettings(force) {
   const node = el("settings-modal");
   if (!node) return false;
   const open = typeof force === "boolean" ? force : node.classList.contains("hidden");
   node.classList.toggle("hidden", !open);
   node.setAttribute("aria-hidden", String(!open));
-  const button = el("btn-settings");
-  if (button) {
+  // Both entry points mirror the modal state, so the gear lights up whether
+  // the modal was opened from the panel or from the overlay header.
+  for (const button of settingsButtons()) {
     button.classList.toggle("active", open);
     button.setAttribute("aria-pressed", String(open));
   }
@@ -1171,7 +1177,9 @@ export async function setupSettings() {
   if (!el("settings-modal")) return;
   if (!buildForm()) return;
 
-  el("btn-settings")?.addEventListener("click", () => toggleSettings());
+  for (const button of settingsButtons()) {
+    button.addEventListener("click", () => toggleSettings());
+  }
   el("btn-settings-close")?.addEventListener("click", () => toggleSettings(false));
   el("btn-settings-save")?.addEventListener("click", save);
   el("btn-settings-reload")?.addEventListener("click", () => {

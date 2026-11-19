@@ -12,6 +12,7 @@ import {
   avatar, RT, speech, watcher, gaze, tts, stt, PRESET_STATES, TAU,
   round, num, clamp, viewport, updateViewport,
   setExpression, markManual, toast, updateStatusUI, activeState, blinkActive,
+  reactExpression, settleExpression,
 } from "./state.js";
 
 import {
@@ -318,6 +319,10 @@ function step(dt) {
       if (back !== avatar.expression) setExpression(back);
     }
   }
+  // ---- a face with no hold settles back to neutral once things are calm ----
+  // (the AI's `speak`/`emote` faces, and every program reaction below, land
+  // here; an explicit hold or an open bubble wins over it)
+  settleExpression();
 
   if (avatar.mode === "idle") {
     // While the bubble is up the avatar stands still: talking pins it in place
@@ -606,6 +611,8 @@ async function sendUserMessage(text, profile, includeScreen) {
   });
   if (result && result.__error) {
     endThinking();
+    // The task never reached the watcher: that is an error, not a mood.
+    reactExpression("sad", 5);
     toast("Send failed: " + result.__error, true);
     return false;
   }
@@ -844,31 +851,12 @@ function setupUI() {
   document.getElementById("btn-rig-panel").addEventListener("click", () => setRigMode(true));
   document.getElementById("btn-exit-rig").addEventListener("click", () => setRigMode(false));
 
-  document.querySelectorAll("[data-expression]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      setExpression(btn.dataset.expression);
-      markManual(20);
-      await call("set_avatar_expression", { expression: btn.dataset.expression });
-    });
-  });
-
   document.getElementById("btn-wave").addEventListener("click", async () => {
     avatar.mode = "waving";
     avatar.wavePhase = 0;
     markManual(15);
     updateStatusUI();
     await call("trigger_wave");
-  });
-
-  document.getElementById("btn-idle").addEventListener("click", async () => {
-    avatar.mode = "idle";
-    avatar.idleTimer = 0;
-    avatar.targetX = avatar.x;
-    avatar.targetY = avatar.y;
-    markManual(20);
-    setExpression("neutral");
-    updateStatusUI();
-    await call("set_avatar_state", { new_state: "idle" });
   });
 
   document.getElementById("btn-walk-random").addEventListener("click", wander);
@@ -1000,10 +988,6 @@ function setupUI() {
       return;
     }
     switch (key) {
-      case "1": setExpression("happy"); markManual(20); call("set_avatar_expression", { expression: "happy" }); break;
-      case "2": setExpression("sad"); markManual(20); call("set_avatar_expression", { expression: "sad" }); break;
-      case "3": setExpression("surprised"); markManual(20); call("set_avatar_expression", { expression: "surprised" }); break;
-      case "4": setExpression("neutral"); markManual(20); call("set_avatar_expression", { expression: "neutral" }); break;
       case "w": wander(); break;
       case "i":
         avatar.mode = "idle"; avatar.idleTimer = 0;
@@ -1044,6 +1028,10 @@ function installDebugSurface() {
   window.__avatarDebug = {
     ready: false,
     setExpression: setExpression,
+    /** A program/event reaction: the face is held, then reverts to neutral. */
+    reactExpression: reactExpression,
+    /** Force the settle pass (it also runs every frame). */
+    settleExpression: settleExpression,
     speak: speak,
     /** Motion state: `mode` turns "waving" on, `wavePhase` proves it advances. */
     anim: () => ({ mode: avatar.mode, wavePhase: avatar.wavePhase, time: avatar.time }),
