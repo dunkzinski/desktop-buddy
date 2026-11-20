@@ -1953,7 +1953,7 @@ unknown routes are **404**.
 curl -s localhost:8765/health
 ```
 ```json
-{"ok":true,"service":"desktop-buddy avatar api","version":"0.1.0","uptime_secs":396}
+{"ok":true,"service":"desktop-buddy avatar api","version":"0.2.0","uptime_secs":396}
 ```
 
 ### `/state`

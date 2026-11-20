@@ -117,7 +117,7 @@ panel). All request/response bodies are JSON.
 ### `GET /health`
 
 ```json
-{ "ok": true, "service": "desktop-buddy avatar api", "version": "0.1.0", "uptime_secs": 42 }
+{ "ok": true, "service": "desktop-buddy avatar api", "version": "0.2.0", "uptime_secs": 42 }
 ```
 
 ### `GET /state`

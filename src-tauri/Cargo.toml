@@ -1,6 +1,6 @@
 [package]
 name = "desktop-buddy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop Buddy - a transparent desktop companion avatar, driven by a local HTTP API"
 authors = ["Austin Dunkzinski"]
 license = "Apache-2.0"
