@@ -14,6 +14,16 @@ It renders skeletal 2D rigs on a transparent, click-through overlay spanning you
 * **Sandboxed WebAssembly plugins:** Fuel-metered `wasm32-unknown-unknown` guests with isolated linear memory—shipping with a survival/fishing economy loop and a deterministic procedural creature generator (`2,160` base silhouettes across 15 body plans).
 * **Zero-idle-token watcher:** A supervised background daemon subscribes to SSE and polls window context, waking an agent or local model only when rules match.
 
+## Screenshots
+
+<img src="docs/screenshot.png" alt="Desktop Buddy on a desktop: a lantern moth mid-sentence with the Avatar Control panel beside it and the watcher running" />
+
+The two Wasm plugin surfaces, side by side:
+
+<img src="docs/survival.png" width="49.5%" alt="Survival card: hunger tier, the fishing mini-game with its reel timing bar, the bag and the store" /> <img src="docs/metamorphosis.png" width="49.5%" alt="Metamorphosis card: archetype blend, XP and bond, and the three evolve options for the current creature" />
+
+<img src="docs/rig-editor.png" width="49.5%" alt="Rig Edit Mode: the inspector on the left, the bone overlay on the avatar, and the keyframe timeline along the bottom" /> <img src="docs/history-drawer.png" width="49.5%" alt="The history drawer listing the session's turns with per-turn details" />
+
 ---
 
 ## Quick start

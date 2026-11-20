@@ -380,19 +380,41 @@ impl EscapeReason {
     }
 }
 
+/// `a` / `an` for a catch label, so no line ever reads "Caught a Old boot".
+///
+/// The labels are player-facing item names ("Minnow", "Ember eel", "Old boot"),
+/// so only the leading letter decides the article; a label that starts with
+/// anything but a vowel sound ("an hour" is not a fish) takes `a`.
+fn article(label: &str) -> &'static str {
+    match label.chars().next().map(|c| c.to_ascii_lowercase()) {
+        Some('a' | 'e' | 'i' | 'o' | 'u') => "an",
+        _ => "a",
+    }
+}
+
+/// The same article when it opens the sentence: `A minnow`, `An eel`.
+fn article_cap(label: &str) -> &'static str {
+    match article(label) {
+        "an" => "An",
+        _ => "A",
+    }
+}
+
 /// The avatar's line when a catch lands. `junk` is a different mood entirely.
 pub fn catch_notice(label: &str, junk: bool, variant: u64) -> String {
+    let noun = format!("{} {label}", article(label));
+    let noun_cap = format!("{} {label}", article_cap(label));
     if junk {
         return match variant % 3 {
-            0 => format!("A {label}. Wonderful. Exactly what I wanted."),
-            1 => format!("I reeled in a {label}. Not a fish, but it's mine now."),
+            0 => format!("{noun_cap}. Wonderful. Exactly what I wanted."),
+            1 => format!("I reeled in {noun}. Not a fish, but it's mine now."),
             _ => format!("{label}. The river is mocking me."),
         };
     }
     match variant % 3 {
-        0 => format!("Caught a {label}! Come look at it."),
-        1 => format!("A {label}. Not bad, if I say so myself."),
-        _ => format!("I landed a {label}! That's going straight in the bag."),
+        0 => format!("Caught {noun}! Come look at it."),
+        1 => format!("{noun_cap}. Not bad, if I say so myself."),
+        _ => format!("I landed {noun}! That's going straight in the bag."),
     }
 }
 
@@ -757,5 +779,29 @@ mod tests {
             catch_notice("Old boot", true, 0),
             catch_notice("Old boot", false, 0)
         );
+    }
+
+    #[test]
+    fn every_catch_line_picks_the_right_article() {
+        // A vowel-initial item must never read "Caught a Ember eel".
+        for variant in 0..3 {
+            for junk in [false, true] {
+                let eel = catch_notice("Ember eel", junk, variant).to_lowercase();
+                let boot = catch_notice("Old boot", junk, variant).to_lowercase();
+                let minnow = catch_notice("Minnow", junk, variant).to_lowercase();
+                // `Old boot`'s third variant names the boot with no article.
+                if boot.contains(" boot") {
+                    assert!(!boot.contains("a old"), "{boot}");
+                }
+                assert!(!eel.contains("a ember"), "{eel}");
+                assert!(!minnow.contains("an minnow"), "{minnow}");
+            }
+            assert!(catch_notice("Ember eel", false, variant)
+                .to_lowercase()
+                .contains("an ember eel"));
+        }
+        assert!(catch_notice("Ember eel", false, 0).starts_with("Caught an Ember eel"));
+        assert!(catch_notice("Old boot", true, 0).starts_with("An Old boot"));
+        assert!(catch_notice("Minnow", false, 1).starts_with("A Minnow"));
     }
 }

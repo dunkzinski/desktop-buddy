@@ -387,7 +387,11 @@ input[type="range"]::-webkit-slider-thumb {
   color: #f2f2f8;
   font-size: 13px; line-height: 1.45;
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
-  white-space: pre-wrap; word-wrap: break-word;
+  /* `pre-wrap` must not live here: this element also contains the template's
+     own indentation, and preserving that whitespace added four blank lines
+     (~76 px) of dead space under every message. It belongs on the text node —
+     see `#speech-text` — so a message keeps its newlines and nothing else. */
+  white-space: normal; word-wrap: break-word;
   /* The bubble is a published hit region while visible (rig.js::wireRegions),
      so it can accept the click that opens the quick-reply box. */
   pointer-events: auto;
@@ -399,6 +403,8 @@ input[type="range"]::-webkit-slider-thumb {
 }
 #speech.show { opacity: 1; transform: translateY(0); }
 #speech-bubble { display: block; }
+/* Only the message honours its own newlines — see the note on `#speech`. */
+#speech-text { white-space: pre-wrap; }
 
 /* details drawer: the summary stays a glance, the code/log lives behind it */
 #speech-actions { display: flex; gap: 6px; margin-top: 8px; }
