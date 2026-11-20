@@ -1,5 +1,7 @@
 # char-rig
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 **A local-first, cross-platform desktop companion runtime built in Rust + Tauri 2.**
 
 It renders skeletal 2D rigs on a transparent, click-through overlay spanning your virtual desktop, drives lip-sync and cursor gaze from local Piper/Whisper pipelines, sandboxes procedural creature generation and mini-games in WebAssembly, and exposes a zero-idle-token HTTP/SSE/MCP bridge for local LLMs or Hermes Agent.
@@ -15,9 +17,10 @@ It renders skeletal 2D rigs on a transparent, click-through overlay spanning you
 
 ## Quick start
 
-**Requirements:** **Rust** (`1.77+`) and **WebView2** (ships with Windows 11). Local voice I/O optionally uses **Piper** and **whisper.cpp**—without them, the app runs fine silently.
+**Requirements:** **Rust** (`1.85+`, per `rust-version` in `src-tauri/Cargo.toml`), the **`wasm32-unknown-unknown`** target for the plugins (`rustup target add wasm32-unknown-unknown`), and **WebView2** (ships with Windows 11). Local voice I/O optionally uses **Piper** and **whisper.cpp**—without them, the app runs fine silently.
 
 ```bash
+./scripts/build-plugin.sh     # plugins are .wasm artifacts and gitignored — a fresh clone has none
 cd src-tauri
 cargo build
 ./target/debug/avatar-desktop.exe
@@ -135,3 +138,13 @@ tools/                   verify_docs.py (source↔docs drift check), cdp-eval.mj
 ## Status
 
 Active hobby/prototype build. The HTTP API is unauthenticated on localhost, and mixed per-monitor DPI scaling across multi-monitor virtual desktops is the main remaining rough edge. Check `python tools/verify_docs.py` after modifying routes or events to ensure documentation stays in sync with the Rust source.
+
+---
+
+## License
+
+**Apache License 2.0** — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+It covers the whole repository, not just the code: the Rust sources, the `ui/` frontend, both plugin crates, the hand-authored and generated rigs under `models/`, the documentation and the `SOUL.md` persona. Third-party crates keep their own (permissive) licenses — the resolved set is visible with `cargo metadata`.
+
+Contributions are accepted under the same license (inbound = outbound), per section 5 of the license.
