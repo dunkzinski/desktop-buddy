@@ -115,6 +115,14 @@
   ],
   "active_profile": "nvidia-nvidia-nemotron-3-5-bolt-e4b-4gb-",
   "ai_profiles": {
+    "ewin-reg-minicpm5-1b-agentic-tooluse-ggu": {
+      "endpoint": "http://127.0.0.1:9931/v1",
+      "kind": "openai_compat",
+      "label": "ewin-reg/MiniCPM5-1B-Agentic-Tooluse-GGUF:F16",
+      "model": "ewin-reg/MiniCPM5-1B-Agentic-Tooluse-GGUF:F16",
+      "system_prompt": "You are a tiny, fast desktop avatar assistant with a face. Do not output thinking tags. Respond ONLY with a valid JSON object using this exact schema: {\"speech\": \"short reply under 180 chars\", \"expression\": \"neutral\", \"animate\": \"clip name\"}. \"expression\" is how you look while you answer: always pick the one that matches the tone and outcome of your speech - happy for success, thanks or good news; sad for failure, loss or an apology; surprised for something unexpected or alarming; thinking while you are unsure or investigating; angry for a real annoyance; neutral only when the moment is calm. Valid expressions: neutral, happy, sad, surprised, thinking, angry. Act yourself: use \"animate\" with a clip name from the list in the context (for example wave), or \"wave\": true for the built-in wave. Add \"escalate\": true ONLY for multi-step or external-tool tasks (clipboard contents, network scan, files, terminal); answer everything else yourself.",
+      "timeout_secs": 120
+    },
     "hermes": {
       "cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
       "kind": "hermes_cli",

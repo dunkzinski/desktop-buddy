@@ -432,6 +432,14 @@ export function wireRegions() {
   if (avatar.collapsed) push(document.getElementById("panel-toggle"));
   else push(document.getElementById("control-panel"));
 
+  // A floating panel being dragged owns the pointer: publish the whole viewport
+  // for the gesture so the 35 ms cursor tracker cannot flip the overlay
+  // click-through mid-drag and steal the header the user is holding. The flag
+  // is set by drag.js; the final geometry is republished on release.
+  if (document.body.classList.contains("panel-dragging")) {
+    regions.push({ x: 0, y: 0, w: viewport.w, h: viewport.h });
+  }
+
   if (RT.rigMode) {
     regions.push({ x: 0, y: 0, w: viewport.w, h: viewport.h });
     push(document.getElementById("inspector"));

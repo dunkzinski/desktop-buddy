@@ -97,6 +97,7 @@ Run the unit tests with `cd src-tauri && cargo test`.
 | 🛠 wrench | toggle **Rig Edit Mode** (`R`) |
 | ⚙ gear | open **Settings** — works even with the control panel collapsed |
 | ↖ cursor | toggle click-through on empty space |
+| ▦ grid | **Reset panel layout** — snap every floating panel back to its default position |
 | — | minimize |
 | ✕ | close (stops the API too) |
 
@@ -728,6 +729,46 @@ read the same list over HTTP:
 curl -s localhost:8765/history
 # {"ok":true,"messages":[{"id":1,"role":"user","text":"…","ts_ms":…}, …]}
 ```
+
+## Moving the panels
+
+Every floating card is draggable by its **header** — the titlebar itself, the
+Avatar Control panel, Survival, Metamorphosis, the History drawer, the watcher
+console, the rig inspector and the import chooser. The gesture starts only on
+the header, so the close ✕, collapse, tabs, dropdowns, sliders, inputs and
+scrollable bodies keep their normal behaviour. The cursor is `grab` over a
+header and `grabbing` while dragging, and text selection is suppressed for the
+gesture.
+
+A drag stays glued to the click-through tracker. The page republishes its hit
+regions on every animation frame while the pointer moves and again on release,
+so a moved panel never leaves a stale hit box behind. During the gesture the
+whole overlay is temporarily interactive (the same full-viewport fallback the
+avatar drag uses) — the 35 ms Rust cursor tracker must never flip the window
+click-through mid-drag and steal the pointer. A panel drag never reaches the
+canvas underneath, so it cannot trigger an avatar click or drag.
+
+**Stacking.** Clicking or dragging a panel raises it above its siblings. Panels
+live in the 900–979 layer, below the Settings modal (980), the speech bubble
+(1050) and the command bar (1060); the titlebar stays window chrome at 1000.
+The command bar and the speech bubble remain avatar-anchored and are not
+draggable — they follow the avatar by design.
+
+**Bounds.** A dragged panel is clamped so its header stays reachable. The
+overlay window covers the whole virtual desktop (every monitor, including one
+left of or above the primary), so panel coordinates are overlay-local and never
+negative: a monitor to the left simply makes the overlay wider. Plugging a
+monitor in or out resizes the overlay and re-clamps any panel that no longer
+fits.
+
+**Persistence and reset.** Each panel's `(left, top)` is stored in
+`localStorage` under `char-rig.panel-layout.v1` and restored on load. A saved
+position is validated against the live viewport; a stale or off-screen entry
+falls back to the panel's CSS default instead of parking it somewhere
+unreachable. The titlebar's **▦** button resets every panel to its default
+position (and clears the stored layout). The same action is available to
+scripts as `window.__avatarDebug.resetPanelLayout()`; the current positions are
+readable through `window.__avatarDebug.panelLayout()`.
 
 ## The polish pass
 

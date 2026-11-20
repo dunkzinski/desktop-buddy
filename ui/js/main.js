@@ -65,6 +65,8 @@ import {
 
 import { setupPluginGate, pluginActive } from "./plugins.js";
 
+import { setupPanelDrag } from "./drag.js";
+
 import { call, listen } from "./ipc.js";
 
 /* ---------- behaviour (play mode) ---------- */
@@ -1249,6 +1251,8 @@ async function init() {
 
   setExpression("neutral");
   setupUI();
+  // Floating panels: header drag, persisted positions, clamped to the overlay.
+  setupPanelDrag();
   // The conversation log: hydrate from Rust, then follow `chat-message` /
   // `chat-history-cleared`. Its **New chat** button reuses the page's own
   // `resetSession`, so both entry points rotate the session identically.

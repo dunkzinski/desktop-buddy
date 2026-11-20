@@ -78,6 +78,7 @@ ui/
     ├── editor.js       # Rig Edit Mode overlay gizmos (`drawEditorOverlay`, `hitTest`, mouse/wheel handlers), inspector rendering/bindings (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `bindExpressionSprite`, `saveRig`, `resetRig`), and the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`)
     ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), text-driven lip sync (`mouthPoseFor`, `setMouthFrom`, `stepMouth`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
     ├── bridge.js       # Tauri IPC commands, event listeners (`avatar-state-changed`, `emote`, `speak`, `avatar-animate`, etc.), hit-region publishing (`wireRegions`, `setClickThrough`), state sync (`reportState`, `applyRemoteState`, `applyPartPatch`)
+    ├── drag.js         # Floating-panel drag + layout: header-only pointer drag, viewport clamping (multi-monitor overlay), sibling z-order, `localStorage` persistence (`char-rig.panel-layout.v1`), `setupPanelDrag` / `resetPanelLayout`; a drag sets `body.panel-dragging` so `rig.js` publishes a full-viewport region for the gesture
     ├── survival.js     # The **Survival** pop-out card and its four tabs: `setupSurvival` (hydrate from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follow the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events, 15 s survival poll floor), `renderSurvival` (tier badge, the two bars and the craving row, from any of the payload shapes), `feed` (the real `POST /survival/feed`), `setCraving` / `clearCraving`, `craft` + `syncCraftButton` (the recipe picker's `can_cook`/`missing`, so a cook the bag cannot pay for is not clickable), `showSurvivalTab` (status / bag / fishing / store), `renderInventory` + `addItem` + `useItem` + `sellPickedItem` (`GET /inventory`, `POST /inventory/add`, `POST /inventory/use`, plus a one-unit `POST /store/sell` straight from the bag at the slot's `sell_price`), `syncInventoryButtons` (Use for edibles, Sell for anything the counter prices), the shop (`renderStore` + `renderWallet` + `pickStoreItem` + `syncStoreButtons` + `trade` over `GET /store`, `POST /store/buy`, `POST /store/sell`), the fishing mini-game (`castLine` / `hookFish` / `reelFish` / `cancelFishing`, a 120 ms `GET /fishing` poll, `startMarker` animating off the plugin's sweep), `toggleSurvivalCard` / `survivalCardOpen`
     ├── metamorphose.js    # The **Metamorphosis** pop-out card: `setupMetamorphose` (hydrate from
     │                  # `GET /creature/status`, follow the `creature` event, 10 s poll), `renderCreature`
@@ -1240,6 +1241,30 @@ outran the art box; and `applyRemoteState` ignores in-flight
 `avatar-state-changed` frames while the drag is live, plus a bare `walking`
 echo that arrives without the walk segment that goes with it (adopting it used
 to leave `step()` with a stale start and snap the avatar to an old target).
+
+### Moving the panels
+
+Floating cards are positioned by CSS defaults and moved by `ui/js/drag.js`.
+`setupPanelDrag` attaches a `pointerdown` listener to each panel's header
+(`titlebar`, `#control-panel header`, `#inspector header`, the drawer/card
+headers and the import chooser's `<h3>`). The listener ignores presses that
+start on a control (`button`, `select`, `input`, …), so only the header
+background starts a drag. Positions are clamped so the header stays reachable
+inside the overlay viewport; a stretch panel (the rig inspector) keeps its
+bottom margin. A press anywhere in the panel raises its z-index within the
+900–979 stack, below Settings (980) and the transient bubble/command bar
+(1050/1060).
+
+`drag.js` persists `(left, top)` per panel in `localStorage`
+(`char-rig.panel-layout.v1`), restores it when the panel is visible (a
+`MutationObserver` catches panels that open later), and validates the saved
+coordinates against the live viewport — a stale or off-screen entry falls back
+to the CSS default. The titlebar's **▦** button calls `resetPanelLayout`.
+
+Click-through stays correct because the drag calls `wireRegions` on every
+animation frame and on release, and because `body.panel-dragging` makes
+`rig.js` publish the whole viewport for the gesture. Without that flag a fast
+drag could outrun the 35 ms Rust cursor tracker and lose the pointer.
 
 ### Life signs: lip sync, gaze and hover
 
