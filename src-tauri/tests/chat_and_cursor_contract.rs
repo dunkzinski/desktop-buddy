@@ -13,11 +13,11 @@
 #[test]
 fn chat_history_contract_matches_the_docs() {
     assert_eq!(
-        avatar_desktop_lib::CHAT_HISTORY_CAPACITY, 50,
+        desktop_buddy_lib::CHAT_HISTORY_CAPACITY, 50,
         "ARCHITECTURE.md / API.md promise a 50-turn in-memory log"
     );
     assert_eq!(
-        avatar_desktop_lib::CHAT_ROLES,
+        desktop_buddy_lib::CHAT_ROLES,
         ["user", "assistant"],
         "`GET /history` documents exactly these two roles"
     );
@@ -26,11 +26,11 @@ fn chat_history_contract_matches_the_docs() {
 #[test]
 fn global_cursor_throttle_matches_the_docs() {
     assert_eq!(
-        avatar_desktop_lib::CURSOR_EMIT_DEADBAND, 3.0,
+        desktop_buddy_lib::CURSOR_EMIT_DEADBAND, 3.0,
         "the `cursor-pos` deadband is documented as 3 CSS px"
     );
     assert_eq!(
-        avatar_desktop_lib::CURSOR_EMIT_INTERVAL_MS, 50,
+        desktop_buddy_lib::CURSOR_EMIT_INTERVAL_MS, 50,
         "`cursor-pos` is documented as ~20 Hz (every 50 ms)"
     );
 }

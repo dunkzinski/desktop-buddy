@@ -1,5 +1,5 @@
 /**
- * char-rig — metamorphosis widget
+ * desktop-buddy — metamorphosis widget
  *
  * The pop-out card for the `metamorphosis` plugin: stage, XP, bond, attribute,
  * the recency-weighted attribute mix of the whole lineage, the three evolution

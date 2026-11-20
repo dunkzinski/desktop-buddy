@@ -606,7 +606,7 @@
       "z": 6
     }
   ],
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "label": "Xenomorph-7",
   "name": "xenomorph-7",
   "notes": "Built-in model: procedural shapes, no textures. Converted from the original hardcoded renderer."

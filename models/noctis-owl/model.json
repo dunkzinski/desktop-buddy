@@ -2092,7 +2092,7 @@
       "z": 12
     }
   ],
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "label": "Noctis Owl",
   "name": "noctis-owl",
   "notes": "Bioluminescent celestial owl-gryphon rig with 19 bones, layered wings, procedural face expressions, and 4 keyframe clips."

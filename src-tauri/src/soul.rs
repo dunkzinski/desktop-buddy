@@ -5,7 +5,7 @@
 //! candour, how it reacts to the screen, style anti-patterns). No paths, no
 //! profiles, no secrets — those live in `watcher_rules.json`.
 //!
-//! It is read from disk **on every turn** by `char-rig-watcher`, so an edit
+//! It is read from disk **on every turn** by `desktop-buddy-watcher`, so an edit
 //! takes effect immediately; nothing caches it. Three rules keep it safe:
 //!
 //! 1. **Seed once, never clobber.** A missing file is created from
@@ -18,7 +18,7 @@
 //!    file's own directory → the app config directory.
 //!
 //! This module is deliberately dependency-light (std + `serde_json`) because
-//! `char-rig-watcher` includes it directly with `#[path = "../soul.rs"]`; it is
+//! `desktop-buddy-watcher` includes it directly with `#[path = "../soul.rs"]`; it is
 //! the one piece of personality code shared by both binaries.
 
 use std::io::Write as _;
@@ -33,7 +33,7 @@ pub const MAX_SOUL_BYTES: usize = 64 * 1024;
 
 /// Override for the file location, used by tests and by a user who wants the
 /// persona in their dotfiles. Checked before the rules file.
-pub const ENV_SOUL_PATH: &str = "CHAR_RIG_SOUL";
+pub const ENV_SOUL_PATH: &str = "DESKTOP_BUDDY_SOUL";
 
 /// The file both processes look for beside `watcher_rules.json`.
 pub const SOUL_FILE_NAME: &str = "SOUL.md";
@@ -102,28 +102,63 @@ This file is mine. If it stops sounding like me, I rewrite it.
  * Where the file lives
  * ------------------------------------------------------------------ */
 
-/// `%LOCALAPPDATA%\char-rig` on Windows, `$XDG_CONFIG_HOME/char-rig` elsewhere.
+/// `%LOCALAPPDATA%\desktop-buddy` on Windows, `$XDG_CONFIG_HOME/desktop-buddy` elsewhere.
 ///
 /// Only used when there is no `watcher_rules.json` to sit beside (a fresh
 /// checkout with no rules file, or a test): the rules file is the real config
 /// directory, so its folder wins.
 fn app_config_dir() -> PathBuf {
+    config_dir_named(DIR_NAME)
+}
+
+/// Directory name the app owns under the platform config root.
+const DIR_NAME: &str = "desktop-buddy";
+
+/// The pre-rebrand directory name, still on disk for anyone who ran a
+/// `char-rig` build. Read by [`migrate_legacy_config_dir`] only.
+const LEGACY_DIR_NAME: &str = "char-rig";
+
+/// Move a pre-rebrand config directory into place, once.
+///
+/// The soul and settings written by a `char-rig` build live under the old
+/// name; without this the first launch after the rename silently seeds
+/// `DEFAULT_SOUL` and looks like the persona was lost. Create-only: an
+/// existing new directory always wins, so every later launch is a no-op.
+pub fn migrate_legacy_config_dir() {
+    let new = app_config_dir();
+    if new.exists() {
+        return;
+    }
+    let old = config_dir_named(LEGACY_DIR_NAME);
+    if !old.is_dir() {
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::rename(&old, &new) {
+        Ok(()) => eprintln!("[soul] migrated {} -> {}", old.display(), new.display()),
+        Err(err) => eprintln!("[soul] could not migrate {}: {err}", old.display()),
+    }
+}
+
+fn config_dir_named(name: &str) -> PathBuf {
     #[cfg(windows)]
     {
         if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(dir).join("char-rig");
+            return PathBuf::from(dir).join(name);
         }
-        PathBuf::from("char-rig")
+        PathBuf::from(name)
     }
     #[cfg(not(windows))]
     {
         if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
-            return PathBuf::from(dir).join("char-rig");
+            return PathBuf::from(dir).join(name);
         }
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(".config").join("char-rig");
+            return PathBuf::from(home).join(".config").join(name);
         }
-        PathBuf::from(".char-rig")
+        PathBuf::from(format!(".{name}"))
     }
 }
 
@@ -140,7 +175,7 @@ fn path_override(rules: Option<&Path>) -> Option<PathBuf> {
 
 /// The one SOUL.md path both processes agree on.
 ///
-/// `CHAR_RIG_SOUL` → `soul_path` in the rules file → `<rules dir>/SOUL.md` →
+/// `DESKTOP_BUDDY_SOUL` → `soul_path` in the rules file → `<rules dir>/SOUL.md` →
 /// `<app config dir>/SOUL.md`. The rules file is the config directory in
 /// practice (the app and the watcher are both launched from the checkout), so
 /// the persona lives next to the settings the user already edits by hand.
@@ -282,7 +317,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "char-rig-soul-{tag}-{}-{}",
+            "desktop-buddy-soul-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

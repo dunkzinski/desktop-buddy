@@ -247,9 +247,9 @@ if history_cap:
         )
 
 # ---------- 9. MCP bridge ----------
-mcp_path = ROOT / "src-tauri/src/bin/char-rig-mcp.rs"
+mcp_path = ROOT / "src-tauri/src/bin/desktop-buddy-mcp.rs"
 if not mcp_path.exists():
-    problems.append("src-tauri/src/bin/char-rig-mcp.rs is missing")
+    problems.append("src-tauri/src/bin/desktop-buddy-mcp.rs is missing")
 else:
     mcp_rs = mcp_path.read_text(encoding="utf-8")
 
@@ -257,17 +257,17 @@ else:
     tool_names = set(re.findall(r'"([a-z_]+)"', tool_block.group(1))) if tool_block else set()
     print(f"\nMCP tools ({len(tool_names)}): {', '.join(sorted(tool_names))}")
     if len(tool_names) != 14:
-        problems.append(f"char-rig-mcp.rs: expected 14 tools, found {len(tool_names)}")
+        problems.append(f"desktop-buddy-mcp.rs: expected 14 tools, found {len(tool_names)}")
 
     # every declared tool must have a schema entry in tools()
     for name in sorted(tool_names):
         if mcp_rs.count(f'"name": "{name}"') < 1:
-            problems.append(f"char-rig-mcp.rs: tool {name} has no tools() entry")
+            problems.append(f"desktop-buddy-mcp.rs: tool {name} has no tools() entry")
 
     # each tool must be dispatched
     for name in sorted(tool_names):
         if f'"{name}" =>' not in mcp_rs:
-            problems.append(f"char-rig-mcp.rs: tool {name} is not dispatched in run_tool")
+            problems.append(f"desktop-buddy-mcp.rs: tool {name} is not dispatched in run_tool")
 
     for doc_name, text in (("API.md", api_md), ("ARCHITECTURE.md", arch_md), ("README.md", readme)):
         missing = {t for t in tool_names if f"`{t}`" not in text and t not in text}
@@ -281,7 +281,7 @@ else:
     mcp_expressions = re.findall(r'"([a-z]+)"', mcp_exp.group(1)) if mcp_exp else []
     if lib_expressions != mcp_expressions:
         problems.append(
-            "EXPRESSIONS in char-rig-mcp.rs drifted from AVATAR_EXPRESSIONS in lib.rs: "
+            "EXPRESSIONS in desktop-buddy-mcp.rs drifted from AVATAR_EXPRESSIONS in lib.rs: "
             f"{mcp_expressions} vs {lib_expressions}"
         )
     else:
@@ -292,25 +292,25 @@ else:
     print(f"paths used by the MCP bridge: {', '.join(sorted(mcp_paths))}")
     unknown_paths = {p for p in mcp_paths if p not in routes}
     if unknown_paths:
-        problems.append(f"char-rig-mcp.rs calls non-existent routes: {sorted(unknown_paths)}")
+        problems.append(f"desktop-buddy-mcp.rs calls non-existent routes: {sorted(unknown_paths)}")
     if len(mcp_paths) < 14:
-        problems.append(f"char-rig-mcp.rs only maps {len(mcp_paths)} routes; expected 14")
+        problems.append(f"desktop-buddy-mcp.rs only maps {len(mcp_paths)} routes; expected 14")
 
     # the documented Windows path must match where cargo puts the binary
-    if r"src-tauri\target\debug\char-rig-mcp.exe" not in readme:
-        problems.append("README.md: missing the char-rig-mcp.exe path in the MCP config snippet")
+    if r"src-tauri\target\debug\desktop-buddy-mcp.exe" not in readme:
+        problems.append("README.md: missing the desktop-buddy-mcp.exe path in the MCP config snippet")
 
 # ---------- 10. watcher binary + rules file ----------
-watcher_path = ROOT / "src-tauri/src/bin/char-rig-watcher.rs"
+watcher_path = ROOT / "src-tauri/src/bin/desktop-buddy-watcher.rs"
 rules_path = ROOT / "watcher_rules.json"
 
 if not watcher_path.exists():
-    problems.append("src-tauri/src/bin/char-rig-watcher.rs is missing")
+    problems.append("src-tauri/src/bin/desktop-buddy-watcher.rs is missing")
 else:
     watcher_rs = watcher_path.read_text(encoding="utf-8")
 
     for doc_name, text in (("README.md", readme), ("ARCHITECTURE.md", arch_md)):
-        for needle in ("char-rig-watcher.exe", "watcher_rules.json"):
+        for needle in ("desktop-buddy-watcher.exe", "watcher_rules.json"):
             if needle not in text:
                 problems.append(f"{doc_name}: does not mention {needle}")
 
@@ -337,14 +337,14 @@ else:
     }
     for name, value in defaults.items():
         if value is None:
-            problems.append(f"char-rig-watcher.rs: {name} not found")
+            problems.append(f"desktop-buddy-watcher.rs: {name} not found")
         elif name not in arch_md:
             problems.append(f"ARCHITECTURE.md: {name} not documented")
 
     m = re.search(r'const DEFAULT_ACK_EMOTE: &str = "([a-z]+)";', watcher_rs)
     ack = m.group(1) if m else None
     if ack is None:
-        problems.append("char-rig-watcher.rs: DEFAULT_ACK_EMOTE not found")
+        problems.append("desktop-buddy-watcher.rs: DEFAULT_ACK_EMOTE not found")
     elif f"`{ack}`" not in config_md:
         problems.append(f"CONFIGURATION.md: default ack emote {ack!r} not documented")
 
@@ -1074,9 +1074,9 @@ else:
                             "watcher_rules.json: vision.trigger_phrases entries must be non-empty strings"
                         )
 
-                    watcher_rs_path = ROOT / "src-tauri/src/bin/char-rig-watcher.rs"
+                    watcher_rs_path = ROOT / "src-tauri/src/bin/desktop-buddy-watcher.rs"
                     if not watcher_rs_path.exists():
-                        problems.append("src-tauri/src/bin/char-rig-watcher.rs is missing")
+                        problems.append("src-tauri/src/bin/desktop-buddy-watcher.rs is missing")
                     else:
                         watcher_rs = watcher_rs_path.read_text(encoding="utf-8")
                         profile_const = re.search(
@@ -1084,7 +1084,7 @@ else:
                         )
                         if profile_const is None:
                             problems.append(
-                                "src-tauri/src/bin/char-rig-watcher.rs: DEFAULT_VISION_PROFILE not found"
+                                "src-tauri/src/bin/desktop-buddy-watcher.rs: DEFAULT_VISION_PROFILE not found"
                             )
                         elif profile_name != profile_const.group(1):
                             problems.append(

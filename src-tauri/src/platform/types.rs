@@ -183,7 +183,7 @@ pub fn is_self_foreground(
 /// The overlay is a full-screen transparent window: the moment the user drags
 /// the avatar or clicks a quick-task chip, Windows hands it foreground, and a
 /// naive `GetForegroundWindow()` then tells every trigger that the user is
-/// looking at `avatar-desktop.exe` — which poisons the model's context *and*
+/// looking at `desktop-buddy.exe` — which poisons the model's context *and*
 /// makes an unqualified `POST /perch` walk to the overlay's own full-screen
 /// rect. When the foreground window is ours, the front-most *other* window is
 /// reported instead; `visible_windows` is already z-ordered front-to-back and

@@ -1,4 +1,4 @@
-"""Offline renderer for a char-rig manifest — the sanity check the format
+"""Offline renderer for a desktop-buddy manifest — the sanity check the format
 document recommends (re-implement computeWorld / partWorldMatrix / drawShape and
 look at the PNG) before trusting a generated rig on the desktop.
 

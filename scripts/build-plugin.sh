@@ -30,10 +30,14 @@ for dir in "${DIRS[@]}"; do
   echo "==> building $name ($TARGET)"
   ( cd "$dir" && cargo build --release --target "$TARGET" )
 
-  # Prefer the artifact whose name matches this plugin: a stale `.wasm` from a
-  # previous crate name can still sit in the target dir and would otherwise win
-  # the `head -n 1`.
-  artifact="$(find "$dir/target/$TARGET/release" -maxdepth 1 -name "${name//-/_}*.wasm" | head -n 1)"
+  # Prefer the artifact whose name matches this plugin's lib exactly: a stale
+  # `.wasm` from a previous crate name (`char_rig_survival_plugin.wasm` and
+  # friends) still sits in this directory and *sorts first*, so a glob + head -n 1
+  # silently ships the old build. Fall back to the newest .wasm, not the first.
+  artifact="$dir/target/$TARGET/release/desktop_buddy_${name//-/_}_plugin.wasm"
+  if [ ! -f "$artifact" ]; then
+    artifact="$(ls -t "$dir/target/$TARGET/release"/*.wasm 2>/dev/null | head -n 1)"
+  fi
   if [ -z "$artifact" ]; then
     artifact="$(find "$dir/target/$TARGET/release" -maxdepth 1 -name '*.wasm' | head -n 1)"
   fi
@@ -47,4 +51,4 @@ for dir in "${DIRS[@]}"; do
 done
 
 echo
-echo "done. restart avatar-desktop.exe (no rebuild) to load the plugins."
+echo "done. restart desktop-buddy.exe (no rebuild) to load the plugins."

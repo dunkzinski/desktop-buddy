@@ -1,4 +1,4 @@
-//! The `char-rig/model@1` shape: typed bones/parts/clips, the mirroring
+//! The `desktop-buddy/model@1` shape: typed bones/parts/clips, the mirroring
 //! formulas from `MODEL_FORMAT.md`, and a forward-kinematics pass the generator
 //! (and the tests) can verify against.
 //!

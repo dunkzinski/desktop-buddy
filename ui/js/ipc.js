@@ -1,5 +1,5 @@
 /**
- * char-rig — Tauri IPC leaf module
+ * desktop-buddy — Tauri IPC leaf module
  *
  * Owns every access to `window.__TAURI__`. This module imports nothing, so
  * every other module can depend on it without creating a cycle.

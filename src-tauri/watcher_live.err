@@ -1,9 +1,0 @@
-[watcher] rules loaded from C:/Users/fro_d/AppData/Local/hermes/cache/scratch/e2e_rules.json
-[watcher] char-rig-watcher ready (api http://127.0.0.1:8799, context every 1s, ack "surprised", live)
-[watcher] dispatch: webhook http://127.0.0.1:8799/hook
-[watcher] subscribed to http://127.0.0.1:8799/events
-[watcher] trigger interaction: the user double-clicked the avatar at (10, 20)
-[watcher] trigger user_reply: the user replied in the speech bubble: "what is on my clipboard?"
-[watcher] trigger window_title: the focused window changed to "main.rs - error" (Code.exe with a title containing "error"; matched "error")
-[watcher] trigger alert: suricata reported a warn alert: ET SCAN port sweep from 192.168.0.9
-[watcher] trigger idle_return: the user came back after about 950s idle

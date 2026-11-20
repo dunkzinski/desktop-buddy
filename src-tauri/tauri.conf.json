@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AI Avatar Desktop",
+  "productName": "Desktop Buddy",
+  "mainBinaryName": "desktop-buddy",
   "version": "0.1.0",
-  "identifier": "com.ai-avatar.desktop",
+  "identifier": "com.dunkzinski.desktop-buddy",
   "build": {
     "frontendDist": "../ui",
     "beforeDevCommand": "",
@@ -13,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "AI Avatar Desktop",
+        "title": "Desktop Buddy",
         "width": 1920,
         "height": 1080,
         "resizable": false,

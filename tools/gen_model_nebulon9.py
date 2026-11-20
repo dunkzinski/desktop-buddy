@@ -230,7 +230,7 @@ animations = {
 }
 
 model = {
-    "format": "char-rig/model@1",
+    "format": "desktop-buddy/model@1",
     "name": "nebulon-9",
     "label": "Nebulon-9 (alien)",
     "notes": "Procedural-shape alien: 21-bone rig, glowing antennae, third eye, "

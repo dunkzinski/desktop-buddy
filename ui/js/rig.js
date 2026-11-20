@@ -1,5 +1,5 @@
 /**
- * char-rig — rig model ingestion, skeletal transforms, geometry, serialization
+ * desktop-buddy — rig model ingestion, skeletal transforms, geometry, serialization
  *
  * Depends on: state.js (state + helpers) and ipc.js (Tauri commands).
  * Nothing in this module reads from editor/renderer/bridge, so it can be
@@ -557,7 +557,7 @@ export function serializeAnimations() {
 
 export function serializeRig() {
   return {
-    format: "char-rig/model@1",
+    format: "desktop-buddy/model@1",
     name: RT.model ? RT.model.name : null,
     label: RT.model ? RT.model.label : null,
     notes: RT.model && RT.model.rig ? RT.model.rig.notes : null,

@@ -1160,7 +1160,7 @@
       "z": 11
     }
   ],
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "label": "Sir Clank (knight)",
   "name": "sir-clank",
   "notes": "Procedural-shape knight: steel plate armor, red helmet plume, heater shield, broadsword, tagged visor eyes/mouth, and four keyframe clips (wave, breathe, scan, alert)."

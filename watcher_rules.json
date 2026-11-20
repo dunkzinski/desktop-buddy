@@ -63,7 +63,7 @@
   ],
   "max_session_turns": 15,
   "session_idle_reset_secs": 1800,
-  "session_base": "char-rig",
+  "session_base": "desktop-buddy",
   "hotkey": "Alt+Space",
   "stt": {
     "enabled": true,

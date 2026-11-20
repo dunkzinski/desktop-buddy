@@ -11,9 +11,9 @@
 
 use std::path::PathBuf;
 
-use char_rig_metamorphosis_plugin::attribute::Attribute;
-use char_rig_metamorphosis_plugin::generator::{generate, Archetype, Spec, Tier};
-use char_rig_metamorphosis_plugin::plan::{BUILD_COUNT, FORM_COUNT};
+use desktop_buddy_metamorphosis_plugin::attribute::Attribute;
+use desktop_buddy_metamorphosis_plugin::generator::{generate, Archetype, Spec, Tier};
+use desktop_buddy_metamorphosis_plugin::plan::{BUILD_COUNT, FORM_COUNT};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

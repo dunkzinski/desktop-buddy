@@ -15,8 +15,8 @@
 
 use std::collections::HashSet;
 
-use char_rig_metamorphosis_plugin::attribute::Attribute;
-use char_rig_metamorphosis_plugin::generator::{generate, Archetype, Manifest, Spec, Tier};
+use desktop_buddy_metamorphosis_plugin::attribute::Attribute;
+use desktop_buddy_metamorphosis_plugin::generator::{generate, Archetype, Manifest, Spec, Tier};
 
 fn silhouette(manifest: &Manifest) -> String {
     let mut sig = String::new();

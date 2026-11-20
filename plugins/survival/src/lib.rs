@@ -1,4 +1,4 @@
-//! `char-rig-survival-plugin` — the survival feature, compiled to WebAssembly.
+//! `desktop-buddy-survival-plugin` — the survival feature, compiled to WebAssembly.
 //!
 //! This crate is a **guest**: it knows nothing about Tauri, axum or `AppCtx`. It
 //! exposes a handful of `extern "C"` functions, exchanges JSON through linear
@@ -49,7 +49,7 @@
 //! ```bash
 //! cd plugins/survival
 //! cargo build --release --target wasm32-unknown-unknown
-//! cp target/wasm32-unknown-unknown/release/char_rig_survival_plugin.wasm \
+//! cp target/wasm32-unknown-unknown/release/desktop_buddy_survival_plugin.wasm \
 //!    ../survival.wasm
 //! ```
 //!

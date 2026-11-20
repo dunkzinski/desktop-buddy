@@ -1,5 +1,5 @@
 /**
- * char-rig — the History drawer (in-memory conversation log)
+ * desktop-buddy — the History drawer (in-memory conversation log)
  *
  * Depends on: state.js (the mirrored `chat` state and `toast`), ipc.js (the
  * `get_chat_history` / `set_clipboard` commands and the two chat events) and

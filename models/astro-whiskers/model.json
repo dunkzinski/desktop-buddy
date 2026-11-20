@@ -1302,7 +1302,7 @@
       "z": 7
     }
   ],
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "label": "Astro-Whiskers (space cat)",
   "name": "astro-whiskers",
   "notes": "Procedural-shape space cat: white NASA-inspired flight suit, translucent bubble space helmet, pointed cat ears, swaying space tail, tagged eyes/mouth, and four keyframe clips (wave, breathe, scan, alert)."

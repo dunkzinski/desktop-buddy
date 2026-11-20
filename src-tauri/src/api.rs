@@ -447,7 +447,7 @@ impl ApiCtx {
 async fn health(State(api): State<ApiCtx>) -> Json<Value> {
     Json(json!({
         "ok": true,
-        "service": "char-rig avatar api",
+        "service": "desktop-buddy avatar api",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_secs": api.started.elapsed().as_secs(),
     }))
@@ -585,7 +585,7 @@ async fn alert(
 
 /// `POST /session/reset` — drop the conversation context.
 ///
-/// The app does not own the session; `char-rig-watcher.exe` does. This route
+/// The app does not own the session; `desktop-buddy-watcher.exe` does. This route
 /// therefore only broadcasts a `session_reset` frame, and the watcher rotates its
 /// `{session}` id when it sees it. The quick-reply box's **↺** and the control
 /// panel's **New chat** call the same core through `reset_session`.
@@ -1096,7 +1096,7 @@ fn soul_path(shared: &crate::AppCtx) -> std::path::PathBuf {
 ///   `plugins::config_specs()`), applied through the plugin's own
 ///   `PluginConfig::apply`, which reports whether it is live or needs a restart;
 /// * `ai.*` / `vision.*` → one `ai_profile` SSE frame, which is what makes
-///   `char-rig-watcher.exe` re-read the file (new endpoints, models, capture
+///   `desktop-buddy-watcher.exe` re-read the file (new endpoints, models, capture
 ///   mode) without being restarted.
 ///
 /// Piper/Whisper **paths** are read once at startup, so those are reported under
@@ -1713,7 +1713,7 @@ mod tests {
 
     fn soul_scratch(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "char-rig-api-soul-{tag}-{}-{}",
+            "desktop-buddy-api-soul-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

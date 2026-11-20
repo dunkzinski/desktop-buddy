@@ -1,12 +1,12 @@
-# ARCHITECTURE — char-rig desktop avatar
+# ARCHITECTURE — desktop-buddy desktop avatar
 
-Technical documentation for the AI desktop avatar in `C:\hermes\char-rig`.
+Technical documentation for the AI desktop avatar in `C:\hermes\desktop-buddy`.
 Everything here was read from the current sources; file names, function names,
 constants and payloads are quoted from the code, not from memory.
 
 Last verified against: `src-tauri/src/{lib,api,models}.rs`, `ui/index.html`,
 `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, `models/*/model.json`,
-`src-tauri/src/bin/{char-rig-mcp,char-rig-watcher}.rs`,
+`src-tauri/src/bin/{desktop-buddy-mcp,desktop-buddy-watcher}.rs`,
 `src-tauri/src/bin/capture/mod.rs`, `src-tauri/src/platform/*.rs`.
 
 ---
@@ -34,7 +34,7 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | **Conversation history** | The session's turns are kept **in memory** by `AppCtx::push_chat` — a bounded `VecDeque<ChatMessage>` (capacity 50, oldest evicted) recording `{id, role, text, details?, expression?, ts_ms}`. `"user"` turns are recorded in `do_user_reply_with_profile`, `"assistant"` turns in `do_speak` (with their `details` and expression), and `do_session_reset` clears the lot. A **History** drawer (panel **History** button, command-bar **☰**, or `H`) renders the transcript with per-turn timestamps, expandable monospace `details` blocks and **Copy**; it hydrates through `get_chat_history`, appends live from `chat-message`, empties on `chat-history-cleared`, and stays clickable over a click-through desktop by publishing its own hit region while open. `GET /history` exposes the same log to agents. Nothing is persisted — a restart starts a new chat |
 | **Local voice** | Every spoken bubble is also **read out loud** by a local **Piper** voice — no network, no API key. `do_speak` is the single hook, so it covers `POST /speak`, the `speak` command, MCP `avatar_speak` and every agent reply, whichever model (`lfm3-fast`, `hermes_cli`, …) produced the words. Text is sanitized first (markdown, fenced code, links, emoji and `<tag>` control markers are not spoken) and an empty result is skipped; `piper.exe` runs with `CREATE_NO_WINDOW` on the FIFO `avatar-tts` worker thread, which synthesizes one temp `.wav`, plays it through **`rodio`** (WASAPI / ALSA / CoreAudio — no OS audio binding in this crate) and deletes it — lines queue instead of overlapping, and the HTTP server never blocks. Configured by the `tts` block of `watcher_rules.json`, with a **Voice** mute switch in the control panel, `GET`/`POST /tts` and the `get_tts_status` / `set_tts_enabled` commands |
 | **Push-to-talk voice input** | Hold **Alt+V** anywhere (or the panel's **Hold to talk** button), speak, let go: the mic is captured through **`cpal`** (WASAPI / ALSA / CoreAudio), downmixed to mono and resampled to **16 kHz PCM**, written to a temp `.wav`, and transcribed locally by `whisper-cli.exe` with its built-in **Silero VAD** (`--vad --vad-model --vad-threshold`). The cleaned transcript (no `[BLANK_AUDIO]`, `(music)`, timestamps or control chars) is posted to `POST /reply`, so it wakes the agent exactly like a typed message and the answer is spoken by the Piper voice. One `avatar-ptt` thread owns the whole state machine (`idle` → `listening` → `transcribing`); holding the button cuts the avatar's own voice off first so the mic never transcribes it. Configured by the `stt` block, with `GET`/`POST /stt` and a badge in the panel |
-| **Screen vision** | **"What's on screen?"** in the command bar (or the panel's screen button, or simply asking *what's on my screen?*) makes the watcher screenshot the focused window and answer with a **local vision-language model** — no network, no API key. `GET /context` now carries the foreground window's `window_rect`, and `char-rig-watcher` grabs exactly that rectangle with GDI (`GetDC` + `BitBlt` + `GetDIBits`), falls back to the full primary monitor when the rect is missing, zero-sized or the overlay itself is focused, downscales the longest edge to `max_image_dim`, encodes JPEG (`jpeg_quality`) and inlines it as a `data:image/jpeg;base64,…` URL in one OpenAI-shaped `chat/completions` request against the named `vision` AI profile. A failed capture or an unreachable endpoint is one spoken apology, never a crashed or blocked reply. Configured by the `vision` block of `watcher_rules.json` |
+| **Screen vision** | **"What's on screen?"** in the command bar (or the panel's screen button, or simply asking *what's on my screen?*) makes the watcher screenshot the focused window and answer with a **local vision-language model** — no network, no API key. `GET /context` now carries the foreground window's `window_rect`, and `desktop-buddy-watcher` grabs exactly that rectangle with GDI (`GetDC` + `BitBlt` + `GetDIBits`), falls back to the full primary monitor when the rect is missing, zero-sized or the overlay itself is focused, downscales the longest edge to `max_image_dim`, encodes JPEG (`jpeg_quality`) and inlines it as a `data:image/jpeg;base64,…` URL in one OpenAI-shaped `chat/completions` request against the named `vision` AI profile. A failed capture or an unreachable endpoint is one spoken apology, never a crashed or blocked reply. Configured by the `vision` block of `watcher_rules.json` |
 | **Audio-driven lip sync** | The Piper clip that is about to play is read back as **16-bit PCM**, its RMS is bucketed at **25 ms** and normalized, and the page indexes that envelope by playback time — so the mouth follows the actual voice instead of the typing speed. `tts-envelope` carries `{bucket_ms, samples}` and is emitted right before playback starts; `tts-envelope-stop` ends it. A muted, missing or already-finished voice silently falls back to the per-character mapping, so a rig without audio still lip-syncs |
 | **Live window tether** | `POST /perch` remembers the target's `HWND`, edge and offset, and a 60 ms poll re-reads its DWM frame bounds: the avatar walks along with the window as it is dragged or resized, and drops back to `idle` (clearing `perched`/`perch_rect`) when the window is minimized or closed. A drag of the avatar itself, or any `/move`, breaks the perch immediately |
 | **Multi-monitor overlay** | The overlay window is positioned and sized to the **whole virtual desktop** (`SM_XVIRTUALSCREEN` …), and every screen-space value — cursor, window rects, `visible_windows`, the watcher's GDI capture — is expressed relative to that virtual origin, so a monitor to the left of (or above) the primary has positive CSS coordinates instead of negatives. `POST /perch` clamps to the monitor the target window is on |
@@ -42,9 +42,9 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | **Desktop awareness** | `GET /context` — foreground window title, its owning executable (`process_name`), the focused window's `window_rect` plus the top few `visible_windows` (all converted to CSS px), machine-wide idle seconds (Win32 probes, safe defaults elsewhere); `POST /perch` — stand the avatar on or beside a window border and keep its gaze there **and** the last 15 SSE frames as the agent's short-term memory; `GET /clipboard` — the last-copied text, capped at 2000 characters; `POST /clipboard` — put up to 32 000 characters on the clipboard |
 | **Event stream** | `GET /events` — Server-Sent Events over a 64-frame `tokio::broadcast` channel: `state`, `speech`, `speech_cleared`, `model`, `rig_saved`, `pose`, `part_patch`, `animate`, `interaction`, `user_reply`, `alert`, `session_reset`, `ai_profile`, `watcher`; 15 s keep-alive, plus a 15-frame history ring buffer served inside `/context` |
 | **Interactions** | Play-mode click / double-click / drag on the avatar's bounds → `notify_interaction` → `interaction` frame; a typed command-bar message → `notify_reply` → `user_reply` frame |
-| **Sessions** | The watcher owns a mutable `{session}` id (`char-rig-<seed>`, `-2`, `-3`… after each rotation) substituted into `hermes_cmd`; **New chat** / `POST /session/reset` broadcasts `session_reset` and rotates it; `max_session_turns` / `session_idle_reset_secs` rotate automatically |
-| **MCP bridge** | `char-rig-mcp.exe` — a second binary exposing 14 tools (`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_perch`, `avatar_wave`, `avatar_pose`, `avatar_get_context`, `avatar_get_clipboard`, `avatar_set_clipboard`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_animate`, `avatar_switch_ai`) to any MCP client over stdio JSON-RPC 2.0; stateless, forwards each call to the HTTP API and reports a down host as a readable tool error |
-| **Desktop watcher** | `char-rig-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword **or a per-app rule**, an `idle_return` after a long idle stretch, a `user_reply` from the command bar (no cooldown — the user asked directly), or an `alert` pushed by `POST /alert` under its own cooldown. Per-trigger cooldowns, an immediate ack (expression or custom clip), an optional webhook, and an optional spawned Hermes command with a one-line prompt on a persistent, rotatable session (`{session}`). Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Dispatch is single-flight with a **one-slot pending queue**: a `user_reply`/`alert` arriving mid-turn waits and runs as soon as that turn ends (newest wins), while routine triggers are dropped. Exponential-backoff reconnect; **zero LLM tokens while idle** |
+| **Sessions** | The watcher owns a mutable `{session}` id (`desktop-buddy-<seed>`, `-2`, `-3`… after each rotation) substituted into `hermes_cmd`; **New chat** / `POST /session/reset` broadcasts `session_reset` and rotates it; `max_session_turns` / `session_idle_reset_secs` rotate automatically |
+| **MCP bridge** | `desktop-buddy-mcp.exe` — a second binary exposing 14 tools (`avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_perch`, `avatar_wave`, `avatar_pose`, `avatar_get_context`, `avatar_get_clipboard`, `avatar_set_clipboard`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_animate`, `avatar_switch_ai`) to any MCP client over stdio JSON-RPC 2.0; stateless, forwards each call to the HTTP API and reports a down host as a readable tool error |
+| **Desktop watcher** | `desktop-buddy-watcher.exe` — a third binary that subscribes to `GET /events` and polls `GET /context` and only acts when a rule fires: an `interaction` (`double_click`/`drag_end`), a `window_title` change matching a keyword **or a per-app rule**, an `idle_return` after a long idle stretch, a `user_reply` from the command bar (no cooldown — the user asked directly), or an `alert` pushed by `POST /alert` under its own cooldown. Per-trigger cooldowns, an immediate ack (expression or custom clip), an optional webhook, and an optional spawned Hermes command with a one-line prompt on a persistent, rotatable session (`{session}`). Spawned and supervised by the app itself, with an on/off switch (`GET`/`POST /watcher`, the panel toggle), a 200-line piped log tail in the pop-out console, and crash restart. Dispatch is single-flight with a **one-slot pending queue**: a `user_reply`/`alert` arriving mid-turn waits and runs as soon as that turn ends (newest wins), while routine triggers are dropped. Exponential-backoff reconnect; **zero LLM tokens while idle** |
 | **Persistence** | `models/<name>/model.json` (shipped), `rig.json` (editor override), `models/.state.json` (selected model) |
 
 ### Repository map
@@ -55,13 +55,13 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | `ui/` | **live** | Modular frontend (see structure below) |
 | `models/` | **live** | Model folders + `models/.state.json` |
 | [`API.md`](API.md), [`MODEL_FORMAT.md`](MODEL_FORMAT.md), [`README.md`](README.md) | **live docs** | Endpoint reference, manifest guide, quick start (this file is the design overview) |
-| `watcher_rules.json` | **live config** | Optional rules for `char-rig-watcher.exe` (interaction kinds, title keywords, **per-app `app_rules`**, alert cooldown, idle threshold, cooldowns, ack emote, Hermes command/session, hotkey, webhook); built-in defaults when absent |
+| `watcher_rules.json` | **live config** | Optional rules for `desktop-buddy-watcher.exe` (interaction kinds, title keywords, **per-app `app_rules`**, alert cooldown, idle threshold, cooldowns, ack emote, Hermes command/session, hotkey, webhook); built-in defaults when absent |
 | `docs/`, `tools/`, `TASKS.json` | **live** | Screenshots, `verify_docs.py` / `mcp_smoke_test.py` / `cdp-eval.mjs`, and the stage ledger |
 | `.github/workflows/` | **live** | One `check.yml` job on `windows-latest`: `cargo test --lib --bins` (lib, MCP and watcher targets), then both plugin crate suites via `--manifest-path`, then `verify_docs.py`. Each plugin is its own workspace, so the app's cargo never reaches them; `plugins/*.wasm` are gitignored, so the shipped-plugin test is guarded on presence |
 
 The legacy prototypes that used to sit in this tree — `ai-avatar-bridge/`,
 `avatar-desktop/`, `avatar-editor/`, `spikes/`, `src-tauri/avatar-renderer.html`
-and the empty `src/char_rig/`, `tests/`, `assets/` placeholders — have been
+and the empty `src/desktop_buddy/`, `tests/`, `assets/` placeholders — have been
 **deleted**. Nothing outside `src-tauri`, `ui`, `models`, `docs`, `tools` is
 part of the app, and no source file references them.
 
@@ -79,7 +79,7 @@ ui/
     ├── editor.js       # Rig Edit Mode overlay gizmos (`drawEditorOverlay`, `hitTest`, mouse/wheel handlers), inspector rendering/bindings (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `bindExpressionSprite`, `saveRig`, `resetRig`), and the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`)
     ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), text-driven lip sync (`mouthPoseFor`, `setMouthFrom`, `stepMouth`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
     ├── bridge.js       # Tauri IPC commands, event listeners (`avatar-state-changed`, `emote`, `speak`, `avatar-animate`, etc.), hit-region publishing (`wireRegions`, `setClickThrough`), state sync (`reportState`, `applyRemoteState`, `applyPartPatch`)
-    ├── drag.js         # Floating-panel drag + layout: header-only pointer drag, viewport clamping (multi-monitor overlay), sibling z-order, `localStorage` persistence (`char-rig.panel-layout.v1`), `setupPanelDrag` / `resetPanelLayout`; a drag sets `body.panel-dragging` so `rig.js` publishes a full-viewport region for the gesture
+    ├── drag.js         # Floating-panel drag + layout: header-only pointer drag, viewport clamping (multi-monitor overlay), sibling z-order, `localStorage` persistence (`desktop-buddy.panel-layout.v1`), `setupPanelDrag` / `resetPanelLayout`; a drag sets `body.panel-dragging` so `rig.js` publishes a full-viewport region for the gesture
     ├── survival.js     # The **Survival** pop-out card and its four tabs: `setupSurvival` (hydrate from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follow the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events, 15 s survival poll floor), `renderSurvival` (tier badge, the two bars and the craving row, from any of the payload shapes), `feed` (the real `POST /survival/feed`), `setCraving` / `clearCraving`, `craft` + `syncCraftButton` (the recipe picker's `can_cook`/`missing`, so a cook the bag cannot pay for is not clickable), `showSurvivalTab` (status / bag / fishing / store), `renderInventory` + `addItem` + `useItem` + `sellPickedItem` (`GET /inventory`, `POST /inventory/add`, `POST /inventory/use`, plus a one-unit `POST /store/sell` straight from the bag at the slot's `sell_price`), `syncInventoryButtons` (Use for edibles, Sell for anything the counter prices), the shop (`renderStore` + `renderWallet` + `pickStoreItem` + `syncStoreButtons` + `trade` over `GET /store`, `POST /store/buy`, `POST /store/sell`), the fishing mini-game (`castLine` / `hookFish` / `reelFish` / `cancelFishing`, a 120 ms `GET /fishing` poll, `startMarker` animating off the plugin's sweep), `toggleSurvivalCard` / `survivalCardOpen`
     ├── metamorphose.js    # The **Metamorphosis** pop-out card: `setupMetamorphose` (hydrate from
     │                  # `GET /creature/status`, follow the `creature` event, 10 s poll), `renderCreature`
@@ -147,8 +147,8 @@ ui/
 | `avatar-api-rt` workers | Tokio | runtime lifetime | Request handlers |
 | `avatar-cursor` | `spawn_cursor_tracker` | until `AppCtx::running` is false | Global cursor poll: publishes the deadbanded `cursor-pos` gaze event every ≥ 3 CSS px / ≥ 50 ms and toggles `WS_EX_TRANSPARENT` per hit region |
 | `avatar-watcher-log` (x2) | `spawn_log_reader` | until the child closes stdout/stderr | Drain the watcher's pipes into the `AppCtx` ring buffer and echo each line to stderr |
-| `avatar-watcher-supervisor` | `supervise_watcher` | until `AppCtx::running` is false | `try_wait`s the supervised `char-rig-watcher.exe` every 250 ms and respawns it after a crash (2 s, doubling to 30 s); parks while the switch is off |
-| `avatar-tts` | `tts::init` | process lifetime | The only caller of `piper.exe` and of the `rodio` output stream: drains a `SyncSender<String>` FIFO, synthesizes each line into `%TEMP%\char-rig-tts-<pid>-<n>.wav` with `CREATE_NO_WINDOW`, plays it synchronously (`Sink::sleep_until_end`) and deletes it. One thread, so lines queue instead of cutting each other off |
+| `avatar-watcher-supervisor` | `supervise_watcher` | until `AppCtx::running` is false | `try_wait`s the supervised `desktop-buddy-watcher.exe` every 250 ms and respawns it after a crash (2 s, doubling to 30 s); parks while the switch is off |
+| `avatar-tts` | `tts::init` | process lifetime | The only caller of `piper.exe` and of the `rodio` output stream: drains a `SyncSender<String>` FIFO, synthesizes each line into `%TEMP%\desktop-buddy-tts-<pid>-<n>.wav` with `CREATE_NO_WINDOW`, plays it synchronously (`Sink::sleep_until_end`) and deletes it. One thread, so lines queue instead of cutting each other off |
 | `avatar-ptt` | `stt::init` | process lifetime | Push-to-talk state machine: polls `platform::key_is_down` for the hold hotkey, drains the `cpal` input stream while held, resamples to 16 kHz mono, writes a temp `.wav`, runs `whisper-cli.exe` (with Silero VAD) and posts the cleaned transcript to `/reply`. One thread, so a hold and a transcription can never overlap |
 | `avatar-hotkey` | `spawn_hotkey_listener` | until `AppCtx::running` is false | Registers the system-wide hotkey through `platform::HotkeyListener` (`RegisterHotKey` on Windows, the `global-hotkey` crate on Linux/macOS) and polls it every 25 ms; on a press it disables click-through, focuses the overlay and emits `summon-command-bar`, then releases the shortcut on the way out |
 
@@ -157,7 +157,7 @@ shared state and emit Tauri events; the page applies them on its next frame.
 
 ### Startup sequence (`lib.rs::run`)
 
-1. `AppCtx::new(api_port())` — port from `CHAR_RIG_API_PORT`, else `8765`.
+1. `AppCtx::new(api_port())` — port from `DESKTOP_BUDDY_API_PORT`, else `8765`.
 2. `ModelCtx::new()` — resolves `models_root()` and the saved selection.
 3. Create a `tokio::sync::oneshot` pair; store the sender in `AppCtx`.
 4. `tauri::Builder` → `manage(AppCtx)`, `manage(ModelCtx)`, register 44 commands.
@@ -165,12 +165,12 @@ shared state and emit Tauri events; the page applies them on its next frame.
    * Resize/move the window to the **virtual desktop** (`SM_X/Y/CX/CYVIRTUALSCREEN`, converted to physical px; the primary monitor only as a fallback when no virtual metrics exist).
    * `model_ctx.ensure_loaded()` (logs a warning and falls back if a model is broken).
    * `api::start(...)` → binds, spawns the API thread, stores the URL, emits `api-status`.
-   * `start_watcher(...)` → resolves `char-rig-watcher.exe` next to the running
+   * `start_watcher(...)` → resolves `desktop-buddy-watcher.exe` next to the running
      exe and spawns it with `--api-url <bound url>`, `--rules <found>`
      (`watcher_rules_path`: cwd → beside the binaries → parents up to
      `models_root()`'s parent), `stdin(Stdio::null())`, `stdout`/`stderr` piped
      into the log ring buffer, cwd = the exe's directory and
-     `CREATE_NO_WINDOW`; skipped entirely when `CHAR_RIG_NO_WATCHER` is
+     `CREATE_NO_WINDOW`; skipped entirely when `DESKTOP_BUDDY_NO_WATCHER` is
      `1`/`true`. The child goes into `AppCtx::watcher` (switch + child + paths +
      log tail), reader threads start, and the supervisor takes over.
    * `spawn_cursor_tracker(...)`.
@@ -350,12 +350,12 @@ model load|switch|import|reset / save_rig / set_pose / patch_part
 | `summon_command_bar`, `spawn_hotkey_listener` | the `avatar-hotkey` thread: `RegisterHotKey` (+ `MOD_NOREPEAT`), a 120 ms `PeekMessageW` poll, then `set_click_through(false)` + `apply_ignore_cursor(false)` + `window.set_focus()` + the `summon-command-bar` event; `UnregisterHotKey` on `request_shutdown` |
 | `cursor_position`, `cursor_emit_due`, `spawn_cursor_tracker` | Windows cursor poll (stub returning `None` elsewhere). The poll publishes `cursor-pos` `{x, y}` (CSS px) whenever the cursor moved ≥ `CURSOR_EMIT_DEADBAND` and ≥ `CURSOR_EMIT_INTERVAL_MS` passed — the pure `cursor_emit_due` predicate is unit-tested — **and** flips `WS_EX_TRANSPARENT` per hit region; emission happens whether or not the window is click-through, as long as it is visible and not minimized |
 | `WatcherState`, `watcher_status`, `set_watcher_enabled`, `push_watcher_log` | on/off switch, live `Child`, resolved `binary`/`rules` paths and a 200-line `VecDeque` log tail; the status JSON feeds `GET /watcher`, `get_watcher_status` and every `watcher` frame (Tauri `watcher-status` + SSE) |
-| `watcher_disabled_by`, `watcher_binary_name`, `watcher_binary_path` | `CHAR_RIG_NO_WATCHER` parsing; resolves `char-rig-watcher{EXE_SUFFIX}` next to `current_exe()` |
+| `watcher_disabled_by`, `watcher_binary_name`, `watcher_binary_path` | `DESKTOP_BUDDY_NO_WATCHER` parsing; resolves `desktop-buddy-watcher{EXE_SUFFIX}` next to `current_exe()` |
 | `watcher_rules_candidates`, `watcher_rules_path` | rules lookup order: cwd → beside the binaries → parents up to `models_root()`'s parent |
 | `clock_stamp`, `stamped`, `push_log_line`, `log_watcher_event`, `spawn_log_reader` | `[HH:MM:SS]` local-time stamps (`GetLocalTime`), bounded ring-buffer append, and the two pipe readers that echo every line to the app's stderr |
 | `spawn_watcher`, `supervise_watcher`, `watcher_health`, `start_watcher`, `kill_and_reap` | spawn with `--api-url`, `--rules`, null stdin, piped stdout/stderr, `CREATE_NO_WINDOW`, cwd = exe dir; then `try_wait` polling, crash restart with backoff (parked while off), and a store-under-the-lock handshake that cannot orphan a child during shutdown |
 | `api_port`, `run` | startup |
-| `tests` | 110 unit tests over the event envelope, `reported_window` / `is_self_foreground` (PID and exe-name matching, the front-most-window fallback and its rect, the blank overlay-alone case), sequence numbers, the 15-frame history ring buffer, interaction validation, quick replies (trim, caps, bubble dismissal, `user_reply` frame), `session_reset` (frame + bubble dismissal), `quick_tasks` (defaults, file parse, blank-entry filtering, cap, missing/broken fallback), `truncate_chars`, the clipboard contract (read cap + write cap + char boundary), the desktop-context shape, the hotkey grammar (`parse_hotkey`) and the `hotkey` rules lookup, `model_event_payload`, the `CHAR_RIG_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
+| `tests` | 110 unit tests over the event envelope, `reported_window` / `is_self_foreground` (PID and exe-name matching, the front-most-window fallback and its rect, the blank overlay-alone case), sequence numbers, the 15-frame history ring buffer, interaction validation, quick replies (trim, caps, bubble dismissal, `user_reply` frame), `session_reset` (frame + bubble dismissal), `quick_tasks` (defaults, file parse, blank-entry filtering, cap, missing/broken fallback), `truncate_chars`, the clipboard contract (read cap + write cap + char boundary), the desktop-context shape, the hotkey grammar (`parse_hotkey`) and the `hotkey` rules lookup, `model_event_payload`, the `DESKTOP_BUDDY_NO_WATCHER` parser, the watcher binary name, `watcher_health`, the log ring buffer, the watcher status keys, the rules lookup order, and the shutdown kill (no orphaned pid) |
 
 ### `src-tauri/src/platform/` (the OS boundary)
 
@@ -387,7 +387,7 @@ Push-to-talk voice input. One module, one worker thread, one config block.
 | `init`, `status_json`, `start`, `stop`, `set_enabled`, `shutdown`, `is_live` | the process-wide `OnceLock<SttRuntime>`: start the worker, report `{enabled, ready, state, hotkey, last_transcript, last_error, reason, …}`, and the two edges the panel/hotkey drive. `start` also calls `tts::interrupt()` |
 | `run_worker` | the `avatar-ptt` state machine: idle (hotkey rising edge via `GetAsyncKeyState`, or `PttCommand::Start`) → `listening` → `transcribing` → post → idle. Stale commands are drained after a transcription so a tap mid-run cannot start a surprise recording |
 | `capture_until_stop`, `MicStream` | `cpal` default input device at its own preferred format; the callback downmixes interleaved frames to mono `i16` (`append_mono`), the worker drains the buffer every 15 ms, `resample_pcm16` brings it to 16 kHz, then the `min_speech_ms` gate and a 60 s cap |
-| `downmix_pcm16`, `resample_pcm16`, `wav_bytes`, `temp_wav_path` | interleaved 16-bit PCM → mono, linear-interpolation resampling to 16 kHz, a 44-byte-header PCM WAV, and `%TEMP%\char-rig-stt-<pid>-<n>.wav` (deleted right after transcription) |
+| `downmix_pcm16`, `resample_pcm16`, `wav_bytes`, `temp_wav_path` | interleaved 16-bit PCM → mono, linear-interpolation resampling to 16 kHz, a 44-byte-header PCM WAV, and `%TEMP%\desktop-buddy-stt-<pid>-<n>.wav` (deleted right after transcription) |
 | `transcribe`, `run_whisper` | write the clip, spawn `whisper-cli.exe` with `-m`, `-f`, `-l`, `-nt`, `-np` and `--vad --vad-model --vad-threshold` when a VAD model is configured, `CREATE_NO_WINDOW`, stdout captured / stderr dropped, then delete the file |
 | `sanitize_transcript`, `is_non_speech` | strip `[BLANK_AUDIO]`, `(music)`, `[inaudible]`, timestamp brackets and control characters, collapse whitespace; an empty result is never posted |
 | `post_reply` | `POST /reply {"text": …}` against the app's own API (blocking reqwest, 5 s timeout), capped at `MAX_REPLY_CHARS` |
@@ -412,14 +412,14 @@ The local voice. One module, one worker thread, one config block.
 ### `src-tauri/src/soul.rs`
 
 The avatar's durable persona, `SOUL.md`. Dependency-light (std + `serde_json`)
-because `char-rig-watcher` includes it directly with `#[path = "../soul.rs"]`,
+because `desktop-buddy-watcher` includes it directly with `#[path = "../soul.rs"]`,
 so the app and the watcher share one resolver and one seed.
 
 | Item | Responsibility |
 | --- | --- |
 | `DEFAULT_SOUL` | the ~50-line starter: voice, brevity, candour, humour, face/body, screen reactions, anti-patterns. No paths, profiles or secrets — those live in `watcher_rules.json` |
-| `MAX_SOUL_BYTES`, `ENV_SOUL_PATH`, `SOUL_FILE_NAME` | 64 KB cap; `CHAR_RIG_SOUL` override; `SOUL.md` |
-| `soul_path` | the one resolution rule: `CHAR_RIG_SOUL` → `soul_path` in the rules file → `<rules dir>/SOUL.md` → `<app config dir>/SOUL.md` |
+| `MAX_SOUL_BYTES`, `ENV_SOUL_PATH`, `SOUL_FILE_NAME` | 64 KB cap; `DESKTOP_BUDDY_SOUL` override; `SOUL.md` |
+| `soul_path` | the one resolution rule: `DESKTOP_BUDDY_SOUL` → `soul_path` in the rules file → `<rules dir>/SOUL.md` → `<app config dir>/SOUL.md` |
 | `read_soul`, `load_soul` | read with the size cap; empty/missing/unreadable/oversized all fall back to `DEFAULT_SOUL` |
 | `ensure_soul` | seed a missing file with `create_new` (never clobbers an existing or empty file), then return the effective persona |
 | `write_soul` | atomic replace (temp file + rename); refuses an empty body or anything over the cap |
@@ -585,10 +585,10 @@ snapshot never has to travel through an HTTP route.
 # or by hand:
 cd plugins/survival
 cargo build --release --target wasm32-unknown-unknown
-cp target/wasm32-unknown-unknown/release/char_rig_survival_plugin.wasm ../survival.wasm
+cp target/wasm32-unknown-unknown/release/desktop_buddy_survival_plugin.wasm ../survival.wasm
 ```
 
-Then restart `avatar-desktop.exe` — no Rust build of the app, no feature flag.
+Then restart `desktop-buddy.exe` — no Rust build of the app, no feature flag.
 The plugin's routes appear in the API, its config block appears in the settings
 modal, and its entry appears in `GET /plugins`. Delete the `.wasm` to remove it.
 
@@ -602,7 +602,7 @@ touched `mod.rs` (three generic capabilities), `wasm_host.rs` (their imports) an
 | file | responsibility |
 | --- | --- |
 | `src/rng.rs` | SplitMix64. No dependency, no `getrandom`: `(seed, archetype, tier, attribute)` reproduces the same creature — same bones, same colours — on every machine |
-| `src/skeleton.rs` | the `char-rig/model@1` types, the two mirroring formulas (`atan2(sin θ, −cos θ)` for a chain root, `−θ` for a descendant), `computeWorld`, and the painted-bounds pass |
+| `src/skeleton.rs` | the `desktop-buddy/model@1` types, the two mirroring formulas (`atan2(sin θ, −cos θ)` for a chain root, `−θ` for a descendant), `computeWorld`, and the painted-bounds pass |
 | `src/attribute.rs` | `Seraph` / `Prism` / `Feral`: wire spelling, `branch_order` (bond re-orders the three branches — Seraph leading for a devoted creature, Feral for a feral one — and never drops one), the one-line flavour the UI shows, and `AttributeBlend` — the recency-weighted mix of a whole evolution line (linear step weights `1..n`, normalised) plus its percentages, prominence and blended flavour |
 | `src/plan.rs` | The fifteen body plans, each with its own six-form table (`beast_form`, `drake_form`, …), then the attribute's mutations, then the seeded build and the seed's individual layer (`individualise`): head, ears, crest, arms, legs, tail and trunk per archetype, plus proportion multipliers, posture, accessory geometry and the family's secondary-trait vocabulary (`secondary_traits`) |
 | `src/generator.rs` | `generate(Spec) -> Manifest`: centerline → tail → right chains → mirror → archetype parts → blended attribute parts → clips → monitor guard → detail trim, plus `validate` / `validate_at(manifest, tier)` and `max_parts(tier)` |
@@ -794,7 +794,7 @@ for one with `{"animate": "nod"}` without any new plumbing.
 
 | Function | Responsibility |
 | --- | --- |
-| `models_root` | `CHAR_RIG_MODELS` → next to the exe (`models`, `../models`, `../../../models`, `../../../../models`) → compile-time `<repo>/models` |
+| `models_root` | `DESKTOP_BUDDY_MODELS` → next to the exe (`models`, `../models`, `../../../models`, `../../../../models`) → compile-time `<repo>/models` |
 | `load_selection` / `save_selection` | read/write `models/.state.json` (`{"current": "<name>"}`) |
 | `validate_rig` | bones array non-empty, unique ids, parents exist, no cycles, every part has `id` and (`image` or `shape`), plus `validate_animations` → `(bones, parts)` |
 | `validate_animations` | optional `animations` block: object of clips, `duration_ms > 0`, boolean `loop`, `keyframes` array, every `t` in `0.0..=1.0`, every referenced bone id exists, transform fields finite |
@@ -816,17 +816,17 @@ for one with `{"animate": "nod"}` without any new plumbing.
 
 ### `src-tauri/src/main.rs` (6 lines)
 
-Calls `avatar_desktop_lib::run()`; sets `windows_subsystem = "windows"` in release builds.
+Calls `desktop_buddy_lib::run()`; sets `windows_subsystem = "windows"` in release builds.
 
-### `src-tauri/src/bin/char-rig-mcp.rs` (1300 lines)
+### `src-tauri/src/bin/desktop-buddy-mcp.rs` (1300 lines)
 
-The **second binary** (`char-rig-mcp.exe`), built by the same `cargo build`. It is
+The **second binary** (`desktop-buddy-mcp.exe`), built by the same `cargo build`. It is
 independent of the Tauri lib: a stdio MCP server that owns no state and forwards
 each tool call to the HTTP API with `reqwest::blocking`.
 
 | Section | Responsibility |
 | --- | --- |
-| consts | `DEFAULT_API_URL`, `ENV_API_URL` (`CHAR_RIG_API_URL`), `CONNECT_TIMEOUT` 3 s, `REQUEST_TIMEOUT` 10 s, `EXPRESSIONS` (mirrors `AVATAR_EXPRESSIONS`), `SUPPORTED_PROTOCOLS`, `INSTRUCTIONS` |
+| consts | `DEFAULT_API_URL`, `ENV_API_URL` (`DESKTOP_BUDDY_API_URL`), `CONNECT_TIMEOUT` 3 s, `REQUEST_TIMEOUT` 10 s, `EXPRESSIONS` (mirrors `AVATAR_EXPRESSIONS`), `SUPPORTED_PROTOCOLS`, `INSTRUCTIONS` |
 | `ApiError` / `Api` | blocking client + error taxonomy: `Unreachable`, `Timeout`, `Transport`, `Http{status,message}`, `Decode`; `get`/`post`/`send`/`classify` |
 | argument helpers | `req_str`, `opt_str`, `opt_expression`, `opt_u64`, `opt_bool`, `req_number`, `req_object` — each failure is a model-readable message |
 | `tool_content` / `tool_failure` | build the MCP result envelope (`content[]`, `isError`) and the `{ok:false, kind, error, hint, details}` payload |
@@ -840,17 +840,17 @@ Protocol notes worth keeping: stdout carries **only** JSON-RPC frames (all
 diagnostics go to stderr, or the client's parser breaks), a missing avatar is a
 tool *result*, and a bad line is a JSON-RPC error — the loop always survives.
 
-### `src-tauri/src/bin/char-rig-watcher.rs` (3340 lines)
+### `src-tauri/src/bin/desktop-buddy-watcher.rs` (3340 lines)
 
-The **third binary** (`char-rig-watcher.exe`), built by the same `cargo build`.
+The **third binary** (`desktop-buddy-watcher.exe`), built by the same `cargo build`.
 It owns no UI and no state of its own: a headless trigger pump that reads the
 avatar's `GET /events` stream and polls `GET /context`, and only reaches out
 when a rule fires. With no trigger it spends no tokens — the whole idle cost is
 one open SSE response and one small JSON poll every 20 s.
 
 ```text
-  avatar-desktop.exe ──SSE /events────┐
-                     ──GET /context─┴──▶ char-rig-watcher ──▶ POST /emote (ack)
+  desktop-buddy.exe ──SSE /events────┐
+                     ──GET /context─┴──▶ desktop-buddy-watcher ──▶ POST /emote (ack)
                                                           ──▶ --webhook-url
                                                           ──▶ ai_profile (backend)
                                                                 ├─ openai_compat ──▶ POST /v1/chat/completions
@@ -860,13 +860,13 @@ one open SSE response and one small JSON poll every 20 s.
 
 | Section | Responsibility |
 | --- | --- |
-| consts | `DEFAULT_API_URL`, `ENV_API_URL` (`CHAR_RIG_API_URL`), `ENV_HERMES_CMD` (`CHAR_RIG_HERMES_CMD`), `DEFAULT_RULES_FILE`, `DEFAULT_CONTEXT_INTERVAL_SECS` 20, `DEFAULT_INTERACTION_COOLDOWN_SECS` 15, `DEFAULT_CONTEXT_COOLDOWN_SECS` 300, `DEFAULT_ALERT_COOLDOWN_SECS` 60, `DEFAULT_IDLE_THRESHOLD_SECS` 900, `DEFAULT_ACK_EMOTE` `thinking`, `ACK_EMOTE_DURATION_MS` 4000, `DEFAULT_HERMES_TIMEOUT_SECS` 120, `FALLBACK_SPEECH_TEXT` / `FALLBACK_SPEECH_EXPRESSION` `sad` / `FALLBACK_SPEECH_DURATION_MS` 4000 (the bubble the watcher posts itself when a dispatch fails), `EXPRESSIONS` (mirrors `AVATAR_EXPRESSIONS`, decides emote vs. clip ack), `HEADLESS_DIRECTIVE`, `CONNECT_TIMEOUT` 3 s, `CONTEXT_TIMEOUT` 5 s, backoff 1 s → 30 s, `TRIGGER_QUEUE` 64 |
+| consts | `DEFAULT_API_URL`, `ENV_API_URL` (`DESKTOP_BUDDY_API_URL`), `ENV_HERMES_CMD` (`DESKTOP_BUDDY_HERMES_CMD`), `DEFAULT_RULES_FILE`, `DEFAULT_CONTEXT_INTERVAL_SECS` 20, `DEFAULT_INTERACTION_COOLDOWN_SECS` 15, `DEFAULT_CONTEXT_COOLDOWN_SECS` 300, `DEFAULT_ALERT_COOLDOWN_SECS` 60, `DEFAULT_IDLE_THRESHOLD_SECS` 900, `DEFAULT_ACK_EMOTE` `thinking`, `ACK_EMOTE_DURATION_MS` 4000, `DEFAULT_HERMES_TIMEOUT_SECS` 120, `FALLBACK_SPEECH_TEXT` / `FALLBACK_SPEECH_EXPRESSION` `sad` / `FALLBACK_SPEECH_DURATION_MS` 4000 (the bubble the watcher posts itself when a dispatch fails), `EXPRESSIONS` (mirrors `AVATAR_EXPRESSIONS`, decides emote vs. clip ack), `HEADLESS_DIRECTIVE`, `CONNECT_TIMEOUT` 3 s, `CONTEXT_TIMEOUT` 5 s, backoff 1 s → 30 s, `TRIGGER_QUEUE` 64 |
 | `CliConfig` / `Config` | raw flags vs. resolved runtime config; `Config::resolve` merges **CLI → env → rules file → built-in default** (`hermes_timeout` = `--hermes-timeout` → `hermes_timeout_secs` → 120; no env var) |
 | `parse_cli` / `usage` | hand-rolled flag parser (`--flag value` and `--flag=value`), `-h/--help`, exit 2 on bad input; env fallbacks applied after the flags |
 | `InteractionRules` / `ContextRules` / `AppRule` / `AlertRules` / `Rules` | serde-defaulted rule model (`app_rules` and `alerts` optional, so the old schema still parses); `Rules::load` (explicit path, else cwd then next to the exe), `from_json`, `interaction_allowed`, `matched_keyword` (case-insensitive substring), `matched_app_rule` (process + title, first match wins, blank matcher = wildcard), `idle_transition` (`was_idle && idle < threshold`) |
 | `Cooldowns` | per-key `HashMap<String, Instant>`; `allow` checks **and** stamps, so a suppressed trigger does not extend the window |
 | `SseParser` | incremental `text/event-stream` parser: `event:`/`data:` fields, multi-line `data`, `:` keep-alive comments, CRLF, and frames split across arbitrary TCP reads; `message` is the default event name |
-| `Trigger` | `{event_type, detail, window_title, idle_secs, kind, keyword, x, y, animation, hint, text, severity}`; `payload(ts_ms)` builds the webhook / dry-run JSON (absent fields omitted), `brief()` builds the one-line situation (what an OpenAI-compatible model gets), `prompt()` is that plus the CLI's `HEADLESS_DIRECTIVE` — quoting a `user_reply`'s text verbatim and appending an `app_rules` `prompt_hint` as `Context:` — and ends with `HEADLESS_DIRECTIVE`: no follow-up questions, **`tool_search(query="avatar_")` as the first tool call of a session** (Hermes defers MCP tools, so `mcp__char_rig__avatar_*` is not callable until the search loads the schemas — a model that skips it retries the "deferred tools must be invoked through tool_call" error until `--hermes-timeout` kills it), the literal `mcp__char_rig__avatar_speak(text, expression?, duration_ms?)` / `avatar_emote(expression, duration_ms?)` (with the six expressions) / `avatar_wave()` / `avatar_animate(name, loop?)` / `avatar_get_context()` / `avatar_get_clipboard()` / `avatar_perch(edge, window_process?, offset?)` signatures, an explicit invitation to chain several calls in one turn, and the **under-180-characters** bubble rule so a bubble never overflows the screen |
+| `Trigger` | `{event_type, detail, window_title, idle_secs, kind, keyword, x, y, animation, hint, text, severity}`; `payload(ts_ms)` builds the webhook / dry-run JSON (absent fields omitted), `brief()` builds the one-line situation (what an OpenAI-compatible model gets), `prompt()` is that plus the CLI's `HEADLESS_DIRECTIVE` — quoting a `user_reply`'s text verbatim and appending an `app_rules` `prompt_hint` as `Context:` — and ends with `HEADLESS_DIRECTIVE`: no follow-up questions, **`tool_search(query="avatar_")` as the first tool call of a session** (Hermes defers MCP tools, so `mcp__desktop_buddy__avatar_*` is not callable until the search loads the schemas — a model that skips it retries the "deferred tools must be invoked through tool_call" error until `--hermes-timeout` kills it), the literal `mcp__desktop_buddy__avatar_speak(text, expression?, duration_ms?)` / `avatar_emote(expression, duration_ms?)` (with the six expressions) / `avatar_wave()` / `avatar_animate(name, loop?)` / `avatar_get_context()` / `avatar_get_clipboard()` / `avatar_perch(edge, window_process?, offset?)` signatures, an explicit invitation to chain several calls in one turn, and the **under-180-characters** bubble rule so a bubble never overflows the screen |
 | `interaction_trigger` | gate on `interaction_allowed` + cooldown, then format `the user double-clicked the avatar at (x, y)` |
 | `user_reply_trigger` | `user_reply` frame → trigger with the user's trimmed text; **no cooldown and no interaction gate** — the user asked directly |
 | `alert_trigger` | `alert` frame → trigger with `source`/`summary`/`severity`; honours `alerts.enabled` and the `alert` cooldown |
@@ -1010,7 +1010,7 @@ the app. "Reset" = delete `rig.json`.
 
 ```jsonc
 {
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "name": "demo-blob",
   "label": "Demo Blob (sprite parts)",
   "notes": "free-form",
@@ -1159,7 +1159,7 @@ TOML manifests are accepted too and normalised to JSON on install; TOML has no
 null, so a root bone omits `parent` (or uses `""` / `"none"`):
 
 ```toml
-format = "char-rig/model@1"
+format = "desktop-buddy/model@1"
 name = "tomlhero"
 
 [[bones]]
@@ -1191,11 +1191,11 @@ size = [120, 120]
 ```bash
 cd src-tauri
 cargo check                 # type-check
-cargo build                 # dev binary -> target/debug/avatar-desktop.exe
-./target/debug/avatar-desktop.exe
+cargo build                 # dev binary -> target/debug/desktop-buddy.exe
+./target/debug/desktop-buddy.exe
 ```
 
-Environment variables: `CHAR_RIG_MODELS` (model root), `CHAR_RIG_API_PORT`
+Environment variables: `DESKTOP_BUDDY_MODELS` (model root), `DESKTOP_BUDDY_API_PORT`
 (default 8765). Logs go to stdout and the plugin's log file; startup prints
 `avatar api listening on http://127.0.0.1:8765`.
 
@@ -1257,7 +1257,7 @@ bottom margin. A press anywhere in the panel raises its z-index within the
 (1050/1060).
 
 `drag.js` persists `(left, top)` per panel in `localStorage`
-(`char-rig.panel-layout.v1`), restores it when the panel is visible (a
+(`desktop-buddy.panel-layout.v1`), restores it when the panel is visible (a
 `MutationObserver` catches panels that open later), and validates the saved
 coordinates against the live viewport — a stale or off-screen entry falls back
 to the CSS default. The titlebar's **▦** button calls `resetPanelLayout`.
@@ -1334,7 +1334,7 @@ floating command bar anchored under the avatar:
   `window_title` and `alert` show the wait too, and all of them inherit the same
   safety timer.
   never get stuck: the watcher posts a `sad` fallback bubble when the spawned
-  agent times out or dies (see `char-rig-watcher.rs`), and `speech.js` keeps a
+  agent times out or dies (see `desktop-buddy-watcher.rs`), and `speech.js` keeps a
   `THINKING_TIMEOUT_MS` (125 s) timer as the last resort — it clears the card, sets
   the expression back to `neutral` and toasts, so "Thinking…" always ends.
 * The **chips** under the input are one-click tasks (`quick_tasks` in
@@ -1555,13 +1555,13 @@ form now. **Settings ⚙** in the control panel opens a modal with three tabs �
 
 ### Watcher console
 
-The **Watcher** row in the control panel drives `char-rig-watcher.exe` without
+The **Watcher** row in the control panel drives `desktop-buddy-watcher.exe` without
 restarting the app:
 
 | Control | Effect |
 | --- | --- |
 | switch | `set_watcher_enabled(true/false)` — starts or stops (kills and reaps) the child. The supervisor parks while it is off and resumes when it is on |
-| badge | `running` (green, with the pid in the tooltip), `off`, or `missing` (no `char-rig-watcher.exe` beside the app) |
+| badge | `running` (green, with the pid in the tooltip), `off`, or `missing` (no `desktop-buddy-watcher.exe` beside the app) |
 | **Logs ↗** | opens the pop-out **Watcher console** |
 
 The console (`#watcher-drawer`, fixed above the panel) shows the live tail of the
@@ -1600,7 +1600,7 @@ block and `discovery_hosts` / `discovery_ports`:
   ],
   "max_session_turns": 15,
   "session_idle_reset_secs": 1800,
-  "session_base": "char-rig",
+  "session_base": "desktop-buddy",
   "hotkey": "Alt+Space",
   "tts": {
     "enabled": true,
@@ -1669,7 +1669,7 @@ block and `discovery_hosts` / `discovery_ports`:
   phrase.
 * **`hermes_cmd`** — the shipped value keeps one conversation across triggers:
   `hermes chat --continue {session} --create-if-missing -Q -q`. `{session}` is
-  substituted with the watcher's **current** session id (`char-rig-<epoch>`,
+  substituted with the watcher's **current** session id (`desktop-buddy-<epoch>`,
   `-2`, `-3`… after each rotation); `-Q` keeps the banner/spinner out of the
   watcher's log, and `-q` must stay **last** in the string because the watcher
   appends the prompt as the final argv entry. The CLI has no `--session` flag:
@@ -1685,7 +1685,7 @@ block and `discovery_hosts` / `discovery_ports`:
   limit already runs in the new conversation.
 * **`session_idle_reset_secs`** — rotate after this long without a dispatch
   (absent/0 = off), so a conversation left overnight does not come back stale.
-* **`session_base`** — prefix for generated ids (default `char-rig`).
+* **`session_base`** — prefix for generated ids (default `desktop-buddy`).
 * **`hotkey`** — the system-wide shortcut that summons the command bar
   (`"Alt+Space"` by default; modifiers `Alt`/`Ctrl`/`Shift`/`Win` plus a letter,
   digit, `Space`, `Enter`, `Tab`, `Esc`, an arrow or `F1`–`F24`). Read by the
@@ -1864,7 +1864,7 @@ and/or `State<Arc<ModelCtx>>`; argument names are snake_case for the annotated o
 | `save_rig(rig)` / `reset_rig` | persist / discard override (broadcast `rig_saved` / `model`+`reset`) |
 | `set_pose(joints)` / `clear_pose` / `get_joints` | runtime joint posing |
 | `get_watcher_status` | `{ok, enabled, running, pid, binary_path, rules_path, logs}` — the same JSON as `GET /watcher` |
-| `set_watcher_enabled(enabled)` | start/stop `char-rig-watcher.exe` without restarting the app; returns the new status |
+| `set_watcher_enabled(enabled)` | start/stop `desktop-buddy-watcher.exe` without restarting the app; returns the new status |
 | `get_ai_profiles` | the `GET /ai-profiles` object: `{ok, active_profile, active_health, profiles}` (health probe included) |
 | `get_tts_status` | the `GET /tts` object: `{ok, enabled, ready, reason, piper_exe_path, model_path, espeak_data_path, speaker_id, length_scale}` |
 | `set_tts_enabled(enabled)` | the **Voice** switch: mute/unmute the local Piper voice (muting also purges the line that is playing), emits `tts-status`, returns the new status. Runtime only — `watcher_rules.json` is never rewritten |
@@ -1953,7 +1953,7 @@ unknown routes are **404**.
 curl -s localhost:8765/health
 ```
 ```json
-{"ok":true,"service":"char-rig avatar api","version":"0.1.0","uptime_secs":396}
+{"ok":true,"service":"desktop-buddy avatar api","version":"0.1.0","uptime_secs":396}
 ```
 
 ### `/state`
@@ -2115,7 +2115,7 @@ curl -s -X POST localhost:8765/import -H 'content-type: application/json' \
      -d '{"path":"D:/art/hat.png","mode":"part","tag":"accessory"}'
 ```
 ```json
-{"ok":true,"root":"C:\\hermes\\char-rig\\models","models":[
+{"ok":true,"root":"C:\\hermes\\desktop-buddy\\models","models":[
   {"name":"demo-blob","label":"Demo Blob (sprite parts)","bones":7,"parts":11,
    "has_rig_override":false,"generated":false,"error":null,"path":"…\\models\\demo-blob"}]}
 ```
@@ -2285,7 +2285,7 @@ Live: `tts.enabled`, `stt.enabled`, **every block a plugin owns** (the editor
 asks `plugins::config_specs()` and each plugin applies its own section through
 `PluginConfig::apply`, reporting live vs restart) and everything under `ai` /
 `vision` / `discovery_hosts` / `discovery_ports` (the `ai_profile` frame is what makes
-`char-rig-watcher.exe` re-read the file). A Piper/Whisper **path** or
+`desktop-buddy-watcher.exe` re-read the file). A Piper/Whisper **path** or
 `stt.hotkey` is read once at startup, so it is reported under
 `restart_required` instead of being pretended live.
 
@@ -2325,8 +2325,8 @@ refused. There is no cache to invalidate: the watcher re-reads the file on
 every turn.
 
 **One resolver, both processes.** `src-tauri/src/soul.rs` is compiled into the
-app *and* into `char-rig-watcher` (via `#[path = "../soul.rs"]`), so the editor
-and the prompt cannot disagree. Order: `CHAR_RIG_SOUL` → `soul_path` in
+app *and* into `desktop-buddy-watcher` (via `#[path = "../soul.rs"]`), so the editor
+and the prompt cannot disagree. Order: `DESKTOP_BUDDY_SOUL` → `soul_path` in
 `watcher_rules.json` → `<rules dir>/SOUL.md` → `<app config dir>/SOUL.md`.
 Seeding is `create_new` only — a missing file gets the ~50-line starter, an
 existing file (even an empty one) is never touched. Reads degrade to the
@@ -2658,8 +2658,8 @@ whether an alert is worth a Hermes turn.
 curl -s -X POST localhost:8765/session/reset   # -> {"ok":true,"reason":"api","subscribers":1}
 ```
 Broadcasts `session_reset` and dismisses the bubble. The app owns no session
-state — `char-rig-watcher.exe` rotates its `{session}` id on the frame and logs
-`session reset (api): char-rig-<ts> -> char-rig-<ts>-2`; the next task runs in a
+state — `desktop-buddy-watcher.exe` rotates its `{session}` id on the frame and logs
+`session reset (api): desktop-buddy-<ts> -> desktop-buddy-<ts>-2`; the next task runs in a
 clean Hermes conversation. The UI twins are the command bar's **↺** and the
 control panel's **New chat** (both call `reset_session`).
 
@@ -2778,7 +2778,7 @@ history served in `/context`. Full payload table in `API.md` §
   renamed in place from the same field.
 * **One override per model.** `rig.json` is a single alternative; there are no
   named rig variants or migration/versioning beyond `format`.
-* **Watcher triggers are rule-shaped, not semantic.** `char-rig-watcher.exe`
+* **Watcher triggers are rule-shaped, not semantic.** `desktop-buddy-watcher.exe`
   reacts to `interaction`, `user_reply` and `alert` frames plus window-title and
   idle changes; `app_rules` match a process name against the title with plain
   case-insensitive substrings (no regex, no path, no other window's context),
@@ -2792,7 +2792,7 @@ history served in `/context`. Full payload table in `API.md` §
   or configure the avatar (it only observes). The rules file is looked up from
   the cwd, beside the binary, or in a parent directory up to the
   `models/` root, so a checkout that keeps `watcher_rules.json` at the repo root
-  works without copying it or setting `CHAR_RIG_NO_WATCHER`.
+  works without copying it or setting `DESKTOP_BUDDY_NO_WATCHER`.
 * **The picker is modal.** While the native dialog is open the overlay drops
   always-on-top; if the app is killed mid-dialog the flag is restored only on
   the next launch.

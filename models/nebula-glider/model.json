@@ -850,7 +850,7 @@
       "z": 10
     }
   ],
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "label": "Nebula Glider",
   "name": "nebula-glider",
   "notes": "Procedural-shape floating entity: 12-bone rig with gaseous gasbag core, dual wing arrays, gravity-sail head, thruster feet, and three keyframe clips (drift/loop, glide/loop, alert/one-shot). Designed for continuous ambient animation without sprite assets."

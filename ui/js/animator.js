@@ -1,5 +1,5 @@
 /**
- * char-rig — custom keyframe animation: authoring helpers, sampling, playback
+ * desktop-buddy — custom keyframe animation: authoring helpers, sampling, playback
  *
  * Depends on: state.js only (`RT` holds the loaded rig, `animation` holds the
  * runtime). It is *below* renderer/editor/bridge in the module DAG, so it never

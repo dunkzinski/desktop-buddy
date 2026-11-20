@@ -92,15 +92,15 @@ pub const MAX_SPEECH_DETAILS_CHARS: usize = 8_000;
 /// has no `hotkey` key.
 const DEFAULT_HOTKEY: &str = "Alt+Space";
 
-/// Default port for the local HTTP API (override with `CHAR_RIG_API_PORT`).
+/// Default port for the local HTTP API (override with `DESKTOP_BUDDY_API_PORT`).
 const DEFAULT_API_PORT: u16 = 8765;
 
-/// Set to `1`/`true` to stop `avatar-desktop` from spawning and supervising
-/// `char-rig-watcher.exe` — handy when running the watcher by hand in a
+/// Set to `1`/`true` to stop `desktop-buddy` from spawning and supervising
+/// `desktop-buddy-watcher.exe` — handy when running the watcher by hand in a
 /// terminal (its stderr then goes to that terminal, not to the app's log).
-const ENV_NO_WATCHER: &str = "CHAR_RIG_NO_WATCHER";
+const ENV_NO_WATCHER: &str = "DESKTOP_BUDDY_NO_WATCHER";
 /// The supervised binary, resolved next to the running executable.
-const WATCHER_BIN_STEM: &str = "char-rig-watcher";
+const WATCHER_BIN_STEM: &str = "desktop-buddy-watcher";
 /// First restart delay after the watcher dies unexpectedly; doubles up to
 /// [`WATCHER_RESTART_MAX`] so a permanently broken watcher cannot hot-loop.
 const WATCHER_RESTART_DELAY: Duration = Duration::from_secs(2);
@@ -286,7 +286,7 @@ pub struct AppCtx {
     hotkey_registered: AtomicBool,
     api_url: Mutex<String>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
-    /// The supervised `char-rig-watcher.exe`: on/off switch, live child, ring
+    /// The supervised `desktop-buddy-watcher.exe`: on/off switch, live child, ring
     /// buffer of its output and where it came from. `request_shutdown` takes
     /// the child out and kills it, so no watcher is ever left behind.
     pub watcher: Mutex<WatcherState>,
@@ -1203,7 +1203,7 @@ fn notify_reply(
 /// Core of `POST /session/reset` and [`reset_session`]: ask the watcher to
 /// rotate to a fresh Hermes conversation.
 ///
-/// The app owns no conversation state — `char-rig-watcher.exe` holds the current
+/// The app owns no conversation state — `desktop-buddy-watcher.exe` holds the current
 /// session id — so this is a broadcast: the `session_reset` frame is the
 /// instruction, and the watcher acknowledges it on its own stderr/log tail. The
 /// bubble is dismissed because the prompt it was showing belongs to the context
@@ -1245,6 +1245,7 @@ fn get_watcher_status(ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<Value, Strin
 /// first: opening a non-existent path would just fail in the editor.
 #[tauri::command(rename_all = "snake_case")]
 fn open_soul_file(ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<String, String> {
+    crate::soul::migrate_legacy_config_dir();
     let path = crate::soul::soul_path(ctx.ai_rules_path().as_deref());
     crate::soul::ensure_soul(&path);
     if !path.exists() {
@@ -1264,7 +1265,7 @@ fn open_soul_file(ctx: tauri::State<'_, Arc<AppCtx>>) -> Result<String, String> 
     Ok(shown)
 }
 
-/// Start or stop `char-rig-watcher.exe` on demand, without restarting the app.
+/// Start or stop `desktop-buddy-watcher.exe` on demand, without restarting the app.
 #[tauri::command(rename_all = "snake_case")]
 fn set_watcher_enabled(
     app: AppHandle,
@@ -2562,7 +2563,7 @@ fn spawn_perch_tracker(app: AppHandle, ctx: Arc<AppCtx>) {
  * ------------------------------------------------------------------ */
 
 fn api_port() -> u16 {
-    std::env::var("CHAR_RIG_API_PORT")
+    std::env::var("DESKTOP_BUDDY_API_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .filter(|port| *port > 0)
@@ -2578,7 +2579,7 @@ const WATCHER_LOG_CAPACITY: usize = 200;
 /// Rules file handed to the watcher when one can be found.
 const WATCHER_RULES_FILE: &str = "watcher_rules.json";
 
-/// Everything the app knows about the supervised `char-rig-watcher.exe`.
+/// Everything the app knows about the supervised `desktop-buddy-watcher.exe`.
 #[derive(Debug, Default)]
 pub struct WatcherState {
     /// The control-panel switch. A disabled watcher is never respawned.
@@ -2689,7 +2690,7 @@ impl AppCtx {
             } else if let Some(child) = state.child.take() {
                 log_watcher_event(&mut state, "stopped by the control panel");
                 if let Some(status) = kill_and_reap(child) {
-                    log::info!("char-rig-watcher stopped ({status})");
+                    log::info!("desktop-buddy-watcher stopped ({status})");
                 }
             }
         }
@@ -2782,7 +2783,7 @@ impl AppCtx {
                     state,
                     &format!("started {} (pid {pid}{at_rules})", binary.display()),
                 );
-                log::info!("char-rig-watcher started (pid {pid})");
+                log::info!("desktop-buddy-watcher started (pid {pid})");
                 true
             }
             Err(err) => {
@@ -2798,13 +2799,13 @@ impl AppCtx {
         let child = { lock_or_recover(&self.watcher).child.take() };
         let Some(child) = child else { return };
         match kill_and_reap(child) {
-            Some(status) => log::info!("char-rig-watcher stopped ({status})"),
-            None => log::warn!("char-rig-watcher was killed but could not be reaped"),
+            Some(status) => log::info!("desktop-buddy-watcher stopped ({status})"),
+            None => log::warn!("desktop-buddy-watcher was killed but could not be reaped"),
         }
     }
 }
 
-/// Is the `CHAR_RIG_NO_WATCHER` escape hatch on?
+/// Is the `DESKTOP_BUDDY_NO_WATCHER` escape hatch on?
 ///
 /// Pure so the parsing can be pinned down by the tests: `"1"` and `"true"`
 /// (any case, surrounding whitespace ignored) disable auto-supervision;
@@ -2820,7 +2821,7 @@ fn watcher_disabled() -> bool {
     watcher_disabled_by(std::env::var(ENV_NO_WATCHER).ok().as_deref())
 }
 
-/// `char-rig-watcher.exe` on Windows, `char-rig-watcher` elsewhere.
+/// `desktop-buddy-watcher.exe` on Windows, `desktop-buddy-watcher` elsewhere.
 fn watcher_binary_name() -> String {
     format!("{WATCHER_BIN_STEM}{}", std::env::consts::EXE_SUFFIX)
 }
@@ -2973,7 +2974,7 @@ pub fn quick_tasks(rules_path: Option<&std::path::Path>) -> Vec<Value> {
 
 /// Profile name a rules file means when it does not say.
 ///
-/// Mirrors `DEFAULT_AI_PROFILE` in `char-rig-watcher.rs`; the watcher synthesises
+/// Mirrors `DEFAULT_AI_PROFILE` in `desktop-buddy-watcher.rs`; the watcher synthesises
 /// a `hermes` profile from `hermes_cmd`, so the API reports the same name.
 pub const DEFAULT_AI_PROFILE_NAME: &str = "hermes";
 
@@ -3458,11 +3459,11 @@ fn supervise_watcher(ctx: Arc<AppCtx>, app: AppHandle) {
                     }
                     WatcherHealth::Missing => {}
                     WatcherHealth::Exited(status) => log::warn!(
-                        "char-rig-watcher exited ({status}); restarting in {}s",
+                        "desktop-buddy-watcher exited ({status}); restarting in {}s",
                         delay.as_secs()
                     ),
                     WatcherHealth::Unpollable(err) => log::warn!(
-                        "cannot poll char-rig-watcher ({err}); restarting in {}s",
+                        "cannot poll desktop-buddy-watcher ({err}); restarting in {}s",
                         delay.as_secs()
                     ),
                 }
@@ -3508,7 +3509,7 @@ fn supervise_watcher(ctx: Arc<AppCtx>, app: AppHandle) {
 /// Start the watcher for a live API URL and supervise it, unless disabled.
 fn start_watcher(ctx: Arc<AppCtx>, app: AppHandle) {
     if watcher_disabled() {
-        log::info!("{ENV_NO_WATCHER} is set; not starting char-rig-watcher");
+        log::info!("{ENV_NO_WATCHER} is set; not starting desktop-buddy-watcher");
         let models = crate::models::models_root();
         let mut state = lock_or_recover(&ctx.watcher);
         state.enabled = false;
@@ -3670,6 +3671,7 @@ pub fn run() {
                 // never overwritten, and an unreadable one is left for the
                 // fallback to handle. The watcher re-reads it every turn.
                 {
+                    crate::soul::migrate_legacy_config_dir();
                     let soul_file = crate::soul::soul_path(ctx.ai_rules_path().as_deref());
                     crate::soul::ensure_soul(&soul_file);
                 }
@@ -3990,12 +3992,12 @@ mod tests {
     #[test]
     fn is_self_foreground_matches_on_pid_or_exe_name() {
         // Same PID wins even if the name could not be read.
-        assert!(is_self_foreground(Some(7), "", 7, "avatar-desktop.exe"));
+        assert!(is_self_foreground(Some(7), "", 7, "desktop-buddy.exe"));
         // The name is the fallback, case-insensitively.
-        assert!(is_self_foreground(None, "Avatar-Desktop.EXE", 7, "avatar-desktop.exe"));
-        assert!(is_self_foreground(Some(9), "avatar-desktop.exe", 7, "avatar-desktop.exe"));
+        assert!(is_self_foreground(None, "Desktop-Buddy.EXE", 7, "desktop-buddy.exe"));
+        assert!(is_self_foreground(Some(9), "desktop-buddy.exe", 7, "desktop-buddy.exe"));
         // Somebody else's window is left alone.
-        assert!(!is_self_foreground(Some(9), "Code.exe", 7, "avatar-desktop.exe"));
+        assert!(!is_self_foreground(Some(9), "Code.exe", 7, "desktop-buddy.exe"));
         // An unresolved exe path must never match every window.
         assert!(!is_self_foreground(None, "", 7, ""));
         assert!(!is_self_foreground(None, "Code.exe", 7, ""));
@@ -4005,14 +4007,14 @@ mod tests {
     fn the_overlay_never_reports_itself_as_the_focused_window() {
         // After a drag the overlay holds foreground; the user is really in Code.
         let reported = reported_window(
-            foreground("", "avatar-desktop.exe", 0.0),
+            foreground("", "desktop-buddy.exe", 0.0),
             Some(4242),
             4242,
-            "avatar-desktop.exe",
-            &[window("char-rig — lib.rs", "Code.exe", 40.0), window("Terminal", "WindowsTerminal.exe", 60.0)],
+            "desktop-buddy.exe",
+            &[window("desktop-buddy — lib.rs", "Code.exe", 40.0), window("Terminal", "WindowsTerminal.exe", 60.0)],
         );
         assert_eq!(reported.process_name, "Code.exe", "the front-most real window wins");
-        assert_eq!(reported.window_title, "char-rig — lib.rs");
+        assert_eq!(reported.window_title, "desktop-buddy — lib.rs");
         // `POST /perch` without `window_process` perches on this rect, so the
         // fallback must carry the *other* window's rect, not the overlay's.
         assert_eq!(
@@ -4028,8 +4030,8 @@ mod tests {
             original.clone(),
             Some(1234),
             4242,
-            "avatar-desktop.exe",
-            &[window("char-rig — lib.rs", "Code.exe", 40.0)],
+            "desktop-buddy.exe",
+            &[window("desktop-buddy — lib.rs", "Code.exe", 40.0)],
         );
         assert_eq!(reported, original, "the fallback only applies to our own window");
     }
@@ -4039,10 +4041,10 @@ mod tests {
         // Nothing else on screen: blank, so a caller can tell "nothing focused"
         // from "we are focused" instead of being told it is looking at us.
         let reported = reported_window(
-            foreground("", "avatar-desktop.exe", 0.0),
+            foreground("", "desktop-buddy.exe", 0.0),
             Some(4242),
             4242,
-            "avatar-desktop.exe",
+            "desktop-buddy.exe",
             &[],
         );
         assert_eq!(reported.window_title, "");
@@ -4053,10 +4055,10 @@ mod tests {
     #[test]
     fn the_name_fallback_applies_when_the_pid_is_unreadable() {
         let reported = reported_window(
-            foreground("", "avatar-desktop.exe", 0.0),
+            foreground("", "desktop-buddy.exe", 0.0),
             None,
             4242,
-            "avatar-desktop.exe",
+            "desktop-buddy.exe",
             &[window("Terminal", "WindowsTerminal.exe", 60.0)],
         );
         assert_eq!(reported.process_name, "WindowsTerminal.exe");
@@ -4139,11 +4141,11 @@ mod tests {
     #[test]
     fn watcher_binary_name_matches_the_platform() {
         let name = watcher_binary_name();
-        assert_eq!(name, format!("char-rig-watcher{}", std::env::consts::EXE_SUFFIX));
+        assert_eq!(name, format!("desktop-buddy-watcher{}", std::env::consts::EXE_SUFFIX));
         #[cfg(windows)]
-        assert_eq!(name, "char-rig-watcher.exe");
+        assert_eq!(name, "desktop-buddy-watcher.exe");
         #[cfg(not(windows))]
-        assert_eq!(name, "char-rig-watcher", "no .exe off Windows");
+        assert_eq!(name, "desktop-buddy-watcher", "no .exe off Windows");
     }
 
     #[test]
@@ -4235,7 +4237,7 @@ mod tests {
 
     #[test]
     fn quick_tasks_are_read_from_the_rules_file() {
-        let root = std::env::temp_dir().join(format!("char-rig-quick-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-quick-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("scratch dir");
         let path = root.join("watcher_rules.json");
         std::fs::write(
@@ -4258,7 +4260,7 @@ mod tests {
 
     #[test]
     fn quick_tasks_carry_their_optional_profile_and_screen_flag() {
-        let root = std::env::temp_dir().join(format!("char-rig-quick-opt-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-quick-opt-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("scratch dir");
         let path = root.join("watcher_rules.json");
         std::fs::write(
@@ -4288,7 +4290,7 @@ mod tests {
         let missing = std::path::Path::new("Z:/definitely/not/here/watcher_rules.json");
         assert_eq!(quick_tasks(Some(missing)).len(), default_quick_tasks().len());
 
-        let root = std::env::temp_dir().join(format!("char-rig-broken-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-broken-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("scratch dir");
         let path = root.join("watcher_rules.json");
         std::fs::write(&path, "{not json").expect("write rules");
@@ -4302,7 +4304,7 @@ mod tests {
 
     #[test]
     fn quick_tasks_are_capped() {
-        let root = std::env::temp_dir().join(format!("char-rig-many-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-many-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("scratch dir");
         let path = root.join("watcher_rules.json");
         let chips: Vec<String> = (0..(MAX_QUICK_TASKS + 3))
@@ -4367,7 +4369,7 @@ mod tests {
 
     #[test]
     fn watcher_rules_are_found_from_cwd_exe_dir_or_repo_root() {
-        let root = std::env::temp_dir().join(format!("char-rig-rules-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-rules-{}", std::process::id()));
         let exe_dir = root.join("src-tauri").join("target").join("debug");
         std::fs::create_dir_all(&exe_dir).expect("scratch dir");
         assert_eq!(
@@ -4457,7 +4459,7 @@ mod tests {
     fn hotkey_spec_reads_the_rules_file_and_falls_back() {
         assert_eq!(hotkey_spec(None), DEFAULT_HOTKEY);
 
-        let root = std::env::temp_dir().join(format!("char-rig-hotkey-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-hotkey-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("scratch dir");
         let path = root.join("watcher_rules.json");
 
@@ -4836,7 +4838,7 @@ mod tests {
 
     /// A scratch rules-file path, removed by the caller.
     fn scratch_rules(tag: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!("char-rig-ai-{tag}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-ai-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("scratch dir");
         root.join("watcher_rules.json")
     }
@@ -5078,7 +5080,7 @@ mod tests {
 
     #[test]
     fn find_on_path_resolves_an_executable_in_a_scratch_directory() {
-        let root = std::env::temp_dir().join(format!("char-rig-path-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-path-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("scratch dir");
         let bin = root.join("hermes.bat");
         std::fs::write(&bin, "@echo off\n").expect("write");

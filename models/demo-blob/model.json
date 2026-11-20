@@ -1,5 +1,5 @@
 {
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "name": "demo-blob",
   "label": "Demo Blob (sprite parts)",
   "notes": "Example sprite model: PNG parts on a bone hierarchy. Good starting point for imports.",

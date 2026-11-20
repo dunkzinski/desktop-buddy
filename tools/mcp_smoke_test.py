@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Smoke-test the char-rig MCP stdio server.
+"""Smoke-test the desktop-buddy MCP stdio server.
 
-Spawns `char-rig-mcp.exe`, speaks JSON-RPC 2.0 over its stdin/stdout exactly the
+Spawns `desktop-buddy-mcp.exe`, speaks JSON-RPC 2.0 over its stdin/stdout exactly the
 way an MCP client does, and asserts the protocol surface and the error handling.
 
 The mode is auto-detected: if the avatar HTTP API is up, tool calls must
 succeed; if it is down, they must come back as structured `isError` results
 (never a crash, never a closed stream).
 
-    python tools/mcp_smoke_test.py [path-to-char-rig-mcp.exe]
+    python tools/mcp_smoke_test.py [path-to-desktop-buddy-mcp.exe]
 """
 import json
 import os
@@ -20,8 +20,8 @@ import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_BIN = os.path.join(ROOT, "src-tauri", "target", "debug", "char-rig-mcp.exe")
-API = os.environ.get("CHAR_RIG_API_URL", "http://127.0.0.1:8765")
+DEFAULT_BIN = os.path.join(ROOT, "src-tauri", "target", "debug", "desktop-buddy-mcp.exe")
+API = os.environ.get("DESKTOP_BUDDY_API_URL", "http://127.0.0.1:8765")
 
 EXPECTED_TOOLS = {
     "avatar_speak": ["text"],
@@ -153,12 +153,12 @@ def main():
             {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {},
-                "clientInfo": {"name": "char-rig-smoke-test", "version": "1"},
+                "clientInfo": {"name": "desktop-buddy-smoke-test", "version": "1"},
             },
         )
         result = init["result"]
         check(result["protocolVersion"] == "2025-06-18", "negotiates the requested protocol version")
-        check(result["serverInfo"]["name"] == "char-rig", "serverInfo.name is char-rig")
+        check(result["serverInfo"]["name"] == "desktop-buddy", "serverInfo.name is desktop-buddy")
         check("tools" in result["capabilities"], "advertises the tools capability")
         check(bool(result.get("instructions")), "ships instructions for the agent")
 
@@ -270,7 +270,7 @@ def main():
 
         if online:
             print("\nclipboard write round-trip")
-            marker = "char-rig clipboard round-trip\n  line two"
+            marker = "desktop-buddy clipboard round-trip\n  line two"
             wrote = mcp.call("avatar_set_clipboard", {"text": marker})
             check(wrote["result"].get("isError") is False, "set_clipboard succeeded", text_of(wrote)[:200])
             if wrote["result"].get("isError") is False:

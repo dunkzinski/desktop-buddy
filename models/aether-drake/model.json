@@ -2816,7 +2816,7 @@
       "z": 8
     }
   ],
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "label": "Aether-Drake (astral wyvern)",
   "name": "aether-drake",
   "notes": "Procedural-shape astral wyvern: 24-bone rig, layered eyespot wings, split mouth + ellipse brows + tagged eyes/pupils for full facial expressions, and 4 keyframe clips."

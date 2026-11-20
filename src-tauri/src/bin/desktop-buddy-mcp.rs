@@ -1,14 +1,14 @@
-//! `char-rig-mcp` — Model Context Protocol (stdio) bridge to the char-rig HTTP API.
+//! `desktop-buddy-mcp` — Model Context Protocol (stdio) bridge to the desktop-buddy HTTP API.
 //!
 //! An MCP client (Hermes, Claude Desktop, …) spawns this binary and speaks
 //! newline-delimited JSON-RPC 2.0 over stdin/stdout. Every tool call is
-//! forwarded to the *running* `avatar-desktop.exe`, which owns the avatar:
+//! forwarded to the *running* `desktop-buddy.exe`, which owns the avatar:
 //!
 //! ```text
-//!   MCP client  ──stdio JSON-RPC──▶  char-rig-mcp  ──HTTP──▶  127.0.0.1:8765
+//!   MCP client  ──stdio JSON-RPC──▶  desktop-buddy-mcp  ──HTTP──▶  127.0.0.1:8765
 //! ```
 //!
-//! Base URL comes from `CHAR_RIG_API_URL` (default `http://127.0.0.1:8765`).
+//! Base URL comes from `DESKTOP_BUDDY_API_URL` (default `http://127.0.0.1:8765`).
 //!
 //! Transport rules that matter, and why:
 //!
@@ -36,7 +36,7 @@ use serde_json::{json, Map, Value};
  * ------------------------------------------------------------------ */
 
 const DEFAULT_API_URL: &str = "http://127.0.0.1:8765";
-const ENV_API_URL: &str = "CHAR_RIG_API_URL";
+const ENV_API_URL: &str = "DESKTOP_BUDDY_API_URL";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -54,7 +54,7 @@ const SUPPORTED_PROTOCOLS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"
 const DEFAULT_PROTOCOL: &str = "2025-06-18";
 
 const INSTRUCTIONS: &str = "Tools that drive a 2D avatar living on the user's Windows desktop. \
-The avatar is a separate process (`avatar-desktop.exe`) that must already be running; if a call reports \
+The avatar is a separate process (`desktop-buddy.exe`) that must already be running; if a call reports \
 that it cannot reach the avatar, tell the user to start it instead of retrying blindly. \
 `avatar_get_context` is the cheapest way to see what the user is doing (foreground window title, the \
 owning process name such as `Code.exe`, machine-wide idle seconds, the focused window's `window_rect` and the \
@@ -92,7 +92,7 @@ impl ApiError {
     fn message(&self) -> String {
         match self {
             Self::Unreachable { base, detail } => {
-                format!("cannot reach the char-rig avatar at {base} ({detail})")
+                format!("cannot reach the desktop-buddy avatar at {base} ({detail})")
             }
             Self::Timeout { url, secs } => {
                 format!("the avatar did not answer {url} within {secs}s")
@@ -106,8 +106,8 @@ impl ApiError {
     fn hint(&self) -> Option<&'static str> {
         match self {
             Self::Unreachable { .. } => Some(
-                "Start the desktop app first: `cd src-tauri && cargo build && ./target/debug/avatar-desktop.exe`, \
-or set CHAR_RIG_API_URL if it listens elsewhere.",
+                "Start the desktop app first: `cd src-tauri && cargo build && ./target/debug/desktop-buddy.exe`, \
+or set DESKTOP_BUDDY_API_URL if it listens elsewhere.",
             ),
             Self::Timeout { .. } => Some("The avatar is running but busy; retry, or check its console output."),
             Self::Http { .. } => Some("This is a validation error from the avatar API — fix the arguments and retry."),
@@ -142,7 +142,7 @@ impl Api {
         let http = reqwest::blocking::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
-            .user_agent(concat!("char-rig-mcp/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("desktop-buddy-mcp/", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_else(|_| reqwest::blocking::Client::new());
 
@@ -169,7 +169,7 @@ impl Api {
         let text = response.text().unwrap_or_default();
 
         if !status.is_success() {
-            // char-rig's own errors are `{"ok":false,"error":"…"}`.
+            // desktop-buddy's own errors are `{"ok":false,"error":"…"}`.
             let message = serde_json::from_str::<Value>(&text)
                 .ok()
                 .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string))
@@ -1057,8 +1057,8 @@ fn initialize_result(params: &Value) -> Value {
         "protocolVersion": protocol,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": {
-            "name": "char-rig",
-            "title": "char-rig avatar",
+            "name": "desktop-buddy",
+            "title": "desktop-buddy avatar",
             "version": env!("CARGO_PKG_VERSION"),
         },
         "instructions": INSTRUCTIONS,
@@ -1112,9 +1112,9 @@ fn handle_message(line: &str, api: &Api) -> Option<Value> {
     // Notifications carry no id and get no reply.
     let Some(id) = id else {
         if method == "notifications/initialized" {
-            eprintln!("[char-rig-mcp] session initialized (api: {})", api.base);
+            eprintln!("[desktop-buddy-mcp] session initialized (api: {})", api.base);
         } else {
-            eprintln!("[char-rig-mcp] ignoring notification `{method}`");
+            eprintln!("[desktop-buddy-mcp] ignoring notification `{method}`");
         }
         return None;
     };
@@ -1148,7 +1148,7 @@ fn write_message(out: &mut impl Write, message: &Value) -> io::Result<()> {
 
 fn main() {
     let api = Api::from_env();
-    eprintln!("[char-rig-mcp] {} ready (api: {})", env!("CARGO_PKG_NAME"), api.base);
+    eprintln!("[desktop-buddy-mcp] {} ready (api: {})", env!("CARGO_PKG_NAME"), api.base);
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -1157,7 +1157,7 @@ fn main() {
         let line = match line {
             Ok(line) => line,
             Err(err) => {
-                eprintln!("[char-rig-mcp] stdin error: {err}");
+                eprintln!("[desktop-buddy-mcp] stdin error: {err}");
                 break;
             }
         };
@@ -1169,13 +1169,13 @@ fn main() {
         if let Some(response) = handle_message(trimmed, &api) {
             if let Err(err) = write_message(&mut stdout, &response) {
                 // The client closed the pipe: nothing left to talk to.
-                eprintln!("[char-rig-mcp] stdout closed: {err}");
+                eprintln!("[desktop-buddy-mcp] stdout closed: {err}");
                 break;
             }
         }
     }
 
-    eprintln!("[char-rig-mcp] stdin closed, exiting");
+    eprintln!("[desktop-buddy-mcp] stdin closed, exiting");
 }
 
 #[cfg(test)]

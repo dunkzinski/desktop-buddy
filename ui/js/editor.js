@@ -1,5 +1,5 @@
 /**
- * char-rig — rig editor: hit testing, gizmo interaction, inspector, authoring
+ * desktop-buddy — rig editor: hit testing, gizmo interaction, inspector, authoring
  *
  * Depends on: state.js, rig.js, ipc.js. Nothing else imports back into this
  * module except bridge.js and main.js, so the graph stays acyclic.

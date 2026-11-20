@@ -68,7 +68,7 @@ pub const FUEL_PER_CALL: u64 = 50_000_000;
 /// Biggest request/response body the host will copy through the ABI.
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 /// Env override, handy for tests and for running the app from another cwd.
-pub const PLUGINS_DIR_ENV: &str = "CHAR_RIG_PLUGINS_DIR";
+pub const PLUGINS_DIR_ENV: &str = "DESKTOP_BUDDY_PLUGINS_DIR";
 
 /* ------------------------------------------------------------------ *
  * Where plugins live
@@ -1011,7 +1011,7 @@ mod tests {
 
     #[test]
     fn a_save_round_trips_and_a_bad_file_starts_fresh() {
-        let dir = std::env::temp_dir().join(format!("char-rig-save-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("desktop-buddy-save-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("survival.state.json");
 
@@ -1050,7 +1050,7 @@ mod tests {
 
     #[test]
     fn the_plugins_directory_can_be_pointed_at_by_env() {
-        let dir = std::env::temp_dir().join(format!("char-rig-wasm-dir-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("desktop-buddy-wasm-dir-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         std::env::set_var(PLUGINS_DIR_ENV, &dir);
         assert_eq!(plugins_dir().as_deref(), Some(dir.as_path()));
@@ -1123,7 +1123,7 @@ mod tests {
         // with the real `host_state_save`, and the file lands beside the `.wasm`
         // — a unit test must not write into the repo's `plugins/`.
         let scratch = std::env::temp_dir().join(format!(
-            "char-rig-metamorphosis-{}",
+            "desktop-buddy-metamorphosis-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&scratch).expect("scratch dir");
@@ -1144,7 +1144,7 @@ mod tests {
             let written = recorder.written.lock().expect("written");
             assert_eq!(written.len(), 1, "one fresh rig is installed");
             assert!(written[0].0.starts_with("buddy-"));
-            assert_eq!(written[0].1["format"], json!("char-rig/model@1"));
+            assert_eq!(written[0].1["format"], json!("desktop-buddy/model@1"));
             assert!(written[0].1["bones"].as_array().expect("bones").len() >= 8);
         }
         assert!(

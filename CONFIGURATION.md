@@ -5,8 +5,8 @@ is read by three parties, each of which understands only its own keys:
 
 | Reader | Owns |
 |---|---|
-| `avatar-desktop.exe` | `hotkey`, `tts`, `stt`, the command bar's `quick_tasks`, `ai_profiles` / `active_profile` for the panel and health probes, and the settings editor itself |
-| `char-rig-watcher.exe` | `interactions`, `context`, `app_rules`, `alerts`, `quick_tasks`, the session keys, `active_profile`, `ai_profiles`, `ack_emote`, `hermes_cmd`, `hermes_timeout_secs`, `webhook_url`, `vision`, `survival` (routing only), `soul_path` |
+| `desktop-buddy.exe` | `hotkey`, `tts`, `stt`, the command bar's `quick_tasks`, `ai_profiles` / `active_profile` for the panel and health probes, and the settings editor itself |
+| `desktop-buddy-watcher.exe` | `interactions`, `context`, `app_rules`, `alerts`, `quick_tasks`, the session keys, `active_profile`, `ai_profiles`, `ack_emote`, `hermes_cmd`, `hermes_timeout_secs`, `webhook_url`, `vision`, `survival` (routing only), `soul_path` |
 | the survival guest | the rest of the `survival` block (`metabolism`, `cravings`, `fishing`, `inventory`, …) — see [PLUGINS.md](PLUGINS.md#6-the-survival-guest) |
 
 Every block is `#[serde(default)]`, so a missing key is the built-in default and
@@ -21,7 +21,7 @@ constants, which is the only guard against "looks configured, runs on defaults".
 **The desktop app** (`watcher_rules_candidates`) tries, in order:
 
 1. `./watcher_rules.json` (the process working directory);
-2. `watcher_rules.json` beside `avatar-desktop.exe`;
+2. `watcher_rules.json` beside `desktop-buddy.exe`;
 3. every parent directory of the executable, up to the repo root;
 4. the repo root itself (next to `models/`).
 
@@ -44,21 +44,21 @@ key order and one-liners survive. A profile switch does not rewrite the file.
 
 | Variable | Used by | Effect |
 |---|---|---|
-| `CHAR_RIG_API_URL` | watcher, MCP bridge | base URL (default `http://127.0.0.1:8765`) |
-| `CHAR_RIG_API_PORT` | app | port to bind instead of `8765` |
-| `CHAR_RIG_HERMES_CMD` | watcher | default `hermes_cmd` when the flag and file are silent |
-| `CHAR_RIG_NO_WATCHER` | app | `1` = do not spawn/supervise `char-rig-watcher.exe` |
-| `CHAR_RIG_MODELS` | app | override the `models/` root |
-| `CHAR_RIG_PLUGINS_DIR` | app | override the `plugins/` directory |
-| `CHAR_RIG_SOUL` | app + watcher | absolute `SOUL.md` path, ahead of `soul_path` |
-| `CHAR_RIG_STT_WAV` | `stt` test only | transcribe a WAV and exit |
+| `DESKTOP_BUDDY_API_URL` | watcher, MCP bridge | base URL (default `http://127.0.0.1:8765`) |
+| `DESKTOP_BUDDY_API_PORT` | app | port to bind instead of `8765` |
+| `DESKTOP_BUDDY_HERMES_CMD` | watcher | default `hermes_cmd` when the flag and file are silent |
+| `DESKTOP_BUDDY_NO_WATCHER` | app | `1` = do not spawn/supervise `desktop-buddy-watcher.exe` |
+| `DESKTOP_BUDDY_MODELS` | app | override the `models/` root |
+| `DESKTOP_BUDDY_PLUGINS_DIR` | app | override the `plugins/` directory |
+| `DESKTOP_BUDDY_SOUL` | app + watcher | absolute `SOUL.md` path, ahead of `soul_path` |
+| `DESKTOP_BUDDY_STT_WAV` | `stt` test only | transcribe a WAV and exit |
 
 ---
 
-## 3. `char-rig-watcher` command line
+## 3. `desktop-buddy-watcher` command line
 
 The app spawns the watcher itself; these flags are for running it by hand
-(`CHAR_RIG_NO_WATCHER=1`).
+(`DESKTOP_BUDDY_NO_WATCHER=1`).
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -68,13 +68,13 @@ The app spawns the watcher itself; these flags are for running it by hand
 | `--trigger-single-click` | off | also fire on plain `click` interactions |
 | `--ack-emote <EXPR>` | `thinking` | expression shown the moment a trigger fires |
 | `--no-ack-emote` | — | same as `--ack-emote ""`: acknowledge with no face |
-| `--hermes-cmd <CMD>` | `$CHAR_RIG_HERMES_CMD` | command spawned with the prompt appended |
+| `--hermes-cmd <CMD>` | `$DESKTOP_BUDDY_HERMES_CMD` | command spawned with the prompt appended |
 | `--hermes-timeout <SECS>` | `120` | kill the spawned command after this long (must be ≥ 1) |
 | `--webhook-url <URL>` | — | POST the trigger payload to this endpoint |
 | `--dry-run` | off | print trigger payloads on stdout, call nothing |
 | `-h`, `--help` | — | usage; stops startup |
 
-`--help` is the authoritative text — `usage()` in `char-rig-watcher.rs` is the
+`--help` is the authoritative text — `usage()` in `desktop-buddy-watcher.rs` is the
 string it prints, and it explains the dispatch contract:
 
 * the prompt is appended as the **last argv entry** (or substituted for
@@ -119,11 +119,11 @@ same table; see [PLUGINS.md §6](PLUGINS.md#events) for their payloads.
 | `quick_tasks` | array (≤ 6) | 4 built-in chips | app (command bar) |
 | `max_session_turns` | integer | absent = disabled | watcher |
 | `session_idle_reset_secs` | integer | absent = disabled | watcher |
-| `session_base` | string | `char-rig` | watcher |
+| `session_base` | string | `desktop-buddy` | watcher |
 | `active_profile` | string | `hermes` | watcher, app |
 | `ai_profiles` | object | `{}` | watcher, app |
 | `ack_emote` | string | `thinking` | watcher |
-| `hermes_cmd` | string | `$CHAR_RIG_HERMES_CMD` | watcher |
+| `hermes_cmd` | string | `$DESKTOP_BUDDY_HERMES_CMD` | watcher |
 | `hermes_timeout_secs` | integer | `120` | watcher |
 | `webhook_url` | string or `null` | `null` | watcher |
 | `vision` | object | see §4.6 | watcher |
@@ -247,7 +247,7 @@ profile is refused at save time.
 {
   "max_session_turns": 15,
   "session_idle_reset_secs": 1800,
-  "session_base": "char-rig",
+  "session_base": "desktop-buddy",
   "hermes_cmd": "hermes chat --continue {session} --create-if-missing -Q -q",
   "hermes_timeout_secs": 120,
   "webhook_url": null
@@ -411,7 +411,7 @@ signatures. Those live in `watcher_rules.json`.
 
 Both processes call the same resolver (`src-tauri/src/soul.rs`):
 
-1. `$CHAR_RIG_SOUL`, if set and non-empty;
+1. `$DESKTOP_BUDDY_SOUL`, if set and non-empty;
 2. `soul_path` from `watcher_rules.json`;
 3. the rules file's own directory (`SOUL.md` beside it);
 4. the app config directory.

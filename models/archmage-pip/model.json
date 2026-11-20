@@ -1247,7 +1247,7 @@
       "z": 11
     }
   ],
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "label": "Archmage Pip (wizard)",
   "name": "archmage-pip",
   "notes": "Procedural-shape wizard: flowing indigo robes, long beard, pointed hat with gold band, glowing orb staff, tagged eyes/mouth, and four keyframe clips (wave, breathe, scan, alert)."

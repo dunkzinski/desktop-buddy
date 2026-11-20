@@ -47,7 +47,7 @@ file at startup.
 
 `wasm_host::plugins_dir()` resolves, in order:
 
-1. `$CHAR_RIG_PLUGINS_DIR` (must be an existing directory);
+1. `$DESKTOP_BUDDY_PLUGINS_DIR` (must be an existing directory);
 2. `./plugins` relative to the process working directory;
 3. `plugins/` beside the executable;
 4. `plugins/` beside the repo root (i.e. next to `models/`).
@@ -541,7 +541,7 @@ the `config` echo on `GET /survival`, never the file.
 ## 7. The `metamorphosis` guest
 
 A deterministic procedural creature generator. From `(seed, archetype, stage)`
-it synthesises a complete `char-rig/model@1` skeleton, writes it through
+it synthesises a complete `desktop-buddy/model@1` skeleton, writes it through
 `host_model_write`, and hot-swaps the avatar through `host_model_activate` —
 exactly `POST /model`'s path.
 

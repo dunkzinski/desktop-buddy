@@ -1,4 +1,4 @@
-//! Screen capture + JPEG encode for the vision path of `char-rig-watcher.exe`.
+//! Screen capture + JPEG encode for the vision path of `desktop-buddy-watcher.exe`.
 //!
 //! GDI `BitBlt` + `GetDIBits` on purpose: unlike DXGI desktop duplication it has
 //! no session/permission handshake, works over RDP and in windowed sessions, and

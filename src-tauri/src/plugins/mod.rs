@@ -160,7 +160,7 @@ pub trait PluginHost: Send + Sync {
         epoch_ms()
     }
 
-    /// Install a generated `char-rig/model@1` manifest as
+    /// Install a generated `desktop-buddy/model@1` manifest as
     /// `models/<slug>/model.json`, validating it with the app's own loader.
     ///
     /// A guest has no filesystem, so "publish a rig" has to be a host

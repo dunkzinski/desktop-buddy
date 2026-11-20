@@ -1,4 +1,4 @@
-# char-rig — AI desktop avatar
+# desktop-buddy — AI desktop avatar
 
 A transparent, always-on-top 2D avatar that walks around the desktop and can be
 driven by an external AI agent over a local HTTP API.
@@ -25,12 +25,12 @@ driven by an external AI agent over a local HTTP API.
 ```bash
 cd src-tauri
 cargo check          # type-check
-cargo build          # dev binary -> target/debug/avatar-desktop.exe
+cargo build          # dev binary -> target/debug/desktop-buddy.exe
 cargo build --release
-./target/debug/avatar-desktop.exe
+./target/debug/desktop-buddy.exe
 ```
 
-Optional: `CHAR_RIG_API_PORT=9000` overrides the API port (default `8765`; if the
+Optional: `DESKTOP_BUDDY_API_PORT=9000` overrides the API port (default `8765`; if the
 port is taken the next free port in `8765..8774` is used and logged).
 
 ## Interaction model
@@ -117,7 +117,7 @@ panel). All request/response bodies are JSON.
 ### `GET /health`
 
 ```json
-{ "ok": true, "service": "char-rig avatar api", "version": "0.1.0", "uptime_secs": 42 }
+{ "ok": true, "service": "desktop-buddy avatar api", "version": "0.1.0", "uptime_secs": 42 }
 ```
 
 ### `GET /state`
@@ -237,7 +237,7 @@ See [MODEL_FORMAT.md](MODEL_FORMAT.md) for the manifest schema.
 #### `GET /models`
 
 ```json
-{ "ok": true, "root": "C:\\hermes\\char-rig\\models", "models": [
+{ "ok": true, "root": "C:\\hermes\\desktop-buddy\\models", "models": [
   { "name": "demo-blob", "label": "Demo Blob (sprite parts)", "path": "...",
     "bones": 7, "parts": 10, "has_rig_override": false, "generated": false,
     "error": null }
@@ -561,7 +561,7 @@ Used by the page; exposed for tooling/debugging.
 
 ### `GET /watcher` / `POST /watcher`
 
-The supervised `char-rig-watcher.exe` — the same switch the control panel's
+The supervised `desktop-buddy-watcher.exe` — the same switch the control panel's
 **Watcher** toggle drives.
 
 ```bash
@@ -574,8 +574,8 @@ curl -s localhost:8765/watcher
   "enabled": true,
   "running": true,
   "pid": 14320,
-  "binary_path": "C:\dev\char-rig\src-tauri\target\debug\char-rig-watcher.exe",
-  "rules_path": "C:\dev\char-rig\watcher_rules.json",
+  "binary_path": "C:\dev\desktop-buddy\src-tauri\target\debug\desktop-buddy-watcher.exe",
+  "rules_path": "C:\dev\desktop-buddy\watcher_rules.json",
   "logs": ["[22:23:29] started … (pid 14320, rules …watcher_rules.json)", "…"],
   "quick_tasks": [
     {"label": "Summarize clipboard", "prompt": "Call avatar_get_clipboard and summarise what I copied …"},
@@ -735,7 +735,7 @@ curl -s -X POST localhost:8765/ai-profile \
 The switch is persisted to `watcher_rules.json` (`active_profile`, written to a
 sibling file and renamed, so the file is never half-written), the new profile is
 probed, and the app broadcasts an `ai_profile` frame plus the
-`ai-profile-changed` Tauri event. The running `char-rig-watcher.exe` re-reads the
+`ai-profile-changed` Tauri event. The running `desktop-buddy-watcher.exe` re-reads the
 file when it sees the frame, so the **next** trigger uses the new backend — no
 restart. An unknown name is a **400** that lists the valid profiles.
 
@@ -844,7 +844,7 @@ rate. The answer is the same body as `GET` plus `applied` (dotted paths) and
   `survival.*` value (the metabolism plugin reads the new config on its next
   tick, so a new drain rate bites within a second), and every `ai.*` or
   `vision.*` change (one `ai_profile` frame is what makes
-  `char-rig-watcher.exe` re-read the file — new endpoints, models, capture mode,
+  `desktop-buddy-watcher.exe` re-read the file — new endpoints, models, capture mode,
   no restart).
 * **Needs a restart**: Piper/Whisper **paths** and `stt.hotkey`. Those are read
   once at startup, so they are listed under `restart_required` rather than
@@ -913,7 +913,7 @@ creates:
 ### `GET /soul` / `POST /soul`
 
 `SOUL.md` is the avatar's durable persona — a plain markdown file the user owns.
-`char-rig-watcher` reads it at the **start of every turn**, so nothing is cached
+`desktop-buddy-watcher` reads it at the **start of every turn**, so nothing is cached
 and an edit is live on the next reply. `GET` reports the file *and* the persona
 that will actually be used:
 
@@ -924,7 +924,7 @@ curl -s localhost:8765/soul
 ```json
 {
   "ok": true,
-  "path": "C:\\hermes\\char-rig\\SOUL.md",
+  "path": "C:\\hermes\\desktop-buddy\\SOUL.md",
   "exists": true,
   "is_default": false,
   "content": "# SOUL.md\n\n…the file exactly as it is on disk…",
@@ -953,8 +953,8 @@ and nothing is written: a missing `content`, a blank one, or anything over
 half-written persona can never land.
 
 **One resolver, both processes.** `src-tauri/src/soul.rs` is compiled into the
-app *and* into `char-rig-watcher` (`#[path = "../soul.rs"]`), so the editor and
-the prompt cannot disagree: `CHAR_RIG_SOUL` → `soul_path` in
+app *and* into `desktop-buddy-watcher` (`#[path = "../soul.rs"]`), so the editor and
+the prompt cannot disagree: `DESKTOP_BUDDY_SOUL` → `soul_path` in
 `watcher_rules.json` → `<rules dir>/SOUL.md` → `<app config dir>/SOUL.md`.
 
 The Settings modal's **Open SOUL.md** button is the `open_soul_file` command
@@ -1668,7 +1668,7 @@ Gives up on the current cast and reports it as a `fishing-result` with
 ## Metamorphosis (the `metamorphosis` plugin)
 
 The `metamorphosis` guest owns one procedurally generated creature: a seed, a
-stage, XP, bond and an attribute. Every stage is a complete `char-rig/model@1`
+stage, XP, bond and an attribute. Every stage is a complete `desktop-buddy/model@1`
 rig it **generates itself** (no sprites, no AI, no network) and writes into
 `models/<slug>/model.json` through a host import, which validates it with the
 app's own loader before anything lands on disk. `/metamorphose` then hot-swaps the
@@ -2134,7 +2134,7 @@ The page-side twin is the `notify_reply` command, so a reply behaves identically
 whichever end sent it.
 
 Optional `include_screen: true` rides the same frame and tells
-`char-rig-watcher.exe` to attach a screenshot to this turn even when the text
+`desktop-buddy-watcher.exe` to attach a screenshot to this turn even when the text
 matches none of the `vision.trigger_phrases` phrases — it is what the panel's
 **What's on screen?** button and the command bar's matching chip send:
 
@@ -2176,7 +2176,7 @@ curl -s -X POST localhost:8765/alert -H 'content-type: application/json' \
 | `severity` | `info` \| `warn` \| `error`; defaults to `info`, anything else is **400** |
 
 The route only validates and broadcasts an `alert` frame — it never calls a
-model itself. `char-rig-watcher.exe` picks the frame up and wakes Hermes under
+model itself. `desktop-buddy-watcher.exe` picks the frame up and wakes Hermes under
 its own `alerts.cooldown_secs` throttle, so a `curl` cannot spawn agent turns.
 
 ### `POST /session/reset`
@@ -2193,9 +2193,9 @@ curl -s -X POST localhost:8765/session/reset
 ```
 
 The app owns no conversation state: it broadcasts a `session_reset` frame on
-`GET /events` and dismisses the visible bubble, and `char-rig-watcher.exe`
+`GET /events` and dismisses the visible bubble, and `desktop-buddy-watcher.exe`
 rotates its `{session}` id when it sees the frame (it logs
-`session reset (api): char-rig-<ts> -> char-rig-<ts>-2`). The next trigger then
+`session reset (api): desktop-buddy-<ts> -> desktop-buddy-<ts>-2`). The next trigger then
 runs in a brand-new Hermes session, so the model starts from a clean context.
 
 ### `GET /events` (Server-Sent Events)
@@ -2246,7 +2246,7 @@ Every `data:` line is one JSON object:
 | `alert` | `POST /alert` from an external monitor | `{source, summary, severity}` with `severity` ∈ `info` \| `warn` \| `error` |
 | `session_reset` | `POST /session/reset`, the command bar's **↺** or the control panel's **New chat** | `{reason}` with `reason` ∈ `ui` \| `api` |
 | `ai_profile` | `POST /ai-profile`, the panel's **AI Brain** dropdown, or the `set_ai_profile` command | `{name, active_profile, source}` with `source` ∈ `ui` \| `api` |
-| `watcher` | the supervised `char-rig-watcher.exe` starts, stops, or writes a line | full status `{ok, enabled, running, pid, binary_path, rules_path, logs}` on a lifecycle change, or `{kind: "log", line, enabled, running, pid}` for one log line |
+| `watcher` | the supervised `desktop-buddy-watcher.exe` starts, stops, or writes a line | full status `{ok, enabled, running, pid, binary_path, rules_path, logs}` on a lifecycle change, or `{kind: "log", line, enabled, running, pid}` for one log line |
 
 Behaviour worth knowing:
 
@@ -2364,7 +2364,7 @@ box: the user's text (≤ 500 characters) becomes a `user_reply` frame, the bubb
 is dismissed and `{ok, text, profile, subscribers}` comes back. The optional
 `profile` pins that one prompt to a specific AI profile (what a
 `quick_tasks[].profile` chip does).
-`POST /reply`, and `char-rig-watcher.exe` treats the frame as a direct
+`POST /reply`, and `desktop-buddy-watcher.exe` treats the frame as a direct
 instruction that bypasses the interaction cooldowns.
 
 `reset_session` is the **New chat** button: it broadcasts a `session_reset`
@@ -2385,19 +2385,19 @@ see *Awareness: desktop context & the event stream* for the frame list.
 
 ---
 
-## MCP server (`char-rig-mcp`)
+## MCP server (`desktop-buddy-mcp`)
 
-`src-tauri/src/bin/char-rig-mcp.rs` builds a **second binary**,
-`src-tauri/target/debug/char-rig-mcp.exe`, that exposes the avatar to any MCP
+`src-tauri/src/bin/desktop-buddy-mcp.rs` builds a **second binary**,
+`src-tauri/target/debug/desktop-buddy-mcp.exe`, that exposes the avatar to any MCP
 client (Hermes, Claude Desktop, …) over **stdio JSON-RPC 2.0** as thirteen tools.
 It is a thin, stateless bridge: each tool call becomes one HTTP request to the
-*running* `avatar-desktop.exe`.
+*running* `desktop-buddy.exe`.
 
 ```
-MCP client ── stdio JSON-RPC ──▶ char-rig-mcp ── HTTP ──▶ 127.0.0.1:8765
+MCP client ── stdio JSON-RPC ──▶ desktop-buddy-mcp ── HTTP ──▶ 127.0.0.1:8765
 ```
 
-Base URL: `CHAR_RIG_API_URL`, default `http://127.0.0.1:8765`.
+Base URL: `DESKTOP_BUDDY_API_URL`, default `http://127.0.0.1:8765`.
 
 | MCP tool | Arguments | Forwards to |
 | --- | --- | --- |
@@ -2452,7 +2452,7 @@ The process never panics and never closes the transport:
 
 | Situation | Result |
 | --- | --- |
-| avatar app not running / wrong port | `isError: true`, payload `{"ok":false,"kind":"avatar_unreachable","error":"cannot reach the char-rig avatar at …","hint":"Start the desktop app first: …"}` |
+| avatar app not running / wrong port | `isError: true`, payload `{"ok":false,"kind":"avatar_unreachable","error":"cannot reach the desktop-buddy avatar at …","hint":"Start the desktop app first: …"}` |
 | avatar answered 4xx (validation) | `isError: true`, `kind: "avatar_rejected_request"`, message taken from the API's `error` field |
 | request exceeded 10 s | `isError: true`, `kind: "avatar_timeout"` |
 | bad argument values | `isError: true`, `kind: "invalid_arguments"` (no HTTP call made) |
@@ -2473,7 +2473,7 @@ printf '%s\n' \
  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"avatar_get_context","arguments":{}}}' \
- | ./target/debug/char-rig-mcp.exe
+ | ./target/debug/desktop-buddy-mcp.exe
 ```
 
 `python tools/mcp_smoke_test.py` asserts the whole protocol surface against the

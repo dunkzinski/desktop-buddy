@@ -1,5 +1,5 @@
 {
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "name": "nebulon-9",
   "label": "Nebulon-9 (alien)",
   "notes": "Procedural-shape alien: 21-bone rig, glowing antennae, third eye, tagged eyes/mouth for expressions + gaze, tail chain, and four keyframe clips (wave, breathe, scan, alert).",

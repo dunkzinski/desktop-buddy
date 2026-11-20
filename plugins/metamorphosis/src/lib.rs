@@ -1,8 +1,8 @@
-//! `char-rig-metamorphosis-plugin` — procedural Metamorphosis & Growth, compiled
+//! `desktop-buddy-metamorphosis-plugin` — procedural Metamorphosis & Growth, compiled
 //! to WebAssembly.
 //!
 //! The plugin owns one creature: its seed, stage, XP, bond and attribute. From
-//! that it *generates* a complete `char-rig/model@1` rig per stage (see
+//! that it *generates* a complete `desktop-buddy/model@1` rig per stage (see
 //! [`generator`]), writes it into `models/<slug>/model.json` through a host
 //! import, and swaps the avatar onto it — the same path `POST /model` takes.
 //!
@@ -30,7 +30,7 @@
 //! ```bash
 //! cd plugins/metamorphosis
 //! cargo build --release --target wasm32-unknown-unknown
-//! cp target/wasm32-unknown-unknown/release/char_rig_metamorphosis_plugin.wasm \
+//! cp target/wasm32-unknown-unknown/release/desktop_buddy_metamorphosis_plugin.wasm \
 //!    ../metamorphosis.wasm
 //! ```
 //!

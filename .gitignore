@@ -37,3 +37,5 @@ watcher_rules.json.bak
 # Python bytecode from the model build scripts
 __pycache__/
 *.pyc
+# Stray stderr captures from a hand-started watcher
+*.err

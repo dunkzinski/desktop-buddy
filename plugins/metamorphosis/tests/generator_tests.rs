@@ -14,12 +14,12 @@
 
 use std::collections::HashSet;
 
-use char_rig_metamorphosis_plugin::attribute::{Attribute, AttributeBlend};
-use char_rig_metamorphosis_plugin::evolution::Metamorphosis;
-use char_rig_metamorphosis_plugin::generator::{
+use desktop_buddy_metamorphosis_plugin::attribute::{Attribute, AttributeBlend};
+use desktop_buddy_metamorphosis_plugin::evolution::Metamorphosis;
+use desktop_buddy_metamorphosis_plugin::generator::{
     generate, max_parts, validate_at, Archetype, Spec, Tier,
 };
-use char_rig_metamorphosis_plugin::skeleton::{
+use desktop_buddy_metamorphosis_plugin::skeleton::{
     hierarchy_is_sound, min_world_y, world_transforms, Manifest, MAX_PARTS, MONITOR_BUDGET_Y,
     ROOT_SCALE,
 };
@@ -60,7 +60,7 @@ fn label(manifest: &Manifest) -> String {
 fn every_manifest_is_valid_json_for_the_format() {
     for (tier, manifest) in corpus() {
         let where_ = label(&manifest);
-        assert_eq!(manifest.format, "char-rig/model@1", "{where_}");
+        assert_eq!(manifest.format, "desktop-buddy/model@1", "{where_}");
         assert!(!manifest.name.is_empty(), "{where_}");
         assert!(!manifest.label.is_empty(), "{where_}");
         assert!(!manifest.bones.is_empty(), "{where_}");
@@ -338,7 +338,7 @@ fn the_face_uses_split_mouths_ellipse_brows_and_separate_pupils() {
     for (_tier, manifest) in corpus() {
         let where_ = label(&manifest);
         let head = manifest.bone("head").expect("head");
-        let tagged = |tag: &str| -> Vec<&char_rig_metamorphosis_plugin::skeleton::Part> {
+        let tagged = |tag: &str| -> Vec<&desktop_buddy_metamorphosis_plugin::skeleton::Part> {
             head.parts
                 .iter()
                 .filter(|part| part.tag.as_deref() == Some(tag))

@@ -1,7 +1,7 @@
 [package]
-name = "avatar-desktop"
+name = "desktop-buddy"
 version = "0.1.0"
-description = "AI Avatar Desktop - transparent avatar walking on the desktop, driven by a local HTTP API"
+description = "Desktop Buddy - a transparent desktop companion avatar, driven by a local HTTP API"
 authors = ["Austin Dunkzinski"]
 license = "Apache-2.0"
 repository = "https://github.com/dunkzinski/desktop-buddy"
@@ -10,7 +10,7 @@ edition = "2021"
 rust-version = "1.85"
 
 [lib]
-name = "avatar_desktop_lib"
+name = "desktop_buddy_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -27,9 +27,9 @@ axum = "0.7"
 # `GET /events`: BroadcastStream adapts the tokio broadcast channel into the
 # Stream that axum's SSE response consumes.
 tokio-stream = { version = "0.1", features = ["sync"] }
-# `src/bin/char-rig-mcp.rs`: blocking HTTP client for the MCP stdio bridge.
+# `src/bin/desktop-buddy-mcp.rs`: blocking HTTP client for the MCP stdio bridge.
 # No TLS on purpose — it only ever talks to http://127.0.0.1.
-# `stream` feeds `src/bin/char-rig-watcher.rs`, which consumes the SSE body of
+# `stream` feeds `src/bin/desktop-buddy-watcher.rs`, which consumes the SSE body of
 # `GET /events` chunk by chunk (`Response::bytes_stream`).
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "stream", "rustls-tls"] }
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std"] }
@@ -90,7 +90,7 @@ rdev = "0.5"
 # own code (breakpoints, quick rebuilds) and catastrophic for Cranelift: building
 # one 400 KB plugin module in wasmtime took ~4.5 s per plugin in that profile, and
 # every launch paid it again (9 s of a 10 s startup). Optimising *only* the
-# dependencies keeps `avatar-desktop` itself debuggable while making plugin
+# dependencies keeps `desktop-buddy` itself debuggable while making plugin
 # instantiation, JSON parsing and image decoding production-fast.
 [profile.dev.package."*"]
 opt-level = 2

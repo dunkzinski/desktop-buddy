@@ -1,5 +1,5 @@
 /**
- * char-rig — Tauri bridge: outgoing state reports, incoming events, import flow
+ * desktop-buddy — Tauri bridge: outgoing state reports, incoming events, import flow
  *
  * Depends on: state.js, rig.js, speech.js, ipc.js, editor.js.
  * One-way edges only: nothing under state/rig/speech/editor imports this file.

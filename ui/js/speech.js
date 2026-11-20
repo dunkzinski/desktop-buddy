@@ -1,5 +1,5 @@
 /**
- * char-rig — speech bubble lifecycle
+ * desktop-buddy — speech bubble lifecycle
  *
  * Depends on: state.js (speech state, avatar, RT.world, viewport), ipc.js (the
  * clipboard command) and rig.js (`wireRegions`, because an expanded details

@@ -1,5 +1,5 @@
 {
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "name": "emberwing",
   "label": "Emberwing (lantern moth)",
   "notes": "Procedural-shape lantern moth: 25-bone rig, four mirrored wing panels with ember eyespots, segmented abdomen ending in a glowing lantern, feathered antennae and six walk-cycle legs. Six clips: flutter, hover, scan, alert, bow, flare.",

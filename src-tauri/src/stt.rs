@@ -721,11 +721,11 @@ fn run_whisper(config: &SttConfig, wav: &Path) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// `%TEMP%\char-rig-stt-<pid>-<n>.wav`
+/// `%TEMP%\desktop-buddy-stt-<pid>-<n>.wav`
 fn temp_wav_path() -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("char-rig-stt-{}-{seq}.wav", std::process::id()))
+    std::env::temp_dir().join(format!("desktop-buddy-stt-{}-{seq}.wav", std::process::id()))
 }
 
 /// A 44-byte-header PCM WAV: mono, 16-bit, `sample_rate`.
@@ -1071,7 +1071,7 @@ mod tests {
     /// must still load, and a broken block must degrade to the defaults.
     #[test]
     fn legacy_rules_file_without_an_stt_block_still_loads() {
-        let dir = std::env::temp_dir().join(format!("char-rig-stt-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("desktop-buddy-stt-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("watcher_rules.json");
         std::fs::write(&path, r#"{"ack_emote": "thinking", "tts": {"enabled": true}}"#).unwrap();
@@ -1219,15 +1219,15 @@ mod tests {
     /// End-to-end: real 16-bit PCM WAV → whisper-cli (with Silero VAD) → text.
     ///
     /// Ignored by default because it needs the shipped binaries *and* a clip;
-    /// run it with `CHAR_RIG_STT_WAV=<path to a 16 kHz mono wav>` and
+    /// run it with `DESKTOP_BUDDY_STT_WAV=<path to a 16 kHz mono wav>` and
     /// `cargo test --lib transcribe_a_real_clip -- --ignored`.
     #[test]
     #[ignore]
     fn transcribe_a_real_clip() {
-        let path = match std::env::var("CHAR_RIG_STT_WAV") {
+        let path = match std::env::var("DESKTOP_BUDDY_STT_WAV") {
             Ok(path) if !path.trim().is_empty() => path,
             _ => {
-                eprintln!("CHAR_RIG_STT_WAV is not set; skipping");
+                eprintln!("DESKTOP_BUDDY_STT_WAV is not set; skipping");
                 return;
             }
         };

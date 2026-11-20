@@ -1,15 +1,15 @@
-//! `char-rig-watcher` — a headless watcher that wakes an agent when the desktop
+//! `desktop-buddy-watcher` — a headless watcher that wakes an agent when the desktop
 //! or the avatar does something interesting, at **zero idle LLM cost**.
 //!
-//! It is the third binary built by `cargo build` (next to `avatar-desktop.exe`
-//! and `char-rig-mcp.exe`) and it owns no UI: it subscribes to the running
+//! It is the third binary built by `cargo build` (next to `desktop-buddy.exe`
+//! and `desktop-buddy-mcp.exe`) and it owns no UI: it subscribes to the running
 //! avatar's `GET /events` stream and polls `GET /context`, and only when a
 //! configured rule fires does it reach out — a visual ack on the avatar, an
 //! HTTP webhook, or a Hermes command with a concise prompt.
 //!
 //! ```text
-//!   avatar-desktop.exe ──SSE /events────┐
-//!                        ──GET /context─┴──▶ char-rig-watcher ──▶ POST /emote (ack)
+//!   desktop-buddy.exe ──SSE /events────┐
+//!                        ──GET /context─┴──▶ desktop-buddy-watcher ──▶ POST /emote (ack)
 //!                                                          ──▶ --webhook-url
 //!                                                          ──▶ --hermes-cmd (spawn)
 //! ```
@@ -47,7 +47,7 @@ use tokio_stream::StreamExt;
 /// Screen capture + JPEG encoding for the vision path (`capture/mod.rs`).
 mod capture;
 
-/// The `SOUL.md` persona: one file, one resolver, shared with `avatar-desktop`
+/// The `SOUL.md` persona: one file, one resolver, shared with `desktop-buddy`
 /// (`#[path]` because the binaries are separate crates' roots and this module
 /// has no crate-specific dependencies).
 #[path = "../soul.rs"]
@@ -61,8 +61,8 @@ use capture::Rect;
  * ------------------------------------------------------------------ */
 
 const DEFAULT_API_URL: &str = "http://127.0.0.1:8765";
-const ENV_API_URL: &str = "CHAR_RIG_API_URL";
-const ENV_HERMES_CMD: &str = "CHAR_RIG_HERMES_CMD";
+const ENV_API_URL: &str = "DESKTOP_BUDDY_API_URL";
+const ENV_HERMES_CMD: &str = "DESKTOP_BUDDY_HERMES_CMD";
 const DEFAULT_RULES_FILE: &str = "watcher_rules.json";
 
 const DEFAULT_CONTEXT_INTERVAL_SECS: u64 = 20;
@@ -109,9 +109,9 @@ const CANNED_LINE_DURATION_MS: u64 = 5000;
 const DEFAULT_IDLE_THRESHOLD_SECS: u64 = 900;
 const DEFAULT_ACK_EMOTE: &str = "thinking";
 const ACK_EMOTE_DURATION_MS: u64 = 4000;
-/// Prefix for generated session ids (`char-rig-<seed>`); override with
+/// Prefix for generated session ids (`desktop-buddy-<seed>`); override with
 /// `session_base` in the rules file.
-const DEFAULT_SESSION_BASE: &str = "char-rig";
+const DEFAULT_SESSION_BASE: &str = "desktop-buddy";
 /// How long a spawned `--hermes-cmd` may run before it is killed.
 ///
 /// Generous on purpose: a local model answering a trigger often needs well over
@@ -162,7 +162,7 @@ const DEFAULT_VISION_MAX_IMAGE_DIM: u32 = capture::DEFAULT_MAX_IMAGE_DIM;
 /// Default JPEG quality for the screenshot.
 const DEFAULT_VISION_JPEG_QUALITY: u8 = capture::DEFAULT_JPEG_QUALITY;
 /// Title of the avatar's own overlay window (never screenshotted).
-const SELF_WINDOW_TITLE: &str = "AI Avatar Desktop";
+const SELF_WINDOW_TITLE: &str = "Desktop Buddy";
 /// Bubble posted when vision cannot run (missing profile, capture or endpoint).
 const VISION_UNAVAILABLE_TEXT: &str =
     "I couldn't look at your screen just now. Ask me again in a moment.";
@@ -1370,7 +1370,7 @@ calls is a fine answer when the event is not worth a line. ";
 ///
 /// **`tool_search` comes first.** Hermes defers MCP server tools until
 /// `tool_search` is called in a session, so on a fresh (or resumed) session the
-/// `mcp__char_rig__avatar_*` names are not callable yet. A model that goes
+/// `mcp__desktop_buddy__avatar_*` names are not callable yet. A model that goes
 /// straight at them gets `deferred tools must be invoked through tool_call by
 /// the exact name tool_search returns` and retries until `--hermes-timeout`
 /// kills it — the UI then sits on "Thinking…" forever. Spelling out the one
@@ -1378,18 +1378,18 @@ calls is a fine answer when the event is not worth a line. ";
 /// invocation) is what keeps a local model out of that loop; the fallback
 /// `POST /speak` in [`spawn_hermes`] is the second line of defence.
 const HEADLESS_DIRECTIVE: &str = "[Headless desktop avatar trigger -- do not ask follow-up questions or wait for user input. \
-FIRST TOOL CALL IN THIS SESSION: the char-rig tools are DEFERRED MCP tools. Calling mcp__char_rig__avatar_* before they \
+FIRST TOOL CALL IN THIS SESSION: the desktop-buddy tools are DEFERRED MCP tools. Calling mcp__desktop_buddy__avatar_* before they \
 are loaded fails with \"deferred tools must be invoked through tool_call by the exact name tool_search returns\", and \
-retrying never loads them. So call tool_search(query=\"avatar_\") once (tool_search(query=\"char-rig\") works too), \
-take the mcp__char_rig__avatar_* names it returns, invoke them through tool_call with exactly those names, then exit. \
+retrying never loads them. So call tool_search(query=\"avatar_\") once (tool_search(query=\"desktop-buddy\") works too), \
+take the mcp__desktop_buddy__avatar_* names it returns, invoke them through tool_call with exactly those names, then exit. \
 Already loaded this session? Skip the search and just call the tools. The signatures: \
-mcp__char_rig__avatar_speak(text, expression?, duration_ms?, details?) where \
+mcp__desktop_buddy__avatar_speak(text, expression?, duration_ms?, details?) where \
 `text` is the short spoken bubble and the optional `details` is a long code/diff/log block rendered in a scrollable drawer, \
-mcp__char_rig__avatar_emote(expression, duration_ms?) where expression is neutral|happy|sad|surprised|thinking|angry, \
-mcp__char_rig__avatar_wave(), mcp__char_rig__avatar_animate(name, loop?), \
-mcp__char_rig__avatar_set_clipboard(text) to put a full snippet, command or log on the user's clipboard, \
-mcp__char_rig__avatar_get_context() for the foreground window title, the owning process_name (e.g. Code.exe), \
-idle_secs and the recent events, and mcp__char_rig__avatar_get_clipboard() for the text the user last copied. \
+mcp__desktop_buddy__avatar_emote(expression, duration_ms?) where expression is neutral|happy|sad|surprised|thinking|angry, \
+mcp__desktop_buddy__avatar_wave(), mcp__desktop_buddy__avatar_animate(name, loop?), \
+mcp__desktop_buddy__avatar_set_clipboard(text) to put a full snippet, command or log on the user's clipboard, \
+mcp__desktop_buddy__avatar_get_context() for the foreground window title, the owning process_name (e.g. Code.exe), \
+idle_secs and the recent events, and mcp__desktop_buddy__avatar_get_clipboard() for the text the user last copied. \
 Chain several calls in one turn when it helps: an avatar_emote or avatar_animate for the feeling plus an \
 avatar_speak for the words, then exit. ALWAYS choose an expression that matches the outcome: happy for success, good news or a thank-you; sad for a failure, a loss or an apology; surprised for something unexpected or alarming; thinking while you are still investigating; angry for a real annoyance; neutral only when the moment is calm. Pass it to avatar_speak(expression=...) when the words and the face belong together, and call avatar_emote first when the feeling should land before the sentence. Keep the speech bubble under 180 characters (1-2 sentences) so it never \
 overflows the screen; put multi-line code, diffs or logs in avatar_speak's `details` or on the clipboard with \
@@ -1444,10 +1444,10 @@ struct Config {
 fn usage() -> String {
     format!(
         "\
-char-rig-watcher {version} - wake an agent when the avatar or the desktop does something
+desktop-buddy-watcher {version} - wake an agent when the avatar or the desktop does something
 
 USAGE:
-  char-rig-watcher [OPTIONS]
+  desktop-buddy-watcher [OPTIONS]
 
 OPTIONS:
   --api-url <URL>            avatar API base (default ${ENV_API_URL} or {api})
@@ -1882,7 +1882,7 @@ struct Rules {
     /// Rotate to a fresh `{session}` after this long without a dispatch (absent
     /// or 0 disables the rule).
     session_idle_reset_secs: Option<u64>,
-    /// Prefix for generated session ids; defaults to `char-rig`.
+    /// Prefix for generated session ids; defaults to `desktop-buddy`.
     session_base: Option<String>,
     /// Name of the `ai_profiles` entry triggers dispatch to.
     ///
@@ -2107,7 +2107,7 @@ impl SseParser {
 
 /// Which Hermes conversation the next dispatch should use.
 ///
-/// `char-rig-watcher.exe` is the only component that knows how the agent is
+/// `desktop-buddy-watcher.exe` is the only component that knows how the agent is
 /// launched, so it owns the id. The `hermes_cmd` template carries a `{session}`
 /// placeholder that is substituted at spawn time; `POST /session/reset` (and the
 /// `max_session_turns` / `session_idle_reset_secs` rules) swap the id for a
@@ -2134,7 +2134,7 @@ impl Default for SessionState {
 }
 
 impl SessionState {
-    /// `char-rig-<seed>` for the first session, `char-rig-<seed>-2` after the
+    /// `desktop-buddy-<seed>` for the first session, `desktop-buddy-<seed>-2` after the
     /// first rotation, and so on — unique per watcher run, short enough to read
     /// in the log, and never reused after a reset (so no stale context).
     fn id_for(&self, base: &str) -> String {
@@ -2336,7 +2336,7 @@ thinking while you are still unsure."
             format!("focused window {:?}", self.window_title)
         };
         let mut prompt = format!(
-            "[char-rig {}] {} ({}; idle {}s).",
+            "[desktop-buddy {}] {} ({}; idle {}s).",
             self.event_type, self.detail, focus, self.idle_secs
         );
         if let Some(text) = &self.text {
@@ -4196,7 +4196,7 @@ fn count_turn(session: &Arc<Mutex<SessionState>>) {
 fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        .user_agent(concat!("char-rig-watcher/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("desktop-buddy-watcher/", env!("CARGO_PKG_VERSION")))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -4568,7 +4568,7 @@ async fn main() {
         Ok(Some(cli)) => cli,
         Ok(None) => return, // --help
         Err(message) => {
-            eprintln!("char-rig-watcher: {message}");
+            eprintln!("desktop-buddy-watcher: {message}");
             std::process::exit(2);
         }
     };
@@ -5072,7 +5072,7 @@ mod tests {
             ..Trigger::default()
         };
         let prompt = trigger.prompt();
-        assert!(prompt.starts_with("[char-rig window_title]"), "{prompt}");
+        assert!(prompt.starts_with("[desktop-buddy window_title]"), "{prompt}");
         assert!(prompt.contains("Build failed"), "{prompt}");
         assert!(prompt.contains("idle 3s"), "{prompt}");
         assert!(prompt.contains("Decide whether to react"), "{prompt}");
@@ -5093,20 +5093,20 @@ mod tests {
 
     #[test]
     fn command_argv_appends_or_substitutes_the_prompt() {
-        let argv = command_argv("hermes chat", "hello world", "char-rig-1");
+        let argv = command_argv("hermes chat", "hello world", "desktop-buddy-1");
         assert_eq!(argv, vec!["hermes", "chat", "hello world"]);
 
-        let argv = command_argv("hermes --prompt={prompt}", "hello", "char-rig-1");
+        let argv = command_argv("hermes --prompt={prompt}", "hello", "desktop-buddy-1");
         assert_eq!(argv, vec!["hermes", "--prompt=hello"]);
 
-        let argv = command_argv("", "hello", "char-rig-1");
+        let argv = command_argv("", "hello", "desktop-buddy-1");
         assert!(argv.is_empty(), "an empty command yields no argv");
     }
 
     #[test]
     fn prompt_is_one_argv_entry_even_with_shell_characters() {
         let prompt = "user clicked; rm -rf / && echo hi";
-        let argv = command_argv("agent", prompt, "char-rig-1");
+        let argv = command_argv("agent", prompt, "desktop-buddy-1");
         assert_eq!(argv.len(), 2);
         assert_eq!(argv[1], prompt, "no shell, so nothing is re-interpreted");
     }
@@ -5214,11 +5214,11 @@ mod tests {
         assert!(prompt.contains("do not ask follow-up questions"), "{prompt}");
         // The signatures are what saves the model a `tool_describe` round-trip.
         for signature in [
-            "mcp__char_rig__avatar_speak(text, expression?, duration_ms?, details?)",
-            "mcp__char_rig__avatar_emote(expression, duration_ms?)",
-            "mcp__char_rig__avatar_wave()",
-            "mcp__char_rig__avatar_animate(name, loop?)",
-            "mcp__char_rig__avatar_set_clipboard(text)",
+            "mcp__desktop_buddy__avatar_speak(text, expression?, duration_ms?, details?)",
+            "mcp__desktop_buddy__avatar_emote(expression, duration_ms?)",
+            "mcp__desktop_buddy__avatar_wave()",
+            "mcp__desktop_buddy__avatar_animate(name, loop?)",
+            "mcp__desktop_buddy__avatar_set_clipboard(text)",
             "neutral|happy|sad|surprised|thinking|angry",
         ] {
             assert!(prompt.contains(signature), "missing {signature:?} in {prompt}");
@@ -5263,7 +5263,7 @@ mod tests {
 
         assert!(prompt.starts_with(SOUL_SLOT_HEADER), "{prompt}");
         let persona = prompt.find(soul).expect("persona");
-        let body = prompt.find("[char-rig interaction]").expect("brief");
+        let body = prompt.find("[desktop-buddy interaction]").expect("brief");
         let directive = prompt.find(HEADLESS_DIRECTIVE).expect("directive");
         assert!(persona < body, "persona precedes the trigger: {prompt}");
         assert!(prompt.find(creature).expect("creature") < body, "{prompt}");
@@ -5903,7 +5903,7 @@ mod tests {
         assert_eq!(trigger.idle_secs, 7);
 
         let prompt = trigger.prompt();
-        assert!(prompt.starts_with("[char-rig user_reply]"), "{prompt}");
+        assert!(prompt.starts_with("[desktop-buddy user_reply]"), "{prompt}");
         assert!(
             prompt.contains("typed this directly in the desktop overlay")
                 && prompt.contains("\"what is on my clipboard?\""),
@@ -5938,7 +5938,7 @@ mod tests {
         assert!(trigger.detail.contains("suricata"));
         assert!(trigger.detail.contains("port sweep"));
         let prompt = trigger.prompt();
-        assert!(prompt.starts_with("[char-rig alert]"), "{prompt}");
+        assert!(prompt.starts_with("[desktop-buddy alert]"), "{prompt}");
         assert!(prompt.contains("Context: This came from suricata"), "{prompt}");
 
         assert!(
@@ -6631,7 +6631,7 @@ mod tests {
         let prompt = Trigger::default().prompt();
 
         // Hermes defers MCP tools per session: without this the model calls
-        // `mcp__char_rig__avatar_*` directly, gets "deferred tools must be
+        // `mcp__desktop_buddy__avatar_*` directly, gets "deferred tools must be
         // invoked through tool_call ...", retries until --hermes-timeout kills
         // it, and the UI is left on "Thinking…".
         for needle in [
@@ -6639,7 +6639,7 @@ mod tests {
             "DEFERRED MCP tools",
             "deferred tools must be invoked through tool_call by the exact name tool_search returns",
             "tool_search(query=\"avatar_\")",
-            "tool_search(query=\"char-rig\")",
+            "tool_search(query=\"desktop-buddy\")",
             "tool_call",
         ] {
             assert!(prompt.contains(needle), "missing {needle:?} in {prompt}");
@@ -6648,12 +6648,12 @@ mod tests {
         // The search must be taught *before* the first signature, or a model
         // that stops reading at the first tool name still retries blindly.
         let search_at = prompt.find("tool_search(query=\"avatar_\")").expect("search hint");
-        let speak_at = prompt.find("mcp__char_rig__avatar_speak(").expect("speak signature");
+        let speak_at = prompt.find("mcp__desktop_buddy__avatar_speak(").expect("speak signature");
         assert!(search_at < speak_at, "tool_search must come first: {prompt}");
 
         // The exact tool names Hermes exposes keep their underscore spelling.
         assert!(
-            prompt.contains("mcp__char_rig__avatar_") && !prompt.contains("mcp__char-rig__"),
+            prompt.contains("mcp__desktop_buddy__avatar_") && !prompt.contains("mcp__desktop-buddy__"),
             "tool names must match the registered MCP server: {prompt}"
         );
     }
@@ -6662,9 +6662,9 @@ mod tests {
     fn headless_directive_documents_the_new_tools_and_brevity() {
         let prompt = Trigger::default().prompt();
         for needle in [
-            "mcp__char_rig__avatar_get_clipboard()",
-            "mcp__char_rig__avatar_get_context()",
-            "mcp__char_rig__avatar_set_clipboard(text)",
+            "mcp__desktop_buddy__avatar_get_clipboard()",
+            "mcp__desktop_buddy__avatar_get_context()",
+            "mcp__desktop_buddy__avatar_set_clipboard(text)",
             "avatar_speak(text, expression?, duration_ms?, details?)",
             "details",
             "process_name",
@@ -6745,19 +6745,19 @@ mod tests {
     #[test]
     fn session_ids_are_unique_per_rotation() {
         let mut state = SessionState { seed: 1_700_000_000, ..SessionState::default() };
-        assert_eq!(state.id_for("char-rig"), "char-rig-1700000000");
+        assert_eq!(state.id_for("desktop-buddy"), "desktop-buddy-1700000000");
 
-        let (old, new) = state.rotate("char-rig");
+        let (old, new) = state.rotate("desktop-buddy");
         assert_eq!(old, "<none>", "the very first id has no predecessor");
-        assert_eq!(new, "char-rig-1700000000");
+        assert_eq!(new, "desktop-buddy-1700000000");
 
-        let (old, new) = state.rotate("char-rig");
-        assert_eq!(old, "char-rig-1700000000");
-        assert_eq!(new, "char-rig-1700000000-2");
+        let (old, new) = state.rotate("desktop-buddy");
+        assert_eq!(old, "desktop-buddy-1700000000");
+        assert_eq!(new, "desktop-buddy-1700000000-2");
 
         state.turns = 5;
-        state.rotate("char-rig");
-        assert_eq!(state.id, "char-rig-1700000000-3");
+        state.rotate("desktop-buddy");
+        assert_eq!(state.id, "desktop-buddy-1700000000-3");
         assert_eq!(state.turns, 0, "a rotation resets the turn counter");
         assert_eq!(state.last_turn, None);
     }
@@ -6767,7 +6767,7 @@ mod tests {
         let custom = rules(r#"{"session_base":"desk-buddy"}"#);
         assert_eq!(session_base(&custom), "desk-buddy");
         assert_eq!(session_base(&Rules::default()), DEFAULT_SESSION_BASE);
-        assert_eq!(session_base(&rules(r#"{"session_base":"   "}"#)), "char-rig");
+        assert_eq!(session_base(&rules(r#"{"session_base":"   "}"#)), "desktop-buddy");
     }
 
     #[test]
@@ -6784,7 +6784,7 @@ mod tests {
         let mut state = SessionState { seed: 42, ..SessionState::default() };
 
         let first = session_for_dispatch(&settings, &mut state, Instant::now());
-        assert_eq!(first, "char-rig-42");
+        assert_eq!(first, "desktop-buddy-42");
         assert_eq!(state.turns, 0, "no turn dispatched yet");
 
         state.turns = 1;
@@ -6802,23 +6802,23 @@ mod tests {
 
         let mut under = SessionState {
             seed: 42,
-            id: "char-rig-42".to_string(),
+            id: "desktop-buddy-42".to_string(),
             turns: 1,
             last_turn: Some(now),
             ..SessionState::default()
         };
-        assert_eq!(session_for_dispatch(&settings, &mut under, now), "char-rig-42");
+        assert_eq!(session_for_dispatch(&settings, &mut under, now), "desktop-buddy-42");
 
         let mut at = SessionState {
             seed: 42,
-            id: "char-rig-42".to_string(),
+            id: "desktop-buddy-42".to_string(),
             turns: 2,
             last_turn: Some(now),
             ..SessionState::default()
         };
         assert_eq!(
             session_for_dispatch(&settings, &mut at, now),
-            "char-rig-42-2",
+            "desktop-buddy-42-2",
             "the turn that trips the limit lands in the new session"
         );
         assert_eq!(at.turns, 0);
@@ -6831,23 +6831,23 @@ mod tests {
 
         let mut away = SessionState {
             seed: 42,
-            id: "char-rig-42".to_string(),
+            id: "desktop-buddy-42".to_string(),
             turns: 3,
             last_turn: now.checked_sub(Duration::from_secs(900)),
             ..SessionState::default()
         };
-        assert_eq!(session_for_dispatch(&settings, &mut away, now), "char-rig-42-2");
+        assert_eq!(session_for_dispatch(&settings, &mut away, now), "desktop-buddy-42-2");
 
         let mut active = SessionState {
             seed: 42,
-            id: "char-rig-42".to_string(),
+            id: "desktop-buddy-42".to_string(),
             turns: 3,
             last_turn: now.checked_sub(Duration::from_secs(60)),
             ..SessionState::default()
         };
         assert_eq!(
             session_for_dispatch(&settings, &mut active, now),
-            "char-rig-42",
+            "desktop-buddy-42",
             "a short pause keeps the conversation"
         );
     }
@@ -6857,9 +6857,9 @@ mod tests {
         let argv = command_argv(
             "hermes chat --continue {session} --create-if-missing -Q -q",
             "hello",
-            "char-rig-7",
+            "desktop-buddy-7",
         );
-        assert_eq!(argv[3], "char-rig-7", "the template is expanded: {argv:?}");
+        assert_eq!(argv[3], "desktop-buddy-7", "the template is expanded: {argv:?}");
         assert_eq!(argv.last().map(String::as_str), Some("hello"), "prompt is still last");
         assert!(
             !argv.iter().any(|arg| arg.contains("{session}")),
@@ -6867,7 +6867,7 @@ mod tests {
         );
 
         // A template without {session} is used verbatim (rotation is inert).
-        let plain = command_argv("hermes chat -q", "hi", "char-rig-7");
+        let plain = command_argv("hermes chat -q", "hi", "desktop-buddy-7");
         assert_eq!(plain, vec!["hermes", "chat", "-q", "hi"]);
     }
 
@@ -6877,7 +6877,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let session = Arc::new(Mutex::new(SessionState {
             seed: 42,
-            id: "char-rig-42".to_string(),
+            id: "desktop-buddy-42".to_string(),
             turns: 4,
             ..SessionState::default()
         }));
@@ -6896,7 +6896,7 @@ mod tests {
         handle_frame(&frame, &rules, &shared, &session, &ai, &tx).await;
 
         let state = lock_session(&session);
-        assert_eq!(state.id, "char-rig-42-2", "the reset rotated the session");
+        assert_eq!(state.id, "desktop-buddy-42-2", "the reset rotated the session");
         assert_eq!(state.turns, 0, "the new session starts at zero turns");
         drop(state);
         assert!(rx.try_recv().is_err(), "a reset is an instruction, not a trigger");
@@ -7030,7 +7030,7 @@ mod tests {
         let spawned = spawn_hermes(
             "python -c \"import time; time.sleep(30)\"",
             "hello",
-            "char-rig-test",
+            "desktop-buddy-test",
             Duration::from_secs(1),
             &client,
             &api_url,
@@ -7445,8 +7445,8 @@ c"));
             .dispatch(DispatchCtx {
                 client: &client,
                 api_url: &api_url,
-                prompt: "[char-rig user_reply] build broke",
-                session: "char-rig-test",
+                prompt: "[desktop-buddy user_reply] build broke",
+                session: "desktop-buddy-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
@@ -7534,7 +7534,7 @@ c"));
                 client: &client,
                 api_url: &api_url,
                 prompt: "anything",
-                session: "char-rig-test",
+                session: "desktop-buddy-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
@@ -7634,7 +7634,7 @@ c"));
         let server = serve(
             listener,
             vec![
-                r#"{"window_title":"char-rig","process_name":"Code.exe","idle_secs":12}"#,
+                r#"{"window_title":"desktop-buddy","process_name":"Code.exe","idle_secs":12}"#,
                 SURVIVAL_BODY,
                 CLIPS_BODY,
                 r#"{"ok":true,"text":"cargo test --lib","truncated":false}"#,
@@ -7663,7 +7663,7 @@ c"));
                 client: &client,
                 api_url: &api_url,
                 prompt: "what is on my clipboard?",
-                session: "char-rig-test",
+                session: "desktop-buddy-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
@@ -7725,7 +7725,7 @@ c"));
                 client: &client,
                 api_url: &api_url,
                 prompt: "build failed in main.rs",
-                session: "char-rig-test",
+                session: "desktop-buddy-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
@@ -7772,7 +7772,7 @@ c"));
                 client: &client,
                 api_url: &api_url,
                 prompt: "summarise this repo",
-                session: "char-rig-test",
+                session: "desktop-buddy-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
@@ -7922,7 +7922,7 @@ c"));
                 client: &client,
                 api_url: &api_url,
                 prompt,
-                session: "char-rig-test",
+                session: "desktop-buddy-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
@@ -8019,7 +8019,7 @@ c"));
                 client: &client,
                 api_url: &api_url,
                 prompt: "wave at me",
-                session: "char-rig-test",
+                session: "desktop-buddy-test",
                 flight: guard,
                 failure_speech: FailureSpeech::default(),
                 timeout_floor: None,
@@ -8048,7 +8048,7 @@ c"));
 
     #[tokio::test]
     async fn an_ai_profile_frame_reloads_the_rules_file() {
-        let root = std::env::temp_dir().join(format!("char-rig-watcher-ai-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-watcher-ai-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("scratch dir");
         let path = root.join("watcher_rules.json");
         std::fs::write(&path, PROFILE_RULES).expect("write rules");
@@ -8122,7 +8122,7 @@ c"));
             }
         }"#;
 
-        let root = std::env::temp_dir().join(format!("char-rig-watcher-vision-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-watcher-vision-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("scratch dir");
         let path = root.join("watcher_rules.json");
         std::fs::write(&path, BEFORE).expect("write rules");
@@ -8173,7 +8173,7 @@ c"));
 
     #[test]
     fn rules_can_be_loaded_from_an_explicit_path() {
-        let root = std::env::temp_dir().join(format!("char-rig-watcher-load-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("desktop-buddy-watcher-load-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("scratch dir");
         let path = root.join("custom_rules.json");
         std::fs::write(&path, PROFILE_RULES).expect("write");

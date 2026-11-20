@@ -1,5 +1,5 @@
 {
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "name": "xenomorph-7",
   "label": "Xenomorph-7",
   "notes": "Built-in model: procedural shapes, no textures. Converted from the original hardcoded renderer.",

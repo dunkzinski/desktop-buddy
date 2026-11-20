@@ -19,10 +19,10 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use avatar_desktop_lib::models;
+use desktop_buddy_lib::models;
 
 fn main() {
-    let root = std::env::var("CHAR_RIG_MODELS")
+    let root = std::env::var("DESKTOP_BUDDY_MODELS")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("../models"));
 

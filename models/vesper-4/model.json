@@ -1481,7 +1481,7 @@
       "z": 7
     }
   ],
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "label": "Vesper-4 (Cyber-Wyvern)",
   "name": "vesper-4",
   "notes": "Procedural-shape nocturnal cyber-creature with articulated wings, glowing ear tufts, tagged eyes/mouth for expressions, and custom keyframe animations."

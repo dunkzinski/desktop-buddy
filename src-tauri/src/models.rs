@@ -1,6 +1,6 @@
 //! Model + rig storage.
 //!
-//! On-disk layout (root = `<char-rig>/models`, override with `CHAR_RIG_MODELS`):
+//! On-disk layout (root = `<desktop-buddy>/models`, override with `DESKTOP_BUDDY_MODELS`):
 //!
 //! ```text
 //! models/
@@ -35,7 +35,16 @@ use base64::Engine as _;
 /// Shipped default model, also the fallback when the saved selection is gone.
 pub const DEFAULT_MODEL: &str = "xenomorph-7";
 /// Format tag written into every manifest the editor saves.
-pub const FORMAT_TAG: &str = "char-rig/model@1";
+pub const FORMAT_TAG: &str = "desktop-buddy/model@1";
+/// The tag the pre-rebrand build wrote. Rigs saved before the rename — including
+/// every procedurally generated `models/buddy-*` folder — keep it, so it stays a
+/// manifest this build reads; only *new* writes carry [`FORMAT_TAG`].
+pub const LEGACY_FORMAT_TAGS: &[&str] = &["char-rig/model@1"];
+
+/// `true` when `tag` is a manifest format this build understands.
+pub fn is_known_format_tag(tag: &str) -> bool {
+    tag == FORMAT_TAG || LEGACY_FORMAT_TAGS.contains(&tag)
+}
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// One entry of `GET /models`.
@@ -108,7 +117,7 @@ pub struct LoadedModel {
 
 /// Root directory holding every model.
 pub fn models_root() -> PathBuf {
-    if let Ok(value) = std::env::var("CHAR_RIG_MODELS") {
+    if let Ok(value) = std::env::var("DESKTOP_BUDDY_MODELS") {
         if !value.trim().is_empty() {
             return PathBuf::from(value);
         }
@@ -1413,7 +1422,7 @@ mod tests {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "char-rig-{tag}-{}-{unique}",
+            "desktop-buddy-{tag}-{}-{unique}",
             std::process::id()
         ));
         fs::create_dir_all(&dir).expect("scratch dir");
@@ -1729,6 +1738,32 @@ mod tests {
         assert_eq!(stats.parsed, 0);
         assert_eq!(again[0].error, entries[0].error);
 
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_rig_tagged_before_the_rename_still_loads() {
+        // Every `models/buddy-*` folder the plugin generated, and anything saved
+        // by a `char-rig` build, still carries the old tag. Reading it must not
+        // start failing just because the brand changed.
+        assert!(is_known_format_tag(FORMAT_TAG));
+        assert!(is_known_format_tag("char-rig/model@1"));
+        assert!(!is_known_format_tag("someone-else/model@9"));
+
+        let root = std::env::temp_dir().join(format!("desktop-buddy-legacy-{}", std::process::id()));
+        let dir = root.join("legacy-pet");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("model.json"),
+            r#"{"format":"char-rig/model@1","name":"legacy-pet","label":"Legacy pet","bones":[{"id":"root","parent":null,"pos":[0,0],"rotation":0,"scale":1,"length":0,"z":0,"parts":[]}]}"#,
+        )
+        .unwrap();
+        let loaded = load_model(&root, "legacy-pet").expect("a pre-rename rig must still load");
+        assert_eq!(
+            loaded.rig.get("format").and_then(Value::as_str),
+            Some("char-rig/model@1")
+        );
+        assert!(!loaded.is_override);
         fs::remove_dir_all(&root).ok();
     }
 

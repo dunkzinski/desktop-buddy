@@ -1,5 +1,5 @@
 /**
- * char-rig — plugin-backed UI gate
+ * desktop-buddy — plugin-backed UI gate
  *
  * The app is allowed to start with `plugins/` empty (or with one `.wasm`
  * deleted), and `GET /plugins` is the only honest answer to "is this feature

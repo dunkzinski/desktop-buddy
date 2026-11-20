@@ -1,8 +1,8 @@
 [package]
-name = "char-rig-survival-plugin"
+name = "desktop-buddy-survival-plugin"
 version = "0.1.0"
 edition = "2021"
-description = "The survival feature as a dynamically loaded WebAssembly plugin for char-rig"
+description = "The survival feature as a dynamically loaded WebAssembly plugin for desktop-buddy"
 license = "Apache-2.0"
 repository = "https://github.com/dunkzinski/desktop-buddy"
 homepage = "https://github.com/dunkzinski/desktop-buddy"

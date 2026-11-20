@@ -1,7 +1,7 @@
 //! The procedural rig generator.
 //!
 //! One pure function — [`generate`] — turns `(seed, archetype, tier)` into a
-//! complete `char-rig/model@1` manifest. No clock, no filesystem, no host call:
+//! complete `desktop-buddy/model@1` manifest. No clock, no filesystem, no host call:
 //! the same spec always yields the same bytes, which is what makes the creatures
 //! reproducible and the tests meaningful.
 //!
@@ -1336,7 +1336,7 @@ pub fn generate(spec: &Spec) -> Manifest {
     give_wave(&mut bones);
 
     let mut manifest = Manifest {
-        format: "char-rig/model@1".to_string(),
+        format: "desktop-buddy/model@1".to_string(),
         name: spec.slug(),
         label: spec.label(),
         notes: Some(match spec.blend {
@@ -4273,6 +4273,10 @@ fn enforce_monitor_budget(manifest: &mut Manifest) {
 /// Structural checks the generator promises its callers, against the part budget
 /// of the **base** stages (100). Prefer [`validate_at`] when the tier is known;
 /// `POST /metamorphose` and the plugin's status/install paths use that.
+/// Manifest tags [`validate_at`] accepts: the current one, plus the pre-rename
+/// `char-rig/model@1` so saved creatures still validate.
+const FORMAT_TAGS: [&str; 2] = ["desktop-buddy/model@1", "char-rig/model@1"];
+
 pub fn validate(manifest: &Manifest) -> Result<Report, String> {
     validate_at(manifest, Tier::Champion)
 }
@@ -4280,7 +4284,9 @@ pub fn validate(manifest: &Manifest) -> Result<Report, String> {
 /// Structural checks against the budget of `tier` — the same checks, but a Mega
 /// is allowed the 150 parts [`max_parts`] grants it.
 pub fn validate_at(manifest: &Manifest, tier: Tier) -> Result<Report, String> {
-    if manifest.format != "char-rig/model@1" {
+    // The pre-rename tag is still a rig we can read: a creature saved by a
+    // `char-rig` build must keep validating after the rebrand.
+    if !FORMAT_TAGS.contains(&manifest.format.as_str()) {
         return Err(format!("unexpected format {:?}", manifest.format));
     }
     hierarchy_is_sound(&manifest.bones)?;

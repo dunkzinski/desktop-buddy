@@ -1,5 +1,5 @@
 /**
- * char-rig — floating panel drag, layout persistence and z-order
+ * desktop-buddy — floating panel drag, layout persistence and z-order
  *
  * Every floating card in the overlay is positioned by CSS defaults. This module
  * makes each one draggable by its header, clamps it so the header stays
@@ -24,7 +24,13 @@ import { viewport, toast } from "./state.js";
 import { wireRegions } from "./rig.js";
 
 /** Bump when the stored shape changes; a stale key is ignored, not migrated. */
-const LAYOUT_KEY = "char-rig.panel-layout.v1";
+const LAYOUT_KEY = "desktop-buddy.panel-layout.v1";
+
+/**
+ * The pre-rebrand storage key. Read once and rewritten under `LAYOUT_KEY`, so a
+ * renamed build does not snap every pop-out back to its CSS default.
+ */
+const LEGACY_LAYOUT_KEY = "char-rig.panel-layout.v1";
 
 /** How much of a panel's header must stay inside the viewport. */
 const MIN_VISIBLE_W = 120;
@@ -71,7 +77,15 @@ let ready = false;
 
 function loadLayout() {
   try {
-    const raw = window.localStorage.getItem(LAYOUT_KEY);
+    let raw = window.localStorage.getItem(LAYOUT_KEY);
+    if (!raw) {
+      const legacy = window.localStorage.getItem(LEGACY_LAYOUT_KEY);
+      if (legacy) {
+        window.localStorage.setItem(LAYOUT_KEY, legacy);
+        window.localStorage.removeItem(LEGACY_LAYOUT_KEY);
+        raw = legacy;
+      }
+    }
     const parsed = raw ? JSON.parse(raw) : null;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     const clean = {};
@@ -386,6 +400,7 @@ export function resetPanelLayout() {
   layout = {};
   try {
     window.localStorage.removeItem(LAYOUT_KEY);
+    window.localStorage.removeItem(LEGACY_LAYOUT_KEY);
   } catch (err) {
     console.warn("[avatar] could not clear panel layout:", err);
   }

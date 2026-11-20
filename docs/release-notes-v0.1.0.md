@@ -1,4 +1,4 @@
-# char-rig v0.1.0 — first public snapshot
+# desktop-buddy v0.1.0 — first public snapshot
 
 A local-first desktop companion: a skeletal 2D avatar that lives on a
 transparent, click-through overlay across your virtual desktop, talks through
@@ -23,7 +23,7 @@ Dated: 2026-11-19 · first tag on `main`
   click-through that is genuinely click-through — the page reports its own hit
   regions (`GET /hit-regions`), and everything else passes the click to the
   desktop behind it.
-* `model.json` skeletal rigs (`char-rig/model@1`): bones, sprites, expression
+* `model.json` skeletal rigs (`desktop-buddy/model@1`): bones, sprites, expression
   bindings and keyframe clips. **15 hand-authored rigs** ship in `models/`.
 * **In-app rig editor** (`R`): drag joints, rotate bone tips, scale parts with
   `Shift+Wheel`, bind expression PNGs, scrub keyframe clips, and import a
@@ -67,7 +67,7 @@ panic is a trap that parks the plugin instead of killing the app.
 
 ### The watcher: zero idle tokens
 
-`char-rig-watcher.exe` sits on the SSE bus and polls window context, waking a
+`desktop-buddy-watcher.exe` sits on the SSE bus and polls window context, waking a
 model only when a rule fires — window-title keywords, per-app overrides, pointer
 gestures, idle return, external alerts, or a plugin event.
 
@@ -87,7 +87,7 @@ gestures, idle return, external alerts, or a plugin event.
 
 * **HTTP/SSE** on `http://127.0.0.1:8765` — 64 routes across the core and both
   plugins, plus a 15-type SSE stream at `GET /events` for live state.
-* **MCP** — `char-rig-mcp.exe`, a stdio bridge exposing 14 `avatar_*` tools
+* **MCP** — `desktop-buddy-mcp.exe`, a stdio bridge exposing 14 `avatar_*` tools
   (`avatar_speak`, `avatar_emote`, `avatar_perch`, `avatar_animate`,
   `avatar_get_context`, `avatar_get_clipboard`, …) to Hermes or any MCP client.
 
@@ -97,7 +97,7 @@ gestures, idle return, external alerts, or a plugin event.
 
 | | |
 |---|---|
-| Binaries | 3 — `avatar-desktop`, `char-rig-watcher`, `char-rig-mcp` |
+| Binaries | 3 — `desktop-buddy`, `desktop-buddy-watcher`, `desktop-buddy-mcp` |
 | HTTP routes | 64 (core + plugin-contributed) |
 | SSE event types | 15 |
 | MCP tools | 14 |
@@ -137,7 +137,7 @@ cargo build
 Then:
 
 ```bash
-./target/debug/avatar-desktop.exe        # the overlay + API; spawns the watcher itself
+./target/debug/desktop-buddy.exe        # the overlay + API; spawns the watcher itself
 ```
 
 Check that it is alive:
@@ -157,11 +157,11 @@ tools:
 
 ```yaml
 mcp_servers:
-  char-rig:
-    command: 'C:\hermes\char-rig\src-tauri\target\debug\char-rig-mcp.exe'
+  desktop-buddy:
+    command: 'C:\hermes\desktop-buddy\src-tauri\target\debug\desktop-buddy-mcp.exe'
     args: []
     env:
-      CHAR_RIG_API_URL: http://127.0.0.1:8765
+      DESKTOP_BUDDY_API_URL: http://127.0.0.1:8765
 ```
 
 **Why no installers in this release:** every path the app reads or writes

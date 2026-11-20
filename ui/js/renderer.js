@@ -1,5 +1,5 @@
 /**
- * char-rig — canvas rendering pipeline
+ * desktop-buddy — canvas rendering pipeline
  *
  * Depends on: state.js (state + activeState/hasVariant + gaze/speech) and
  * rig.js (geometry). Owns the 2D context and the DPR transform.

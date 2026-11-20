@@ -596,10 +596,10 @@ fn run_worker(receiver: Receiver<(u64, String)>, config: TtsConfig, epoch: Arc<A
     log::info!("tts: audio worker stopped");
 }
 
-/// `%TEMP%\char-rig-tts-<pid>-<seq>.wav`
+/// `%TEMP%\desktop-buddy-tts-<pid>-<seq>.wav`
 fn temp_wav_path(sequence: u64) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "char-rig-tts-{}-{sequence}.wav",
+        "desktop-buddy-tts-{}-{sequence}.wav",
         std::process::id()
     ))
 }
@@ -983,7 +983,7 @@ mod tests {
     /// output existed still loads and keeps the voice on the shipped paths.
     #[test]
     fn legacy_rules_file_without_a_tts_block_still_loads() {
-        let dir = std::env::temp_dir().join(format!("char-rig-tts-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("desktop-buddy-tts-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("watcher_rules.json");
         std::fs::write(&path, r#"{"ack_emote": "thinking", "hotkey": "Alt+Space"}"#).unwrap();
@@ -1210,7 +1210,7 @@ mod tests {
     /// error: it must load the defaults silently.
     #[test]
     fn an_explicit_null_tts_block_is_treated_as_absent() {
-        let dir = std::env::temp_dir().join(format!("char-rig-tts-null-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("desktop-buddy-tts-null-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("watcher_rules.json");
         std::fs::write(&path, r#"{"tts": null, "hotkey": "Alt+Space"}"#).unwrap();

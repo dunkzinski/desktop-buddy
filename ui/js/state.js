@@ -1,5 +1,5 @@
 /**
- * char-rig — shared state, constants, view-model sync
+ * desktop-buddy — shared state, constants, view-model sync
  *
  * LEAF MODULE: this file imports nothing. Everything that used to be a
  * "forward declaration" (`export let foo = () => {}` reassigned from another
@@ -80,7 +80,7 @@ export const avatar = {
   lookAt: null,
 };
 
-/* ---------- watcher (the supervised char-rig-watcher.exe) ---------- */
+/* ---------- watcher (the supervised desktop-buddy-watcher.exe) ---------- */
 /**
  * Mirror of `get_watcher_status` / `GET /watcher`. Written only by `bridge.js`
  * (status events, commands and the drawer), read by the panel and the drawer.

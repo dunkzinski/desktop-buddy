@@ -1664,7 +1664,7 @@
       "z": 11
     }
   ],
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "label": "Bot-MK4 (retro robot)",
   "name": "bot-mk4",
   "notes": "Procedural-shape retro robot: 19-bone rig, spring-loaded head dish, thruster pack, tagged visor eyes/mouth for expressions + gaze, articulated claw arms, and four keyframe clips (wave, breathe, scan, alert)."

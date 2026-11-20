@@ -1,8 +1,8 @@
 [package]
-name = "char-rig-metamorphosis-plugin"
+name = "desktop-buddy-metamorphosis-plugin"
 version = "0.1.0"
 edition = "2021"
-description = "Procedural Metamorphosis & Growth plugin for char-rig: generates, mutates and evolves creature rigs"
+description = "Procedural Metamorphosis & Growth plugin for desktop-buddy: generates, mutates and evolves creature rigs"
 license = "Apache-2.0"
 repository = "https://github.com/dunkzinski/desktop-buddy"
 homepage = "https://github.com/dunkzinski/desktop-buddy"

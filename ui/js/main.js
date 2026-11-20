@@ -1,5 +1,5 @@
 /**
- * char-rig — entry point
+ * desktop-buddy — entry point
  *
  * Wires the DOM, keyboard shortcuts, the automation/debug surface
  * (`window.__avatarDebug`) and the requestAnimationFrame loop.

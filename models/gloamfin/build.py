@@ -217,7 +217,7 @@ animations = {
 }
 
 rig = {
-    "format": "char-rig/model@1",
+    "format": "desktop-buddy/model@1",
     "name": "gloamfin",
     "label": "Gloamfin (abyssal lantern)",
     "notes": "Procedural-shape abyssal lantern-fish: 11-bone rig, glowing lure bulb, "

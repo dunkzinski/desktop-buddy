@@ -24,7 +24,7 @@ models/
     parts/…               any PNG/JPG/SVG/WebP the manifest references
 ```
 
-* `models/` root can be relocated with the `CHAR_RIG_MODELS` environment
+* `models/` root can be relocated with the `DESKTOP_BUDDY_MODELS` environment
   variable; otherwise the app looks next to the executable and falls back to
   `<repo>/models`.
 * `.state.json` (inside `models/`) remembers the last selected model, so the
@@ -36,7 +36,7 @@ models/
 
 ```json
 {
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "name": "demo-blob",
   "label": "Demo Blob",
 
@@ -160,7 +160,7 @@ without it loads exactly as before.
 
 ```json
 {
-  "format": "char-rig/model@1",
+  "format": "desktop-buddy/model@1",
   "name": "demo-blob",
   "bones": [ … ],
   "animations": {
@@ -514,7 +514,7 @@ missing, or is larger than 16 MB fails the import before anything is written.
 TOML has no `null`, so a root bone simply omits `parent` (or uses `""`/`"none"`):
 
 ```toml
-format = "char-rig/model@1"
+format = "desktop-buddy/model@1"
 name = "tomlhero"
 
 [[bones]]

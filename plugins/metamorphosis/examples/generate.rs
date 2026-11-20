@@ -13,8 +13,8 @@
 
 use std::path::PathBuf;
 
-use char_rig_metamorphosis_plugin::attribute::Attribute;
-use char_rig_metamorphosis_plugin::generator::{generate, validate, Archetype, Spec, Tier};
+use desktop_buddy_metamorphosis_plugin::attribute::Attribute;
+use desktop_buddy_metamorphosis_plugin::generator::{generate, validate, Archetype, Spec, Tier};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

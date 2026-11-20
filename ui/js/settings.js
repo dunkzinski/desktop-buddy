@@ -1,5 +1,5 @@
 /**
- * char-rig — the Settings modal
+ * desktop-buddy — the Settings modal
  *
  * One form over `GET /config` / `POST /config`. The point is that nothing here
  * hardcodes a path or asks the user to hand-edit `watcher_rules.json`: the

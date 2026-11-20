@@ -1,5 +1,5 @@
 /**
- * char-rig — survival widget
+ * desktop-buddy — survival widget
  *
  * The panel's hunger/saturation readout plus the Feed button. It is a *client*
  * of the HTTP API on purpose: the numbers it shows are the ones `GET /survival`
