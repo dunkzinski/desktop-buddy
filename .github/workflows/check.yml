@@ -1,0 +1,57 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One run per ref: a force-push or a fast-follow commit cancels the stale job
+# instead of queueing behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    # Windows-first: `src-tauri/build.rs` links the app's Common-Controls v6
+    # resource into the *test* binaries (see the 0xc0000139 note in the docs),
+    # and screen capture is Windows-only, so the local gates are proven here.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Three independent workspaces: the app plus two standalone plugin crates.
+          workspaces: |
+            src-tauri -> target
+            plugins/survival -> target
+            plugins/metamorphosis -> target
+
+      - name: Unit + binary tests (lib, mcp, watcher)
+        working-directory: src-tauri
+        # Not a bare `cargo test`: the doctest stage needs rustdoc.exe, which the
+        # pinned toolchain ships separately. These three targets are the gates.
+        run: cargo test --lib --bins
+
+      - name: Plugin crate tests
+        # `cargo test` in src-tauri cannot see these: each plugin is its own
+        # workspace so the app crate never depends on it.
+        run: |
+          cargo test --lib --manifest-path plugins/survival/Cargo.toml
+          cargo test --lib --manifest-path plugins/metamorphosis/Cargo.toml
+
+      - name: Documents match the source
+        run: python tools/verify_docs.py

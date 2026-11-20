@@ -1,6 +1,7 @@
 # desktop-buddy
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![check](https://github.com/dunkzinski/desktop-buddy/actions/workflows/check.yml/badge.svg)](https://github.com/dunkzinski/desktop-buddy/actions/workflows/check.yml)
 
 **A local-first, cross-platform desktop companion runtime built in Rust + Tauri 2.**
 
@@ -121,6 +122,7 @@ plugins/                 Guest Wasm crates (survival, metamorphosis) + built .wa
 ui/                      Zero-build-step ES module frontend (canvas renderer, rig editor, speech UI)
 models/                  Skeletal rigs, sprites, and persisted selection state
 tools/                   verify_docs.py (source↔docs drift check), cdp-eval.mjs, mcp_smoke_test.py
+.github/workflows/       check.yml — CI: cargo test --lib --bins, both plugin crates, verify_docs.py
 ```
 
 ---

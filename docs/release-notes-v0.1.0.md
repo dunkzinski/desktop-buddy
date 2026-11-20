@@ -188,8 +188,10 @@ to paper over with a bundle today.
 * **Vision needs a local multimodal server** you run yourself (the config
   defaults assume `llama.cpp` on `127.0.0.1:9932` with an LFM3-VL model).
   Wizardry with paths there is on you; `GET /config` reports which paths exist.
-* **No test suite run in CI** — there is no CI yet. `cargo test --lib --bins`
-  and `python tools/verify_docs.py` are the local gates.
+* **CI is Windows-only.** `.github/workflows/check.yml` runs `cargo test --lib
+  --bins` (lib, MCP and watcher targets), both plugin crate suites and
+  `python tools/verify_docs.py` on `windows-latest`. The Linux/macOS platform
+  layer builds, but no job exercises it.
 
 ---
 

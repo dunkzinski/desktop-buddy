@@ -57,6 +57,7 @@ A local HTTP API lets an external agent (LLM, script, automation) drive it.
 | [`API.md`](API.md), [`MODEL_FORMAT.md`](MODEL_FORMAT.md), [`README.md`](README.md) | **live docs** | Endpoint reference, manifest guide, quick start (this file is the design overview) |
 | `watcher_rules.json` | **live config** | Optional rules for `char-rig-watcher.exe` (interaction kinds, title keywords, **per-app `app_rules`**, alert cooldown, idle threshold, cooldowns, ack emote, Hermes command/session, hotkey, webhook); built-in defaults when absent |
 | `docs/`, `tools/`, `TASKS.json` | **live** | Screenshots, `verify_docs.py` / `mcp_smoke_test.py` / `cdp-eval.mjs`, and the stage ledger |
+| `.github/workflows/` | **live** | One `check.yml` job on `windows-latest`: `cargo test --lib --bins` (lib, MCP and watcher targets), then both plugin crate suites via `--manifest-path`, then `verify_docs.py`. Each plugin is its own workspace, so the app's cargo never reaches them; `plugins/*.wasm` are gitignored, so the shipped-plugin test is guarded on presence |
 
 The legacy prototypes that used to sit in this tree — `ai-avatar-bridge/`,
 `avatar-desktop/`, `avatar-editor/`, `spikes/`, `src-tauri/avatar-renderer.html`
