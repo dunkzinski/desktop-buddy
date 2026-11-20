@@ -4,8 +4,6 @@
 
 It renders skeletal 2D rigs on a transparent, click-through overlay spanning your virtual desktop, drives lip-sync and cursor gaze from local Piper/Whisper pipelines, sandboxes procedural creature generation and mini-games in WebAssembly, and exposes a zero-idle-token HTTP/SSE/MCP bridge for local LLMs or Hermes Agent.
 
-![The avatar on the desktop](docs/screenshot.png)
-
 * **Native Rust core:** Tauri 2 (WebView2) shell, native ES-module canvas renderer, and an `axum` HTTP/SSE API on its own Tokio thread.
 * **Data-driven 2D skeletal rigs (`model.json`):** Author bones, sprites, expression bindings, and keyframe clips in-app, then trigger them via UI, HTTP, or MCP.
 * **Real-time life signs:** Mouth shapes track actual Piper WAV RMS energy (falling back to phoneme-mapped typing when muted), pupils track the OS cursor across monitors, and `POST /perch` dynamically tracks target window borders as you drag or resize them.
