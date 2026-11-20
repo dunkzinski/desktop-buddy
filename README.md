@@ -8,7 +8,7 @@ It renders skeletal 2D rigs on a transparent, click-through overlay spanning you
 * **Data-driven 2D skeletal rigs (`model.json`):** Author bones, sprites, expression bindings, and keyframe clips in-app, then trigger them via UI, HTTP, or MCP.
 * **Real-time life signs:** Mouth shapes track actual Piper WAV RMS energy (falling back to phoneme-mapped typing when muted), pupils track the OS cursor across monitors, and `POST /perch` dynamically tracks target window borders as you drag or resize them.
 * **Fully local voice & vision:** Local Piper TTS (`rodio`/`cpal`), push-to-talk via Silero VAD + `whisper.cpp`, and in-memory screen capture routed to local vision-language models. No cloud keys required.
-* **Sandboxed WebAssembly plugins:** Fuel-metered `wasm32-unknown-unknown` guests with isolated linear memory—shipping with a survival/fishing economy loop and a deterministic procedural creature generator (`2,160` base silhouettes across 12 body plans).
+* **Sandboxed WebAssembly plugins:** Fuel-metered `wasm32-unknown-unknown` guests with isolated linear memory—shipping with a survival/fishing economy loop and a deterministic procedural creature generator (`2,160` base silhouettes across 15 body plans).
 * **Zero-idle-token watcher:** A supervised background daemon subscribes to SSE and polls window context, waking an agent or local model only when rules match.
 
 ---
@@ -34,6 +34,7 @@ Verify the running instance:
 curl -s localhost:8765/health
 curl -s localhost:8765/context          # focused window, rect, visible windows, idle seconds
 curl -N localhost:8765/events           # live SSE push stream
+curl -s localhost:8765/history          # bounded chat history (50 turns)
 curl -s -X POST localhost:8765/speak -H 'content-type: application/json' \
      -d '{"text":"Hello!","expression":"happy","duration_ms":4000}'
 curl -s -X POST localhost:8765/perch -H 'content-type: application/json' \
@@ -126,8 +127,8 @@ tools/                   verify_docs.py (source↔docs drift check), cdp-eval.mj
 * **[ARCHITECTURE.md](ARCHITECTURE.md)** — Threading model, kinematic math, rig schema, and known limitations
 * **[API.md](API.md)** — Full HTTP/SSE endpoint reference and payload examples
 * **[MODEL_FORMAT.md](MODEL_FORMAT.md)** — Rig folder layout, manifest specification, and editor guide
-* **[PLUGINS.md](PLUGINS.md)** — Wasm ABI imports/exports, survival economy tables, and procedural creature generation *(recommended split from original README)*
-* **[CONFIGURATION.md](CONFIGURATION.md)** — Complete `watcher_rules.json` schema, CLI flags, and `SOUL.md` injection rules *(recommended split from original README)*
+* **[PLUGINS.md](PLUGINS.md)** — Wasm ABI imports/exports, the plugin registry, survival economy tables, and procedural creature generation
+* **[CONFIGURATION.md](CONFIGURATION.md)** — Complete `watcher_rules.json` schema, watcher CLI flags, AI profiles, and `SOUL.md` injection rules
 
 ---
 

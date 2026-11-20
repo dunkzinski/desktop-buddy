@@ -21,6 +21,9 @@ lib_rs = (ROOT / "src-tauri/src/lib.rs").read_text(encoding="utf-8")
 api_md = (ROOT / "API.md").read_text(encoding="utf-8")
 arch_md = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
 readme = (ROOT / "README.md").read_text(encoding="utf-8")
+# CONFIGURATION.md owns the watcher flags, the trigger/event types and the
+# rules-file schema; the README only links to it.
+config_md = (ROOT / "CONFIGURATION.md").read_text(encoding="utf-8")
 
 problems = []
 
@@ -311,12 +314,12 @@ else:
             if needle not in text:
                 problems.append(f"{doc_name}: does not mention {needle}")
 
-    # every flag the parser accepts must be documented in README
+    # every flag the parser accepts must be documented in CONFIGURATION.md
     flags = set(re.findall(r'"(--[a-z][a-z-]+)"\s*(?:\||=>)', watcher_rs))
     flags.discard("--help")
-    undocumented = {f for f in flags if f not in readme}
+    undocumented = {f for f in flags if f not in config_md}
     if undocumented:
-        problems.append(f"README.md: watcher flags not documented: {sorted(undocumented)}")
+        problems.append(f"CONFIGURATION.md: watcher flags not documented: {sorted(undocumented)}")
     print(f"\nwatcher flags ({len(flags)}): {', '.join(sorted(flags))}")
 
     # documented defaults must match the constants
@@ -342,13 +345,13 @@ else:
     ack = m.group(1) if m else None
     if ack is None:
         problems.append("char-rig-watcher.rs: DEFAULT_ACK_EMOTE not found")
-    elif f"`{ack}`" not in readme:
-        problems.append(f"README.md: default ack emote {ack!r} not documented")
+    elif f"`{ack}`" not in config_md:
+        problems.append(f"CONFIGURATION.md: default ack emote {ack!r} not documented")
 
     # trigger event types must be documented
     trigger_types = set(re.findall(r'event_type: "([a-z_]+)"\.to_string\(\)', watcher_rs))
     print(f"watcher trigger types: {', '.join(sorted(trigger_types))}")
-    for doc_name, text in (("README.md", readme), ("ARCHITECTURE.md", arch_md)):
+    for doc_name, text in (("CONFIGURATION.md", config_md), ("ARCHITECTURE.md", arch_md)):
         missing = {t for t in trigger_types if f"`{t}`" not in text}
         if missing:
             problems.append(f"{doc_name}: watcher trigger types not documented: {sorted(missing)}")
@@ -428,6 +431,15 @@ else:
             unknown = set(shipped) - known
             if unknown:
                 problems.append(f"watcher_rules.json: unknown keys {sorted(unknown)}")
+
+            # Every key the loader understands belongs in CONFIGURATION.md's
+            # schema table — a key nobody documents is a setting nobody finds.
+            undocumented_keys = {k for k in known if f"`{k}`" not in config_md}
+            if undocumented_keys:
+                problems.append(
+                    "CONFIGURATION.md: watcher_rules.json keys not documented: "
+                    f"{sorted(undocumented_keys)}"
+                )
 
             # discovery_ports: the Settings modal's "Discover models" probe list.
             # The app probes these on loopback, so a string or a 0 would only
