@@ -30,6 +30,28 @@ The two Wasm plugin surfaces, side by side:
 
 **Requirements:** **Rust** (`1.85+`, per `rust-version` in `src-tauri/Cargo.toml`), the **`wasm32-unknown-unknown`** target for the plugins (`rustup target add wasm32-unknown-unknown`), and **WebView2** (ships with Windows 11). Local voice I/O optionally uses **Piper** and **whisper.cpp**—without them, the app runs fine silently.
 
+### Automated install (AI-agent-friendly)
+
+```powershell
+# Windows (PowerShell 5.1+): prerequisites, build, Hermes wiring, bridge proof
+iwr https://raw.githubusercontent.com/dunkzinski/desktop-buddy/main/install.ps1 -UseBasicParsing | iex
+```
+
+```bash
+./install.sh     # Linux / WSL / git-bash: build only (Windows is the supported desktop)
+```
+
+Windows is the supported platform. `install.ps1` needs no bash, never hand-edits
+`config.yaml` (it drives `hermes mcp add`), and finishes by speaking JSON-RPC to
+`desktop-buddy-mcp.exe` rather than trusting `hermes mcp test`, which can pass
+while the gateway is still holding a dead child. See **[INSTALL.md](INSTALL.md)**
+for the flags, what each verification step actually proves, and troubleshooting.
+
+> The one-liner reads the script from `main`, so it only resolves once that file
+> is on the default branch — a fork or a feature branch needs a local run.
+
+### Manual quick start
+
 ```bash
 ./scripts/build-plugin.sh     # plugins are .wasm artifacts and gitignored — a fresh clone has none
 cd src-tauri
