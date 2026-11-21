@@ -1318,7 +1318,11 @@ floating command bar anchored under the avatar:
   (`RegisterHotKey` on the `avatar-hotkey` thread) and, when it fires, disables
   click-through, focuses the overlay and emits `summon-command-bar`; the page
   opens the bar and focuses `#command-input`, so you can start typing the moment
-  the shortcut lands. Change it with `hotkey` in `watcher_rules.json`
+  the shortcut lands. Typing before the Alt key comes back up is delivered as a
+  *system* key (`WM_SYSCHAR`), which produces no DOM `input` event at all, so
+  the bar's input re-inserts that character itself (`insertAtCaret`) instead of
+  letting the first letter of a fast prompt be dropped. Change it with
+  `hotkey` in `watcher_rules.json`
   (`"Ctrl+Shift+A"`, `"F9"`, `"Win+Shift+Enter"`, …) and restart the app —
   a hotkey is registered once at startup. If another application already owns
   the shortcut, `RegisterHotKey` fails, the app logs a warning and everything
