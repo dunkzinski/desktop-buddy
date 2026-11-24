@@ -537,6 +537,12 @@ cd ../.. && python tools/verify_docs.py
 | **5 — mining-ready hardening** | nested sockets + depth/cycle guard; `accepts` validation; metamorphosis generator writes explicit `sockets`; `head_helmet`/`hand_secondary` verified on generated rigs | lantern-on-helmet-on-avatar resolves; a self-referential attach is refused at spawn with a 400; resolution stays under ~1 ms for a 3-deep chain |
 | **6 — docs + MCP** | `API.md`, `ARCHITECTURE.md`, `PLUGINS.md` (ABI table + import), `MODEL_FORMAT.md` (sockets, `rect`), `CONFIGURATION.md` if a key is added; MCP tools + the `expected 14` route assertion | `verify_docs.py` green; MCP tool list updated deliberately (the count assertion is a doc gate) |
 
+**What actually happened to rows 4–6 is audited in §14.4** — do not read this table as
+a status list. Rows 0–3 carry a ✅ because each closed against its own criteria; Phase
+4 landed as §11–§13 with two of its criteria superseded, and the plan's Phase 5 was
+absorbed by the post-plan arc that §13/§14 call "Phase 5" (same number, different
+phase).
+
 Deliberate sequencing choice: **chest after the rod.** The rod alone proves
 generation, sockets, rendering and the ABI end to end with one prop; the chest
 then reuses all four and only adds containers. Doing the chest first would mean
@@ -1118,7 +1124,8 @@ Not Phase 4 work — Phase 5, as named back in §8's known limits:
 * ~~Per-rig prop fitting (§8's note)~~ — props are now fitted by a ratio to the
   creature holding them (§14.3), and `attach.scale` is a multiplier on that.
 
-Nothing in Phase 4's plan is unshipped. The remaining work is a new arc.
+Nothing in Phase 4's *feature* plan is unshipped. Two of its *acceptance criteria*
+were superseded rather than met — see §14.4 — and the remaining work is a new arc.
 
 ---
 
@@ -1266,3 +1273,29 @@ than hidden, since "unchanged" would be a lie by two percent).
 `tools/entity-transform.test.mjs` pins the measurement (a taller body → a taller
 rig, a rig's own root scale → the same measurement), the clamp, and that the fit
 lands on avatar-parented props only.
+
+### 14.4 Post-plan audit: which of §4's phases actually landed
+
+Asked "have we succeeded in all the listed phases?", so this was checked against the
+tree rather than against this document's own ✅ marks. Short answer: **Phases 0–4 yes,
+Phase 5 partly, Phase 6 half.** The two ✅-less rows in §4 were not oversights — the
+plan's Phase 5 and Phase 6 were never closed, and the arc §13–§14 calls "Phase 5" is a
+*different* phase that reused the number.
+
+| §4 phase | Status | Evidence, or the gap |
+|---|---|---|
+| 0 — seams | **landed** | `sockets.rs` + `GET /sockets` + sweep over every shipped model; A/B `maxDiff 0`; `frameErrors 0` (§7) |
+| 1 — store + one prop | **landed** | determinism, ≥60 structural tuples/100 seeds, `validate_rig` on every prop, live rod in a paw (§8) |
+| 2 — ABI + survival rod | **landed** | `host_entities`, summaries-not-rigs, guest call-order tests, live cast→pounce→catch (§9) |
+| 3 — the chest | **landed**, three plan items changed | `shape:"rect"` was replaced by `poly` (a faceted shell needs geometry, §10); the 5–8 slot capacity was removed on purpose (§12). Two items did **not** ship: `dismiss_after_ms` auto-dismiss (grep finds it only in this document — the pod stays until the card's Fold or a caller dismisses it) and the single `avatar.activity ∈ {none, scavenge, chest}` lock (§2.8 item 5) — the page kept two walk objects (`scavengeWalk`, `chestWalk`) plus `avatar.manualMoves`, which arbitrates two activities fine and was never tested with a third |
+| 4 — scavenge bag + loot→entities | **landed as §11–§13**, two criteria superseded | The bag carries counts, and the only tools (rod, bag) are **withdrawn from the pod** (§12.4, §12.6), so "loot that yields a tool creates a seeded entity" and "a looted tool survives restart with the same seed/params" lost their subject rather than being met. §2.4(A)'s `item_id` on an entity was never built and `chest::put` never touches the guest's inventory, so "bag and chest never both claim one item" is vacuously true — the two stores never name the same item |
+| 5 — mining-ready hardening | **partly** | nested sockets + depth/cycle guard: **yes**, and better than planned (the catch is the caller, §14.2). Verified live 3-deep: trinket on the fish's `mouth` on the rod's `line_end` in the paw → roots `1944.5, 530.5` / `1956.7, 546.3` / `1827.6, 635.3`. `accepts` validation: **no** — `Socket.accepts` is parsed and surfaced to `__avatarDebug.sockets()`, and no code compares a prop's `tags` to it. metamorphosis writes explicit `sockets`: **no** — its generator emits none and those rigs ride the `sockets.rs` heuristics. `head_helmet`/`hand_secondary`: `hand_secondary` is swept over every shipped model, `head_helmet` is asserted on one generated test rig, not swept. "self-attach refused at spawn with a 400": **refuted** — spawn answers 200 (`doc:self` was created and the page drew nothing for it), the refusal ("an entity cannot attach to itself") only fires on `update`; this is the same spawn/update asymmetry as §14.2 #4. "resolution under ~1 ms for a 3-deep chain": **never measured** |
+| 6 — docs + MCP | **docs yes, MCP no** | `API.md` / `ARCHITECTURE.md` / `PLUGINS.md` / `MODEL_FORMAT.md` all carry the arc; `CONFIGURATION.md` needed nothing because no config key shipped. But `desktop-buddy-mcp` still exposes **14** `avatar_*` tools and `verify_docs.py` asserts exactly 14 tools and 14 mapped routes — no entity, prop or chest tool was ever added, and the count gate is what makes that a deliberate decision rather than drift |
+
+If the letter of the plan matters, the smallest set of changes that would close it:
+check the attach target on `spawn` too (one call site, and it satisfies Phase 5's
+self-attach criterion); either enforce `accepts` on attach or delete the field and its
+claim from `MODEL_FORMAT.md`; have the metamorphosis generator emit `sockets`; ship
+`dismiss_after_ms` or drop it from §2.3; add a timing assertion if the ~1 ms budget is
+real; and add MCP tools for entities only when an agent has a use for them. None of
+these blocks the current arc — which is why they are recorded rather than done.
