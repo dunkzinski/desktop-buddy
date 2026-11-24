@@ -196,12 +196,24 @@ reader; do not expect a refusal. Design doc §14.5.2 has the full argument.
 
    A bare array is accepted too. A malformed file is a warning, never a load
    failure — the derived table below is a complete fallback.
-2. **`sockets` inside `model.json` / `rig.json`** — what the procedural
-   generator writes. Loads today: the validator accepts unknown root keys.
+2. **`sockets` inside `model.json` / `rig.json`** — accepted, and the path a
+   hand-authored rig would use. Today's procedural generator writes **no** sockets
+   (see below); the validator accepts the key either way.
 3. **Nothing at all** — the runtime derives the table from the bones.
 
 Precedence, per socket id: sidecar → manifest → derived. An explicit entry that
 names a missing bone is skipped with a warning rather than failing the load.
+
+**The generator does not write sockets.** `plugins/metamorphosis` emits
+`format`/`bones`/`animations` and stops; the table comes from the derivation below.
+That is deliberate rather than pending: a generator knows bones and part geometry,
+and a socket emitted at a bone's origin sits at the *start* of that bone — on a
+one-bone arm that is the shoulder, not the paw. Deriving the grip from the artwork is
+what fixed that (design doc §9). Measured on the loaded generated rig:
+`models/buddy-alien-mega-prism-2df77e4e/model.json` has no `sockets` key, and
+`GET /sockets` reports nine sockets, every one `source: derived`, with
+`hand_primary` at `pos [29.85, 0]` on `arm3_r` — 29.85 units out along the limb, not
+`[0, 0]`.
 
 #### How derivation decides
 

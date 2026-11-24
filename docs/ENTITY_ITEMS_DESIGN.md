@@ -561,7 +561,7 @@ debugging a container and a renderer refactor at the same time.
 | An entity path throws inside `render()` and freezes the avatar | every entity call inside the existing try/catch; dangling socket degrades to "unattached + log once"; `frameErrors` asserted 0 in the live probe |
 | Duplicate authority (bag count vs chest entity) | one mutation path per action (`put`/`take` only); entity carries `item_id`; reconcile on init |
 | Unbounded growth / runaway guest | `MAX_ENTITIES`, `MAX_MESSAGE_BYTES`, 1 MiB state file, ownership scoping, fuel unchanged |
-| Editor silently deletes sockets | `sockets.json` sidecar is authoritative; `model.json` sockets are generator-only output |
+| Editor silently deletes sockets | `sockets.json` sidecar is authoritative; sockets inside `model.json` survive the editor but no generator writes them today (the derived table is the generated-rig answer — §14.5.4) |
 | Nested attachment cycle | depth cap 4 + visited set; refused at spawn with a readable 400 |
 | SSE clients cannot filter new events | add `event_name()` arms and document every type in `ARCHITECTURE.md` |
 | Docs drift | every phase's routes/events land in the same commit as the code, then `verify_docs.py` |
@@ -1294,7 +1294,7 @@ plan's Phase 5 and Phase 6 were never closed, and the arc §13–§14 calls "Pha
 | 2 — ABI + survival rod | **landed** | `host_entities`, summaries-not-rigs, guest call-order tests, live cast→pounce→catch (§9) |
 | 3 — the chest | **landed**, three plan items changed | `shape:"rect"` was replaced by `poly` (a faceted shell needs geometry, §10); the 5–8 slot capacity was removed on purpose (§12); `dismiss_after_ms` shipped as a **const** rather than a config key (§14.5.3). One item did **not** ship: the single `avatar.activity ∈ {none, scavenge, chest}` lock (§2.8 item 5) — the page kept two walk objects (`scavengeWalk`, `chestWalk`) plus `avatar.manualMoves`, which arbitrates two activities fine and was never tested with a third |
 | 4 — scavenge bag + loot→entities | **landed as §11–§13**, two criteria superseded | The bag carries counts, and the only tools (rod, bag) are **withdrawn from the pod** (§12.4, §12.6), so "loot that yields a tool creates a seeded entity" and "a looted tool survives restart with the same seed/params" lost their subject rather than being met. §2.4(A)'s `item_id` on an entity was never built and `chest::put` never touches the guest's inventory, so "bag and chest never both claim one item" is vacuously true — the two stores never name the same item |
-| 5 — mining-ready hardening | **partly** | nested sockets + depth/cycle guard: **yes**, and better than planned (the catch is the caller, §14.2). Verified live 3-deep: trinket on the fish's `mouth` on the rod's `line_end` in the paw → roots `1944.5, 530.5` / `1956.7, 546.3` / `1827.6, 635.3`. `accepts` validation: **no, and now declared advisory** — `Socket.accepts` is parsed and surfaced to `__avatarDebug.sockets()`, no code compares a prop's `tags` to it, and §14.5.2 turned the claim into a documented decision plus a round-trip test. metamorphosis writes explicit `sockets`: **no** — its generator emits none and those rigs ride the `sockets.rs` heuristics. `head_helmet`/`hand_secondary`: `hand_secondary` is swept over every shipped model, `head_helmet` is asserted on one generated test rig, not swept. "self-attach refused at spawn with a 400": **yes, as of §14.5.1** — `spawn` and `update` now share one attach rule: an entity cannot hang off itself, and neither route will create or keep a child under a parent that does not exist. Live: spawn self → 400, spawn missing → 400, spawn valid parent → 200, update self → 400, update missing → 400. |
+| 5 — mining-ready hardening | **partly** | nested sockets + depth/cycle guard: **yes**, and better than planned (the catch is the caller, §14.2). Verified live 3-deep: trinket on the fish's `mouth` on the rod's `line_end` in the paw → roots `1944.5, 530.5` / `1956.7, 546.3` / `1827.6, 635.3`. `accepts` validation: **no, and now declared advisory** — `Socket.accepts` is parsed and surfaced to `__avatarDebug.sockets()`, no code compares a prop's `tags` to it, and §14.5.2 turned the claim into a documented decision plus a round-trip test. metamorphosis writes explicit `sockets`: **no, on purpose** — its generator serialises a typed `Manifest` with no `sockets` field, and those rigs ride the `sockets.rs` heuristics that already place the grip from the artwork (§14.5.4). `head_helmet`/`hand_secondary`: `hand_secondary` is swept over every shipped model, `head_helmet` is asserted on one generated test rig, not swept. "self-attach refused at spawn with a 400": **yes, as of §14.5.1** — `spawn` and `update` now share one attach rule: an entity cannot hang off itself, and neither route will create or keep a child under a parent that does not exist. Live: spawn self → 400, spawn missing → 400, spawn valid parent → 200, update self → 400, update missing → 400. |
 | 6 — docs + MCP | **docs yes, MCP no** | `API.md` / `ARCHITECTURE.md` / `PLUGINS.md` / `MODEL_FORMAT.md` all carry the arc; `CONFIGURATION.md` needed nothing because no config key shipped. But `desktop-buddy-mcp` still exposes **14** `avatar_*` tools and `verify_docs.py` asserts exactly 14 tools and 14 mapped routes — no entity, prop or chest tool was ever added, and the count gate is what makes that a deliberate decision rather than drift |
 
 If the letter of the plan matters, the smallest set of changes that would close it:
@@ -1413,3 +1413,37 @@ deadline → `dormant` + one event, next tick → nothing),
 `an_interaction_resets_the_idle_clock_and_a_full_pod_is_left_alone` (a put at
 `deadline × 100` still does not move the pod; taking the item resets the wait), and
 `the_idle_rule_never_touches_a_closed_pod_or_an_empty_stage`.
+
+#### 14.5.4 The generator writes no sockets, and that is the fix, not a gap
+
+§4 Phase 5 listed "metamorphosis generator writes explicit `sockets`". Not shipping it
+is the recommendation, and the evidence is the bug in §9 rather than an opinion about
+effort: a generator can only emit `{id, bone, pos}` from what it knows — bones and part
+geometry — and a socket at a bone's **origin** sits at the *start* of that bone. On a
+one-bone arm that is the shoulder; that is exactly what "the item is in its
+elbow/shoulder" was, and deriving the grip from the artwork (`grip_point()`) is what
+fixed it.
+
+Measured on the rig loaded right now (`buddy-alien-mega-prism-2df77e4e`, a generated
+creature): `model.json` has no `sockets` key, and `GET /sockets` reports **9** sockets,
+every one `source: derived`, with `hand_primary` at `pos [29.85, 0]` on `arm3_r` — the
+paw, 29.85 units out along a 31-ish unit limb. An authoring generator starting from
+`[0, 0]` would put the same socket on the elbow and be right about nothing else.
+
+The capability is not missing: the manifest path already accepts a `sockets` block
+(`a_manifest_socket_block_is_read_when_there_is_no_sidecar`), so a generator *could*
+write one. The restraint is that it should not guess, and a guess would be worse than
+the derivation it replaced. It is also structural rather than a promise: the generator
+serialises a typed `Manifest` (`skeleton.rs`) whose fields are
+`format/name/label/notes/bones/animations` — there is no `sockets` field to fill, so
+"the generator writes no sockets" cannot drift without someone editing the type.
+
+**The plan's intent, if it is wanted later:** have the generator place sockets from the
+art the way `grip_point()` does, and the existing sweep
+(`every_shipped_model_resolves_a_primary_hand`, which asserts a derived grip lands on
+the limb's artwork and never past its end, over every rig in `models/`) must still pass
+for every authored table. The alternative the charter floated — `host_model_write`
+returning the resolved table so a guest can inspect it — is not free and not asked for:
+the import returns a status code, not a buffer, so it would be a new
+`host_entities`-style buffer protocol (≥4 KiB, guest stub, ABI tests) for a guest that
+does not exist. The inspector already exists over HTTP (`GET /sockets`).
