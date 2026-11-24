@@ -53,29 +53,68 @@ export function boneDefaults(bone) {
 
 export function rebuildOrder() {
   if (!RT.model || !RT.model.rig) return;
-  RT.bones = {};
-  RT.order = [];
   RT.boneList = (RT.model.rig.bones || []).map((bone) => boneDefaults(bone));
-  for (const bone of RT.boneList) RT.bones[bone.id] = bone;
+  const { bones, order } = orderBones(RT.boneList);
+  RT.bones = bones;
+  RT.order = order;
+}
+
+/**
+ * Sort a bone list topologically and link parents/children, in place.
+ *
+ * Shared by the avatar (`rebuildOrder`) and every prop entity, so a mini-rig is
+ * evaluated by exactly the same ordering rules as a creature.
+ */
+function orderBones(boneList) {
+  const bones = {};
+  const order = [];
+  for (const bone of boneList) bones[bone.id] = bone;
 
   const placed = new Set();
   let guard = 0;
-  while (RT.order.length < RT.boneList.length && guard < 500) {
+  while (order.length < boneList.length && guard < 500) {
     guard += 1;
-    for (const bone of RT.boneList) {
+    for (const bone of boneList) {
       if (placed.has(bone.id)) continue;
-      if (!bone.parent || placed.has(bone.parent) || !RT.bones[bone.parent]) {
-        RT.order.push(bone.id);
+      if (!bone.parent || placed.has(bone.parent) || !bones[bone.parent]) {
+        order.push(bone.id);
         placed.add(bone.id);
       }
     }
   }
-  for (const bone of RT.boneList) if (!placed.has(bone.id)) RT.order.push(bone.id);
+  for (const bone of boneList) if (!placed.has(bone.id)) order.push(bone.id);
 
-  for (const bone of RT.boneList) bone.children = [];
-  for (const bone of RT.boneList) {
-    if (bone.parent && RT.bones[bone.parent]) RT.bones[bone.parent].children.push(bone.id);
+  for (const bone of boneList) bone.children = [];
+  for (const bone of boneList) {
+    if (bone.parent && bones[bone.parent]) bones[bone.parent].children.push(bone.id);
   }
+  return { bones, order };
+}
+
+/**
+ * A private rig context for a **prop entity**: same bone defaults, same ordering,
+ * no shared state with the avatar.
+ *
+ * `lifeSigns: false` is the whole difference at render time — a held rod must not
+ * breathe, blink or follow the cursor. Its own `anim` channels still work; they
+ * read `ctx.time`, which the entity stepper advances.
+ */
+export function makeRigContext(rig) {
+  const source = rig && Array.isArray(rig.bones) ? rig.bones : [];
+  const boneList = source.map((bone) =>
+    boneDefaults(JSON.parse(JSON.stringify(bone))),
+  );
+  const { bones, order } = orderBones(boneList);
+  return {
+    bones,
+    order,
+    boneList,
+    world: {},
+    pose: {},
+    clips: null,
+    lifeSigns: false,
+    time: 0,
+  };
 }
 
 function loadImages(model) {
@@ -263,16 +302,21 @@ function rummageOffset(bone, blend) {
   return { rot: 0, bob: 0 };
 }
 
-export function animOffset(bone) {
-  if (RT.rigMode) return { rot: 0, bob: 0 };
+export function animOffset(bone, ctx = RT) {
+  // Rig Edit Mode freezes the avatar's life signs — but never a prop's own
+  // channels, which is why the check is `ctx === RT` rather than a global flag.
+  if (ctx === RT && RT.rigMode) return { rot: 0, bob: 0 };
   const anim = bone.anim || {};
   const phase = num(anim.phase, 0);
+  const lifeSigns = !ctx || ctx.lifeSigns !== false;
+  // A prop runs on its own clock; the avatar reads the shared one.
+  const clock = ctx && Number.isFinite(ctx.time) ? ctx.time : avatar.time;
   let rot = 0;
-  if (anim.sway) rot += Math.sin(avatar.time * 1.3 + phase) * anim.sway;
-  if (anim.walk && avatar.mode === "walking") {
+  if (anim.sway) rot += Math.sin(clock * 1.3 + phase) * anim.sway;
+  if (lifeSigns && anim.walk && avatar.mode === "walking") {
     rot += Math.sin(avatar.walkPhase * TAU + phase) * anim.walk;
   }
-  if (anim.wave && avatar.mode === "waving") {
+  if (lifeSigns && anim.wave && avatar.mode === "waving") {
     rot += Math.sin(avatar.wavePhase + phase) * anim.wave;
   }
   // Hover life-sign: a soft head tilt while the cursor rests on the avatar.
@@ -282,13 +326,13 @@ export function animOffset(bone) {
   // a perch, or an explicit `look_at`). Both are added here and clamped by
   // `localRotation` against the bone's `limits`, so a rig that declares a neck
   // range can never be spun past it.
-  if (isHeadBone(bone)) {
+  if (lifeSigns && isHeadBone(bone)) {
     rot += gaze.hover * HOVER_HEAD_TILT + num(gaze.tilt, 0);
   }
-  let bob = anim.bob ? Math.sin(avatar.time * 1.8 + phase) * anim.bob : 0;
+  let bob = anim.bob ? Math.sin(clock * 1.8 + phase) * anim.bob : 0;
   // Scavenging layers on top of the rig's own life-signs rather than replacing
   // them, so a rig that sways still sways while it digs.
-  if (avatar.rummage > 0) {
+  if (lifeSigns && avatar.rummage > 0) {
     const dig = rummageOffset(bone, avatar.rummage);
     rot += dig.rot;
     bob += dig.bob;
@@ -327,7 +371,7 @@ export function localRotation(bone, ctx = RT) {
   const pose = (ctx && ctx.pose) || RT.pose;
   const override = pose[bone.id];
   const clip = animationOffset(bone, ctx);
-  const base = num(bone.rotation, 0) + animOffset(bone).rot + (clip ? num(clip.rotation, 0) : 0);
+  const base = num(bone.rotation, 0) + animOffset(bone, ctx).rot + (clip ? num(clip.rotation, 0) : 0);
   const value = override && Number.isFinite(override.rotation) ? override.rotation : base;
   return clampRotation(bone, value);
 }
@@ -365,7 +409,7 @@ export function computeWorldInto(ctx, origin) {
     const clip = animationOffset(bone, ctx);
     const ox = bone.pos[0] + (clip ? num(clip.x, 0) : 0);
     const oy = bone.pos[1] + (clip ? num(clip.y, 0) : 0);
-    const bob = animOffset(bone).bob;
+    const bob = animOffset(bone, ctx).bob;
     const override = ((ctx && ctx.pose) || RT.pose)[bone.id] || {};
     const dx = num(override.x, 0);
     const dy = num(override.y, 0);
@@ -416,7 +460,17 @@ export function sortedDrawables() {
  * the renderer applies `ctx.scale()` before `ctx.translate(offset)`.
  */
 export function partWorldMatrix(bone, part) {
-  const w = RT.world[bone.id];
+  return partWorldMatrixIn(RT.world, bone, part);
+}
+
+/**
+ * The same matrix, against an arbitrary world map — a prop entity's own.
+ *
+ * `partWorldMatrix` is this function bound to the avatar's world, so there is
+ * still exactly one place the matrix maths lives.
+ */
+export function partWorldMatrixIn(world, bone, part) {
+  const w = world[bone.id];
   if (!w) return null;
   const scale = w.scale * num(part.scale, 1);
   const cos = Math.cos(w.rot);
@@ -504,8 +558,16 @@ export function partBox(bone, part) {
  * places it. Anything that attaches to a socket can therefore use one formula.
  */
 export function socketWorld(socket) {
+  return socketTransformIn(RT.world, socket);
+}
+
+/**
+ * The same maths against an arbitrary world map — used for a socket on an
+ * entity's mini-rig (a lantern hanging off a helmet's `lamp` slot).
+ */
+export function socketTransformIn(world, socket) {
   if (!socket || !socket.bone) return null;
-  const w = RT.world[socket.bone];
+  const w = world[socket.bone];
   if (!w) return null;
   const scale = w.scale * num(socket.scale, 1);
   const pos = Array.isArray(socket.pos) ? socket.pos : [0, 0];

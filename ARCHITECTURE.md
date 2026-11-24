@@ -921,7 +921,8 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/ipc.js` | **Leaf** Tauri access: `call`, `listen`, `once`, `isTauri`. Reads `window.__TAURI__` lazily on every call (never cached at module scope) |
 | `ui/js/plugins.js` | **Leaf** plugin-backed UI gate: `setupPluginGate` (one `GET /plugins` read, retried while the API is still binding, plus a `plugins` event listener), `applyPluginStatus`, `pluginActive` (only `active` counts — a failed or parked plugin does not serve its routes), `pluginStates` and `gatePluginUi`, which shows/hides every `data-plugin="<id>"` element. The Survival / Metamorphose control-panel buttons and the Settings Survival tab ship **hidden** in `index.html`, so a missing `.wasm` removes the option instead of leaving a dead end |
 | `ui/js/state.js` | **Leaf** shared state objects (`avatar`, `RT`, `speech`, `gaze`, `viewport`, `watcher`, `ai` — the last mirroring `{active, profiles, health, checked}` for the **AI Brain** row), constants (`EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), helpers, `toast`, `updateStatusUI`, `setExpression`, the expression lifecycle (`EXPRESSION_SETTLE_SECS`, `reactExpression` — a program/event reaction with a hold that reverts to neutral, `settleExpression` — the per-frame ease back to neutral, guarded by holds, bubbles, walk/wave and STT state), `snapshot`, `setDirty`, `activeState` (which routes the lip-sync mouth variant through `mouthState`), `blinkActive`, `markManual` |
-| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset` — the hover head tilt rides on it, and `rummageOffset` is the procedural dig the scavenging activity blends in through `avatar.rummage`, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix` — the one world matrix the renderer and the editor both draw through, `partLocalRect` — how each shape type is anchored inside that matrix, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
+| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset` — the hover head tilt rides on it, and `rummageOffset` is the procedural dig the scavenging activity blends in through `avatar.rummage`, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld` — plus `computeWorldInto(ctx, origin)` so a **prop entity** evaluates the same maths from its own root), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix` — the one world matrix the renderer and the editor both draw through, `partLocalRect` — how each shape type is anchored inside that matrix, `partBox`, `partWorldMatrixIn` for a prop's private world), **sockets** (`socketWorld`, `socketTransformIn`, `socketList`, `socketById`, `makeRigContext` — a private, `lifeSigns: false` context for a prop rig), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
+| `ui/js/entities.js` | **Prop entities** on the canvas: `refresh` (`GET /entities`, coalesced), `stepEntities` (per-entity clock + state→clip, with `animator.js::sampleClip`), `resolveRoot` (avatar socket, `entity:<id>` nesting, the `stage` ground, depth 4 + cycle guard), `entityDrawables` (z-sorted parts in the avatar's own units), `entitySnapshot` (the `__avatarDebug.entities()` accessor), `markDirty` (fed by the `entity-*` frames) |
 | `ui/js/animator.js` | Custom keyframe clips: catalogue (`animationClips`, `listAnimations`), transport (`playAnimation`, `stopAnimation`, `stopPlayback`, `seekAnimation`, `stepAnimation`), sampling (`sampleAnimation`), authoring (`setAnimationBone`, `captureKeyframe`, `addClip`, `renameClip`, `deleteClip`, `setClipDuration`, `setClipLoop`) and finished listeners (`onAnimationFinished`) |
 | `ui/js/renderer.js` | Canvas pipeline: DPR resize (`initRenderer`, `resizeCanvas`), `drawFace`, `drawShape`, `drawPart`, rig overlay gizmos, `render`; `updateGazeDir` turns the smoothed aim point into a clamped pupil vector and `isPupilPart` decides between moving the pupil sprite or the whole eye; the mouth squash reads `speech.mouthSmooth` (the same cadence as the sprite variants) |
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
@@ -1963,6 +1964,11 @@ unknown routes are **404**.
 | GET | `/model` | current model |
 | POST | `/model` | switch model |
 | GET | `/sockets` | semantic attachment points of a rig (`?model=<name>` for a folder that is not loaded) |
+| GET | `/entities` | every prop entity, with its generated mini-rig |
+| POST | `/entities/spawn` | create a prop (idempotent by id) |
+| POST | `/entities/update` | move / re-state / attach / detach a prop |
+| POST | `/entities/remove` | delete a prop, detaching its children |
+| GET | `/props` | prop catalogue (defs, states, clips, grip sockets) |
 | POST | `/import` | import rig or image |
 | GET | `/parts` | parts + tags + variants + runtime patches |
 | POST | `/part` | patch parts by tag/id |
@@ -2174,7 +2180,7 @@ curl -s "localhost:8765/sockets?model=xenomorph-7"
 ```json
 {"ok":true,"model":"demo-blob","bones":7,"count":9,
  "sockets":[{"id":"hand_primary","bone":"arm_r","pos":[0,0],"rotation":0,"scale":1,
-             "z":420,"accepts":["rod","tool","bag"],"mirror":"hand_secondary",
+             "z":42,"accepts":["rod","tool","bag"],"mirror":"hand_secondary",
              "label":"Primary hand","kind":"bone","source":"derived"}]}
 ```
 
@@ -2190,6 +2196,58 @@ every hand-authored rig that predates sockets.
 `?model=` is **read-only**: it loads the folder from disk and answers, without
 touching the current selection (`ModelCtx::load` would switch the avatar and
 rewrite `.state.json`, which a GET must never do).
+
+### `/entities`, `/props`
+
+Props are entities, not inventory rows: `def` + `seed` + `params` generate a
+mini-rig, `state` picks its clip, `attach` places it on a named socket.
+
+```bash
+curl -s localhost:8765/props
+curl -s -X POST localhost:8765/entities/spawn -H 'content-type: application/json' \
+     -d '{"def":"fishing_rod","id":"survival:rod","state":"cast",
+          "attach":{"parent":"avatar","socket":"hand_primary"}}'
+curl -s -X POST localhost:8765/entities/update -H 'content-type: application/json' \
+     -d '{"id":"survival:rod","state":"biting"}'
+curl -s localhost:8765/entities
+```
+
+Layers, and why they are split that way:
+
+* **`entities/defs.rs`** — the static catalogue: states, clips, tags, and how the
+  prop grips each host socket (`grips: [("hand_primary", -1.25)]`). A prop with no
+  opinion about a socket attaches with rotation 0.
+* **`entities/gen.rs`** — `(def, seed, params) → mini-rig` in the *model* JSON
+  format, so `models::validate_rig` accepts it and the page draws it with the same
+  maths. Structure is drawn before colour (the metamorphosis rule); a test counts
+  distinct *structural* tuples over 100 seeds, not palettes.
+* **`entities/store.rs`** — identity, state, attachment, ownership, persistence in
+  `models/.entities.json` (`version = 1`, capped at 64, never the rig itself).
+
+The rig is **derived, never saved**: an entity persists as identity and comes back
+with the same wood, reel and dents. `params` changes drop the cached rig.
+
+Ownership: an entity spawned by a plugin carries `owner: "<id>"`; `update`/`remove`
+from *another* plugin is a 400, while the host/user (no actor, i.e. HTTP) outranks
+every plugin. The store has its own mutex and never calls into the plugin
+registry; a mutation is applied under the lock, the lock is dropped, and only then
+is the event emitted — otherwise a listener reading `GET /entities` deadlocks.
+
+On the page, `ui/js/entities.js` resolves attachments and paints:
+`avatar` sockets come from `socketWorld` (the avatar's `RT.world`), `entity:<id>`
+parents resolve recursively (depth 4, cycle guard), and `stage` is the ground under
+the avatar until the chest owns a real anchor. Transforms use
+`rig.js::computeWorldInto` with a private context (`makeRigContext`, `lifeSigns:
+false`) and clips use `animator.js::sampleClip` — one implementation of each, not
+two. Draw order is one merged pass: a prop's `z` is `socket.z + bone.z + part.z`,
+the same units as the creature's own `z`, so a held rod draws in front of the torso
+and a pack on the back draws behind it.
+
+Frames: `entity-spawned` / `entity-updated` / `entity-removed` carry only ids
+(plus `revision`); the page marks itself dirty and refetches the roster, coalesced
+to one request per burst, with a 2 s reconcile so a dropped frame cannot leave a
+stale prop on screen. They are not watcher-routed (no model turn is spent on a rod
+being equipped), so they are outside the routed-frame check in `verify_docs.py`.
 
 ### `/parts`, `/part`, `/mouth`
 

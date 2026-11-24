@@ -13,6 +13,7 @@
 
 pub mod api;
 pub mod discovery;
+pub mod entities;
 pub mod models;
 pub mod platform;
 pub mod plugins;

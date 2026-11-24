@@ -7,13 +7,15 @@
 
 import {
   avatar, RT, TAU, speech, gaze,
-  clamp, activeState,
+  clamp, num, activeState,
   hasVariant, viewport, updateViewport,
 } from "./state.js";
 
 import {
   computeWorld, sortedDrawables, partBox, partWorldMatrix, partSize,
 } from "./rig.js";
+
+import { entityDrawables } from "./entities.js";
 
 let canvas = null;
 let ctx = null;
@@ -158,12 +160,12 @@ function drawShape(part, w, h, px) {
   if (part.shape === "face") drawFace(w, h);
 }
 
-function drawPart(bone, part) {
+function drawPart(bone, part, preview = null) {
   if (part.visible === false) return;
   // ONE matrix for the renderer and the editor (selection box, pivot cross,
-  // hit test) — see `rig.js::partWorldMatrix`. Drawing through it is what keeps
-  // the yellow box glued to the pixels at any pivot/offset/rotation/scale.
-  const m = partWorldMatrix(bone, part);
+  // hit test) — see `rig.js::partWorldMatrix`. A prop entity passes its own
+  // matrix (computed against its private world) and uses the same painter.
+  const m = preview || partWorldMatrix(bone, part);
   if (!m) return;
   const size = partSize(part);
   const w = size[0];
@@ -334,9 +336,26 @@ export function render() {
   // Both depend on the world transforms, so they run after computeWorld().
   rigHasPupils = RT.boneList.some((bone) => bone.parts.some(isPupilPart));
   updateGazeDir();
+
+  // One z-sorted pass. A prop's `z` is `socket.z + bone.z + part.z` — the same
+  // units as the avatar's — so a held rod draws in front of the torso and a pack
+  // on the back draws behind it, with no special cases in the painter.
+  const drawables = [];
   for (const entry of sortedDrawables()) {
-    drawPart(entry.bone, entry.part);
+    drawables.push({
+      z: num(entry.bone.z, 0) + num(entry.part.z, 0),
+      bone: entry.bone,
+      part: entry.part,
+      matrix: partWorldMatrix(entry.bone, entry.part),
+    });
   }
+  for (const item of entityDrawables()) drawables.push(item);
+  drawables.sort((a, b) => a.z - b.z);
+  for (const item of drawables) {
+    if (!item.matrix) continue;
+    drawPart(item.bone, item.part, item.matrix);
+  }
+
   if (RT.rigMode) drawEditorOverlay();
 }
 

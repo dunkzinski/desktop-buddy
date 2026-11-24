@@ -376,6 +376,11 @@ fn router(api: ApiCtx) -> Router {
         .route("/models", get(list_models))
         .route("/model", get(get_model).post(switch_model))
         .route("/sockets", get(get_sockets))
+        .route("/entities", get(list_entities))
+        .route("/entities/spawn", post(spawn_entity))
+        .route("/entities/update", post(update_entity))
+        .route("/entities/remove", post(remove_entity))
+        .route("/props", get(list_props))
         .route("/import", post(import_asset))
         .route("/parts", get(get_parts))
         .route("/part", post(patch_part))
@@ -669,6 +674,9 @@ fn event_name(kind: &str) -> &'static str {
         "animate" => "animate",
         "watcher" => "watcher",
         "ai_profile" => "ai_profile",
+        "entity-spawned" => "entity-spawned",
+        "entity-updated" => "entity-updated",
+        "entity-removed" => "entity-removed",
         "hello" => "hello",
         _ => "message",
     }
@@ -1222,6 +1230,142 @@ async fn get_sockets(
         "count": model.sockets.len(),
         "sockets": model.sockets,
     })))
+}
+
+/* ------------------------------------------------------------------ *
+ * entities (props as first-class instances)
+ * ------------------------------------------------------------------ */
+
+/// Publish an entity change on both surfaces: the SSE bus (an agent's feed) and
+/// the page (its listeners). Same split as `AppHost::emit`.
+///
+/// Called **after** the store lock is released: a listener that reads
+/// `GET /entities` from inside this emit must not deadlock against the mutation.
+fn emit_entity(api: &ApiCtx, event: &str, payload: Value) {
+    api.shared.emit_event(event, payload.clone());
+    if let Err(err) = api.app.emit(event, payload) {
+        log::debug!("could not emit {event} to the page: {err}");
+    }
+}
+
+/// `GET /entities` — every prop instance, with its generated rig.
+///
+/// The rig travels with the entity so the page never has to regenerate it; the
+/// payload is identity + state + a small mini-rig (a rod is ~8 bones).
+async fn list_entities() -> Json<Value> {
+    let (revision, entities) = crate::entities::roster();
+    Json(json!({
+        "ok": true,
+        "revision": revision,
+        "count": entities.len(),
+        "entities": entities,
+    }))
+}
+
+/// `GET /props` — the prop catalogue: definitions, states, clips, grip sockets.
+async fn list_props() -> Json<Value> {
+    Json(crate::entities::defs::catalogue())
+}
+
+/// `POST /entities/spawn` — create a prop.
+///
+/// Idempotent by `id`: a retry with the same id+def returns `created: false` and
+/// the existing entity, so a guest that missed its ack cannot make two rods.
+async fn spawn_entity(
+    State(api): State<ApiCtx>,
+    Json(body): Json<crate::entities::SpawnRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let ((outcome, rendered), revision) =
+        crate::entities::commit(|store| {
+            let outcome = store.spawn(body)?;
+            let rendered = store.render_one(&outcome.entity.id);
+            Ok((outcome, rendered))
+        })
+        .map_err(ApiError::bad_request)?;
+
+    if outcome.created {
+        emit_entity(
+            &api,
+            "entity-spawned",
+            json!({ "id": outcome.entity.id, "def": outcome.entity.def, "revision": revision }),
+        );
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "created": outcome.created,
+        "revision": revision,
+        "entity": rendered,
+    })))
+}
+
+/// `POST /entities/update` — move, re-state, attach or recolour a prop.
+///
+/// `id` is lifted out of the body before the patch is parsed; everything else is
+/// a [`crate::entities::UpdatePatch`]. `"clip": null` stops the clip,
+/// `"detach": true` puts it down, and an omitted field is left alone.
+async fn update_entity(
+    State(api): State<ApiCtx>,
+    Json(mut body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ApiError::bad_request("`id` is required"))?;
+    if let Some(object) = body.as_object_mut() {
+        object.remove("id");
+    }
+    let patch: crate::entities::UpdatePatch = serde_json::from_value(body)
+        .map_err(|err| ApiError::bad_request(format!("bad update: {err}")))?;
+
+    let ((entity, rendered), revision) = crate::entities::commit(|store| {
+        let entity = store.update(&id, patch, None)?;
+        let rendered = store.render_one(&entity.id);
+        Ok((entity, rendered))
+    })
+    .map_err(ApiError::bad_request)?;
+
+    emit_entity(
+        &api,
+        "entity-updated",
+        json!({
+            "id": entity.id,
+            "state": entity.state,
+            "attach": entity.attach,
+            "revision": revision,
+        }),
+    );
+    Ok(Json(json!({
+        "ok": true,
+        "revision": revision,
+        "entity": rendered,
+    })))
+}
+
+/// `POST /entities/remove` — delete a prop. Children of a removed parent are
+/// detached rather than left pointing at a missing id.
+async fn remove_entity(
+    State(api): State<ApiCtx>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ApiError::bad_request("`id` is required"))?;
+
+    let removed = crate::entities::commit(|store| store.remove(&id, None))
+        .map_err(ApiError::bad_request)?;
+    emit_entity(
+        &api,
+        "entity-removed",
+        json!({ "id": removed.0.id, "revision": removed.1 }),
+    );
+    Ok(Json(json!({ "ok": true, "revision": removed.1, "id": removed.0.id })))
 }
 
 async fn switch_model(

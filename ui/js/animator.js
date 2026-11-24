@@ -136,6 +136,17 @@ function frameTransform(frame, boneId) {
 export function sampleAnimation(t, name) {
   const clips = animationClips();
   const clip = name ? clips[name] : activeClip();
+  return sampleClip(clip, t);
+}
+
+/**
+ * The interpolation rules, for **any** clip object.
+ *
+ * Same smoothstep easing, same hold-before-first / hold-after-last, same node
+ * omissions — `entities.js` uses this for a prop's own mini-rig clips, so a rod's
+ * `cast` eases exactly like the avatar's `wave` (one implementation, not two).
+ */
+export function sampleClip(clip, t) {
   if (!clip) return {};
   const frames = sortedKeyframes(clip);
   if (!frames.length) return {};

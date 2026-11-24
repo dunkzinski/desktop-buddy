@@ -171,7 +171,7 @@ can live in a paw, in a chest, or on the ground.
 | `bone` | **required** for a bone socket; must exist in `bones`. Omit `bone` for a virtual surface (`stage_ground`, `perch_surface`) |
 | `pos` | local offset from the bone joint, in the bone's rotated frame (default `[0, 0]`) |
 | `rotation` / `scale` | local transform on top of the bone (default `0` / `1`) |
-| `z` | draw-order band. Lower draws behind the body. Conventions: `back` 40, `chest_back` 60, `neck_collar` 120, `chest_front` 340, `head_helmet` 380, hands 420. Default 380 |
+| `z` | draw-order band in the **same units as `bone.z` / `part.z`** (a generated creature runs about -8..31), so a held prop interleaves with the body instead of always drawing on top. Conventions: `back` 4, `chest_back` 6, `neck_collar` 12, `chest_front` 34, `head_helmet` 38, hands 42. Default 20 |
 | `accepts` | what may attach, matched against a prop's tags. Empty means anything |
 | `mirror` | the socket on the other side of the body |
 | `label` | human name for the editor / API |

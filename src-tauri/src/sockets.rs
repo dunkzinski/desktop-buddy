@@ -94,8 +94,10 @@ pub struct Socket {
     pub pos: [f64; 2],
     pub rotation: f64,
     pub scale: f64,
-    /// Draw-order band. Lower draws behind the body: `back` is 40,
-    /// `head_helmet` 380, `hand_primary` 420. The page adds the part's own `z`.
+    /// Draw-order band, in the **same units as `bone.z` / `part.z`** so a prop
+    /// interleaves with the rig instead of always landing on top: `back` is 4,
+    /// `head_helmet` 38, `hand_primary` 42. A generated creature's own z values
+    /// run about -8..31, which is what these are calibrated against.
     pub z: i32,
     /// What may be attached: matched against a prop definition's tags. An empty
     /// list means "anything".
@@ -501,7 +503,7 @@ fn virtual_socket(id: &str, label: &str) -> Socket {
         pos: [0.0, 0.0],
         rotation: 0.0,
         scale: 1.0,
-        z: 200,
+        z: 20,
         accepts: Vec::new(),
         mirror: None,
         label: label.to_string(),
@@ -640,7 +642,7 @@ fn merge_explicit(
         let z = object
             .get("z")
             .and_then(Value::as_i64)
-            .unwrap_or(if bone.is_some() { 380 } else { 200 })
+            .unwrap_or(20)
             .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
         let accepts = object
             .get("accepts")
@@ -719,7 +721,7 @@ pub fn resolve(rig: &Value, sidecar: Option<&Value>) -> Vec<Socket> {
                 HAND_PRIMARY,
                 &chosen.id,
                 [0.0, 0.0],
-                420,
+                42,
                 list(&["rod", "tool", "bag"]),
                 Some(HAND_SECONDARY),
                 "Primary hand",
@@ -745,7 +747,7 @@ pub fn resolve(rig: &Value, sidecar: Option<&Value>) -> Vec<Socket> {
                 HAND_SECONDARY,
                 &chosen.id,
                 [0.0, 0.0],
-                420,
+                42,
                 list(&["rod", "tool", "bag"]),
                 Some(HAND_PRIMARY),
                 "Secondary hand",
@@ -761,7 +763,7 @@ pub fn resolve(rig: &Value, sidecar: Option<&Value>) -> Vec<Socket> {
                 HEAD_HELMET,
                 &bone,
                 [0.0, 0.0],
-                380,
+                38,
                 list(&["helmet", "hat"]),
                 None,
                 "Head",
@@ -777,7 +779,7 @@ pub fn resolve(rig: &Value, sidecar: Option<&Value>) -> Vec<Socket> {
                 NECK_COLLAR,
                 &bone,
                 [0.0, 0.0],
-                120,
+                12,
                 list(&["collar", "scarf"]),
                 None,
                 "Neck",
@@ -793,7 +795,7 @@ pub fn resolve(rig: &Value, sidecar: Option<&Value>) -> Vec<Socket> {
                 CHEST_FRONT,
                 &bone,
                 [0.0, 0.0],
-                340,
+                34,
                 list(&["badge", "lamp"]),
                 None,
                 "Chest (front)",
@@ -806,7 +808,7 @@ pub fn resolve(rig: &Value, sidecar: Option<&Value>) -> Vec<Socket> {
                 CHEST_BACK,
                 &bone,
                 [0.0, 0.0],
-                60,
+                6,
                 list(&["bag", "pack"]),
                 None,
                 "Chest (back)",
@@ -822,7 +824,7 @@ pub fn resolve(rig: &Value, sidecar: Option<&Value>) -> Vec<Socket> {
                 BACK,
                 &bone,
                 [0.0, -6.0],
-                40,
+                4,
                 list(&["pack", "bag", "tool"]),
                 None,
                 "Back",

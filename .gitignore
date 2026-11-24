@@ -30,6 +30,9 @@ models/buddy-*/*.tmp
 models/.state.json
 models/.model-index.json
 models/.model-index.json.tmp
+# Prop entities (identity/state/attachment) — machine-local, like .state.json
+models/.entities.json
+models/.entities.json.tmp
 watcher_rules.json.bak
 # The avatar's persona is seeded from `DEFAULT_SOUL` (src-tauri/src/soul.rs) on
 # first start and then belongs to the user — a local edit must not fight a pull.

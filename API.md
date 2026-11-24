@@ -284,10 +284,10 @@ The semantic attachment points of a rig — where a prop, tool or helmet hangs.
 { "ok": true, "model": "demo-blob", "bones": 7, "count": 9,
   "sockets": [
     { "id": "hand_primary", "bone": "arm_r", "pos": [0, 0], "rotation": 0,
-      "scale": 1, "z": 420, "accepts": ["rod", "tool", "bag"],
+      "scale": 1, "z": 42, "accepts": ["rod", "tool", "bag"],
       "mirror": "hand_secondary", "label": "Primary hand",
       "kind": "bone", "source": "derived" },
-    { "id": "stage_ground", "pos": [0, 0], "rotation": 0, "scale": 1, "z": 200,
+    { "id": "stage_ground", "pos": [0, 0], "rotation": 0, "scale": 1, "z": 20,
       "accepts": [], "label": "Ground", "kind": "virtual", "source": "derived" }
   ] }
 ```
@@ -302,7 +302,7 @@ Fields:
 | `id` | the vocabulary: `hand_primary`, `hand_secondary`, `head_helmet`, `neck_collar`, `chest_front`, `chest_back`, `back`, `stage_ground`, `perch_surface`, or a custom id |
 | `bone` | the bone the socket hangs from; **absent** for a virtual surface |
 | `pos` / `rotation` / `scale` | local transform from the bone joint, in the bone's rotated frame |
-| `z` | draw-order band: `back` 40, `chest_back` 60, `head_helmet` 380, hands 420. The page adds the part's own `z` on top |
+| `z` | draw-order band in the same units as `bone.z`/`part.z`: `back` 4, `chest_back` 6, `neck_collar` 12, `chest_front` 34, `head_helmet` 38, hands 42. A held prop interleaves with the body instead of always drawing on top |
 | `accepts` | tags a prop definition must match; empty means "anything" |
 | `mirror` | the socket on the other side of the body, if any |
 | `kind` | `bone` or `virtual` |
@@ -416,6 +416,88 @@ curl -s -X POST localhost:8765/rig -H 'content-type: application/json' --data @/
 #### `POST /rig/reset`
 
 Deletes `rig.json` and reloads `model.json`.
+
+## Props & entities
+
+A prop is a **first-class entity**, not a row in an inventory and not a bone
+welded onto the gremlin: it has an id, a seed, a state, an attachment and its own
+miniature rig (bones, parts, clips, sockets) generated deterministically from
+`(def, seed, params)`. The page renders it with the same transform maths as the
+avatar, attached to a named socket from `GET /sockets` — so the same fishing rod
+is stowed in a chest, held in a paw, or lying on the ground without a second
+renderer.
+
+The host owns entity identity/state/attachment; the survival guest owns the
+economy that pays for props. `POST /entities/*` is the seam (a Wasm guest reaches
+the same store through the ABI, not HTTP).
+
+#### `GET /entities`
+
+```json
+{ "ok": true, "revision": 3, "count": 1,
+  "entities": [
+    { "id": "survival:rod", "def": "fishing_rod", "seed": 12345,
+      "params": {}, "traits": { "bite_luck": 0.09, "durability": 1.16 },
+      "state": "cast", "state_since_ms": 1764000000000,
+      "anim": null,
+      "attach": { "parent": "avatar", "socket": "hand_primary",
+                  "flip": false, "rotation": -1.25 },
+      "visible": true, "owner": "survival",
+      "rig": { "bones": [ … ], "animations": { "cast": { … } }, "sockets": [ … ] } }
+  ] }
+```
+
+`rig` is generated on read and cached; it is never persisted, so a saved entity
+comes back with the same look from the same seed. `revision` increments on every
+mutation and is also echoed in the `entity-*` events.
+
+A state whose name matches a clip in the entity's own `rig.animations` plays that
+clip by itself (started at `state_since_ms`). That is what keeps the page
+prop-agnostic: `{"state": "cast"}` is all a caller needs to animate a rod.
+
+#### `POST /entities/spawn`
+
+```json
+{ "def": "fishing_rod", "id": "survival:rod", "seed": 12345,
+  "state": "equipped", "attach": { "parent": "avatar", "socket": "hand_primary" },
+  "params": { "segments": 3, "reel": true }, "owner": "survival" }
+```
+
+* `def` is required; `GET /props` lists them (`fishing_rod`, `loot_bag`).
+* `id` is optional. Supplying one makes the call **idempotent**: a retry with the
+  same id+def returns `created: false` and the existing entity, so a guest that
+  missed its ack cannot make two rods. A different def under a used id is a 400.
+* `attach.parent` is `"avatar"`, `"stage"` or `"entity:<id>"`; `socket` names a
+  socket on that parent. An omitted `attach.rotation` is filled from the prop's
+  grip defaults, so a rod is gripped rather than lying along the forearm.
+* `traits` and `seed` default from the id; `params` are merged into the
+  generator and change the look (a param change regenerates the rig).
+* Refused with a 400: unknown def, unknown state, bad attachment shape, more than
+  64 entities, `params` over 4 KiB.
+
+#### `POST /entities/update`
+
+```json
+{ "id": "survival:rod", "state": "biting" }
+{ "id": "survival:rod", "attach": { "parent": "avatar", "socket": "hand_secondary" } }
+{ "id": "survival:rod", "detach": true, "clip": null }
+```
+
+Fields: `state`, `clip` (`null` stops it), `speed`, `attach`, `detach`, `params`,
+`visible`, `traits`. An omitted field is left alone. `attach` validates cycles and
+depth (>4 links) and refuses them, and a removed parent detaches its children
+rather than leaving them pointing at a missing id.
+
+#### `POST /entities/remove`
+
+```json
+{ "id": "survival:rod" }
+```
+
+#### `GET /props`
+
+The catalogue: id, label, category, tags, states, default state, clips, own
+sockets and `summary`, for UIs and for agents deciding what to spawn.
 
 ### Posing individual joints
 

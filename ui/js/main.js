@@ -20,6 +20,8 @@ import {
   socketList, socketWorld,
 } from "./rig.js";
 
+import { initEntities, stepEntities, markDirty, entitySnapshot } from "./entities.js";
+
 import { initRenderer, render, resizeCanvas } from "./renderer.js";
 
 import {
@@ -622,6 +624,9 @@ function frame(now) {
   // present: the animation simply stopped.
   try {
     step(dt);
+    // Props move with the avatar and run their own clips; this is also the
+    // reconcile tick that recovers a missed `entity-*` frame.
+    stepEntities(now);
     // `render()` refreshes RT.world (computeWorld) before drawing, so the bubble
     // can be re-anchored against this frame's head position instead of the 10 Hz
     // throttle it used to run on.
@@ -1435,11 +1440,7 @@ function installDebugSurface() {
 
     viewport: () => ({ w: viewport.w, h: viewport.h }),
 
-    /**
-     * The rig's attachment points, resolved — the page half of `GET /sockets`.
-     * `world` is where the socket actually is this frame, so a CDP probe can
-     * prove an attachment lands in the right place without reading pixels.
-     */
+    /** The rig's attachment points, resolved: ids + world transforms. */
     sockets: () => socketList().map((socket) => {
       const world = socketWorld(socket);
       return {
@@ -1454,6 +1455,13 @@ function installDebugSurface() {
           : null,
       };
     }),
+
+    /**
+     * Props as the page sees them: id, def, state, clip, attachment and the
+     * resolved root this frame. `root: null` means "attached to something that
+     * is not there" — the honest answer for a dangling socket.
+     */
+    entities: () => entitySnapshot(),
 
     /** The scavenging walk, as the page sees it (the guest owns the run). */
     scavenge: () => ({
@@ -1558,6 +1566,11 @@ async function init() {
     const bones = applyModel(model) || 0;
     console.log("[avatar] ready with", bones, "bones");
   }
+
+  // Props: hydrate from `GET /entities` and keep them in step with the surface
+  // that owns them. Not gated on any plugin — with nothing spawned the roster is
+  // empty and a reconcile every 2 s costs one tiny request.
+  initEntities();
   updateTimeline();
   const info = await call("get_runtime_info");
   if (info) applyApiStatus(info);
@@ -1597,6 +1610,13 @@ async function init() {
   }).catch((err) => console.error("[avatar] scavenging-started listener failed:", err));
   listen("scavenging-finished", () => endScavengeWalk())
     .catch((err) => console.error("[avatar] scavenging-finished listener failed:", err));
+
+  // Props. The payload only says *which* entity moved; the roster refetch is
+  // coalesced inside `entities.js`, so a spawn+attach+state burst is one request.
+  for (const name of ["entity-spawned", "entity-updated", "entity-removed"]) {
+    listen(name, () => markDirty())
+      .catch((err) => console.error(`[avatar] ${name} listener failed:`, err));
+  }
   setInterval(() => {
     reconcileScavenge().catch((err) =>
       console.error("[avatar] scavenge reconcile failed:", err));

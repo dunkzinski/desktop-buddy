@@ -530,7 +530,7 @@ cd ../.. && python tools/verify_docs.py
 | Phase | Scope | Tests that must exist before it is "done" |
 |---|---|---|
 | **0 — seams, no behaviour change** ✅ | `rig.js` rig-ctx extraction + `computeWorldInto`; `sockets.rs` + `LoadedModel.sockets` + `GET /sockets`; `sockets.json` sidecar loading | socket resolution on `xenomorph-7` (tentacles, no arms), a generated-shape rig (heuristic chain), a legs-named-like-arms stub; a sweep over every shipped `models/*/model.json` asserting `hand_primary` resolves; A/B `__avatarDebug.snapshot()` + screenshot over CDP proves the extraction changed nothing |
-| **1 — entity store + one prop** | `entities/{defs,store,gen}.rs`; persistence, caps, ownership; `fishing_rod` builder; `GET/POST /entities*`, `GET /props`; `entities.js` + renderer merge | store unit tests (cap refusal, owner scoping, save/restore round-trip, dangling attachment); determinism test (same seed ⇒ identical rig); variety test ≥90 distinct shape tuples per 100 seeds; `validate_rig` on every generated prop; live: spawn a rod on `hand_primary`, screenshot, drag the avatar and watch it follow |
+| **1 — entity store + one prop** ✅ | `entities/{defs,gen,rng,store}.rs`; persistence, caps, ownership; `fishing_rod` + `loot_bag` builders; `GET/POST /entities*`, `GET /props`; `entities.js` + renderer merge | store unit tests (cap refusal, owner scoping, save/restore round-trip, dangling attachment); determinism test (same seed ⇒ identical rig); variety test ≥60 distinct shape tuples per 100 seeds; `validate_rig` on every generated prop; live: spawn a rod on `hand_primary`, screenshot, drag the avatar and watch it follow |
 | **2 — ABI + survival rod** | `host_entities` in `build_linker`; guest `host.rs` wrapper + thread-local recorder; guest `props.rs`; fishing state→rod wiring | guest tests assert the exact call sequence (one spawn, then updates in phase order, no spawn on cancel); live: cast with watcher off, screenshots at waiting/biting/reeling; `GET /entities` proves state transitions |
 | **3 — the chest** | `chest` def, `shape:"rect"`, slots, `appear/open/idle_open/close/vanish` clips; `summon/open/close/dismiss/put/take` routes; summon anchor (flip + clamp to monitor); `dismiss_after_ms`; the walk-to choreography + `avatar.activity` lock; **seeded decorative loot** (5–8 items, no economy); chest card (with `wireRegions` entry) | capacity/slot allocation; put↔take leaves bag counts and entity list consistent; interior items draw under the lid and vanish when closed; dismiss refuses while occupied (409 names slots) and `force:true` parking everything on `stage_ground`; restart mid-`opening` restores `closed`; a drag mid-walk stands the walk down without teleporting; a missed `chest-summoned` recovers within ~2 s; the same chest re-summons with the same seed and its contents |
 | **4 — scavenge bag + loot→entities** | `loot_bag` def, start/stow wiring, loot that yields a tool creates a seeded entity | 30 s live run with screenshots at dig + carry; a looted tool survives restart with the same seed/params; bag and chest never both claim one item |
@@ -643,3 +643,62 @@ A CDP probe that reset `avatar.time` reproduced it at `(454436, 340558)` in half
 a second. Fix is one line —
 `const t = Math.min(1, Math.max(0, elapsed / duration))` — and it belongs in its
 own change with its own probe, not smuggled into a "no behaviour change" phase.
+
+---
+
+## 8. Phase 1 — landed
+
+Props are real: a `fishing_rod` generated from a seed, held in a generated
+gremlin's paw, animating through `cast → waiting → biting → reeling`.
+
+| File | What |
+|---|---|
+| `src-tauri/src/entities/rng.rs` | xorshift64* PRNG (stable across runs; `seed 0` is not a fixed point) |
+| `src-tauri/src/entities/defs.rs` | `PropDef` + `PROPS` (`fishing_rod`, `loot_bag`), per-socket grip rotations, `catalogue()` for `GET /props` |
+| `src-tauri/src/entities/gen.rs` | deterministic builders → model-format mini-rigs (bones/parts/clips/sockets) + `traits()` |
+| `src-tauri/src/entities/store.rs` | `Entity`, `Attachment`, spawn/update/remove, ownership, caps, `models/.entities.json`, rig cache |
+| `src-tauri/src/entities/mod.rs` | `roster()`, `commit()` — mutate, persist, return the revision |
+| `src-tauri/src/api.rs` | `GET /entities`, `POST /entities/{spawn,update,remove}`, `GET /props`; `entity-*` frames on SSE + page |
+| `ui/js/entities.js` | roster cache, state→clip, attachment resolution, drawables |
+| `ui/js/rig.js` | `makeRigContext`, `partWorldMatrixIn`, `socketTransformIn`, `animOffset(bone, ctx)` with `lifeSigns` |
+| `ui/js/animator.js` | `sampleClip(clip, t)` extracted (one interpolation implementation) |
+| `ui/js/renderer.js`, `ui/js/main.js` | merged z pass; entity step + listeners + `__avatarDebug.entities()` |
+
+Three things the implementation changed about the plan:
+
+1. **Socket `z` units.** Phase 0 shipped bands of 40–420, which are meaningless
+   next to a rig whose own `z` runs −8…31: every prop would have drawn on top of
+   the head. Measured the generated rigs and moved the vocabulary to rig units
+   (`back` 4 … `hand_primary` 42). A prop now interleaves with the body.
+2. **Grip is part of the prop definition.** `attach.rotation` defaults from
+   `PropDef::grips` (`hand_primary: -1.25`), so a rod is held across the body
+   rather than lying along the forearm. Without it the rod pointed down-right at
+   the arm's rest angle.
+3. **A state that names a clip plays it.** No `anim` is required: `{"state":
+   "biting"}` starts `biting`, because the page looks the state up in the
+   entity's own `animations`. That is what keeps the page from knowing what a
+   rod is.
+
+Known limits, deliberately not fixed in this phase:
+
+* `attach.flip` is stored and validated but not rendered (mirroring a prop for
+  the off hand is Phase 5, with the nested-socket work).
+* `stage` resolves to the ground under the avatar; the chest will own a real
+  anchor in Phase 3.
+* `avatarBounds()` (the click-through region) covers the avatar only, so a prop
+  that sticks out is not clickable — cosmetic until props become draggable.
+* Prop size is authored in rig units: it reads right on a generated gremlin
+  (root scale 0.55) and small on `xenomorph-7` (root scale 1.0, ~700 px tall).
+  Per-rig fitting is a later nicety, not a correctness bug.
+
+### Verification (what was actually run)
+
+| Check | Result |
+|---|---|
+| `cargo test --lib entities::` | 25 passed (rng, defs, gen, store) |
+| variety test | ≥60 distinct **structural** tuples per 100 seeds, per def |
+| `validate_rig` on props | every generated rod/bag is a rig the loader accepts |
+| Live, generated gremlin `buddy-alien-fresh-prism-0b5590cd` | `POST /entities/spawn` → rod at `hand_primary` (11 bones, clips `cast/waiting/biting/reeling`), 16 drawables, `frameErrors` 0 |
+| State sweep | `waiting → biting → reeling → stowed` each switched the clip; `stowed` → `clip: null` |
+| Hot-swap rigs | switched to `buddy-beast-fresh-prism-f6e986b0` (`hand_primary@arm_r`) and `xenomorph-7` (`hand_primary@tentacle_1_tip`); the rod followed both with no reload, `frameErrors` 0 |
+| Remove | `POST /entities/remove` → page `count: 0`, save file `{"version":1,"entities":[]}` |
