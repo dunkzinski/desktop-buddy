@@ -172,9 +172,16 @@ can live in a paw, in a chest, or on the ground.
 | `pos` | local offset from the bone joint, in the bone's rotated frame (default `[0, 0]`) |
 | `rotation` / `scale` | local transform on top of the bone (default `0` / `1`) |
 | `z` | draw-order band in the **same units as `bone.z` / `part.z`** (a generated creature runs about -8..31), so a held prop interleaves with the body instead of always drawing on top. Conventions: `back` 4, `chest_back` 6, `neck_collar` 12, `chest_front` 34, `head_helmet` 38, hands 42. Default 20 |
-| `accepts` | what may attach, matched against a prop's tags. Empty means anything |
+| `accepts` | what may attach, **advisory**: matched against a prop's tags by nobody today (see below). Empty means anything |
 | `mirror` | the socket on the other side of the body |
 | `label` | human name for the editor / API |
+
+**`accepts` is advisory.** It is parsed, kept and shipped to the page, and nothing
+compares it to a prop's `tags` — a prop in the wrong socket still attaches and draws.
+That is deliberate rather than pending plumbing: the socket table belongs to the rig
+and the tags to the prop catalogue, and no layer owns both, so an "enforcement" here
+would either ignore `entity:` parents or special-case the avatar. Write it for the
+reader; do not expect a refusal. Design doc §14.5.2 has the full argument.
 
 #### Where to put them
 

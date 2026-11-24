@@ -45,7 +45,11 @@ pub struct PropDef {
     pub id: &'static str,
     pub label: &'static str,
     pub category: PropCategory,
-    /// Matched against a socket's `accepts` list.
+    /// The tags this prop declares for a socket's `accepts` list — **advisory
+    /// only**: no code compares the two. The field is surfaced (and shipped in
+    /// `GET /props`) so a rig author and an inspecting caller see the intent;
+    /// enforcement waits for a layer that owns both the prop catalogue and a
+    /// socket table. An empty list means "anything".
     pub tags: &'static [&'static str],
     /// Every state a caller may set. `default_state` must be one of them.
     pub states: &'static [&'static str],

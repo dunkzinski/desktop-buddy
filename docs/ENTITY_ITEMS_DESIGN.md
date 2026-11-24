@@ -1291,7 +1291,7 @@ plan's Phase 5 and Phase 6 were never closed, and the arc §13–§14 calls "Pha
 | 2 — ABI + survival rod | **landed** | `host_entities`, summaries-not-rigs, guest call-order tests, live cast→pounce→catch (§9) |
 | 3 — the chest | **landed**, three plan items changed | `shape:"rect"` was replaced by `poly` (a faceted shell needs geometry, §10); the 5–8 slot capacity was removed on purpose (§12). Two items did **not** ship: `dismiss_after_ms` auto-dismiss (grep finds it only in this document — the pod stays until the card's Fold or a caller dismisses it) and the single `avatar.activity ∈ {none, scavenge, chest}` lock (§2.8 item 5) — the page kept two walk objects (`scavengeWalk`, `chestWalk`) plus `avatar.manualMoves`, which arbitrates two activities fine and was never tested with a third |
 | 4 — scavenge bag + loot→entities | **landed as §11–§13**, two criteria superseded | The bag carries counts, and the only tools (rod, bag) are **withdrawn from the pod** (§12.4, §12.6), so "loot that yields a tool creates a seeded entity" and "a looted tool survives restart with the same seed/params" lost their subject rather than being met. §2.4(A)'s `item_id` on an entity was never built and `chest::put` never touches the guest's inventory, so "bag and chest never both claim one item" is vacuously true — the two stores never name the same item |
-| 5 — mining-ready hardening | **partly** | nested sockets + depth/cycle guard: **yes**, and better than planned (the catch is the caller, §14.2). Verified live 3-deep: trinket on the fish's `mouth` on the rod's `line_end` in the paw → roots `1944.5, 530.5` / `1956.7, 546.3` / `1827.6, 635.3`. `accepts` validation: **no** — `Socket.accepts` is parsed and surfaced to `__avatarDebug.sockets()`, and no code compares a prop's `tags` to it. metamorphosis writes explicit `sockets`: **no** — its generator emits none and those rigs ride the `sockets.rs` heuristics. `head_helmet`/`hand_secondary`: `hand_secondary` is swept over every shipped model, `head_helmet` is asserted on one generated test rig, not swept. "self-attach refused at spawn with a 400": **yes, as of §14.5.1** — `spawn` and `update` now share one attach rule: an entity cannot hang off itself, and neither route will create or keep a child under a parent that does not exist. Live: spawn self → 400, spawn missing → 400, spawn valid parent → 200, update self → 400, update missing → 400. |
+| 5 — mining-ready hardening | **partly** | nested sockets + depth/cycle guard: **yes**, and better than planned (the catch is the caller, §14.2). Verified live 3-deep: trinket on the fish's `mouth` on the rod's `line_end` in the paw → roots `1944.5, 530.5` / `1956.7, 546.3` / `1827.6, 635.3`. `accepts` validation: **no, and now declared advisory** — `Socket.accepts` is parsed and surfaced to `__avatarDebug.sockets()`, no code compares a prop's `tags` to it, and §14.5.2 turned the claim into a documented decision plus a round-trip test. metamorphosis writes explicit `sockets`: **no** — its generator emits none and those rigs ride the `sockets.rs` heuristics. `head_helmet`/`hand_secondary`: `hand_secondary` is swept over every shipped model, `head_helmet` is asserted on one generated test rig, not swept. "self-attach refused at spawn with a 400": **yes, as of §14.5.1** — `spawn` and `update` now share one attach rule: an entity cannot hang off itself, and neither route will create or keep a child under a parent that does not exist. Live: spawn self → 400, spawn missing → 400, spawn valid parent → 200, update self → 400, update missing → 400. |
 | 6 — docs + MCP | **docs yes, MCP no** | `API.md` / `ARCHITECTURE.md` / `PLUGINS.md` / `MODEL_FORMAT.md` all carry the arc; `CONFIGURATION.md` needed nothing because no config key shipped. But `desktop-buddy-mcp` still exposes **14** `avatar_*` tools and `verify_docs.py` asserts exactly 14 tools and 14 mapped routes — no entity, prop or chest tool was ever added, and the count gate is what makes that a deliberate decision rather than drift |
 
 If the letter of the plan matters, the smallest set of changes that would close it:
@@ -1342,3 +1342,30 @@ because a prop whose validity depends on which route created it is a trap, and b
 a silent dangling child is invisible exactly where a typo is most likely (a guest's
 first attempt). The cost is that a caller can no longer create a child before its
 parent — no caller in the tree does, and the error names the id.
+
+#### 14.5.2 `accepts` is advisory, and says so
+
+The plan's Phase 5 asked for `accepts` validation: a socket lists what may hang in it,
+a prop declares `tags`, and a mismatched pair is refused. What shipped is the two
+vocabularies and no comparison — `Socket.accepts` is parsed (`sockets.rs`), carried
+through `GET /sockets`, shipped to the page (`main.js`, `__avatarDebug.sockets()`) and
+documented as enforcement in three places.
+
+It is **not** a one-liner, and this is the reason to write down: `Attachment::validate`
+is shape-only by design and a socket table is not a shape. For an `entity:` parent the
+table lives in the store's rig cache, so the store *could* check it; for the avatar the
+table lives in the loaded model, which the store does not own — so enforcing in the
+store would check one parent kind and silently skip the other. That is exactly the
+asymmetry §14.5.1 just removed, one layer down.
+
+So the field is now declared **advisory** in all four places a reader can meet it: the
+`Socket` doc comment, the `PropDef::tags` doc comment, `MODEL_FORMAT.md` and `API.md`.
+The claim is that it survives, not that it refuses:
+`accepts_is_advisory_but_survives_the_round_trip` pins that a declared list comes back
+in the serialised socket (which is what the page and any inspector read), and that a
+non-array is empty rather than a wildcard.
+
+Enforcement would need one owner for both tables — plausibly a prop/socket registry fed
+by `defs::PROPS` **and** the resolved tables of every rig the store can see. Until such
+a layer exists, a test that refuses a mismatch would have to special-case the avatar to
+pass, which is a claim, not a check.

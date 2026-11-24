@@ -303,10 +303,19 @@ Fields:
 | `bone` | the bone the socket hangs from; **absent** for a virtual surface |
 | `pos` / `rotation` / `scale` | local transform from the bone joint, in the bone's rotated frame |
 | `z` | draw-order band in the same units as `bone.z`/`part.z`: `back` 4, `chest_back` 6, `neck_collar` 12, `chest_front` 34, `head_helmet` 38, hands 42. A held prop interleaves with the body instead of always drawing on top |
-| `accepts` | tags a prop definition must match; empty means "anything" |
+| `accepts` | tags a prop definition declares for this socket. **Advisory today** — nothing compares them (see below); empty means "anything" |
 | `mirror` | the socket on the other side of the body, if any |
 | `kind` | `bone` or `virtual` |
 | `source` | `sidecar`, `manifest` or `derived` — how the entry came to exist |
+
+`accepts` is **advisory**. Both sides of the match exist — a socket lists ids and a
+prop declaration carries `tags` — but no code compares them, so a `bag` socket
+accepting a rod is a statement of intent, not a refusal. The reason is ownership: the
+socket table belongs to the loaded rig (or, for an `entity:` parent, to the store's rig
+cache) and the tag table to the prop catalogue, and no layer holds both; enforcing it
+in the store would re-create the avatar/entity split §14.5.1 removed. The field is
+still parsed, round-tripped and shipped here because it is the only place an author or
+an agent can see what a socket is for.
 
 A rig may define sockets in a `sockets.json` sidecar next to `rig.json`, or in a
 `sockets` array inside `model.json`/`rig.json`; anything not defined is

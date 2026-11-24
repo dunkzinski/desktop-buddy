@@ -99,8 +99,12 @@ pub struct Socket {
     /// `head_helmet` 38, `hand_primary` 42. A generated creature's own z values
     /// run about -8..31, which is what these are calibrated against.
     pub z: i32,
-    /// What may be attached: matched against a prop definition's tags. An empty
-    /// list means "anything".
+    /// What may be attached, **advisory only**: the list is parsed, kept and
+    /// shipped to the page (`__avatarDebug.sockets()`), but nothing compares it
+    /// to a prop definition's `tags` — no layer owns both tables (the store has
+    /// no rig, the socket table has no prop catalogue). Treat it as
+    /// documentation for the author and for a caller inspecting `GET /sockets`.
+    /// An empty list means "anything".
     pub accepts: Vec<String>,
     /// The socket on the other side of the body, when there is one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1146,6 +1150,32 @@ mod tests {
         assert_eq!(secondary.source, "derived");
         assert_ne!(secondary.bone.as_deref(), Some("arm3_l"));
         assert_ne!(secondary.bone.as_deref(), Some("arm2_r"));
+    }
+
+    #[test]
+    fn accepts_is_advisory_but_survives_the_round_trip() {
+        // Nothing compares a socket's `accepts` to a prop's `tags` (design doc
+        // §14.5.2) — but the list must reach the page intact, because
+        // `__avatarDebug.sockets()` and `GET /sockets` are where a caller reads it.
+        let sidecar = json!([
+            { "id": "hand_primary", "bone": "arm2_r", "accepts": ["rod", "tool"] },
+            { "id": "tail_grip", "bone": "arm3_l", "accepts": "rod" }
+        ]);
+        let sockets = resolve(&generated_rig(), Some(&sidecar));
+        let primary = find(&sockets, HAND_PRIMARY).expect("explicit socket");
+        assert_eq!(primary.accepts, vec!["rod".to_string(), "tool".to_string()]);
+        assert_eq!(
+            serde_json::to_value(primary).expect("serialises")["accepts"],
+            json!(["rod", "tool"])
+        );
+
+        // A non-array is not a wildcard and must not become one: empty stays empty.
+        let broken = find(&sockets, "tail_grip").expect("custom socket still attaches");
+        assert!(broken.accepts.is_empty(), "a string is not a list of tags");
+        assert_eq!(
+            serde_json::to_value(broken).expect("serialises")["accepts"],
+            json!([])
+        );
     }
 
     #[test]
