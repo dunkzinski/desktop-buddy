@@ -53,5 +53,10 @@ jobs:
           cargo test --lib --manifest-path plugins/survival/Cargo.toml
           cargo test --lib --manifest-path plugins/metamorphosis/Cargo.toml
 
+      - name: Page transform tests
+        # The prop transforms live in `ui/js` and no Rust test can reach them, so
+        # the mirror/attachment maths runs here against the real ES modules.
+        run: node --test tools/entity-transform.test.mjs
+
       - name: Documents match the source
         run: python tools/verify_docs.py

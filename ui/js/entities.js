@@ -240,8 +240,9 @@ export function chestBounds() {
         [rect.x, rect.y + rect.h],
       ];
       for (const [cx, cy] of corners) {
-        const x = matrix.x + (cx * cos - cy * sin) * matrix.scale;
-        const y = matrix.y + (cx * sin + cy * cos) * matrix.scale;
+        const mx = matrix.mirror < 0 ? -1 : 1;
+        const x = matrix.x + (mx * cx * cos - cy * sin) * matrix.scale;
+        const y = matrix.y + (mx * cx * sin + cy * cos) * matrix.scale;
         if (x < minX) minX = x;
         if (y < minY) minY = y;
         if (x > maxX) maxX = x;
@@ -470,6 +471,11 @@ function resolveRoot(id, slots, depth = 0) {
     // scale, not at gremlin scale.
     scale: base.scale * num(attach.scale, 1),
     z: base.z,
+    // `flip` mirrors the prop's **own** axes, so it multiplies into the parity
+    // the socket already had (a prop on a flipped prop is mirrored with it) and
+    // it leaves `rot`, `scale` and the nudge alone: the prop is turned around in
+    // place, it does not move and it does not shrink.
+    mirror: (base.mirror < 0 ? -1 : 1) * (attach.flip ? -1 : 1),
   };
   return slot.root;
 }
@@ -605,7 +611,9 @@ export function entitySnapshot() {
       visible: entity.visible !== false,
       bones: slot.entry.ctx.boneList.length,
       pose: slot.entry.ctx.clips || null,
-      root: root ? { x: round(root.x, 1), y: round(root.y, 1), rot: round(root.rot, 3) } : null,
+      root: root
+        ? { x: round(root.x, 1), y: round(root.y, 1), rot: round(root.rot, 3), scale: round(root.scale, 3), mirror: root.mirror < 0 ? -1 : 1 }
+        : null,
     });
   }
   return {

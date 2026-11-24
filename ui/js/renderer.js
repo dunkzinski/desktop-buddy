@@ -196,7 +196,12 @@ function drawPart(bone, part, preview = null) {
   ctx.translate(m.x, m.y);
   ctx.rotate(m.rot);
   const scale = m.scale;
-  ctx.scale(scale, scale);
+  // A mirrored prop (the other hand, a prop turned around) paints its own
+  // artwork reversed. The mirror lives *after* the rotation in the chain, so the
+  // axis is the prop's, not the screen's: `ctx.scale(-s, s)` here is exactly the
+  // `partWorldMatrix` mirror the offsets were computed against.
+  const mirror = m.mirror < 0 ? -1 : 1;
+  ctx.scale(scale * mirror, scale);
 
   const state = activeState(part);
   const blend = (key) => (Number.isFinite(avatar.blendshapes[key]) ? avatar.blendshapes[key] : 0);

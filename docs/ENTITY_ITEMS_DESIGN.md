@@ -681,8 +681,9 @@ Three things the implementation changed about the plan:
 
 Known limits, deliberately not fixed in this phase:
 
-* `attach.flip` is stored and validated but not rendered (mirroring a prop for
-  the off hand is Phase 5, with the nested-socket work).
+* `attach.flip` is stored, validated and **rendered** as of Phase 5 (§14.1): a prop
+  put in the off hand is drawn mirrored about its own axis. It was stored and
+  ignored through Phases 1–4.
 * `stage` resolves to the ground under the avatar; the chest will own a real
   anchor in Phase 3.
 * `avatarBounds()` (the click-through region) covers the avatar only, so a prop
@@ -1109,8 +1110,9 @@ includes everything in §12, all of it driven by watching the thing run:
 
 Not Phase 4 work — Phase 5, as named back in §8's known limits:
 
-* `attach.flip` is stored and validated but **not rendered**, so a prop mirrored for
-  the off hand is drawn unmirrored.
+* ~~`attach.flip` is stored and validated but **not rendered**~~ — rendered in Phase 5
+  (§14.1). It is a mirror of the prop's own artwork, composed as a parity through
+  the transform chain.
 * **Nested sockets** — a socket on a *prop* rather than on the avatar. The rig
   supports sockets per bone; the store resolves attachment chains, but nothing yet
   authors a socket inside an item (a lamp on a rod, a fish on a line).
@@ -1118,3 +1120,48 @@ Not Phase 4 work — Phase 5, as named back in §8's known limits:
   small on `xenomorph-7`.
 
 Nothing in Phase 4's plan is unshipped. The remaining work is a new arc.
+
+---
+
+## 14. Phase 5 — the mirror, nested props, fitting
+
+### 14.1 `attach.flip` is rendered
+
+The flag existed since Phase 1 and nothing read it. Resolution happens in
+`ui/js/entities.js::resolveRoot`, so that is where it had to be composed — but not
+as a transform of the attachment: **a flip does not move, turn or resize a prop.**
+It reverses the prop's own artwork, which in a flattened
+`translate · rotate · scale` chain is a *parity*, not a sign on one number.
+
+| Layer | Change |
+|---|---|
+| `entities.js::resolveRoot` | `mirror = base.mirror * (attach.flip ? -1 : 1)`; `x`, `y`, `rot`, `scale` and the nudge stay exactly what the caller asked for |
+| `rig.js::computeWorldInto` | a child offset is `(mirror·x, y)` and its local rotation is negated (`parent.rot + mirror·θ`), because a reflection conjugates every angle inside it |
+| `rig.js::partWorldMatrixIn`, `socketTransformIn`, `partBox` | the same parity, so the painter, the selection box and a nested socket all agree |
+| `renderer.js::drawPart` | `ctx.scale(scale · mirror, scale)` — the artwork reverses |
+| `entities.js::entitySnapshot` | each root reports `mirror`, so a probe reads the drawn handedness instead of inferring it |
+
+The mirror sits **after** the root rotation (`T · R(rot) · S(mirror·s, s)`), so the
+axis it reflects about is the prop's own vertical. That is the difference between
+"mirrored" and "flipped like a sprite": with the reflection composed as
+`R(-rot) · S(-1,1) · R(rot)` a rotated prop would look like a *different* prop.
+
+Unmirrored rigs are arithmetically untouched (parity 1), which is why the avatar,
+the editor and every existing prop kept their numbers.
+
+**Proof**
+
+* `tools/entity-transform.test.mjs` — 9 tests, run by CI as *Page transform tests*
+  (`node --test`). They pin the unmirrored numbers as well as the mirror chain, so
+  "nothing reads this flag" cannot come back quietly; `cargo` cannot see `ui/js` at
+  all, which is why this harness exists.
+* Live, two `rubber_duck`s, same seed 4242, `world` at `[700, 300]` and
+  `[820, 300]`, the second `flip: true`. Their roots are identical apart from the
+  parity (`x 700/820`, `y 300/300`, `rot 0/0`, `scale 1/1`, `mirror 1/-1`), and the
+  beaks (`#e88a2c`) measure **+38.4 px** and **−39.4 px** from their own roots
+  (36 vs 38 beak pixels — the same beak, reversed). `scratch/flip1.png`.
+* The axis rotates with the prop: the same pair at `rotation: 1.2` puts the beak at
+  **−94.8°**, which matches the prop-axis prediction (θ + 180° − local) to within a
+  pixel and is 40° away from what a screen-space flip would give. `scratch/flip2.png`.
+
+---

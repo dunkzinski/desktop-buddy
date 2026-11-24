@@ -407,12 +407,18 @@ export function computeWorldInto(ctx, origin) {
     y: origin && Number.isFinite(origin.y) ? origin.y : 0,
     rot: origin && Number.isFinite(origin.rot) ? origin.rot : 0,
     scale: origin && Number.isFinite(origin.scale) ? origin.scale : 1,
+    // A mirrored rig (`attach.flip`): -1 means every local x is negated *after*
+    // the root rotation, so the mirror axis is the root's own y axis rather than
+    // the screen's. It propagates to the children, and it negates their local
+    // rotations — which is what a mirror does to an angle.
+    mirror: origin && origin.mirror < 0 ? -1 : 1,
   };
   ctx.world = {};
   for (const id of ctx.order) {
     const bone = ctx.bones[id];
     if (!bone) continue;
     const parent = bone.parent && ctx.world[bone.parent] ? ctx.world[bone.parent] : root;
+    const mirror = parent.mirror < 0 ? -1 : 1;
     const cos = Math.cos(parent.rot);
     const sin = Math.sin(parent.rot);
     const clip = animationOffset(bone, ctx);
@@ -423,10 +429,11 @@ export function computeWorldInto(ctx, origin) {
     const dx = num(override.x, 0);
     const dy = num(override.y, 0);
     ctx.world[id] = {
-      x: parent.x + (ox * cos - oy * sin) * parent.scale + dx,
-      y: parent.y + (ox * sin + oy * cos) * parent.scale + dy + bob,
-      rot: parent.rot + localRotation(bone, ctx),
+      x: parent.x + (mirror * ox * cos - oy * sin) * parent.scale + dx,
+      y: parent.y + (mirror * ox * sin + oy * cos) * parent.scale + dy + bob,
+      rot: parent.rot + mirror * localRotation(bone, ctx),
       scale: parent.scale * localScale(bone, ctx),
+      mirror,
     };
   }
   return ctx.world;
@@ -519,16 +526,18 @@ export function partWorldMatrix(bone, part) {
 export function partWorldMatrixIn(world, bone, part) {
   const w = world[bone.id];
   if (!w) return null;
+  const mirror = w.mirror < 0 ? -1 : 1;
   const scale = w.scale * num(part.scale, 1);
   const cos = Math.cos(w.rot);
   const sin = Math.sin(w.rot);
   const ox = part.offset[0];
   const oy = part.offset[1];
   return {
-    x: w.x + (ox * cos - oy * sin) * scale,
-    y: w.y + (ox * sin + oy * cos) * scale,
-    rot: w.rot + num(part.rotation, 0),
+    x: w.x + (mirror * ox * cos - oy * sin) * scale,
+    y: w.y + (mirror * ox * sin + oy * cos) * scale,
+    rot: w.rot + mirror * num(part.rotation, 0),
     scale,
+    mirror,
   };
 }
 
@@ -577,6 +586,7 @@ export function partBox(bone, part) {
   const m = partWorldMatrix(bone, part);
   if (!m) return { x: 0, y: 0, w: 0, h: 0 };
   const rect = partLocalRect(part);
+  const mirror = m.mirror < 0 ? -1 : 1;
   const cos = Math.cos(m.rot);
   const sin = Math.sin(m.rot);
   const corners = [
@@ -585,8 +595,8 @@ export function partBox(bone, part) {
     [rect.x + rect.w, rect.y + rect.h],
     [rect.x, rect.y + rect.h],
   ].map((corner) => [
-    m.x + (corner[0] * cos - corner[1] * sin) * m.scale,
-    m.y + (corner[0] * sin + corner[1] * cos) * m.scale,
+    m.x + (mirror * corner[0] * cos - corner[1] * sin) * m.scale,
+    m.y + (mirror * corner[0] * sin + corner[1] * cos) * m.scale,
   ]);
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const corner of corners) {
@@ -620,15 +630,17 @@ export function socketTransformIn(world, socket) {
   if (!socket || !socket.bone) return null;
   const w = world[socket.bone];
   if (!w) return null;
+  const mirror = w.mirror < 0 ? -1 : 1;
   const scale = w.scale * num(socket.scale, 1);
   const pos = Array.isArray(socket.pos) ? socket.pos : [0, 0];
   const cos = Math.cos(w.rot);
   const sin = Math.sin(w.rot);
   return {
-    x: w.x + (pos[0] * cos - pos[1] * sin) * scale,
-    y: w.y + (pos[0] * sin + pos[1] * cos) * scale,
-    rot: w.rot + num(socket.rotation, 0),
+    x: w.x + (mirror * pos[0] * cos - pos[1] * sin) * scale,
+    y: w.y + (mirror * pos[0] * sin + pos[1] * cos) * scale,
+    rot: w.rot + mirror * num(socket.rotation, 0),
     scale,
+    mirror,
   };
 }
 

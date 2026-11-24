@@ -949,7 +949,7 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/plugins.js` | **Leaf** plugin-backed UI gate: `setupPluginGate` (one `GET /plugins` read, retried while the API is still binding, plus a `plugins` event listener), `applyPluginStatus`, `pluginActive` (only `active` counts — a failed or parked plugin does not serve its routes), `pluginStates` and `gatePluginUi`, which shows/hides every `data-plugin="<id>"` element. The Survival / Metamorphose control-panel buttons and the Settings Survival tab ship **hidden** in `index.html`, so a missing `.wasm` removes the option instead of leaving a dead end |
 | `ui/js/state.js` | **Leaf** shared state objects (`avatar`, `RT`, `speech`, `gaze`, `viewport`, `watcher`, `ai` — the last mirroring `{active, profiles, health, checked}` for the **AI Brain** row), constants (`EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), helpers, `toast`, `updateStatusUI`, `setExpression`, the expression lifecycle (`EXPRESSION_SETTLE_SECS`, `reactExpression` — a program/event reaction with a hold that reverts to neutral, `settleExpression` — the per-frame ease back to neutral, guarded by holds, bubbles, walk/wave and STT state), `snapshot`, `setDirty`, `activeState` (which routes the lip-sync mouth variant through `mouthState`), `blinkActive`, `markManual` |
 | `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset` — the hover head tilt rides on it, and `rummageOffset` is the procedural dig the scavenging activity blends in through `avatar.rummage`, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld` — plus `computeWorldInto(ctx, origin)` so a **prop entity** evaluates the same maths from its own root), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix` — the one world matrix the renderer and the editor both draw through, `partLocalRect` — how each shape type is anchored inside that matrix, `partBox`, `partWorldMatrixIn` for a prop's private world), **sockets** (`socketWorld`, `socketTransformIn`, `socketList`, `socketById`, `makeRigContext` — a private, `lifeSigns: false` context for a prop rig), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
-| `ui/js/entities.js` | **Prop entities** on the canvas: `refresh` (`GET /entities`, coalesced), `stepEntities` (per-entity clock + state→clip, with `animator.js::sampleClip`), `resolveRoot` (avatar socket, `entity:<id>` nesting, the `stage` ground, depth 4 + cycle guard), `entityDrawables` (z-sorted parts in the avatar's own units), `entitySnapshot` (the `__avatarDebug.entities()` accessor), `markDirty` (fed by the `entity-*` frames) |
+| `ui/js/entities.js` | **Prop entities** on the canvas: `refresh` (`GET /entities`, coalesced), `stepEntities` (per-entity clock + state→clip, with `animator.js::sampleClip`), `resolveRoot` (avatar socket, `entity:<id>` nesting, the `stage` ground, depth 4 + cycle guard, and the `attach.flip` mirror parity), `entityDrawables` (z-sorted parts in the avatar's own units), `entitySnapshot` (the `__avatarDebug.entities()` accessor, including each root's `mirror`), `markDirty` (fed by the `entity-*` frames) |
 | `ui/js/animator.js` | Custom keyframe clips: catalogue (`animationClips`, `listAnimations`), transport (`playAnimation`, `stopAnimation`, `stopPlayback`, `seekAnimation`, `stepAnimation`), sampling (`sampleAnimation`), authoring (`setAnimationBone`, `captureKeyframe`, `addClip`, `renameClip`, `deleteClip`, `setClipDuration`, `setClipLoop`) and finished listeners (`onAnimationFinished`) |
 | `ui/js/renderer.js` | Canvas pipeline: DPR resize (`initRenderer`, `resizeCanvas`), `drawFace`, `drawShape`, `drawPart`, rig overlay gizmos, `render`; `updateGazeDir` turns the smoothed aim point into a clamped pupil vector and `isPupilPart` decides between moving the pupil sprite or the whole eye; the mouth squash reads `speech.mouthSmooth` (the same cadence as the sprite variants) |
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
@@ -2502,6 +2502,36 @@ Two rules worth keeping:
   protocol, and `GET /entities` is the whole truth.
 * **Fit belongs to the attachment** (`attach.scale`): an item put into a pod is
   drawn at 45% of its own scale rather than at gremlin scale.
+
+### The mirror: `attach.flip` is a parity, not a negative scale
+
+`Attachment::flip` was stored and validated from Phase 1 and read by nothing, so a
+prop put in the off hand drew mirrored. It is not a transform of the *attachment*
+— it does not move the prop, turn it or resize it. It reverses the prop's **own**
+artwork, so the page carries it as a parity bit through the transform chain:
+
+* `resolveRoot` (in `ui/js/entities.js`) composes `mirror = base.mirror * (flip ?
+  -1 : 1)`, so `x`, `y`, `rot` and `scale` stay exactly what the caller asked for
+  and the nudge offset is untouched. A prop hung on a flipped prop inherits the
+  parity (`base.mirror` comes from `socketTransformIn`), which is what makes a fish
+  on a flipped rod come out on the rod's other side.
+* `rig.js::computeWorldInto` propagates it per bone: a child offset is
+  `(mirror·x, y)`, and its local rotation is negated (`parent.rot + mirror·θ`),
+  because a reflection conjugates every angle inside it. `partWorldMatrixIn` and
+  `socketTransformIn` do the same, and the renderer's `ctx.scale(scale · mirror,
+  scale)` paints the mirrored artwork.
+* The mirror sits **after** the root rotation (`T · R(rot) · S(mirror·s, s)`), so
+  the axis it reflects about is the prop's own vertical, not the screen's: a prop
+  rotated 1.2 rad mirrors about a line 1.2 rad off vertical. A screen-space flip
+  would have been `R(−rot) · S(−1,1) · R(rot)` and would look like a different
+  prop as soon as anything rotated it.
+
+Unmirrored rigs are untouched: parity is 1 unless an entity asks for it, so the
+avatar, the editor and every existing prop compute the same numbers as before.
+`tools/entity-transform.test.mjs` pins both halves (the unmirrored numbers and the
+mirrored chain) against the real modules, which is the only automated proof this
+lives in `ui/js` at all — `cargo` cannot see it. CI runs it as
+**Page transform tests**.
 
 ### `/parts`, `/part`, `/mouth`
 

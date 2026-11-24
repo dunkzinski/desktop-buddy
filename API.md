@@ -470,6 +470,11 @@ prop-agnostic: `{"state": "cast"}` is all a caller needs to animate a rod.
 * `attach.parent` is `"avatar"`, `"stage"` or `"entity:<id>"`; `socket` names a
   socket on that parent. An omitted `attach.rotation` is filled from the prop's
   grip defaults, so a rod is gripped rather than lying along the forearm.
+* `attach.flip` (`false` by default) mirrors the prop's **own** artwork — what a
+  prop in the off hand needs. It does not move, turn or resize the prop: `rotation`,
+  `offset` and `scale` mean the same thing either way, and a prop hung on a flipped
+  prop inherits the mirror. The axis is the prop's own vertical, so a rotated prop
+  is mirrored about its rotated axis rather than the screen's.
 * `traits` and `seed` default from the id; `params` are merged into the
   generator and change the look (a param change regenerates the rig).
 * Refused with a 400: unknown def, unknown state, bad attachment shape, more than
