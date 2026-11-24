@@ -21,6 +21,7 @@ export function openBehaviourCard() {
   visible = true;
   card.classList.remove("hidden");
   card.setAttribute("aria-hidden", "false");
+  toggle?.classList.add("active");
   toggle?.setAttribute("aria-pressed", "true");
   wireRegions();
 }
@@ -30,6 +31,7 @@ export function closeBehaviourCard() {
   visible = false;
   card.classList.add("hidden");
   card.setAttribute("aria-hidden", "true");
+  toggle?.classList.remove("active");
   toggle?.setAttribute("aria-pressed", "false");
   wireRegions();
 }

@@ -176,6 +176,10 @@ export function isChestCardOpen() {
 
 export function openChestCard() {
   if (!card) return;
+  // The tile in Actions lights up while its card is on screen, the way the
+  // survival and metamorphosis tiles do — `aria-pressed` is for the screen reader,
+  // `.active` is for the eye, and forgetting one makes the two disagree.
+  els?.toggle?.classList.add("active");
   els?.toggle?.setAttribute("aria-pressed", "true");
   if (!visible) {
     visible = true;
@@ -193,6 +197,7 @@ export function openChestCard() {
 export function closeChestCard() {
   if (!card || !visible) return;
   visible = false;
+  els?.toggle?.classList.remove("active");
   els?.toggle?.setAttribute("aria-pressed", "false");
   card.classList.add("hidden");
   card.setAttribute("aria-hidden", "true");
