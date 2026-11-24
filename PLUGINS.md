@@ -123,10 +123,11 @@ fit).
   hangs from a prop. The socket is looked up on the **parent's own generated rig**
   (the rod declares `line_end` on its bobber), the child inherits the parent's
   `flip` parity and fitted scale, and a socket the parent does not have simply draws
-  nothing — the spawn still succeeds. A **missing parent** is not checked on `spawn`
-  (the child exists, invisible, until the parent does) but is refused by `update`
-  (`attachment parent "x" does not exist`); that asymmetry is verified, not intended
-  — see design doc §14.2. Depth is capped at 4 and a cycle resolves to invisible.
+  nothing — the spawn still succeeds.
+* **Both `spawn` and `update` refuse an entity attaching to itself.** Both also
+  refuse a missing parent entity (`attachment parent "x" does not exist`). A valid
+  existing parent is unchanged. The old asymmetry — spawn tolerating a missing
+  parent while update refused it — is eliminated.
   `attach.flip` and `attach.scale` are ordinary fields on the same object.
 * **Never name a state the def does not declare.** The host refuses it (400 on HTTP,
   `ok:false` to a guest) and the prop does not appear at all — which reads, from the

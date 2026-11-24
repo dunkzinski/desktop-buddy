@@ -461,6 +461,12 @@ impl EntityStore {
             if attachment.rotation.is_none() {
                 attachment.rotation = def.grip_rotation(&attachment.socket);
             }
+            // Unified attach target validation: both spawn and update must
+            // check that a child cannot attach to itself, and that a missing
+            // parent entity is refused (not tolerated as in spawn's old behaviour).
+            if let Some(parent) = attachment.parent_entity() {
+                self.check_attach_target(&parent, &id)?;
+            }
         }
         let traits = request
             .traits
@@ -1231,6 +1237,116 @@ mod tests {
             None,
         );
         assert!(itself.is_err());
+    }
+
+    #[test]
+    fn spawn_refuses_self_attachment_and_a_missing_parent() {
+        let mut store = store();
+        let seat = |parent: &str| {
+            Some(Attachment {
+                parent: parent.to_string(),
+                socket: "hand_primary".to_string(),
+                flip: false,
+                rotation: None,
+                offset: None,
+                scale: None,
+            })
+        };
+
+        // The id this spawn would create, named as its own parent.
+        let itself = store.spawn(SpawnRequest {
+            def: "fishing_rod".to_string(),
+            id: Some("doc:self".to_string()),
+            attach: seat("entity:doc:self"),
+            ..Default::default()
+        });
+        let err = itself.expect_err("self-attach must be refused at spawn");
+        assert!(err.contains("cannot attach to itself"), "{err}");
+        assert!(
+            store.state_of("doc:self").is_none(),
+            "a refused spawn must not leave a row behind"
+        );
+
+        // A parent nobody ever spawned is a typo, not an order to be honoured.
+        let missing = store.spawn(SpawnRequest {
+            def: "fishing_rod".to_string(),
+            id: Some("doc:child".to_string()),
+            attach: seat("entity:doc:absent"),
+            ..Default::default()
+        });
+        let err = missing.expect_err("a missing parent must be refused at spawn");
+        assert!(err.contains("does not exist"), "{err}");
+        assert_eq!(store.len(), 0, "neither refusal may insert anything");
+
+        // A real parent is unchanged: the child spawns and keeps the seat.
+        spawn_rod(&mut store, Some("doc:rod"));
+        let child = store
+            .spawn(SpawnRequest {
+                def: "fishing_rod".to_string(),
+                id: Some("doc:child".to_string()),
+                attach: seat("entity:doc:rod"),
+                ..Default::default()
+            })
+            .expect("an existing parent is still allowed");
+        assert_eq!(child.entity.attach.expect("attached").parent, "entity:doc:rod");
+    }
+
+    #[test]
+    fn spawn_does_not_extend_a_broken_or_cyclic_chain() {
+        let mut store = store();
+        let seat = |parent: &str| {
+            Some(Attachment {
+                parent: parent.to_string(),
+                socket: "hand_primary".to_string(),
+                flip: false,
+                rotation: None,
+                offset: None,
+                scale: None,
+            })
+        };
+
+        // Only `load` can produce these two shapes: every route that writes an
+        // attachment now walks the chain. They are repaired-by-refusal, not by
+        // trusting the save file — a child hung off a ghost would be a second
+        // dangling row instead of one.
+        let mut dangling = spawn_rod(&mut store, Some("doc:dangling"));
+        dangling.attach = Attachment {
+            parent: "entity:doc:ghost".to_string(),
+            socket: "hand_primary".to_string(),
+            flip: false,
+            rotation: None,
+            offset: None,
+            scale: None,
+        }
+        .into();
+        store.entities.insert(dangling.id.clone(), dangling);
+        let err = store
+            .spawn(SpawnRequest {
+                def: "fishing_rod".to_string(),
+                id: Some("doc:on-dangling".to_string()),
+                attach: seat("entity:doc:dangling"),
+                ..Default::default()
+            })
+            .expect_err("a ghost grandparent is still a refusal");
+        assert!(err.contains("doc:ghost"), "{err}");
+
+        // A cycle can only be *closed* by `update` — a brand-new entity has no
+        // descendants — but spawn must not hang off one either.
+        let mut left = spawn_rod(&mut store, Some("doc:left"));
+        let mut right = spawn_rod(&mut store, Some("doc:right"));
+        left.attach = seat("entity:doc:right").unwrap().into();
+        right.attach = seat("entity:doc:left").unwrap().into();
+        store.entities.insert(left.id.clone(), left);
+        store.entities.insert(right.id.clone(), right);
+        let err = store
+            .spawn(SpawnRequest {
+                def: "fishing_rod".to_string(),
+                id: Some("doc:on-cycle".to_string()),
+                attach: seat("entity:doc:left"),
+                ..Default::default()
+            })
+            .expect_err("a cyclic chain must not accept a child");
+        assert!(err.contains("cyclic"), "{err}");
     }
 
     #[test]

@@ -1221,6 +1221,8 @@ Four discoveries worth keeping:
    `API.md` and `PLUGINS.md` as the current behaviour; unifying the two is a decision
    (refuse on spawn, or tolerate on update), so it is left open rather than settled
    inside a docs pass.
+   **Resolved in §14.5.1:** `spawn` now calls the same `check_attach_target` as
+   `update`, so both refuse a self-attach and a missing parent.
 
 The two socket vocabularies are pinned against drifting: `every_animation_is_a_clip_
 the_generator_emits` already required every `own_sockets` id to exist in the
@@ -1289,13 +1291,54 @@ plan's Phase 5 and Phase 6 were never closed, and the arc §13–§14 calls "Pha
 | 2 — ABI + survival rod | **landed** | `host_entities`, summaries-not-rigs, guest call-order tests, live cast→pounce→catch (§9) |
 | 3 — the chest | **landed**, three plan items changed | `shape:"rect"` was replaced by `poly` (a faceted shell needs geometry, §10); the 5–8 slot capacity was removed on purpose (§12). Two items did **not** ship: `dismiss_after_ms` auto-dismiss (grep finds it only in this document — the pod stays until the card's Fold or a caller dismisses it) and the single `avatar.activity ∈ {none, scavenge, chest}` lock (§2.8 item 5) — the page kept two walk objects (`scavengeWalk`, `chestWalk`) plus `avatar.manualMoves`, which arbitrates two activities fine and was never tested with a third |
 | 4 — scavenge bag + loot→entities | **landed as §11–§13**, two criteria superseded | The bag carries counts, and the only tools (rod, bag) are **withdrawn from the pod** (§12.4, §12.6), so "loot that yields a tool creates a seeded entity" and "a looted tool survives restart with the same seed/params" lost their subject rather than being met. §2.4(A)'s `item_id` on an entity was never built and `chest::put` never touches the guest's inventory, so "bag and chest never both claim one item" is vacuously true — the two stores never name the same item |
-| 5 — mining-ready hardening | **partly** | nested sockets + depth/cycle guard: **yes**, and better than planned (the catch is the caller, §14.2). Verified live 3-deep: trinket on the fish's `mouth` on the rod's `line_end` in the paw → roots `1944.5, 530.5` / `1956.7, 546.3` / `1827.6, 635.3`. `accepts` validation: **no** — `Socket.accepts` is parsed and surfaced to `__avatarDebug.sockets()`, and no code compares a prop's `tags` to it. metamorphosis writes explicit `sockets`: **no** — its generator emits none and those rigs ride the `sockets.rs` heuristics. `head_helmet`/`hand_secondary`: `hand_secondary` is swept over every shipped model, `head_helmet` is asserted on one generated test rig, not swept. "self-attach refused at spawn with a 400": **refuted** — spawn answers 200 (`doc:self` was created and the page drew nothing for it), the refusal ("an entity cannot attach to itself") only fires on `update`; this is the same spawn/update asymmetry as §14.2 #4. "resolution under ~1 ms for a 3-deep chain": **never measured** |
+| 5 — mining-ready hardening | **partly** | nested sockets + depth/cycle guard: **yes**, and better than planned (the catch is the caller, §14.2). Verified live 3-deep: trinket on the fish's `mouth` on the rod's `line_end` in the paw → roots `1944.5, 530.5` / `1956.7, 546.3` / `1827.6, 635.3`. `accepts` validation: **no** — `Socket.accepts` is parsed and surfaced to `__avatarDebug.sockets()`, and no code compares a prop's `tags` to it. metamorphosis writes explicit `sockets`: **no** — its generator emits none and those rigs ride the `sockets.rs` heuristics. `head_helmet`/`hand_secondary`: `hand_secondary` is swept over every shipped model, `head_helmet` is asserted on one generated test rig, not swept. "self-attach refused at spawn with a 400": **yes, as of §14.5.1** — `spawn` and `update` now share one attach rule: an entity cannot hang off itself, and neither route will create or keep a child under a parent that does not exist. Live: spawn self → 400, spawn missing → 400, spawn valid parent → 200, update self → 400, update missing → 400. |
 | 6 — docs + MCP | **docs yes, MCP no** | `API.md` / `ARCHITECTURE.md` / `PLUGINS.md` / `MODEL_FORMAT.md` all carry the arc; `CONFIGURATION.md` needed nothing because no config key shipped. But `desktop-buddy-mcp` still exposes **14** `avatar_*` tools and `verify_docs.py` asserts exactly 14 tools and 14 mapped routes — no entity, prop or chest tool was ever added, and the count gate is what makes that a deliberate decision rather than drift |
 
 If the letter of the plan matters, the smallest set of changes that would close it:
-check the attach target on `spawn` too (one call site, and it satisfies Phase 5's
-self-attach criterion); either enforce `accepts` on attach or delete the field and its
-claim from `MODEL_FORMAT.md`; have the metamorphosis generator emit `sockets`; ship
-`dismiss_after_ms` or drop it from §2.3; add a timing assertion if the ~1 ms budget is
-real; and add MCP tools for entities only when an agent has a use for them. None of
-these blocks the current arc — which is why they are recorded rather than done.
+unify the attach rule across `spawn` and `update` (done, §14.5.1); either enforce
+`accepts` on attach or stop claiming it (decided advisory, §14.5.2); have the
+metamorphosis generator emit `sockets` (decided against, §14.5.4); ship
+`dismiss_after_ms` or drop it from §2.3 (shipped, §14.5.3); add a timing assertion if
+the ~1 ms budget is real (replaced by a measured complexity test, §14.5.6); and add MCP
+tools for entities only when an agent has a use for them (skipped on purpose, §14.5.5).
+
+### 14.5 The closeout pass
+
+§14.4 answered "what landed?"; this section is the follow-up pass that closed the
+small, real gaps it found rather than leaving them as footnotes. Each subsection is
+one scoped commit, with the before/after taken from a command.
+
+#### 14.5.1 One attach rule for both routes
+
+Before: `store.rs::check_attach_target` was called from `update` only, so the same
+attachment that `update` refused with a 400 — `entity:<its own id>`, or a parent that
+never existed — `spawn` accepted with a 200 and kept in the roster, invisible. That is
+the asymmetry §14.2 #4 recorded.
+
+Now: `spawn` runs the same check on the id it is about to create, so both routes answer
+`an entity cannot attach to itself` and `attachment parent "x" does not exist`. The walk
+is the same one `update` already had, which means spawn also refuses to extend a chain
+that is already broken or cyclic (only `load` can produce those shapes — a save written
+before this rule — and the refusal is what stops one stale row becoming a subtree).
+
+Internal spawns were audited before the flip, because a rule that breaks the chest
+would be a worse bug than the asymmetry: `chest::summon` spawns the pod **before**
+`seed_loot` hangs trinkets on `entity:chest` (chest.rs:217 then :110), `find`/`take`
+spawn into `world`, and the nesting tests spawn parents first. Nothing in the tree
+spawns a child before its parent.
+
+Tests: `spawn_refuses_self_attachment_and_a_missing_parent`,
+`spawn_does_not_extend_a_broken_or_cyclic_chain` (the second constructs the two shapes
+only `load` can make), and `update`'s cycle test keeps the closing route honest — a
+brand-new entity has no descendants, so only `update` can close a loop.
+
+Live, on the built app: spawn self → **400**, spawn to `doc:absent` → **400**, spawn of
+an anvil onto `doc:rod`/`line_end` → **200** with the roster showing
+`doc:anvil → entity:doc:rod`, update self → **400**, update to a missing parent →
+**400**. Same rule, same words, both routes.
+
+**Decision to record:** the refusal is on `spawn` rather than tolerance on `update`
+because a prop whose validity depends on which route created it is a trap, and because
+a silent dangling child is invisible exactly where a typo is most likely (a guest's
+first attempt). The cost is that a caller can no longer create a child before its
+parent — no caller in the tree does, and the error names the id.

@@ -487,11 +487,9 @@ prop-agnostic: `{"state": "cast"}` is all a caller needs to animate a rod.
   64 entities, `params` over 4 KiB. A missing *socket* on a parent that does exist is
   **not** an error — the child simply draws nothing (verified: 200, and the roster
   keeps the child).
-* A missing **parent entity** is tolerated by `spawn` and refused by `update`: spawn
-  creates the child with a dangling parent (it stays invisible until the parent
-  exists) and answers 200, while `update` walks the chain and answers `attachment
-  parent "x" does not exist`. Both are pinned in §14.2 of the design doc as an
-  inconsistency, not a design.
+* `attach.parent` cannot be `entity:<id>` for the entity's own id — spawn and
+  update both refuse an entity attaching to itself, and both refuse a missing
+  parent entity. A valid existing parent is unchanged.
 
 Nesting is a normal attachment, not a special case — a socket on a **prop**:
 
