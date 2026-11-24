@@ -2344,13 +2344,25 @@ asked for. Three rules make it work:
 A rummage that finds nothing still spills its duds. That is the point.
 
 **The beat.** Everything is spawned at once, but each dud carries `reveal_at` 300 ms
-after the one before, and the find is revealed after the last. The host owns that
+after the one before (the first waits `FIRST_REVEAL_MS`, so the page can hear about
+it), and the find is revealed after the last. The host owns that
 timing (it is the thing that knows the order); the page owns the *motion*: an
 entity is not drawn before its `reveal_at`, and the first frame after it arms a
 throw — a `sin(πt)` arc from the pod's mouth to the dud's own landing spot, with a
 spin that settles as it lands (`entities.js::tossOffset`, 460 ms). Nothing is
 animated by the host, so a rummage works even if the page is mid-refetch: the
 worst case is a dud that lands without a flight.
+
+Each dud spawns in the state **`tumbling`**, and that shared name is the whole
+trick: `clip_for_state` turns a state into a clip, so one word from the host gives
+the duck a flap, the anvil a tip, the magnifier a wobble and the boot an
+end-over-end flip — no per-prop branch anywhere in the rummage code.
+
+**A spawn the page never hears about is drawn two seconds late.** `chest::find`
+spawns through the store, not the HTTP route, so it emits its own
+`entity-spawned` frames — the first version did not, and the debris arrived after
+its own throw had already landed. `refresh()` claims its dirt *before* fetching, so
+a spawn landing mid-fetch re-arms the flag instead of waiting for the reconcile.
 
 `chest-find` also tells the gremlin, and that listener is what makes the
 performance script-agnostic — a rummage started by `curl` or a plugin makes the

@@ -617,10 +617,11 @@ fn junk_rig(
     bones: Vec<Value>,
     sockets: Vec<Value>,
     animation: Option<(&str, Value)>,
+    thrown: Option<(&str, Value)>,
 ) -> Value {
     let mut animations = serde_json::Map::new();
-    if let Some((clip_name, value)) = animation {
-        animations.insert(clip_name.to_string(), value);
+    for entry in [animation, thrown].into_iter().flatten() {
+        animations.insert(entry.0.to_string(), entry.1);
     }
     json!({
         "format": 1,
@@ -679,7 +680,29 @@ fn rubber_duck(rng: &mut Rng, params: &Value) -> Value {
             kf(1.0, json!({ "root": { "scale": 1.0 }, "head": { "rotation": 0.0 } })),
         ],
     );
-    junk_rig("rubber_duck", "Rubber duck", size, bones, vec![], Some(("squeaking", squeaking)))
+    // Thrown: the head flaps, the body squashes on landing. A bath toy has no
+    // dignity to lose, which is exactly why it is funny at speed.
+    let tumbling = clip(
+        900.0,
+        false,
+        vec![
+            kf(0.0, json!({ "root": { "scale": 1.0, "rotation": 0.0 }, "head": { "rotation": 0.0 } })),
+            kf(0.2, json!({ "root": { "scale": 1.14, "rotation": 0.12 }, "head": { "rotation": -0.55 } })),
+            kf(0.45, json!({ "root": { "scale": 1.0, "rotation": -0.1 }, "head": { "rotation": 0.5 } })),
+            kf(0.68, json!({ "root": { "scale": 0.88, "rotation": 0.05 }, "head": { "rotation": -0.22 } })),
+            kf(0.85, json!({ "root": { "scale": 1.04, "rotation": 0.0 }, "head": { "rotation": 0.1 } })),
+            kf(1.0, json!({ "root": { "scale": 1.0, "rotation": 0.0 }, "head": { "rotation": 0.0 } })),
+        ],
+    );
+    junk_rig(
+        "rubber_duck",
+        "Rubber duck",
+        size,
+        bones,
+        vec![],
+        Some(("squeaking", squeaking)),
+        Some(("tumbling", tumbling)),
+    )
 }
 
 fn anvil(rng: &mut Rng, params: &Value) -> Value {
@@ -750,6 +773,22 @@ fn anvil(rng: &mut Rng, params: &Value) -> Value {
         bones,
         vec![socket("anvil_horn", "horn", [-size * 1.05, -size * 0.18], "Horn")],
         Some(("dropping", dropping)),
+        // Thrown: it does not tumble, it *tips* — ninety kilos of wrong answer
+        // tumbling like a duck would be a different joke.
+        Some((
+            "tumbling",
+            clip(
+                820.0,
+                false,
+                vec![
+                    kf(0.0, json!({ "root": { "rotation": -0.42, "scale": 1.0 } })),
+                    kf(0.35, json!({ "root": { "rotation": 0.24, "scale": 1.06 } })),
+                    kf(0.55, json!({ "root": { "rotation": -0.1, "scale": 0.82 } })),
+                    kf(0.72, json!({ "root": { "rotation": 0.05, "scale": 1.03 } })),
+                    kf(1.0, json!({ "root": { "rotation": 0.0, "scale": 1.0 } })),
+                ],
+            ),
+        )),
     )
 }
 
@@ -795,6 +834,23 @@ fn magnifying_glass(rng: &mut Rng, _params: &Value) -> Value {
         bones,
         vec![socket("lens", "root", [0.0, 0.0], "Lens")],
         Some(("peering", peering)),
+        // Thrown: it lands on its rim and wobbles on the handle like a dropped
+        // coin — the handle swings free because it is on its own bone.
+        Some((
+            "tumbling",
+            clip(
+                1000.0,
+                false,
+                vec![
+                    kf(0.0, json!({ "root": { "rotation": 0.0 }, "handle": { "rotation": -0.7 } })),
+                    kf(0.22, json!({ "root": { "rotation": 0.5 }, "handle": { "rotation": 0.35 } })),
+                    kf(0.44, json!({ "root": { "rotation": -0.38 }, "handle": { "rotation": -1.5 } })),
+                    kf(0.64, json!({ "root": { "rotation": 0.22 }, "handle": { "rotation": -0.15 } })),
+                    kf(0.82, json!({ "root": { "rotation": -0.1 }, "handle": { "rotation": -1.0 } })),
+                    kf(1.0, json!({ "root": { "rotation": 0.0 }, "handle": { "rotation": -0.7 } })),
+                ],
+            ),
+        )),
     )
 }
 
@@ -837,7 +893,21 @@ fn boot(rng: &mut Rng, _params: &Value) -> Value {
         bone("lace", Some("root"), [size * 0.04, -size * 0.4], 0.0, 20, vec![]),
         bone("heel", Some("root"), [-size * 0.1, size * 0.5], 0.0, 20, vec![]),
     ];
-    junk_rig("boot", "Boot", size, bones, vec![], None)
+    // Thrown: a full end-over-end flip and a dead stop — a boot has no other way
+    // to fly.
+    let tumbling = clip(
+        880.0,
+        false,
+        vec![
+            kf(0.0, json!({ "root": { "rotation": 0.0, "scale": 1.0 } })),
+            kf(0.35, json!({ "root": { "rotation": 2.2, "scale": 1.02 } })),
+            kf(0.62, json!({ "root": { "rotation": 5.1, "scale": 1.0 } })),
+            kf(0.78, json!({ "root": { "rotation": 6.283, "scale": 0.86 } })),
+            kf(0.9, json!({ "root": { "rotation": 6.283, "scale": 1.04 } })),
+            kf(1.0, json!({ "root": { "rotation": 6.283, "scale": 1.0 } })),
+        ],
+    );
+    junk_rig("boot", "Boot", size, bones, vec![], None, Some(("tumbling", tumbling)))
 }
 
 /* ------------------------------------------------------------------ *

@@ -593,11 +593,16 @@ loose: an entity id, a def, or a label containing the query.
 unchanged. A rummage that finds nothing still spills its duds (the joke needs the
 mess), and two duds in one rummage are always different props.
 
-**They come out one at a time.** Each dud carries `reveal_at` — 0, 300, 600 ms
-after the rummage — and the find itself is revealed *after* the last one. The page
+**They come out one at a time.** Each dud carries `reveal_at` — 220, 520, 820 ms
+after the rummage (the first gives the page a moment to hear about it) — and the
+find itself is revealed *after* the last one. The page
 does not draw an entity before its `reveal_at`, and on its first visible frame it
-throws it from the pod's mouth to its landing spot on an arc. `sequence` is the
-script:
+throws it from the pod's mouth to its landing spot on an arc.
+
+Each dud also spawns in the state **`tumbling`**, a name every junk prop answers
+with its own clip — the duck flaps and squashes, the anvil tips and lands heavy,
+the magnifier wobbles on its handle, the boot goes end over end. One word from the
+host, four different gags. `sequence` is the script:
 
 ```json
 "sequence": [

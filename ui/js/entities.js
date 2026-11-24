@@ -280,6 +280,9 @@ function signatureOf(entity) {
 export async function refresh() {
   if (inflight) return;
   inflight = true;
+  // Claim this round's dirt *before* the request: a spawn that lands mid-fetch
+  // must re-arm the flag, or its entity waits for the two-second reconcile.
+  dirty = false;
   try {
     const base = await apiBase();
     const response = await fetch(`${base}/entities`, { cache: "no-store" });
@@ -311,7 +314,6 @@ export async function refresh() {
     lastError = String(err && err.message ? err.message : err);
   } finally {
     inflight = false;
-    dirty = false;
     lastFetch = Date.now();
   }
 }
@@ -529,8 +531,9 @@ function tossOffset(entity, id) {
   return {
     dx: x - flight.toX,
     dy: y - flight.toY,
-    // Spinning in flight, settling as it lands.
-    spin: (1 - t) * 0.9 * direction,
+    // A little rigid spin to sell the flight — the prop's own `tumbling` clip does
+    // the personality, so this stays small enough not to fight the boot's flip.
+    spin: (1 - t) * 0.32 * direction,
   };
 }
 

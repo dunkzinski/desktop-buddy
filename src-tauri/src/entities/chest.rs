@@ -545,6 +545,13 @@ pub const JUNK_TTL_MS: u64 = 15_000;
 /// move together.
 pub const REVEAL_STAGGER_MS: u64 = 300;
 
+/// A head start before the first dud, so the page has time to hear about it.
+///
+/// The host spawns and the page fetches — a dud revealed at 0 ms would be revealed
+/// while the page is still asking what exists, and its throw would be spent before
+/// anything was drawn.
+pub const FIRST_REVEAL_MS: u64 = 220;
+
 fn now_ms() -> u64 {
     super::now_ms()
 }
@@ -617,20 +624,27 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
     }
 
     let mut duds: Vec<Value> = Vec::new();
-    let started = now_ms();
+    let mut spawned: Vec<(&'static str, Value)> = Vec::new();
+    let started = now_ms() + FIRST_REVEAL_MS;
     let mut last_reveal = started;
     for (index, def) in picked.into_iter().enumerate() {
         let at_ms = index as u64 * REVEAL_STAGGER_MS;
         let reveal_at = started + at_ms;
         last_reveal = reveal_at;
         let id = next_free_id(store, "chest:junk");
-        // A fan across the pod's front, clear of its ~150 px silhouette.
-        let turn = (already % 4) as f64 * 0.26;
-        let spread = -0.18 + turn + index as f64 * 0.30 + rng.range(-0.05, 0.05);
-        let reach = 108.0 + (already % 3) as f64 * 30.0 + index as f64 * 12.0;
+        // A wide fan across the pod's far side, clear of its ~150 px silhouette.
+        // `index * 0.42 rad` (~24 degrees) plus a stepping `reach` puts three duds
+        // in an arc rather than a queue, and the `already` turn keeps successive
+        // rummages from landing on the previous pile.
+        let turn = (already % 4) as f64 * 0.2;
+        let spread = -0.08 + turn + index as f64 * 0.42 + rng.range(-0.08, 0.08);
+        let reach = 120.0
+            + (already % 3) as f64 * 34.0
+            + index as f64 * 36.0
+            + rng.range(-12.0, 12.0);
         let x = anchor[0] + spread.cos() * reach;
         // Squashed vertically: the stage is a side view, not a floor plan.
-        let y = anchor[1] + 30.0 + spread.sin() * reach * 0.5;
+        let y = anchor[1] + 26.0 + spread.sin() * reach * 0.55;
         let mut seat = Attachment::world(round2(x), round2(y));
         seat.socket = STAGE_SOCKET.to_string();
         store.spawn(SpawnRequest {
@@ -638,7 +652,9 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
             id: Some(id.clone()),
             seed: Some(rng.next_u64()),
             params: json!({}),
-            state: Some(def.default_state.to_string()),
+            // `tumbling` is the shared thrown-state: each junk prop answers it with
+            // its own clip, so the duck flaps and the anvil only tips.
+            state: Some("tumbling".to_string()),
             attach: Some(seat),
             owner: Some("chest".to_string()),
             traits: None,
@@ -653,6 +669,9 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
             "label": def.label,
             "at_ms": at_ms,
         }));
+        // A spawn the page never hears about is a spawn it draws two seconds late,
+        // by which time the throw has already landed.
+        spawned.push(("entity-spawned", json!({ "id": id, "def": def.id })));
     }
 
     // What was actually asked for. Matched loosely — by id, def or label — because
@@ -758,6 +777,9 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
         "sequence": sequence,
         "narrative": applied.body.get("narrative").cloned().unwrap_or(Value::Null),
     });
+    for event in spawned {
+        applied.events.push(event);
+    }
     applied = applied.with("chest-find", payload);
     Ok(applied)
 }
@@ -1075,6 +1097,42 @@ mod tests {
         assert_eq!(sequence.len(), duds.len() + 1);
         assert_eq!(sequence.last().expect("last")["kind"], json!("item"));
         assert_eq!(sequence.first().expect("first")["kind"], json!("dud"));
+    }
+
+    #[test]
+    fn every_dud_arrives_mid_throw_in_its_own_way() {
+        // The host says one word — `tumbling` — and each prop answers with its own
+        // clip: a flap, a tip, a wobble, an end-over-end flip.
+        for def in defs::JUNK {
+            assert!(
+                def.knows_state("tumbling"),
+                "{} cannot be thrown: {:?}",
+                def.id,
+                def.states
+            );
+            assert!(
+                def.animations.contains(&"tumbling"),
+                "{} has no tumble clip: {:?}",
+                def.id,
+                def.animations
+            );
+        }
+
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        let applied = find(&mut store, "pickaxe", Some(11)).expect("find");
+        let duds = applied.body["duds"].as_array().expect("duds");
+        assert!(!duds.is_empty());
+        for dud in duds {
+            let id = dud["id"].as_str().expect("id");
+            let entity = store.render_one(id).expect("dud");
+            assert_eq!(entity["state"], json!("tumbling"), "{id} is not mid-throw");
+            assert_eq!(
+                entity["anim"]["clip"],
+                json!("tumbling"),
+                "{id} is not playing its tumble"
+            );
+        }
     }
 
     #[test]

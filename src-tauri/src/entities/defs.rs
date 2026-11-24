@@ -192,15 +192,20 @@ pub const LOOT_BAG: PropDef = PropDef {
 /// duck, an anvil and a magnifying glass first. They are ordinary props — same
 /// generators, same states, same sockets — because the joke only works if the
 /// pod really does hold them.
+///
+/// All four share the state name **`tumbling`**, and each answers with its own
+/// clip: the duck flaps, the anvil tips and lands heavy, the magnifier wobbles on
+/// its handle, the boot goes end over end. One word from the host, four different
+/// gags — that is what the state→clip rule is for.
 
 pub const RUBBER_DUCK: PropDef = PropDef {
     id: "rubber_duck",
     label: "Rubber duck",
     category: PropCategory::Tool,
     tags: &["junk", "toy", "bath"],
-    states: &["idle", "squeaking"],
+    states: &["idle", "squeaking", "tumbling"],
     default_state: "idle",
-    animations: &["squeaking"],
+    animations: &["squeaking", "tumbling"],
     own_sockets: &[],
     grips: &[("hand_primary", 0.0), ("stage_ground", 0.0)],
     summary: "A bath toy with an expression of mild existential doubt.",
@@ -211,9 +216,9 @@ pub const ANVIL: PropDef = PropDef {
     label: "Anvil",
     category: PropCategory::Tool,
     tags: &["junk", "heavy", "iron"],
-    states: &["idle", "dropping"],
+    states: &["idle", "dropping", "tumbling"],
     default_state: "idle",
-    animations: &["dropping"],
+    animations: &["dropping", "tumbling"],
     own_sockets: &["anvil_horn"],
     grips: &[("hand_primary", 0.0), ("stage_ground", 0.0)],
     summary: "Ninety kilos of wrong answer.",
@@ -224,9 +229,9 @@ pub const MAGNIFYING_GLASS: PropDef = PropDef {
     label: "Magnifying glass",
     category: PropCategory::Tool,
     tags: &["junk", "optics", "detective"],
-    states: &["idle", "peering"],
+    states: &["idle", "peering", "tumbling"],
     default_state: "idle",
-    animations: &["peering"],
+    animations: &["peering", "tumbling"],
     own_sockets: &["lens"],
     grips: &[("hand_primary", -0.3), ("stage_ground", 0.0)],
     summary: "For finding things, in principle.",
@@ -237,9 +242,9 @@ pub const BOOT: PropDef = PropDef {
     label: "Boot",
     category: PropCategory::Apparel,
     tags: &["junk", "footwear"],
-    states: &["idle"],
+    states: &["idle", "tumbling"],
     default_state: "idle",
-    animations: &[],
+    animations: &["tumbling"],
     own_sockets: &[],
     grips: &[("hand_primary", 0.4), ("stage_ground", 0.0)],
     summary: "One boot. No explanation offered.",

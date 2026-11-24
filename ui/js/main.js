@@ -1792,6 +1792,9 @@ async function init() {
    */
   let rummageTimer = 0;
   listen("chest-find", (payload) => {
+    // The pod's contents and the debris both changed: pull the roster now rather
+    // than waiting for the 120 ms debounce to be armed by something else.
+    markDirty();
     const sequence = Array.isArray(payload && payload.sequence) ? payload.sequence : [];
     const span = sequence.reduce(
       (longest, step) => Math.max(longest, Number(step && step.at_ms) || 0),

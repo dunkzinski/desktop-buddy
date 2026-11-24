@@ -959,3 +959,22 @@ moment it exists) and means a missed frame costs a flight, never a lost item.
 The arc is `sin(πt)`: zero at the mouth, zero at the landing spot, peak in
 between — an object leaves the pod, rises, and lands where the host said. Spin is
 `(1 - t)` in a direction taken from the id, so no two duds tumble identically.
+
+### 12.3 Every prop tumbles in its own way
+
+The arc alone made the items *travel*; it did not make them *thrown*. So each junk
+prop now ships a `tumbling` clip and the host throws every dud in that one state:
+
+| prop | tumbling |
+|---|---|
+| rubber duck | head flaps, body squash-stretches |
+| anvil | tips once, lands with a heavy squash |
+| magnifying glass | wobbles on its free-swinging handle |
+| boot | a full end-over-end flip, dead stop |
+
+The state name is shared and the clips are not — that is `clip_for_state` doing the
+work it was built for, and it means the rummage code never mentions a prop.
+
+The scatter also widened: a fan of ~24° per dud out to 120–250 px, stepped by how
+much debris is already on the stage, so a second rummage lands beside the first
+instead of on it.
