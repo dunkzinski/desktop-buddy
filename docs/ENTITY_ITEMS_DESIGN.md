@@ -1447,3 +1447,18 @@ returning the resolved table so a guest can inspect it — is not free and not a
 the import returns a status code, not a buffer, so it would be a new
 `host_entities`-style buffer protocol (≥4 KiB, guest stub, ABI tests) for a guest that
 does not exist. The inspector already exists over HTTP (`GET /sockets`).
+
+#### 14.5.5 No entity tools on the MCP bridge (yet)
+
+`desktop-buddy-mcp` exposes 14 `avatar_*` tools and `verify_docs.py` asserts exactly 14
+tools and 14 mapped routes. Nothing spawned, moved or dismissed a prop through MCP, and
+adding one would need both counts bumped in the same commit. That gate is the point: it
+turns "we could expose everything" into a decision somebody has to make on purpose.
+
+Nothing is missing here: a caller that wants props today has `POST /entities/*` and
+`POST /chest/*` over HTTP, and a Wasm guest has `host_entities`. What MCP would add is
+*an agent's* convenience, and no agent has needed it — the same standard as the tools
+already there, every one of which exists because something asked for it. The decision
+is recorded rather than implemented; when a prompt wants "spawn a lantern on his
+helmet", that is the moment, and the commit that adds the tool bumps
+`verify_docs.py`'s two assertions with it.
