@@ -143,6 +143,24 @@ pub const CHEST: PropDef = PropDef {
     summary: "A seed-pod that blooms: faceted shell, petal lid, a lit well inside.",
 };
 
+/// The little things a pod comes with: a faceted stone, a seed, a scale, a bead.
+///
+/// Trinkets exist to make a summoned pod *worth opening* — a chest that is
+/// always empty is furniture. They are decorative (no economy yet), owned by the
+/// pod (`owner: "chest"`), and they come and go with it.
+pub const TRINKET: PropDef = PropDef {
+    id: "trinket",
+    label: "Trinket",
+    category: PropCategory::Furniture,
+    tags: &["trinket", "gem", "curio"],
+    states: &["idle", "glinting"],
+    default_state: "idle",
+    animations: &["glinting"],
+    own_sockets: &["sparkle"],
+    grips: &[],
+    summary: "A small faceted find: a stone, a seed, a bead. Varies by seed.",
+};
+
 /// The sack the scavenging run carries. Phase 1 ships the definition and the
 /// generator so the next activity needs no core change; nothing spawns it yet.
 pub const LOOT_BAG: PropDef = PropDef {
@@ -165,7 +183,7 @@ pub const LOOT_BAG: PropDef = PropDef {
 };
 
 /// Every prop this build knows.
-pub const PROPS: &[PropDef] = &[FISHING_ROD, LOOT_BAG, CHEST];
+pub const PROPS: &[PropDef] = &[FISHING_ROD, LOOT_BAG, CHEST, TRINKET];
 
 pub fn find(id: &str) -> Option<&'static PropDef> {
     PROPS.iter().find(|def| def.id == id)

@@ -65,6 +65,62 @@ async function apiBase() {
   return baseUrl;
 }
 
+/* ---------- the chest, from the page ---------- */
+
+/**
+ * POST one of the chest routes and mark the roster dirty.
+ *
+ * The page never invents chest state: the host owns the lifecycle, this only
+ * asks. A refusal is thrown with the host's own words, because those name the
+ * item or the slot (`the chest is full (7 of 7 slots)`).
+ */
+async function chestPost(path, payload) {
+  const base = await apiBase();
+  const res = await fetch(`${base}/chest/${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || body.ok === false) {
+    throw new Error(body.error || `chest/${path} refused (${res.status})`);
+  }
+  markDirty();
+  return body;
+}
+
+export function openChest() {
+  return chestPost("open");
+}
+
+export function closeChest() {
+  return chestPost("close");
+}
+
+export function summonChest(at) {
+  return chestPost("summon", at ? { at } : {});
+}
+
+export function dismissChest(force = false) {
+  return chestPost("dismiss", { force: !!force });
+}
+
+export function putInChest(id) {
+  return chestPost("put", { id });
+}
+
+export function takeFromChest(id) {
+  return chestPost("take", { id });
+}
+
+/** The host's view: state, capacity, contents. */
+export async function chestStatus() {
+  const base = await apiBase();
+  const res = await fetch(`${base}/chest`, { cache: "no-store" });
+  const body = await res.json().catch(() => ({}));
+  return body.chest || null;
+}
+
 /** Something changed; refetch as soon as the debounce allows. */
 export function markDirty() {
   dirty = true;
@@ -173,6 +229,7 @@ export function stepEntities() {
     if (!clip) {
       ctx.clips = {};
       entry.clip = null;
+      entry.clipT = 1;
       continue;
     }
     const duration = Math.max(1, num(clip.duration_ms, 1000));
@@ -184,6 +241,9 @@ export function stepEntities() {
     }
     ctx.clips = sampleClip(clip, t);
     entry.clip = name;
+    // `t` (0..1) decides whether a one-shot clip has finished. A dormant entity
+    // is off the stage — except while its `vanish` is still playing.
+    entry.clipT = clip.loop ? 0 : t;
   }
 }
 
@@ -282,6 +342,9 @@ export function entityDrawables() {
     const slot = slots.get(id);
     const entry = slot.entry;
     if (entry.entity.visible === false) continue;
+    // `dormant` means "not on the stage": the pod is gone, but a vanish that is
+    // still running gets to finish rather than blinking out.
+    if (entry.entity.state === "dormant" && !(entry.clip && entry.clipT < 1)) continue;
     const ctx = entry.ctx;
     computeWorldInto(ctx, root);
     const baseZ = num(root.z, 0);

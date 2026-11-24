@@ -2280,6 +2280,22 @@ Three things make it a *chest*:
 requests to it and emits `chest-summoned` / `chest-opened` / `chest-closed` /
 `chest-put` / `chest-took` / `chest-dismissed` **after** the store lock is gone.
 
+**The choreography is the page's, the state is the host's** (the same split as
+scavenging). `chest-summoned` carries `x`/`y`, so `main.js` walks the gremlin to
+the anchor (`beginWalk`, `markManual`, `set_avatar_position`) and, on arrival,
+POSTs `/chest/open` once. It stands down — without retrying — if the user drags
+the avatar mid-walk, if a scavenging run starts, or after 14 s; a pod left closed
+is still a pod you can open from the card.
+
+A new pod seeds its own **trinkets** (`gen.rs::trinket`, owned by `chest`), which
+is what makes a summon worth looking at: 3–5 of them, scattered in the well, two
+slots always left free. `dismiss` treats those as furniture (they leave with the
+pod) and only your own items block it.
+
+`dormant` means *not on the stage*, and the page enforces it: `entityDrawables`
+skips a dormant entity unless its clip is still running, which is what lets
+`vanish` play and then vanish rather than blinking out — no scheduler needed.
+
 Its look is generated like a prop's (`entities/gen.rs::chest`): a faceted polygon
 shell — five or six sides, three facet styles, optional face, feet, charm — with a
 rosette of petals hinged at the rim. Closed, the blades meet in the middle and the

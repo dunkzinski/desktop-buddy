@@ -39,6 +39,7 @@ pub fn build(def: &PropDef, seed: u64, params: &Value) -> Result<Value, String> 
         "fishing_rod" => Ok(fishing_rod(&mut rng, params)),
         "loot_bag" => Ok(loot_bag(&mut rng, params)),
         "chest" => Ok(chest(&mut rng, params)),
+        "trinket" => Ok(trinket(&mut rng, params)),
         other => Err(format!("no generator for prop {other:?}")),
     }
 }
@@ -57,6 +58,10 @@ pub fn traits(def: &PropDef, seed: u64) -> BTreeMap<String, f64> {
         "loot_bag" => {
             out.insert("capacity".to_string(), rng.int(4, 10) as f64);
             out.insert("find_luck".to_string(), round2(rng.range(0.0, 0.12)));
+        }
+        "trinket" => {
+            out.insert("sparkle".to_string(), round2(rng.range(0.0, 1.0)));
+            out.insert("worth".to_string(), round2(rng.range(0.2, 1.0)));
         }
         "chest" => {
             // Slots are a gameplay number, not a costume: a bigger pod is rarer,
@@ -466,6 +471,114 @@ fn loot_bag(rng: &mut Rng, params: &Value) -> Value {
 /* ------------------------------------------------------------------ *
  * json helpers
  * ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * Trinkets: the little things a pod comes with
+ * ------------------------------------------------------------------ */
+
+/// An irregular faceted stone, bead or seed — the kind of thing a pod would
+/// plausibly hold. Six silhouettes, each with a facet and a glint, seeded.
+fn trinket(rng: &mut Rng, params: &Value) -> Value {
+    // 0 pebble, 1 crystal, 2 seed, 3 bead, 4 shard, 5 shell
+    let body_shape = int_param(params, "body")
+        .map(|value| value.rem_euclid(6) as u32)
+        .unwrap_or_else(|| rng.below(6));
+    let sides = match body_shape {
+        0 => 5,
+        1 => 6,
+        2 => 4,
+        3 => 0, // round: drawn as an ellipse
+        4 => 3,
+        _ => 7,
+    };
+    // Big enough to read as an object in a pod's well, not as a speck.
+    let radius = rng.range(12.0, 19.0);
+    let tilt = rng.range(-0.45, 0.45);
+
+    let palettes: [(&str, &str, &str); 6] = [
+        ("#7fd1c1", "#3f8f86", "#e8fffa"), // sea glass
+        ("#e0b46a", "#a87c33", "#fff3cf"), // amber
+        ("#b9a0e8", "#6f5aa8", "#f2ecff"), // amethyst
+        ("#e88f9a", "#a84f5c", "#ffe3e8"), // coral
+        ("#9fe07f", "#5c9440", "#eeffdd"), // moss
+        ("#c9c9d8", "#7a7a8c", "#ffffff"), // quartz
+    ];
+    let (fill, shade, glint) = palettes[rng.below(palettes.len() as u32) as usize];
+
+    let mut parts = Vec::new();
+    let mut glint_parts: Vec<Value> = Vec::new();
+    if sides == 0 {
+        // Round: a bead with a hole punched by a darker circle.
+        parts.push(ellipse("body", radius * 2.0, radius * 1.8, [0.0, 0.0], fill, 10));
+        parts.push(ellipse("hole", radius * 0.5, radius * 0.5, [0.0, 0.0], shade, 12));
+        glint_parts.push(ellipse(
+            "glint",
+            radius * 0.4,
+            radius * 0.28,
+            [0.0, 0.0],
+            glint,
+            14,
+        ));
+    } else {
+        // A body polygon, rotated for the facet, plus a glint on one face.
+        let outer = regular_polygon(radius, sides as usize, rng.range(0.0, 40.0));
+        parts.push(polygon("body", &outer, [0.0, 0.0], fill, 10));
+        let inner = regular_polygon(radius * 0.55, sides as usize, rng.range(0.0, 60.0));
+        parts.push(polygon("facet", &inner, [-radius * 0.12, -radius * 0.1], shade, 12));
+        // The glint lives on its own bone so it can be the thing that twinkles.
+        glint_parts.push(ellipse(
+            "glint",
+            radius * 0.42,
+            radius * 0.3,
+            [0.0, 0.0],
+            glint,
+            14,
+        ));
+    }
+    if body_shape == 5 {
+        // A shell: one extra ridge.
+        parts.push(ellipse("ridge", radius * 0.24, radius * 1.5, [radius * 0.3, 0.0], shade, 11));
+    }
+
+    let mut bones = vec![bone("root", None, [0.0, 0.0], tilt, 10, parts)];
+    // The glint and the sparkle are bones, not decoration: one twinkles with the
+    // clip, the other is a socket for a future charm.
+    bones.push(bone(
+        "glint",
+        Some("root"),
+        [-radius * 0.3, -radius * 0.34],
+        0.0,
+        20,
+        glint_parts,
+    ));
+    bones.push(bone("sparkle", Some("root"), [0.0, 0.0], 0.0, 22, vec![]));
+
+    let glinting = clip(
+        1800.0,
+        true,
+        vec![
+            kf(0.0, json!({ "root": { "scale": 1.0 }, "glint": { "scale": 0.85, "rotation": 0.0 } })),
+            kf(0.5, json!({ "root": { "scale": 1.0 }, "glint": { "scale": 1.2, "rotation": 0.3 } })),
+            kf(1.0, json!({ "root": { "scale": 1.0 }, "glint": { "scale": 0.85, "rotation": 0.6 } })),
+        ],
+    );
+
+    json!({
+        "format": 1,
+        "name": "trinket",
+        "label": "Trinket",
+        "structure": {
+            "body": body_shape,
+            "sides": sides,
+            "radius": round2(radius),
+        },
+        "bones": bones,
+        "animations": { "glinting": glinting },
+        "sockets": [
+            { "id": "sparkle", "bone": "root", "pos": [0.0, round2(-radius * 0.4)], "z": 16, "label": "Sparkle" },
+        ],
+    })
+}
 
 /* ------------------------------------------------------------------ *
  * The chest: a faceted pod that blooms

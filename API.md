@@ -533,6 +533,13 @@ Body: `{ "seed": 2024, "at": [x, y] }`, both optional. Without `at` it lands
 beside the avatar (`+110, +62`); the seed decides the look and the slot count
 (5–8), and is remembered, so the same pod comes back.
 
+A **new** pod arrives with three to five seeded trinkets inside
+(`chest:loot0…`, `def: "trinket"`), always leaving two slots free — a chest you
+cannot put anything into is a display case. `seeded` reports how many were rolled
+(`0` when an existing pod is just moved). The page hears `chest-summoned`, walks
+the gremlin to the anchor and opens the pod on arrival; a manual move stands that
+walk down rather than dragging the avatar back.
+
 * no chest → spawns it, state `closed`, playing `appear`
 * `closed` → moves it to the new anchor and plays `appear` again
 * `open` → **left alone** (`changed: false`): something is being put into it, and
@@ -547,10 +554,15 @@ opening an already-open pod is a 200 with `changed: false`. A `dormant` pod is a
 
 #### `POST /chest/dismiss`
 
-Body: `{ "force": false }`. Refused with a 400 that **names the slots** while
-anything is inside. `force: true` lays the contents out on the stage beside the
-pod (nothing is ever deleted) and then dismisses it — the pod goes `dormant` and
-invisible, and `summon` brings the same one back.
+Body: `{ "force": false }`. The pod's **own** trinkets (anything owned by
+`chest`) go with it — they are part of the furniture, not your loot. Anything
+*you* put in blocks the dismissal with a 400 that **names the items**;
+`force: true` lays those out on the stage beside the pod (nothing is ever
+deleted) and then dismisses it.
+
+The pod goes `dormant` playing `vanish`; the page draws a dormant entity only
+while that clip is still running, so it leaves instead of blinking out. `summon`
+brings the same one back.
 
 #### `POST /chest/put` / `POST /chest/take`
 

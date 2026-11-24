@@ -20,7 +20,7 @@ import {
   socketList, socketWorld,
 } from "./rig.js";
 
-import { initEntities, stepEntities, markDirty, entitySnapshot } from "./entities.js";
+import { initEntities, stepEntities, markDirty, entitySnapshot, openChest } from "./entities.js";
 
 import { initRenderer, render, resizeCanvas } from "./renderer.js";
 
@@ -215,6 +215,82 @@ function nextScavengeLeg() {
   // Tell Rust where the walk is headed, the same way a manual walk does, so
   // `GET /state` and the perch tracker agree with the screen.
   call("set_avatar_position", { x: point.x, y: point.y }).catch(() => {});
+}
+
+/* ---------- the chest: walk over, then bloom ---------- */
+
+/**
+ * The pod is the host's; the walk is the page's — the same split as scavenging.
+ *
+ * `chest-summoned` says where it landed, so the gremlin walks there and opens it
+ * on arrival (that is the whole choreography). A manual move stands the walk down
+ * rather than dragging the avatar back out from under the user, and it never
+ * retries: a pod left closed is still a pod you can click.
+ */
+const chestWalk = {
+  active: false,
+  phase: "idle",
+  x: 0,
+  y: 0,
+  manualMoves: 0,
+  deadline: 0,
+  /** Bumped on every start/stop, so an in-flight `open` cannot outlive its walk. */
+  seq: 0,
+};
+
+/** How far to one side of the pod the gremlin stops, in pixels. */
+const CHEST_STAND_OFF = 96;
+/** Give up on the walk after this many seconds (a long detour, a stuck walk). */
+const CHEST_WALK_TIMEOUT = 14;
+
+function beginChestWalk(x, y) {
+  if (RT.rigMode) return;
+  if (scavengeWalk.active) return; // one activity at a time
+
+  const stand = clampAvatarPosition(x - CHEST_STAND_OFF, y - 24);
+  chestWalk.seq += 1;
+  chestWalk.active = true;
+  chestWalk.phase = "walking";
+  chestWalk.x = x;
+  chestWalk.y = y;
+  chestWalk.manualMoves = avatar.manualMoves;
+  chestWalk.deadline = avatar.time + CHEST_WALK_TIMEOUT;
+
+  avatar.perched = false;
+  avatar.perchRect = null;
+  avatar.lookAt = { x, y };
+  beginWalk(stand.x, stand.y);
+  markManual(CHEST_WALK_TIMEOUT + 1);
+  // Tell Rust where the walk is headed, the way a manual walk does, so `GET
+  // /state` and the perch tracker agree with the screen.
+  call("set_avatar_position", { x: stand.x, y: stand.y }).catch(() => {});
+}
+
+function endChestWalk() {
+  chestWalk.seq += 1;
+  chestWalk.active = false;
+  chestWalk.phase = "idle";
+}
+
+/** Arrived → ask the host to open it. Called from `step`. */
+function stepChestWalk() {
+  if (!chestWalk.active) return;
+  // A user gesture outranks an activity: stand down, do not fight for the avatar.
+  if (avatar.manualMoves !== chestWalk.manualMoves) return endChestWalk();
+  if (avatar.time > chestWalk.deadline) return endChestWalk();
+  if (chestWalk.phase !== "walking") return;
+  if (avatar.mode === "walking") return;
+
+  chestWalk.phase = "opening";
+  const seq = chestWalk.seq;
+  openChest()
+    .then(() => {
+      if (seq === chestWalk.seq) endChestWalk();
+    })
+    .catch((err) => {
+      console.error("[avatar] chest open failed:", err);
+      if (seq === chestWalk.seq) endChestWalk();
+    });
 }
 
 /** Stop animating. The guest's run is unaffected — it reports on its own clock. */
@@ -601,6 +677,7 @@ function step(dt) {
   // Scavenging runs after the mode machine: it needs to see whether a leg has
   // landed, and it drives its own pose blend.
   stepScavenge(dt);
+  stepChestWalk();
 
   // Gaze runs last: the head bone has moved by now, and the next `render()`
   // turns the smoothed aim point into a pupil offset.
@@ -1610,6 +1687,18 @@ async function init() {
   }).catch((err) => console.error("[avatar] scavenging-started listener failed:", err));
   listen("scavenging-finished", () => endScavengeWalk())
     .catch((err) => console.error("[avatar] scavenging-finished listener failed:", err));
+
+  // The pod is summoned by anyone (the card, an agent, a plugin). Where it landed
+  // is in the frame, so the walk needs no round trip.
+  listen("chest-summoned", (event) => {
+    const payload = event && event.payload ? event.payload : {};
+    const x = Number(payload.x);
+    const y = Number(payload.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    beginChestWalk(x, y);
+  }).catch((err) => console.error("[avatar] chest-summoned listener failed:", err));
+  listen("chest-dismissed", () => endChestWalk())
+    .catch((err) => console.error("[avatar] chest-dismissed listener failed:", err));
 
   // Props. The payload only says *which* entity moved; the roster refetch is
   // coalesced inside `entities.js`, so a spawn+attach+state burst is one request.

@@ -833,3 +833,58 @@ clickable) are the next slice; they are page work and touch movement, so they ge
 their own change. Also deferred: **seeded decorative loot** on first summon, and a
 real `vanish` animation (a dismiss is currently instant — hiding is `visible:
 false`, there is no scheduler to run the clip and then hide).
+
+---
+
+## 11. Phase 4 — landed: the walk, the trinkets, the vanish
+
+The part that makes the pod feel alive rather than scripted.
+
+| Piece | What |
+|---|---|
+| `ui/js/main.js` | `beginChestWalk` / `stepChestWalk`: on `chest-summoned`, walk to the anchor and open the pod on arrival |
+| `ui/js/entities.js` | the chest API (`summonChest`, `openChest`, `putInChest`, …), the `dormant` draw rule, `entry.clipT` |
+| `src-tauri/src/entities/gen.rs::trinket` | a faceted find: six silhouettes (pebble, crystal, seed, bead, shard, shell), a twinkling glint bone |
+| `src-tauri/src/entities/chest.rs` | seeds 3–5 trinkets on a *new* pod; dismiss treats the pod's own things as furniture |
+
+### The choreography
+
+`chest-summoned` carries `x`/`y`, so no round trip is needed: the page walks the
+gremlin to `(x - 96, y - 24)`, then POSTs `/chest/open` **once** on arrival. It
+stands down — and does not retry — when the user drags the avatar mid-walk
+(`avatar.manualMoves` moves), when a scavenging run starts, or after 14 s. A pod
+left closed is still a pod the user can open themselves, so giving up quietly is
+the right failure.
+
+### Loot: a pod you want to open
+
+A summons that produces an empty chest is furniture. A new pod now rolls 3–5
+trinkets from its own seed, scattered across the well (not stacked on a point),
+always leaving two slots free. They are owned by `chest`, which is the whole trick
+behind dismiss: the pod's own things leave with it, and only the items *you* put
+in can block a dismissal.
+
+### Vanish without a scheduler
+
+`dormant` means "not on the stage", and the page enforces it: `entityDrawables`
+skips a dormant entity **unless its clip is still running** (`entry.clipT < 1`).
+Dismiss sets `state: dormant` + `clip: vanish` + `visible: true`; the clip plays
+for 360 ms, then nothing draws. No timer, no follow-up call, and a page reloaded
+mid-vanish resolves to "finished, hidden" from the persisted `started_ms`.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `cargo test --lib entities::` | 47 passed (loot seeds and leaves two slots, trinkets are pod property, a moved pod does not re-roll, dismiss with only pod trinkets succeeds, a put item blocks and force drops it) |
+| Live: summon at `[1250, 700]` from `(766, 537)` | gremlin walks 766→1154 over ~2.5 s, then the pod opens itself (`state: open`) |
+| Live: contents | `seeded: 3`; the page reports three `trinket` entities visible at the pod's interior |
+| Live: dismiss | `state: dormant`, `clip: vanish`; `stats.drawables` drops to 0 after the clip |
+| Visual | three distinguishable faceted stones in the well beside the gremlin |
+
+### Still open
+
+The **chest card** (a panel with the slots, a Take button each, and a click region
+so the pod is clickable) is the remaining slice of the original plan. Everything
+it would call already exists on the page (`chestStatus`, `putInChest`,
+`takeFromChest`, `dismissChest`), so it is UI work, not plumbing.

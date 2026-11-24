@@ -309,6 +309,14 @@ impl EntityStore {
         log::info!("entities: restored {} from {}", self.entities.len(), path.display());
     }
 
+    /// Is this entity owned by `owner`? (`false` for an unknown id.)
+    pub fn is_owned_by(&self, id: &str, owner: &str) -> bool {
+        self.entities
+            .get(id)
+            .map(|entity| entity.owner.as_deref() == Some(owner))
+            .unwrap_or(false)
+    }
+
     /// An entity's state, without rendering it (and without needing `&mut`).
     pub fn state_of(&self, id: &str) -> Option<&str> {
         self.entities.get(id).map(|entity| entity.state.as_str())

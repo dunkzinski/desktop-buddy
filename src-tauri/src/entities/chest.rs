@@ -55,6 +55,70 @@ fn chest_state(store: &EntityStore, id: &str) -> Option<String> {
     store.state_of(id).map(str::to_string)
 }
 
+
+/// Scatter the pod's own trinkets inside it.
+///
+/// A chest that is always empty is furniture, so a freshly summoned pod arrives
+/// with three to five seeded finds. They are owned by the pod (`owner: "chest"`),
+/// which is what lets `dismiss` tell "the pod's own things" (they go with it) from
+/// "your things" (they block it).
+fn seed_loot(store: &mut EntityStore, chest_seed: u64, capacity: usize) -> Result<usize, String> {
+    use super::rng::Rng;
+
+    let mut rng = Rng::new(chest_seed ^ 0xC0FF_EE00_1234_5678);
+    // Always leave two slots: a pod you cannot put anything into is a display case.
+    let room = capacity.saturating_sub(2).max(1);
+    let wanted = (3 + rng.below(3) as usize).min(room);
+    let mut made = 0;
+    for index in 0..wanted {
+        let id = format!("chest:loot{index}");
+        if store.state_of(&id).is_some() {
+            continue;
+        }
+        let angle = index as f64 * 2.4 + rng.range(0.0, 0.6);
+        let seat = Attachment {
+            parent: format!("entity:{CHEST_ID}"),
+            socket: "chest_interior".to_string(),
+            flip: false,
+            rotation: Some(rng.range(-0.5, 0.5)),
+            // Scattered across the well rather than stacked on one point, so three
+            // trinkets read as three things.
+            offset: Some([round2(angle.cos() * 22.0), round2(angle.sin() * 14.0)]),
+            scale: Some(1.0),
+        };
+        store.spawn(SpawnRequest {
+            def: "trinket".to_string(),
+            id: Some(id.clone()),
+            seed: Some(rng.next_u64()),
+            params: json!({}),
+            state: Some("idle".to_string()),
+            attach: Some(seat),
+            owner: Some("chest".to_string()),
+            traits: None,
+        })?;
+        // Inside a closed pod: not drawn until it opens.
+        store.update(
+            &id,
+            UpdatePatch {
+                visible: Some(false),
+                ..Default::default()
+            },
+            None,
+        )?;
+        made += 1;
+    }
+    Ok(made)
+}
+
+/// The pod's own property: trinkets it came with, as opposed to things put in.
+fn is_pod_property(store: &EntityStore, id: &str) -> bool {
+    store.is_owned_by(id, "chest")
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
 /// The `GET /chest` body: state, slots, and what is inside.
 pub fn view(store: &mut EntityStore) -> Value {
     let capacity = capacity(store);
@@ -118,15 +182,17 @@ pub fn summon(store: &mut EntityStore, seed: u64, anchor: [f64; 2]) -> Result<Ap
             },
             None,
         )?;
+        let seeded = seed_loot(store, seed, store.capacity_of(CHEST_ID))?;
         return Ok(Applied::new(json!({
             "ok": true,
             "created": outcome.created,
+            "seeded": seeded,
             "changed": true,
             "chest": view(store),
         }))
         .with(
             "chest-summoned",
-            json!({ "id": CHEST_ID, "x": anchor[0], "y": anchor[1], "created": true }),
+            json!({ "id": CHEST_ID, "x": anchor[0], "y": anchor[1], "created": true, "seeded": seeded }),
         ));
     }
 
@@ -139,6 +205,9 @@ pub fn summon(store: &mut EntityStore, seed: u64, anchor: [f64; 2]) -> Result<Ap
             "ok": true,
             "created": false,
             "changed": false,
+            // Nothing was rolled: `seeded` is reported on every summon so a caller
+            // never has to know which branch it hit.
+            "seeded": 0,
             "chest": view(store),
         })));
     }
@@ -157,6 +226,7 @@ pub fn summon(store: &mut EntityStore, seed: u64, anchor: [f64; 2]) -> Result<Ap
         "ok": true,
         "created": false,
         "changed": true,
+        "seeded": 0,
         "chest": view(store),
     }))
     .with(
@@ -269,15 +339,23 @@ pub fn dismiss(store: &mut EntityStore, force: bool) -> Result<Applied, String> 
         .iter()
         .map(|entity| (entity.id.clone(), entity.def.clone()))
         .collect();
-    if !inside.is_empty() && !force {
+    // The pod's own trinkets came with it and leave with it; *your* things block
+    // the dismissal, because that is the case where an item could go missing.
+    let yours: Vec<String> = inside
+        .iter()
+        .map(|(id, _)| id.clone())
+        .filter(|id| !is_pod_property(store, id))
+        .collect();
+    let pod_property: Vec<String> = inside
+        .iter()
+        .map(|(id, _)| id.clone())
+        .filter(|id| is_pod_property(store, id))
+        .collect();
+    if !yours.is_empty() && !force {
         return Err(format!(
             "the chest still holds {} item(s): {} — take them first, or dismiss with `force: true`",
-            inside.len(),
-            inside
-                .iter()
-                .map(|(id, _)| id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            yours.len(),
+            yours.join(", ")
         ));
     }
 
@@ -295,7 +373,7 @@ pub fn dismiss(store: &mut EntityStore, force: bool) -> Result<Applied, String> 
             ]
         })
         .unwrap_or([0.0, 0.0]);
-    for (index, (id, _)) in inside.iter().enumerate() {
+    for (index, id) in yours.iter().enumerate() {
         let x = anchor[0] + DROP_OFFSET + (index as f64) * 44.0;
         let mut drop = Attachment::world(x, anchor[1]);
         drop.socket = STAGE_SOCKET.to_string();
@@ -309,13 +387,19 @@ pub fn dismiss(store: &mut EntityStore, force: bool) -> Result<Applied, String> 
             None,
         )?;
     }
+    // Its own trinkets go with it: they are part of the pod, not the loot.
+    for id in &pod_property {
+        store.remove(id, None)?;
+    }
 
     store.update(
         CHEST_ID,
         UpdatePatch {
             state: Some("dormant".to_string()),
-            clip: Some(None),
-            visible: Some(false),
+            // The page draws a dormant entity only while its clip is still
+            // running: `vanish` is what makes it leave rather than blink out.
+            clip: Some(Some("vanish".to_string())),
+            visible: Some(true),
             ..Default::default()
         },
         None,
@@ -324,12 +408,13 @@ pub fn dismiss(store: &mut EntityStore, force: bool) -> Result<Applied, String> 
         "ok": true,
         "changed": true,
         "dismissed": true,
-        "dropped": inside.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+        "dropped": yours,
+        "taken_with_it": pod_property.len(),
         "chest": view(store),
     }))
     .with(
         "chest-dismissed",
-        json!({ "id": CHEST_ID, "dropped": inside.len() }),
+        json!({ "id": CHEST_ID, "dropped": yours.len() }),
     ))
 }
 
@@ -458,6 +543,35 @@ mod tests {
             .expect("item");
     }
 
+    fn chest_loot(store: &EntityStore) -> Vec<String> {
+        store
+            .contents_of(CHEST_ID)
+            .iter()
+            .map(|entity| entity.id.clone())
+            .filter(|id| is_pod_property(store, id))
+            .collect()
+    }
+
+    #[test]
+    fn a_fresh_pod_arrives_with_its_own_seeded_trinkets() {
+        let mut store = EntityStore::new(None);
+        let applied = summon(&mut store, 7, [900.0, 640.0]).expect("summon");
+        let seeded = applied.body["seeded"].as_u64().expect("a seeded count");
+        assert!((1..=5).contains(&seeded), "seeded {seeded}");
+        assert_eq!(occupied(&store) as u64, seeded);
+
+        // Every one of them is the pod's property, hidden until it opens, and
+        // there is still room to put something in.
+        for id in chest_loot(&store) {
+            assert!(is_pod_property(&store, &id));
+            assert_eq!(store.render_one(&id).expect("loot")["visible"], json!(false));
+        }
+        assert!(
+            occupied(&store) < capacity(&store),
+            "a pod you cannot put anything into is a display case"
+        );
+    }
+
     #[test]
     fn summoning_a_closed_pod_moves_it_and_a_second_summon_moves_it_again() {
         let mut store = EntityStore::new(None);
@@ -470,6 +584,8 @@ mod tests {
         let entity = store.render_one(CHEST_ID).expect("chest");
         assert_eq!(entity["attach"]["offset"], json!([200.0, 200.0]));
         assert_eq!(entity["state"], json!("closed"));
+        // Moving it must not re-roll its contents.
+        assert_eq!(again.body["seeded"], json!(0));
     }
 
     #[test]
@@ -481,14 +597,6 @@ mod tests {
         assert!(again.events.is_empty(), "a no-op summon is quiet");
         let entity = store.render_one(CHEST_ID).expect("chest");
         assert_eq!(entity["attach"]["offset"], json!([900.0, 640.0]));
-    }
-
-    #[test]
-    fn a_dismissed_pod_cannot_be_opened_in_place() {
-        let mut store = store_with_chest();
-        dismiss(&mut store, false).expect("dismiss");
-        let err = open(&mut store).expect_err("not on the stage");
-        assert!(err.contains("summon"), "{err}");
     }
 
     #[test]
@@ -506,27 +614,35 @@ mod tests {
     fn opening_reveals_contents_and_closing_hides_them() {
         let mut store = store_with_chest();
         an_item(&mut store, "demo:bag");
-        open(&mut store, ).expect("open");
+        open(&mut store).expect("open");
         put(&mut store, "demo:bag").expect("put");
 
         let stored = store.render_one("demo:bag").expect("bag");
         assert_eq!(stored["attach"]["parent"], json!("entity:chest"));
         assert_eq!(stored["attach"]["socket"], json!("chest_interior"));
+        assert_eq!(stored["attach"]["scale"], json!(0.45), "fitted to the pod");
 
         close(&mut store).expect("close");
-        assert_eq!(store.render_one("demo:bag").expect("bag")["visible"], json!(false));
+        assert_eq!(
+            store.render_one("demo:bag").expect("bag")["visible"],
+            json!(false)
+        );
 
         open(&mut store).expect("open again");
-        assert_eq!(store.render_one("demo:bag").expect("bag")["visible"], json!(true));
+        assert_eq!(
+            store.render_one("demo:bag").expect("bag")["visible"],
+            json!(true)
+        );
     }
 
     #[test]
     fn a_closed_pod_refuses_a_put() {
         let mut store = store_with_chest();
         an_item(&mut store, "demo:bag");
+        let before = occupied(&store);
         let err = put(&mut store, "demo:bag").expect_err("refused");
         assert!(err.contains("closed"), "{err}");
-        assert_eq!(occupied(&store), 0);
+        assert_eq!(occupied(&store), before, "nothing moved in");
     }
 
     #[test]
@@ -534,11 +650,16 @@ mod tests {
         let mut store = store_with_chest();
         open(&mut store).expect("open");
         let capacity = capacity(&store);
+        let mut placed = 0;
         for index in 0..capacity {
             let id = format!("demo:item{index}");
             an_item(&mut store, &id);
-            put(&mut store, &id).expect("put");
+            match put(&mut store, &id) {
+                Ok(_) => placed += 1,
+                Err(_) => break,
+            }
         }
+        assert_eq!(placed, capacity - chest_loot(&store).len(), "the free slots");
         an_item(&mut store, "demo:extra");
         let err = put(&mut store, "demo:extra").expect_err("full");
         assert!(err.contains("full"), "{err}");
@@ -551,32 +672,64 @@ mod tests {
         an_item(&mut store, "demo:bag");
         open(&mut store).expect("open");
         put(&mut store, "demo:bag").expect("put");
+        let before = occupied(&store);
         take(&mut store, "demo:bag").expect("take");
 
         let bag = store.render_one("demo:bag").expect("bag");
         assert_eq!(bag["attach"]["parent"], json!("world"));
         assert_eq!(bag["visible"], json!(true));
-        assert_eq!(occupied(&store), 0);
+        assert_eq!(occupied(&store), before - 1);
     }
 
     #[test]
-    fn dismiss_refuses_while_occupied_unless_forced() {
+    fn dismiss_refuses_your_things_but_not_the_pods_own() {
+        let mut store = store_with_chest();
+        // Only the pod's trinkets are inside: it goes without complaint.
+        let pod_only = dismiss(&mut store, false).expect("dismiss");
+        assert_eq!(pod_only.body["dismissed"], json!(true));
+        assert!(
+            chest_loot(&store).is_empty(),
+            "its trinkets leave with it: {:?}",
+            store
+                .contents_of(CHEST_ID)
+                .iter()
+                .map(|entity| entity.id.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_put_item_blocks_dismiss_until_forced() {
         let mut store = store_with_chest();
         an_item(&mut store, "demo:bag");
         open(&mut store).expect("open");
         put(&mut store, "demo:bag").expect("put");
 
         let err = dismiss(&mut store, false).expect_err("refused");
-        assert!(err.contains("demo:bag"), "the refusal names the slot: {err}");
+        assert!(
+            err.contains("demo:bag"),
+            "the refusal names your item: {err}"
+        );
 
         let forced = dismiss(&mut store, true).expect("forced");
         assert_eq!(forced.body["dismissed"], json!(true));
+        assert_eq!(forced.body["dropped"], json!(["demo:bag"]));
         let chest = store.render_one(CHEST_ID).expect("chest");
         assert_eq!(chest["state"], json!("dormant"));
-        assert_eq!(chest["visible"], json!(false));
-        // Nothing was deleted: the bag is on the stage.
+        // Visible-but-dormant: the page draws it only while `vanish` runs, then
+        // stops. Hiding it here would make the dismiss blink.
+        assert_eq!(chest["anim"]["clip"], json!("vanish"));
+        // Your bag is on the stage; nothing was deleted.
         let bag = store.render_one("demo:bag").expect("bag");
         assert_eq!(bag["attach"]["parent"], json!("world"));
-        assert_eq!(occupied(&store), 0);
+        assert!(chest_loot(&store).is_empty());
+    }
+
+    #[test]
+    fn a_dismissed_pod_cannot_be_opened_in_place() {
+        let mut store = store_with_chest();
+        dismiss(&mut store, false).expect("dismiss");
+        let err = open(&mut store).expect_err("not on the stage");
+        assert!(err.contains("summon"), "{err}");
     }
 }
