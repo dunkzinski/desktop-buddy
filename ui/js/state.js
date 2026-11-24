@@ -75,6 +75,19 @@ export const avatar = {
   // glancing around. Cleared by a drag, W/centre, or any move.
   perched: false,
   perchRect: null,
+  // Scavenging (`ui/js/scavenge.js` + `main.js`): a 0..1 blend the renderer
+  // eases while the avatar is out rummaging, and the phase that drives the
+  // procedural dig. `rig.js` maps them onto the root/pelvis/torso/head/arm
+  // bones, so no rig needs a "rummage" clip to be scavenged with.
+  rummage: 0,
+  rummagePhase: 0,
+  // Bumped when *the user* takes the avatar somewhere: a drag, or W / centre /
+  // random. The scavenging walk compares it and stands down instead of
+  // pulling the avatar back out from under the pointer. Agent moves
+  // (`POST /move`, the AI's own perch) deliberately do not bump it — see
+  // `ui/js/bridge.js`.
+  manualMoves: 0,
+
   // Explicit gaze target from `POST /move {"look_at": [x, y]}`, screen px, or
   // null for "decide for yourself".
   lookAt: null,

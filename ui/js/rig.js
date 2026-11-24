@@ -196,6 +196,70 @@ export async function refreshModelList(selectName) {
 
 /* ---------- transforms ---------- */
 
+/**
+ * Procedural rummaging pose — the scavenging activity's animation.
+ *
+ * The scavenging run has no keyframe clip (a generated rig ships `alert`,
+ * `breathe`, `wave` and the like; a hand-authored one or a stub ships whatever
+ * it was given), so the dig is built from the one vocabulary every rig shares:
+ * the bone ids. The root dips into a crouch (its `bob` moves every child), the
+ * torso hunches over the pile, the head drops, and the arms scoop toward the
+ * body in alternation.
+ *
+ * `blend` is `avatar.rummage` (0..1), eased by `main.js`, so the pose fades in
+ * and out instead of snapping on when a run starts.
+ *
+ * Three details are easy to get wrong and were, once:
+ *
+ * * the arms' rest rotation is mirrored (a 5-bone stub rig sits at `0.9` and
+ *   `2.24` rad — about `PI/2` apart), so "toward the body" is **+** for the
+ *   right arm and **−** for the left. That is the `side` factor.
+ * * the amplitudes stay small (≤ ~30°). A ±1 rad swing on a rest pose that
+ *   already points outward reads as a wave or a dab, not a dig.
+ * * a front-facing 2D rig has no depth axis to reach forward along, so the dig
+ *   is *hunch + crouch + fast pawing*, not a 3D scoop. Rigs whose limb ids are
+ *   not `arm_*` / `forearm_*` / `hand_*` (a WIP stub can name its legs `arm_*`)
+ *   simply get the partial pose that matches their bones.
+ */
+function rummageOffset(bone, blend) {
+  const id = String(bone.id || "").toLowerCase();
+  const t = avatar.rummagePhase * Math.PI * 2;
+  // Left-side bones are the mirrored half of the rig: `arm_l`, `hand_l`, and a
+  // hand-authored `left_arm` all match.
+  const side = /(^|_)l$|left/.test(id) ? -1 : 1;
+  // Two scoops per cycle, so the paws work at ~3 Hz at RUMMAGE_HZ.
+  const scoop = Math.sin(t * 2);
+  const crouch = Math.abs(Math.sin(t));
+  if (id === "root" || id === "hips") {
+    // `bob` on the root moves every child, so this dips the whole body toward
+    // the pile and lifts it a little with each scoop.
+    return { rot: 0, bob: (-8 + 3 * crouch) * blend };
+  }
+  if (id === "pelvis") {
+    return { rot: 0.03 * Math.sin(t) * blend, bob: 1.5 * crouch * blend };
+  }
+  if (id === "torso" || id === "chest" || id === "body") {
+    // The strongest signal a front-facing 2D rig can give: hunch right over the
+    // spot, with a small working sway.
+    return { rot: (-0.3 + 0.05 * scoop) * blend, bob: 0 };
+  }
+  if (/^head/.test(id)) {
+    return { rot: (0.24 + 0.03 * scoop) * blend, bob: 0 };
+  }
+  if (/^arm/.test(id)) {
+    // Hands scoop in toward the body and back out. There is no depth axis to
+    // reach forward along, so the dig is the crouch + hunch + this pawing.
+    return { rot: side * (0.2 + 0.26 * scoop) * blend, bob: 0 };
+  }
+  if (/^forearm/.test(id)) {
+    return { rot: side * (0.1 + 0.18 * Math.sin(t * 2 + 0.7)) * blend, bob: 0 };
+  }
+  if (/^hand/.test(id)) {
+    return { rot: side * 0.08 * Math.sin(t * 2 + 1.2) * blend, bob: 0 };
+  }
+  return { rot: 0, bob: 0 };
+}
+
 export function animOffset(bone) {
   if (RT.rigMode) return { rot: 0, bob: 0 };
   const anim = bone.anim || {};
@@ -218,7 +282,14 @@ export function animOffset(bone) {
   if (isHeadBone(bone)) {
     rot += gaze.hover * HOVER_HEAD_TILT + num(gaze.tilt, 0);
   }
-  const bob = anim.bob ? Math.sin(avatar.time * 1.8 + phase) * anim.bob : 0;
+  let bob = anim.bob ? Math.sin(avatar.time * 1.8 + phase) * anim.bob : 0;
+  // Scavenging layers on top of the rig's own life-signs rather than replacing
+  // them, so a rig that sways still sways while it digs.
+  if (avatar.rummage > 0) {
+    const dig = rummageOffset(bone, avatar.rummage);
+    rot += dig.rot;
+    bob += dig.bob;
+  }
   return { rot, bob };
 }
 

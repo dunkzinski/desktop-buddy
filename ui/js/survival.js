@@ -29,6 +29,10 @@ const POLL_MS = 15000;
 /** How often the fishing pane re-reads `GET /fishing` while a cast is out. The
  *  host tick is 1 s, so a poll is what makes the bobber react promptly. */
 const FISHING_POLL_MS = 120;
+/** How often the Status pane re-reads `GET /scavenge` while a run is out. The
+ *  host tick is 1 s, so 500 ms is frequent enough to count down and to notice
+ *  the finish; a run is at most 30 s, so the poll is short-lived. */
+const SCAVENGE_POLL_MS = 500;
 
 const survival = {
   base: DEFAULT_BASE,
@@ -72,6 +76,20 @@ const fishing = {
   phase: "idle",
 };
 
+/**
+ * The scavenging half — a thin client for a 10-30 s run.
+ *
+ * The plugin owns the session, the loot and the report; this only starts it,
+ * polls `GET /scavenge` while it is out (so the card can count down and the
+ * poll can even be what completes it), and prints what came home. Nothing here
+ * invents an outcome.
+ */
+const scavenging = {
+  session: null,
+  config: null,
+  timer: 0,
+};
+
 
 const el = (id) => document.getElementById(id);
 
@@ -111,6 +129,7 @@ export function toggleSurvivalCard(force) {
       ensureFishingPoll();
       pollFishing();
     }
+    refreshScavenging();
   }
   return open;
 }
@@ -1417,6 +1436,143 @@ function onFishingKey(event) {
   pressFishingAction();
 }
 
+/* ------------------------------------------------------------------ *
+ * Scavenging
+ * ------------------------------------------------------------------ */
+
+function setScavengeNote(text, isError) {
+  // The run belongs to the Status pane, so its outcome uses that pane's note.
+  setNote(text, isError);
+}
+
+/** Paint the chip and the Stop button on the Status pane. */
+function renderScavengeChip(session) {
+  const chip = el("survival-scavenge-state");
+  const stop = el("btn-scavenge-cancel");
+  const phase = (session && session.phase) || "idle";
+  const active = phase !== "idle";
+  if (chip) {
+    const remaining = session ? Number(session.remaining_secs) || 0 : 0;
+    chip.textContent = active ? `rummaging · ${remaining}s` : "idle";
+    chip.classList.toggle("active", active);
+    chip.title = session && session.runs
+      ? `${session.runs} run(s), ${session.items_found} item(s), ${session.coins_found} coin(s)`
+      : "no runs yet";
+  }
+  if (stop) stop.hidden = !active;
+}
+
+/** Apply `GET /scavenge` (or the start reply): session, config, the poll. */
+function applyScavengeStatus(body) {
+  if (!body || body.ok !== true) return;
+  if (body.config) scavenging.config = body.config;
+  scavenging.session = body.session || null;
+  renderScavengeChip(scavenging.session);
+  if (scavenging.session && scavenging.session.active) ensureScavengePoll();
+  else stopScavengePoll();
+}
+
+function ensureScavengePoll() {
+  if (scavenging.timer) return;
+  scavenging.timer = window.setInterval(pollScavenging, SCAVENGE_POLL_MS);
+}
+
+function stopScavengePoll() {
+  if (scavenging.timer) {
+    window.clearInterval(scavenging.timer);
+    scavenging.timer = 0;
+  }
+}
+
+async function pollScavenging() {
+  try {
+    const res = await fetch(`${survival.base}/scavenge`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    applyScavengeStatus(await res.json());
+  } catch (err) {
+    stopScavengePoll();
+    setScavengeNote(`Scavenging API unreachable: ${err.message}`, true);
+  }
+}
+
+async function refreshScavenging() {
+  try {
+    const res = await fetch(`${survival.base}/scavenge`, { cache: "no-store" });
+    if (res.ok) applyScavengeStatus(await res.json());
+  } catch (_) {
+    // A dead API leaves the chip at "idle"; the next event or poll corrects it.
+  }
+}
+
+/** `POST /scavenge/start` — the zero-cost fallback activity. */
+async function startScavenging() {
+  try {
+    const res = await fetch(`${survival.base}/scavenge/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setScavengeNote(body.error || `Could not set off (HTTP ${res.status})`, true);
+      return;
+    }
+    applyScavengeStatus({ ok: true, session: body.session, config: body.config });
+    const left = body.duration_secs ? `${body.duration_secs}s` : "a while";
+    setScavengeNote(`Off to rummage for ${left}.`);
+    refreshInventory();
+  } catch (err) {
+    setScavengeNote(`Scavenging API unreachable: ${err.message}`, true);
+  }
+}
+
+/** `POST /scavenge/cancel` — come back early, with nothing. */
+async function cancelScavenging() {
+  try {
+    const res = await fetch(`${survival.base}/scavenge/cancel`, { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setScavengeNote(body.error || `Could not stop (HTTP ${res.status})`, true);
+      return;
+    }
+    stopScavengePoll();
+    renderScavengeChip(null);
+    setScavengeNote(body.line || "Came back early with nothing.");
+  } catch (err) {
+    setScavengeNote(`Scavenging API unreachable: ${err.message}`, true);
+  }
+}
+
+/** Spell out a `scavenging-finished` frame: what was banked, and for how much. */
+function applyScavengeResult(payload) {
+  if (!payload || typeof payload !== "object") return;
+  stopScavengePoll();
+  renderScavengeChip(null);
+
+  if (payload.reason === "cancelled") {
+    setScavengeNote(payload.line || "Came back early with nothing.");
+    return;
+  }
+  const rows = Array.isArray(payload.items) ? payload.items : [];
+  const kept = rows
+    .filter((row) => Number(row.stored) > 0)
+    .map((row) => `${row.stored} × ${row.label}`);
+  // Units, not rows: a stack of two that would not fit is two left behind.
+  const left = rows.reduce(
+    (sum, row) => sum + Math.max(0, (Number(row.count) || 0) - (Number(row.stored) || 0)),
+    0,
+  );
+  const coins = Number(payload.coins) || 0;
+  const parts = [kept.length ? `Found ${kept.join(", ")}` : "Found nothing it could carry"];
+  if (coins > 0) parts.push(`+${coins} coin${coins === 1 ? "" : "s"}`);
+  if (payload.rare) parts.push("rare find!");
+  if (left > 0) parts.push(`${left} left behind (bag full)`);
+  setScavengeNote(parts.join(" · "), left > 0 && kept.length === 0);
+  if (kept.length > 0) toast(`🧹 ${kept.join(", ")}`);
+  refreshInventory();
+  refreshStore();
+}
+
 /* ------------------------------------------------------------------ */
 
 
@@ -1461,6 +1617,14 @@ export async function setupSurvival() {
   el("btn-open-fishing")?.addEventListener("click", (event) => {
     event.preventDefault();
     showSurvivalTab("fishing");
+  });
+  el("btn-scavenge")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    startScavenging();
+  });
+  el("btn-scavenge-cancel")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    cancelScavenging();
   });
 
   // ---- inventory --------------------------------------------------------
@@ -1524,6 +1688,7 @@ export async function setupSurvival() {
   await Promise.all([refreshFoods(), refreshRecipes(), refreshSurvival()]);
   await refreshInventory();
   await refreshStore();
+  await refreshScavenging();
 
   // Pushed updates: the telemetry frame and every meal outcome.
   await listen("survival", (event) => renderSurvival(event.payload));
@@ -1575,6 +1740,17 @@ export async function setupSurvival() {
   });
   await listen("fishing-result", (event) => applyFishingResult(event.payload));
 
+  // Scavenging: the start frame is the run's real state (duration included),
+  // and the finished frame spells the findings out — the poll may already have
+  // moved the session to `idle` by the time it lands.
+  await listen("scavenging-started", (event) => {
+    const payload = (event && event.payload) || {};
+    applyScavengeStatus({ ok: true, session: payload.session, config: scavenging.config });
+    ensureScavengePoll();
+    setScavengeNote("Rummaging around…");
+  });
+  await listen("scavenging-finished", (event) => applyScavengeResult(event.payload));
+
   setInterval(refreshSurvival, POLL_MS);
   survival.ready = true;
 
@@ -1623,6 +1799,14 @@ export async function setupSurvival() {
         ? [fishing.session.reel.sweet_start, fishing.session.reel.sweet_end]
         : null,
       hookKey: fishing.config ? fishing.config.hook_key : null,
+    },
+    scavenging: {
+      phase: scavenging.session ? scavenging.session.phase : "idle",
+      remaining: scavenging.session ? scavenging.session.remaining_secs : 0,
+      runs: scavenging.session ? scavenging.session.runs : 0,
+      items: scavenging.session ? scavenging.session.items_found : 0,
+      coins: scavenging.session ? scavenging.session.coins_found : 0,
+      polling: !!scavenging.timer,
     },
   });
 }

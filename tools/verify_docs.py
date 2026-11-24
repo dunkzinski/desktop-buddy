@@ -810,6 +810,7 @@ else:
                     "craving_duration_secs",
                     "fishing",
                     "inventory",
+                    "scavenge",
                 }
                 if not isinstance(survival_block, dict):
                     problems.append("watcher_rules.json: survival is not an object")
@@ -1009,6 +1010,66 @@ else:
                             )
                         if "`slots`" not in arch_md:
                             problems.append("ARCHITECTURE.md: survival.inventory.slots is not documented")
+
+                    # Scavenging: the zero-cost fallback activity. Its 10-30 s
+                    # window is the design promise the whole soft-lock fix rests
+                    # on (and the page animates a walk for that long), so an
+                    # out-of-range block is a bug rather than a preference.
+                    scavenge = survival_block.get("scavenge")
+                    if scavenge is None:
+                        problems.append("watcher_rules.json: survival.scavenge is missing")
+                    elif not isinstance(scavenge, dict):
+                        problems.append("watcher_rules.json: survival.scavenge must be an object")
+                    else:
+                        scavenge_keys = {
+                            "enabled",
+                            "min_secs",
+                            "max_secs",
+                            "rare_chance_per_mille",
+                            "comment_chance_per_mille",
+                        }
+                        stray = set(scavenge) - scavenge_keys
+                        if stray:
+                            problems.append(
+                                f"watcher_rules.json: survival.scavenge has unknown keys {sorted(stray)}"
+                            )
+                        if not isinstance(scavenge.get("enabled"), bool):
+                            problems.append(
+                                "watcher_rules.json: survival.scavenge.enabled must be a boolean"
+                            )
+                        for field in ("min_secs", "max_secs"):
+                            value = scavenge.get(field)
+                            if isinstance(value, bool) or not isinstance(value, int):
+                                problems.append(
+                                    f"watcher_rules.json: survival.scavenge.{field} must be an integer"
+                                )
+                            elif not 10 <= value <= 30:
+                                problems.append(
+                                    f"watcher_rules.json: survival.scavenge.{field} {value} is outside 10..30"
+                                )
+                        if (
+                            isinstance(scavenge.get("min_secs"), int)
+                            and isinstance(scavenge.get("max_secs"), int)
+                            and scavenge["max_secs"] < scavenge["min_secs"]
+                        ):
+                            problems.append(
+                                "watcher_rules.json: survival.scavenge.max_secs is below min_secs"
+                            )
+                        for field in ("rare_chance_per_mille", "comment_chance_per_mille"):
+                            chance = scavenge.get(field)
+                            if isinstance(chance, bool) or not isinstance(chance, int):
+                                problems.append(
+                                    f"watcher_rules.json: survival.scavenge.{field} must be an integer"
+                                )
+                            elif not 0 <= chance <= 1000:
+                                problems.append(
+                                    f"watcher_rules.json: survival.scavenge.{field} {chance} is outside 0..1000"
+                                )
+                        for key in sorted(scavenge_keys):
+                            if f"`{key}`" not in arch_md:
+                                problems.append(
+                                    f"ARCHITECTURE.md: survival.scavenge.{key} is not documented"
+                                )
 
             # vision: screen capture + a named local VL profile. The profile name
             # must resolve, or a screenshot would silently fall back to the text

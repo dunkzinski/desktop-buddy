@@ -19,7 +19,7 @@ Zero cloud keys required. Zero idle tokens burned. Zero excuses for the fishing 
 * **Data-driven 2D skeletal rigs (`model.json`):** Bones, sprites, expression bindings and keyframe clips — authored in-app, then triggered via UI, HTTP, or MCP.
 * **Real-time life signs:** Mouth shapes track actual Piper WAV RMS energy (falling back to phoneme-mapped typing when muted), pupils track the OS cursor across monitors, and `POST /perch` dynamically tracks target window borders as you drag or resize them.
 * **Fully local voice & vision:** Local Piper TTS (`rodio`/`cpal`), push-to-talk via Silero VAD + `whisper.cpp`, and in-memory screen capture routed to local vision-language models. No cloud keys required.
-* **Sandboxed WebAssembly plugins:** Fuel-metered `wasm32-unknown-unknown` guests with isolated linear memory — shipping with a survival/fishing economy loop and a deterministic procedural creature generator (`2,160` base silhouettes across 15 body plans).
+* **Sandboxed WebAssembly plugins:** Fuel-metered `wasm32-unknown-unknown` guests with isolated linear memory — shipping with a survival/fishing/scavenging economy loop and a deterministic procedural creature generator (`2,160` base silhouettes across 15 body plans).
 * **Zero-idle-token watcher:** A supervised background daemon subscribes to SSE and polls window context, waking an agent or local model only when rules match.
 
 ## Screenshots
@@ -243,7 +243,7 @@ Every one is a thin, honest wrapper over the HTTP API (`GET /context` + `GET /st
 
 ## Teach your gremlin new tricks with WASM plugins
 
-Everything that isn't the avatar engine itself is a plugin: hunger, fishing, the entire procedural creature generator, and whatever you build next. Guests are standalone `wasm32-unknown-unknown` crates loaded from disk at startup, so adding a trick never means recompiling the host.
+Everything that isn't the avatar engine itself is a plugin: hunger, fishing, scavenging, the entire procedural creature generator, and whatever you build next. Guests are standalone `wasm32-unknown-unknown` crates loaded from disk at startup, so adding a trick never means recompiling the host.
 
 ```bash
 ./scripts/build-plugin.sh              # every plugin
@@ -299,7 +299,7 @@ Fuel is metered per call (`Config::consume_fuel(true)` starts a store with **zer
 
 ### What already ships
 
-* **`survival.wasm`** — hunger/saturation metabolism, a 20-slot stack-aware bag, 24 foods, 6 recipes, a 13-item shop (`GET /store`, `POST /store/buy`, `POST /store/sell`), and a four-phase fishing mini-game. Body events route to the AI brain with quiet offline fallbacks: with no brain attached, the gremlin reacts on its own instead of monologuing into the void.
+* **`survival.wasm`** — hunger/saturation metabolism, a 20-slot stack-aware bag, 24 foods, 6 recipes, a 13-item shop (`GET /store`, `POST /store/buy`, `POST /store/sell`), a four-phase fishing mini-game, and **scavenging** (`GET /scavenge`, `POST /scavenge/start`): a 10–30 s walk around your open windows that needs no rod, bait, coins or food and always pays, so running out of everything is recoverable instead of a dead end. Body events route to the AI brain with quiet offline fallbacks: with no brain attached, the gremlin reacts on its own instead of monologuing into the void.
 * **`metamorphosis.wasm`** — a pure-Rust procedural character generator (`Fresh → Mega`). One seed drives 15 archetypes × 6 forms × 4 builds = 360 structural silhouettes, each paired with a marking derived from `(build + form) mod 6` — **2,160 base combinations** before the seed's own deformation layer. It synthesizes complete `desktop-buddy/model@1` skeletons with exact kinematic mirroring (`atan2(sin θ, −cos θ)`) and hot-swaps them onto the desktop via `host_model_write` + `host_model_activate`. Bodies are pinned in the save, so rewinding a stage restores that exact creature.
 
 ### Writing one

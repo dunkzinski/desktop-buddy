@@ -272,7 +272,12 @@ profile is refused at save time.
 One JSON block, two readers: `enabled` and `cooldown_secs` are the watcher's
 routing switch and budget for every `survival-*` frame (one shared bucket — a
 feed that crosses a tier *and* settles a craving is one reaction, not two);
-everything else belongs to the guest. The full schema is in
+everything else belongs to the guest, including the `scavenge` sub-block that
+sets the zero-cost fallback activity's 10–30 s window and its rare-loot odds.
+A finished scavenging run is routed as its own trigger (`scavenging-finished`,
+a 5 s bucket) because it is a distinct moment rather than another appetite
+reading; a started run is never routed — it is the page's cue to walk the avatar
+around the open windows. The full schema is in
 [PLUGINS.md §6](PLUGINS.md#config-block).
 
 ### 4.9 `tts` — Piper

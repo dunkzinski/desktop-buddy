@@ -315,6 +315,8 @@ pub struct SurvivalConfig {
     pub fishing: FishingConfig,
     /// The bag: how many slots.
     pub inventory: InventoryConfig,
+    /// Scavenging — the zero-cost fallback activity (duration, rare-loot odds).
+    pub scavenge: crate::scavenge::ScavengeConfig,
 }
 
 impl Default for SurvivalConfig {
@@ -333,6 +335,7 @@ impl Default for SurvivalConfig {
             craving_duration_secs: 600,
             fishing: FishingConfig::default(),
             inventory: InventoryConfig::default(),
+            scavenge: crate::scavenge::ScavengeConfig::default(),
         }
     }
 }
@@ -377,6 +380,7 @@ impl SurvivalConfig {
             .clamp(MIN_CRAVING_DURATION_SECS, MAX_CRAVING_DURATION_SECS);
         self.fishing = self.fishing.sanitized();
         self.inventory = self.inventory.sanitized();
+        self.scavenge = self.scavenge.sanitized();
         self
     }
 
@@ -434,6 +438,7 @@ impl SurvivalConfig {
             "craving_duration_secs": self.craving_duration_secs,
             "fishing": self.fishing.to_json(),
             "inventory": self.inventory.to_json(),
+            "scavenge": self.scavenge.to_json(),
             "metabolism": {
                 "hunger_per_min": self.metabolism.hunger_per_min,
                 "saturation_per_min": self.metabolism.saturation_per_min,

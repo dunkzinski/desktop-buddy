@@ -65,6 +65,7 @@ pub mod model;
 pub mod persist;
 pub mod plugin;
 pub mod routes;
+pub mod scavenge;
 pub mod store;
 
 pub use plugin::Survival;

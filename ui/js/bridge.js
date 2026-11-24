@@ -108,6 +108,10 @@ export function applyRemoteState(remote) {
       avatar.walkPhase = 0;
       if (avatar.mode !== "walking") avatar.mode = "walking";
       walkSegment = true;
+      // Deliberately **not** `avatar.manualMoves += 1`: an external move is
+      // the agent's business (and often the AI's own reaction to a survival
+      // event), so the scavenging walk holds its dig where he was put
+      // instead of ending the activity. Only the user's hand cancels it.
     }
   }
   if (remote.state && remote.state !== avatar.mode) {

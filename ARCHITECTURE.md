@@ -921,16 +921,17 @@ The frontend is split into native ES modules under `ui/` with no bundler:
 | `ui/js/ipc.js` | **Leaf** Tauri access: `call`, `listen`, `once`, `isTauri`. Reads `window.__TAURI__` lazily on every call (never cached at module scope) |
 | `ui/js/plugins.js` | **Leaf** plugin-backed UI gate: `setupPluginGate` (one `GET /plugins` read, retried while the API is still binding, plus a `plugins` event listener), `applyPluginStatus`, `pluginActive` (only `active` counts — a failed or parked plugin does not serve its routes), `pluginStates` and `gatePluginUi`, which shows/hides every `data-plugin="<id>"` element. The Survival / Metamorphose control-panel buttons and the Settings Survival tab ship **hidden** in `index.html`, so a missing `.wasm` removes the option instead of leaving a dead end |
 | `ui/js/state.js` | **Leaf** shared state objects (`avatar`, `RT`, `speech`, `gaze`, `viewport`, `watcher`, `ai` — the last mirroring `{active, profiles, health, checked}` for the **AI Brain** row), constants (`EXPRESSIONS`, `PRESET_STATES`, `PART_TAGS`), helpers, `toast`, `updateStatusUI`, `setExpression`, the expression lifecycle (`EXPRESSION_SETTLE_SECS`, `reactExpression` — a program/event reaction with a hold that reverts to neutral, `settleExpression` — the per-frame ease back to neutral, guarded by holds, bubbles, walk/wave and STT state), `snapshot`, `setDirty`, `activeState` (which routes the lip-sync mouth variant through `mouthState`), `blinkActive`, `markManual` |
-| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset` — the hover head tilt rides on it, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix` — the one world matrix the renderer and the editor both draw through, `partLocalRect` — how each shape type is anchored inside that matrix, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
+| `ui/js/rig.js` | Model ingestion (`applyModel`, `boneDefaults`, `rebuildOrder`, `loadImages`, `refreshModelList`), forward kinematics (`animOffset` — the hover head tilt rides on it, and `rummageOffset` is the procedural dig the scavenging activity blends in through `avatar.rummage`, `clampRotation`, `animationOffset`, `localRotation`, `computeWorld`), geometry (`partSize`, `sortedDrawables`, `partWorldMatrix` — the one world matrix the renderer and the editor both draw through, `partLocalRect` — how each shape type is anchored inside that matrix, `partBox`), hit-region publishing (`avatarBounds`, `wireRegions` — which also publishes the visible speech bubble and the open command bar so both stay clickable), and rig serialization (`serializeRig`, `serializeAnimations`, `saveRig`, `resetRig`) |
 | `ui/js/animator.js` | Custom keyframe clips: catalogue (`animationClips`, `listAnimations`), transport (`playAnimation`, `stopAnimation`, `stopPlayback`, `seekAnimation`, `stepAnimation`), sampling (`sampleAnimation`), authoring (`setAnimationBone`, `captureKeyframe`, `addClip`, `renameClip`, `deleteClip`, `setClipDuration`, `setClipLoop`) and finished listeners (`onAnimationFinished`) |
 | `ui/js/renderer.js` | Canvas pipeline: DPR resize (`initRenderer`, `resizeCanvas`), `drawFace`, `drawShape`, `drawPart`, rig overlay gizmos, `render`; `updateGazeDir` turns the smoothed aim point into a clamped pupil vector and `isPupilPart` decides between moving the pupil sprite or the whole eye; the mouth squash reads `speech.mouthSmooth` (the same cadence as the sprite variants) |
 | `ui/js/editor.js` | Rig Edit Mode: `hitTest`, mouse/wheel handlers (wheel rotates a held part), inspector (`buildInspector`, `renderInspector`, `updateInspectorValues`), bone/part authoring (`addChildBone`, `deleteBone`, `addPartFromControls`, `addLimbFromControls`, `duplicatePart`, `deletePart`, `snapBoneToPart`, `bindExpressionSprite`, `attachStagedPart`), the animation timeline (`buildTimeline`, `updateTimeline`, `syncTimelinePlayhead`), and `undo` |
 | `ui/js/speech.js` | Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), **audio-driven lip sync** (`setAudioEnvelope` / `clearAudioEnvelope` / `hasAudioEnvelope` — `updateSpeech` indexes the Piper RMS envelope by `performance.now() - envelopeAt` and falls back to the character table when the voice is muted, missing or done) on top of the **text-driven** mapping (`mouthPoseFor` vowel/consonant/punctuation table, `setMouthFrom`, `stepMouth` smoothing), the quick-reply box (`isReplyOpen`, `openReply`, `closeReply`, `toggleReply`), the **details drawer** (`detailsText`, `toggleDetails`, `detailsOpen`, `copyDetails` — which republishes the hit region so the expanded card stays clickable), the "Thinking…" card (`beginThinking`, `showThinking`, `endThinking`, plus the `THINKING_TIMEOUT_MS` 125 s safety net that clears a stuck card and puts the face back to `neutral`) and the command bar's anchor (`commandBarVisible`, `positionCommandBar`); the hold timer is suspended while the drawer is open, the box is open, the bubble is hovered or an input has focus |
 | `ui/js/bridge.js` | Tauri event listeners (`avatar-state-changed`, `emote`, `speak`, `part-patch`, …), `reportState`, `applyRemoteState` (ignores frames that would yank a dragged avatar and never adopts a bare `walking` without its segment), `applyPartPatch`, `applyWatcherStatus` (which also mirrors `quick_tasks` for the command bar and wears a `surprised` face when a switched-on watcher stops running), `applySttStatus` (`transcribing` raises a `thinking` face — listening is not a mood), the **AI Brain** layer (`applyAiProfiles` — rebuilds the dropdown only when the profile set changes, so the 12 s health refresh cannot collapse an open select, `renderAiProfiles` for the badge/dot, `refreshAiProfiles`, `setAiProfile`, `aiHealthStatus` — a profile that drops from online to offline wears a `sad` face, only on the transition, `aiActiveLabel`), click-through (`setClickThrough`), import flow (`importFromDialog`, `importImageAs`, chooser) |
 | `ui/js/settings.js` | The **Settings** modal (`#settings-modal`, three tabs): a declarative `FIELDS` spec drives the whole form (label, dotted `section.key`, input type, Browse… `kind`), `renderSettings` paints the `GET /config` body including the per-path ✓/✗ marks and the *stray key* warnings, `collectPatch` diffs the form against the loaded body so a save sends only what changed, and `save` reports `applied` vs `restart_required` from `POST /config`. The **AI brain** tab is not declarative: profiles are a list, so it keeps a working copy in `ai` (loaded entries plus unsaved drafts flagged `isNew`, a `removed` queue and the two dropdown selections) and repaints cards through `renderProfileCards` / `refreshProfileOptions`; `addProfile` / `removeProfile` (inline guards: last profile, active profile, vision profile) / `importModel` (from `discoverModels` → `POST /ai-discover`) all edit that copy, and `collectPatch` turns it into `ai.create` / `ai.profiles` / `ai.rename` / `ai.remove` |
-| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar, `H` toggles the History drawer), the plugin gate (`setupPluginGate` runs before `setupSurvival` / `setupMetamorphose`, which are only set up while their plugin is `active`), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), **gaze targeting** (`attachGazeTracking` — page `mousemove` plus the global `cursor-pos` stream; `updateGaze` — `look_at` > focused command bar > perch > global cursor (4 s) > idle glances, plus the eased hover weight and the clamped head-bone yaw bias), `window.__avatarDebug`, the **AI Brain** select (`setAiProfile` + a toast, with `refreshAiProfiles` every 12 s beside the watcher poll), behaviour loop (`step`, `startWalk`, `wander` — held back while a bubble is up), `requestAnimationFrame` driver (`frame`: `step` → `render` → `positionBubble`), play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
+| `ui/js/main.js` | Entry point: DOM bindings, keyboard shortcuts (`Enter`/`/` summon the bar, `H` toggles the History drawer), the plugin gate (`setupPluginGate` runs before `setupSurvival` / `setupMetamorphose`, which are only set up while their plugin is `active`), the `summon-command-bar` hotkey listener (opens the bar and restores click-through when it closes), **gaze targeting** (`attachGazeTracking` — page `mousemove` plus the global `cursor-pos` stream; `updateGaze` — `look_at` > focused command bar > perch > global cursor (4 s) > idle glances, plus the eased hover weight and the clamped head-bone yaw bias), `window.__avatarDebug`, the **AI Brain** select (`setAiProfile` + a toast, with `refreshAiProfiles` every 12 s beside the watcher poll), behaviour loop (`step`, `beginWalk`, `startWalk` — which bumps `avatar.manualMoves`, so any manual or agent-driven walk outranks the scavenging route — `wander` — held back while a bubble is up — and `stepScavenge` / `beginScavengeWalk` / `nextScavengeLeg` / `endScavengeWalk`, the walk between open windows with a dig at each), `requestAnimationFrame` driver (`frame`: `step` → `render` → `positionBubble`), play-mode click / double-click / drag-to-move detection (`attachInteractionDetection`, `clampAvatarPosition`) that feeds `notify_interaction`, and the ask/task surface (`setupCommandBar`, `openCommandBar`, `sendUserMessage`, `renderQuickTasks`, `resetSession`, the bubble's inline reply and its Details/Copy buttons) |
 | `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions || `ui/js/history.js` | The **History** drawer: `setupHistory` (toggle buttons, the `chat-message` / `chat-history-cleared` listeners, the load-time `get_chat_history` hydrate), `renderHistory` (rows built with `textContent`, so a quoted diff can never be parsed as HTML), `appendChatMessage` (deduped by `id`, capped at 50, follows the newest turn only when the reader is already at the bottom), `clearChatHistory`, `toggleHistoryDrawer` (which republishes the hit region so the open card stays clickable), `historyOpen`, and the per-row **Details ▾** / **Copy** actions |
-| `ui/js/survival.js` | The **Survival** card (top-left pop-out, not a panel section) with four tabs. `setupSurvival` hydrates from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follows the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events with a 15 s survival poll as the floor, `renderSurvival` flattens every payload shape into the tier badge, the two bars and the craving row, `feed` is a real `POST /survival/feed`, `setCraving` / `clearCraving` drive `POST /survival`, `craft` is a real `POST /survival/craft` fed by the recipe picker, which comes from `GET /recipes` with the bag folded in (`can_cook`, `missing`, per-line `held`) so `syncCraftButton` can disable a cook that could not pay (a 409 `missing_ingredients` / refusal prints the API's own prose). `showSurvivalTab` switches status / bag / fishing / store; `renderInventory` draws one cell per slot from `GET /inventory`, `addItem` / `useItem` / `sellPickedItem` are real `POST /inventory/add`, `POST /inventory/use` and a one-unit `POST /store/sell` (the bag's Sell button, enabled for any slot `GET /inventory` gave a `sell_price`); the store pane draws one row per shelf entry from `GET /store` (`renderStore`, grouped by category, with the wallet and each entry's `owned` count), keeps Buy/Sell honest against the purse and the bag (`syncStoreButtons`) and trades for real through `trade` — a 409 `insufficient_coins` / `inventory_full` / `not_enough_items` prints the API's own prose; the fishing pane runs `castLine` / `hookFish` / `reelFish` / `cancelFishing` against the plugin, polls `GET /fishing` at 120 ms so the bobber beats the 1 s host tick, and animates the marker from the published sweep. `toggleSurvivalCard` / `survivalCardOpen` drive the card and Esc chain |
+| `ui/js/survival.js` | The **Survival** card (top-left pop-out, not a panel section) with four tabs. `setupSurvival` hydrates from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follows the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events with a 15 s survival poll as the floor, `renderSurvival` flattens every payload shape into the tier badge, the two bars and the craving row, `feed` is a real `POST /survival/feed`, `setCraving` / `clearCraving` drive `POST /survival`, `craft` is a real `POST /survival/craft` fed by the recipe picker, which comes from `GET /recipes` with the bag folded in (`can_cook`, `missing`, per-line `held`) so `syncCraftButton` can disable a cook that could not pay (a 409 `missing_ingredients` / refusal prints the API's own prose). `showSurvivalTab` switches status / bag / fishing / store; `renderInventory` draws one cell per slot from `GET /inventory`, `addItem` / `useItem` / `sellPickedItem` are real `POST /inventory/add`, `POST /inventory/use` and a one-unit `POST /store/sell` (the bag's Sell button, enabled for any slot `GET /inventory` gave a `sell_price`); the store pane draws one row per shelf entry from `GET /store` (`renderStore`, grouped by category, with the wallet and each entry's `owned` count), keeps Buy/Sell honest against the purse and the bag (`syncStoreButtons`) and trades for real through `trade` — a 409 `insufficient_coins` / `inventory_full` / `not_enough_items` prints the API's own prose; the fishing pane runs `castLine` / `hookFish` / `reelFish` / `cancelFishing` against the plugin, polls `GET /fishing` at 120 ms so the bobber beats the 1 s host tick, and animates the marker from the published sweep. `toggleSurvivalCard` / `survivalCardOpen` drive the card and Esc chain; scavenging is the Status pane's 🧹 **Scavenge** button (`startScavenging` → `POST /scavenge/start`, `cancelScavenging` → `POST /scavenge/cancel`), a 500 ms `GET /scavenge` poll (`ensureScavengePoll` / `pollScavenging`) that counts the chip down and can be what completes the run, and `applyScavengeResult`, which prints the findings (what was *stored*, the coins, a rare find) in the note line |
+| `ui/js/scavenge.js` | The **scavenging walk**'s geography: `scavengeAnchors` reads `GET /context` and turns the front-most `visible_windows` into one anchor just inside each window's bottom edge (validating the rect, skipping a sliver), `windowAnchors` is that pure mapping, and `fallbackAnchors` spreads a few points around the screen when nothing is open or the API is down. It moves nothing itself — `main.js` owns the walk — and takes the viewport as an argument, so it stays a leaf over `ipc.js` |
 | `ui/js/metamorphose.js` | The **Metamorphosis** card (a second top-left pop-out, beside Survival). `setupMetamorphose` resolves the API base, hydrates from `GET /creature/status`, follows the plugin's `creature` event (`ready` / `metamorphosed` / `reset`) and keeps a 10 s poll as the floor so a stopped plugin shows as `offline` instead of freezing the card. `renderCreature` paints the stage badge (green when evolvable, gold at Mega), the XP and bond bars, the archetype/attribute/seed chips and the live rig's `bones` / `parts` / `min_world_y`, `renderBlend` turns `status.attribute_blend` into the lineage readout — one percentage chip and one stacked-bar slice per attribute (a plugin too old to send the block falls back to a one-hot mix from `attribute`), plus the blended flavour line — and `renderBranches` draws one row per offered branch (`pickEvolveBranch` selects it) with the mix that branch would produce (`branchMix` over `branch.blend` / `blend_summary`, so taking it visibly shifts the percentages) and `syncEvolveButton` disables Evolve with the exact XP shortfall (and `syncBackButton` labels **◀ Back** with the stage it returns to — a real `POST /revert`) — the button is a real `POST /metamorphose`, whose reply (`from → stage`, bones, parts, `model_path`) lands in the card's note while the host hot-swaps the avatar; `nudge` is `POST /creature/xp` and `reset` is `POST /creature/reset` (archetype + optional seed). `toggleMetamorphoseCard` / `metamorphoseCardOpen` drive the card and the Esc chain. A 404 on the status route renders the card as offline with the build step |
 
 Module graph is a strict DAG (`ipc` / `state` are leaves):
@@ -1412,7 +1413,7 @@ A bubble is transient by design, so the session's turns are also kept in a log:
   instead of guessing from bubbles that already dismissed themselves. `role` is
   `"user"` or `"assistant"`.
 
-### Survival card (hunger, saturation, feeding, cooking, the bag, fishing, the shop)
+### Survival card (hunger, saturation, feeding, cooking, the bag, fishing, scavenging, the shop)
 
 The avatar has two bars and a mood about them. The numbers live in the survival
 plugin (`plugins/survival/src/model.rs`) and are drained by that plugin's own
@@ -1492,6 +1493,36 @@ tick, so they keep moving whether or not the card is on screen.
   parameters the plugin published — while the *press* is judged by the plugin's
   own clock, so a doctored client cannot widen the sweet spot. A landed fish
   goes into the bag (visible on the Bag tab); a miss prints why it got away.
+* **Scavenge.** The 🧹 **Scavenge** button on *Status* is a real
+  `POST /scavenge/start`, and it is the one control that can never be greyed out
+  for *lack* of anything: no rod, bait, coin or food is checked or spent. The
+  chip beside it counts the run down from a 500 ms `GET /scavenge` poll (`idle`,
+  then `rummaging · 12s`), **Stop** is a real `POST /scavenge/cancel`, and when
+  the run ends the note line spells the findings out —
+  `Found 2 × Driftwood, +5 coins` — or says the bag was too full to take them.
+  The *walking* is not a request: the page follows the plugin's own
+  `scavenging-started` frame, reads `GET /context` for the open windows and moves
+  the avatar to each one while it digs (see the scavenging section of the plugin
+  chapter), so the card can be closed and the avatar still rummages. On the way he
+  may **mutter** about the window he is at — "Let me look behind the Hermes
+  window." — offered to the plugin once per window and said only when its chance
+  roll and its 8 s / two-per-run limits allow, never over an open bubble.
+  His own **fidgeting must not cancel his activity**: the idle wander goes
+  through `startWalk`, which counts as the user taking the avatar, so `step()`
+  only wanders while `!scavengeWalk.active`, and a leg's `markManual` covers the
+  rest of the run instead of a flat 15 s. (Without both, a long run whose last
+  leg landed early stood him up mid-dig and let him idle while the card went on
+  counting down.)
+  The walk is **self-healing**, because two frames are thin glue for a 30 s
+  animation: `reconcileScavenge()` re-reads `GET /scavenge` every 2 s (the call
+  the card already makes, and completion from a `GET` is idempotent), restarts a
+  walk whose `scavenging-started` was missed and ends one whose
+  `scavenging-finished` was; a `scavenging-started` that arrives while a walk is
+  still winding down replaces it instead of being ignored. `frame()` runs its
+  body inside a `try`: `requestAnimationFrame` is queued **outside** the guard,
+  so one bad frame costs a frame and a `[avatar] frame failed:` line instead of
+  freezing the avatar until the app restarts — `__avatarDebug.snapshot()
+  .frameErrors` counts them, and anything above zero is a bug to chase.
 * **Store tab.** The shop, drawn from `GET /store`: the wallet in the pane head
   and on the tab badge, then one row per shelf entry (13 of them, four shelves,
   in a scrolling list) grouped by category, each
@@ -2347,13 +2378,13 @@ chosen `expression`, while `SOUL.md` stays authoritative.
 
 ### `/survival`, `/survival/feed`, `/survival/craft`, `/inventory`, `/inventory/add`,
 `/inventory/remove`, `/inventory/use`, `/fishing`, `/fishing/cast`, `/fishing/hook`,
-`/fishing/reel`, `/fishing/cancel`, `/foods`, `/recipes`, `/store`, `/store/buy`,
-`/store/sell`, `/plugins`
+`/fishing/reel`, `/fishing/cancel`, `/scavenge`, `/scavenge/start`, `/scavenge/cancel`,
+`/scavenge/comment`, `/foods`, `/recipes`, `/store`, `/store/buy`, `/store/sell`, `/plugins`
 
 These endpoints are **contributed by plugins**, not listed in `api.rs`: the
 survival plugin returns `/survival`, `/survival/feed`, `/survival/craft`, the
-four `/inventory` routes, the five `/fishing` routes and the three `/store`
-routes from its `plugin_routes()` export, and the host adds
+four `/inventory` routes, the five `/fishing` routes, the four `/scavenge`
+routes and the three `/store` routes from its `plugin_routes()` export, and the host adds
 its own `/plugins`. `GET /survival` returns the appetite
 (`config`, `stats`, `craving`, the `coins` wallet and the tier duplicated at the
 top level);
@@ -2474,6 +2505,7 @@ never disagrees with the numbers being applied.
 | `craving_duration_secs` | int | how long one craving lasts before it lapses, 30–3600 |
 | `fishing` | object | the mini-game's knob block — keys, timings and difficulty, below |
 | `inventory` | object | `slots`, 4–40: how many slots the bag has |
+| `scavenge` | object | the zero-cost fallback activity — run window and rare-loot odds, below |
 
 #### The `fishing` block
 
@@ -2496,12 +2528,80 @@ never disagrees with the numbers being applied.
 the `config.fishing` echo in `GET /survival` reports what the numbers actually
 play as `effective_period_ms` and `effective_sweet_width`.
 
+#### The `scavenge` block
+
+| key | type | meaning |
+|---|---|---|
+| `enabled` | bool | `false` refuses every run; `GET /scavenge` still answers |
+| `min_secs` | int | shortest run, clamped to 10–30 |
+| `max_secs` | int | longest run, clamped to 10–30 and never below `min_secs` |
+| `rare_chance_per_mille` | int | per-mille chance of one extra find from the rare table, 0–1000 |
+| `comment_chance_per_mille` | int | per-mille chance that a *requested* comment is actually said, 0–1000 (default 300) |
+
+The 10–30 s window is the design promise, not a preference: `MIN_DURATION_SECS`
+and `MAX_DURATION_SECS` in `plugins/survival/src/scavenge.rs` clamp it, an
+out-of-range block is refused by name at `POST /config`, and
+`tools/verify_docs.py` pins the shipped file. The defaults are `10` / `30` /
+`180` (an 18 % rare find).
+
 These are the **serde field names**, not prose: `metabolic_drain_rate`,
 `starting_hunger`, `starting_saturation`, `notifications` and
 `telemetry_interval_secs` are all silently ignored (the struct is
 `#[serde(default)]` with no `deny_unknown_fields`), which is how a block ends up
 looking configured while the app runs on defaults. `GET /config` reports such
 stray keys under `warnings`, and `tools/verify_docs.py` now pins this schema.
+
+#### Scavenging
+
+The fishing loop could dead-end: a cast spends bait, bait costs coins, and an
+avatar with no bait and no coins had no action left. Scavenging is the way out —
+it requires **no rod, bait, coin or consumable**, so it is the one action that is
+always available, and it always pays: one to three ordinary finds, a per-mille
+chance of one rare find, and 1–6 coins. Two runs of it are always enough to
+afford a bait restock (coins plus what the loot sells for), which is the
+invariant the plugin's tests pin.
+
+The split is deliberate, because the two halves have different constraints:
+
+* **The guest owns the rules.** `plugins/survival/src/scavenge.rs` holds the
+  phase (`idle` / `rummaging`), the drawn duration, the two weighted loot tables
+  (`ORDINARY` — driftwood, river weed, minnow, apple, egg, bread, mushroom, an
+  old boot, worm bait — and `RARE` — silver trout, glowing lure, honey, cheese,
+  ember eel), the coin roll and the findings sentence. `POST /scavenge/start`
+  checks only off / already-out / a-line-in-the-water, never stock.
+* **The page owns the movement.** A Wasm guest has no window API, so it cannot
+  see the desktop. `scavenging-started` carries the run's real `duration_secs`;
+  `ui/js/scavenge.js` reads `GET /context`, takes the front-most
+  `visible_windows`, and puts one anchor just inside each window's bottom edge
+  (falling back to a spread of screen points when nothing is open). `main.js`
+  walks the avatar to each anchor, then runs a **procedural rummaging pose** for
+  a beat before moving on — `rig.js::rummageOffset` maps `avatar.rummage`
+  (a 0→1 blend) onto the root/pelvis/torso/head/arm/forearm/hand bones every rig
+  shares, so no model needs a `rummage` clip. `scavenging-finished`, a manual
+  drag, or a `POST /move` ends the walk cleanly (`avatar.manualMoves`); the
+  guest's run finishes and reports on its own clock either way.
+* **Completion is idempotent.** `advance_scavenge` runs from the tick *and* from
+  `GET /scavenge`, and flips the phase to `idle` before publishing, so whichever
+  caller first sees the deadline banks the loot exactly once. A completed run
+  writes its save immediately (a `GET` never reaches the dispatcher's flush).
+  The session is not persisted: a restart mid-run loses an animation, never
+  progress, because nothing is banked until the run completes.
+* **Ambient muttering, spoken by the guest.** `POST /scavenge/comment` lets the
+  page hand over the one fact it has and the guest lacks — the name of the window
+  the avatar just reached (`windowLabel()` in `ui/js/scavenge.js` turns
+  `Code.exe` / `"main.rs - Code"` into `Code`). The guest owns the cadence (max
+  **2 per run**, ≥ **8 s** apart, then a `comment_chance_per_mille` roll, default
+  300) and the phrasing, and it publishes `scavenging-comment` **and speaks the
+  line even with a brain attached**: nothing happened except the avatar looking
+  around, so there is no trigger for the watcher to route — and routing it would
+  put a 10-30 s model turn on a mutter. The page only asks when no bubble is up,
+  so a comment never talks over the AI's own reply to the same run.
+* **A bubble must never end the run.** Real reactions to survival events
+  (`survival-meal`, `survival-threshold`) can include a `perch`/`move`, so
+  `applyRemoteState` deliberately does *not* count as the user taking over: the
+  page's walk holds its dig where the avatar was put and keeps the rummaging
+  blend up until the run's own deadline. Only a **user gesture** (a drag, or
+  `W` / centre / random) bumps `avatar.manualMoves` and stands the walk down.
 
 Tiers are `satiated`, `peckish`, `hungry`, `starving`. An accepted meal emits
 `survival-meal`; a tier crossing (natural or manual) emits `survival-threshold`;
@@ -2510,8 +2610,10 @@ and a craving emits `survival-craving`. The bag adds `inventory-changed` (any
 add, remove or use, with `source` `add` / `remove` / `use` / `bait` /
 `fishing`), and a fishing session emits `fishing-started`, `fishing-bite` (the
 bobber dipped), `fish-hooked` (the strike landed, the sweep parameters travel
-with it) and `fishing-result` (caught or lost, with the reason). See API.md for
-the full JSON shapes.
+with it) and `fishing-result` (caught or lost, with the reason). A scavenging run
+emits `scavenging-started` (the page's cue to walk and dig, carrying the run's
+`duration_secs`) and `scavenging-finished` (the findings, the coins and the
+line). See API.md for the full JSON shapes.
 
 Every spontaneous event also carries `line` (the sentence the plugin would have
 spoken) and, where it has one, `expression`; `fishing-result` adds `species`,
@@ -2532,6 +2634,10 @@ phase from them — and only the end of a cast reaches the AI brain:
   seconds apart are one conversational beat. Routing the intermediates would keep
   a 10-30 s turn permanently in flight on a local model and still narrate each
   moment after it had passed.
+* **Scavenging is terminal-outcome-only too.** `scavenging-started` is in no
+  `handle_frame` arm — it is the page's animation cue. A `scavenging-finished`
+  becomes one trigger (own 5 s bucket) whose detail names what was actually
+  *stored* and the coins found; a cancelled run says so and nothing else.
 * All of them are `quiet_failure`: a failed dispatch never posts the generic
   "Sorry, I hit a snag" bubble, it speaks the event's own `line`. That line is
   the **offline fallback** — a catch or a lost fish still gets a reaction when the

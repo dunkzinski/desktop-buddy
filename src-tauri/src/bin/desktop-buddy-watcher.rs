@@ -90,6 +90,16 @@ const FISHING_RESULT_COOLDOWN_SECS: u64 = 2;
 const FISH_CAUGHT_EVENT: &str = "fish_caught";
 /// Event type for a cast that ended with nothing in the net.
 const FISH_LOST_EVENT: &str = "fish_lost";
+/// How long a scavenging report is held back after the previous one.
+///
+/// A run is 10-30 s and pays out once, so this only has to swallow a
+/// double-route (the plugin's tick and the page's poll both see the deadline —
+/// the guest publishes once, but the frame can arrive twice on a reconnect).
+const SCAVENGE_COOLDOWN_SECS: u64 = 5;
+/// The survival plugin's scavenging frame. Only the *end* of a run is routed:
+/// `scavenging-started` is the page's cue to walk the avatar around, and a
+/// 10-30 s model turn would still be in flight when the findings landed.
+const SCAVENGE_EVENT: &str = "scavenging-finished";
 /// Floor on the inference timeout for a **body event** (survival / fishing).
 ///
 /// A local 7-30B model on CPU or a shared GPU routinely needs well over a
@@ -1341,7 +1351,7 @@ fn human_wait(secs: u64) -> String {
 /// avatar's own body. Numbers are banned on purpose: the bubble is a card a few
 /// words wide, "hunger 31.4, saturation 9.8" reads as telemetry in a mouth that
 /// is supposed to be complaining, and the user can already see the bars.
-const SURVIVAL_DIRECTIVE: &str = "This is a survival event -- hunger, a meal, a cooked dish, a craving, or a fish you just caught or lost. It is about the \
+const SURVIVAL_DIRECTIVE: &str = "This is a survival event -- hunger, a meal, a cooked dish, a craving, a fish you just caught or lost, or what a scavenging run turned up. It is about the \
 \
 avatar's own body, not the user's work, so do not offer to help with anything on screen. From here, without \
 \
@@ -2370,6 +2380,7 @@ Treat it as their task: do what they asked with your tools, then report the outc
         self.event_type.starts_with("survival-")
             || self.event_type == FISH_CAUGHT_EVENT
             || self.event_type == FISH_LOST_EVENT
+            || self.event_type == SCAVENGE_EVENT
     }
 
     /// Concise context prompt for the `hermes_cli` backend, with no persona.
@@ -2656,6 +2667,93 @@ fn fishing_trigger(
         fallback_expression: survival_expression(payload).map(str::to_string),
         ..Trigger::default()
     })
+}
+
+/// Route a finished scavenging run into a trigger.
+///
+/// The run is the survival plugin's zero-cost fallback activity, and its report
+/// is a body event like a meal: the plugin already picked a face and wrote the
+/// line, so this only has to describe what came home and let the brain (or the
+/// event's own `line`, when the model is unreachable) speak it.
+fn scavenge_trigger(
+    rules: &Rules,
+    shared: &mut Shared,
+    payload: &Value,
+    now: Instant,
+) -> Option<Trigger> {
+    if !rules.survival.enabled {
+        return None;
+    }
+    let detail = scavenge_detail(payload)?;
+    if !shared.cooldowns.allow(
+        "scavenge:result",
+        now,
+        Duration::from_secs(SCAVENGE_COOLDOWN_SECS),
+    ) {
+        return None;
+    }
+
+    Some(Trigger {
+        event_type: SCAVENGE_EVENT.to_string(),
+        detail,
+        window_title: shared.context.window_title.clone(),
+        idle_secs: shared.context.idle_secs,
+        // The plugin already wore this face on the event; keep it for the ack.
+        animation: survival_expression(payload).map(str::to_string),
+        quiet_failure: true,
+        // Offline fallback: the report the plugin wrote, verbatim.
+        fallback_line: text_field(payload, "line").map(str::to_string),
+        fallback_expression: survival_expression(payload).map(str::to_string),
+        ..Trigger::default()
+    })
+}
+
+/// The plain-words description of a finished scavenging run.
+///
+/// Reads the payload's own `items` rows (`{label, stored, rare}`) rather than
+/// the bag, so the sentence and the frame can never disagree — and it names only
+/// what was actually *stored*: a find the bag could not take is not something
+/// the avatar came home with.
+fn scavenge_detail(payload: &Value) -> Option<String> {
+    if text_field(payload, "reason") == Some("cancelled") {
+        return Some("the avatar gave up scavenging and came back with nothing".to_string());
+    }
+    let mut detail = String::from("the avatar came back from scavenging");
+    let names: Vec<String> = payload
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let stored = row.get("stored").and_then(Value::as_u64).unwrap_or(0);
+                    if stored == 0 {
+                        return None;
+                    }
+                    let label = text_field(row, "label")?;
+                    Some(if stored > 1 {
+                        format!("{stored} x {label}")
+                    } else {
+                        label.to_string()
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if names.is_empty() {
+        detail.push_str(" with nothing it could carry");
+    } else {
+        detail.push_str(&format!(" with {}", names.join(", ")));
+    }
+    match payload.get("coins").and_then(Value::as_u64) {
+        Some(1) => detail.push_str(" and 1 coin"),
+        Some(coins) if coins > 1 => detail.push_str(&format!(" and {coins} coins")),
+        _ => {}
+    }
+    if text_field(payload, "rare").is_some() {
+        detail.push_str(", including a rare find");
+    }
+    detail.push('.');
+    Some(detail)
 }
 
 fn result_detail(payload: &Value) -> Option<String> {
@@ -4391,6 +4489,14 @@ async fn handle_frame(
         "fishing-result" => {
             let mut guard = lock(shared);
             fishing_trigger(rules, &mut guard, &payload, Instant::now())
+        }
+        // Scavenging: **terminal outcomes only**, for the same reason as a
+        // finished cast. `scavenging-started` is the page's cue to walk the
+        // avatar between windows and never reaches a model, and a run lasts
+        // 10-30 s, so routing the start would narrate it after it had ended.
+        "scavenging-finished" => {
+            let mut guard = lock(shared);
+            scavenge_trigger(rules, &mut guard, &payload, Instant::now())
         }
         _ => return,
     };
@@ -6573,6 +6679,96 @@ mod tests {
         assert!(trigger.detail.contains("got away"), "{}", trigger.detail);
         assert!(trigger.detail.contains("spooked"), "{}", trigger.detail);
         assert_eq!(trigger.animation.as_deref(), Some("sad"));
+    }
+
+    #[tokio::test]
+    async fn only_the_end_of_a_scavenging_run_becomes_a_model_turn() {
+        let settings = Rules::default();
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let session = Arc::new(Mutex::new(SessionState::default()));
+        let ai = AiShared::default();
+        let (tx, mut rx) = mpsc::channel::<Trigger>(TRIGGER_QUEUE);
+        let sse = |kind: &str, payload: Value| SseFrame {
+            event: kind.to_string(),
+            data: json!({ "seq": 1, "type": kind, "payload": payload }).to_string(),
+        };
+
+        // The start is the page's cue to walk the avatar around, not a turn.
+        handle_frame(
+            &sse("scavenging-started", json!({ "duration_secs": 14, "phase": "rummaging" })),
+            &settings,
+            &shared,
+            &session,
+            &ai,
+            &tx,
+        )
+        .await;
+        assert!(rx.try_recv().is_err(), "a start must not reach the AI brain");
+
+        let report = json!({
+            "ok": true,
+            "phase": "idle",
+            "reason": "completed",
+            "items": [
+                { "item": "driftwood", "label": "Driftwood", "count": 2, "stored": 2, "rare": false },
+                { "item": "silver_trout", "label": "Silver trout", "count": 1, "stored": 1, "rare": true }
+            ],
+            "count": 2,
+            "stored_count": 3,
+            "coins": 5,
+            "rare": "silver_trout",
+            "expression": "happy",
+            "line": "Came back with 2 x Driftwood and Silver trout, plus 5 coins.",
+        });
+        handle_frame(
+            &sse("scavenging-finished", report),
+            &settings,
+            &shared,
+            &session,
+            &ai,
+            &tx,
+        )
+        .await;
+
+        let trigger = rx.try_recv().expect("the report is a trigger");
+        assert_eq!(trigger.event_type, "scavenging-finished");
+        assert!(trigger.is_survival(), "scavenging rides the survival directive");
+        assert!(trigger.quiet_failure, "no generic snag bubble on a body event");
+        assert!(trigger.detail.contains("2 x Driftwood"), "{}", trigger.detail);
+        assert!(trigger.detail.contains("Silver trout"), "{}", trigger.detail);
+        assert!(trigger.detail.contains("5 coins"), "{}", trigger.detail);
+        assert!(trigger.detail.contains("rare find"), "{}", trigger.detail);
+        assert_eq!(
+            trigger.fallback_line.as_deref(),
+            Some("Came back with 2 x Driftwood and Silver trout, plus 5 coins."),
+            "the plugin's own line is the offline fallback"
+        );
+        assert_eq!(trigger.animation.as_deref(), Some("happy"));
+
+        // A cancelled run is still a reported outcome, and says nothing was found.
+        {
+            let mut guard = lock(&shared);
+            guard.cooldowns = Cooldowns::default();
+        }
+        let cancelled = json!({
+            "reason": "cancelled",
+            "items": [],
+            "coins": 0,
+            "expression": "neutral",
+            "line": "Never mind - nothing worth dragging back.",
+        });
+        handle_frame(
+            &sse("scavenging-finished", cancelled),
+            &settings,
+            &shared,
+            &session,
+            &ai,
+            &tx,
+        )
+        .await;
+        let trigger = rx.try_recv().expect("a cancelled run is a trigger");
+        assert!(trigger.detail.contains("gave up"), "{}", trigger.detail);
+        assert_eq!(trigger.animation.as_deref(), Some("neutral"));
     }
 
     #[test]

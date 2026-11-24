@@ -28,6 +28,10 @@ pub const ROUTES: &[(&str, &[&str])] = &[
     ("/fishing/hook", &["POST"]),
     ("/fishing/reel", &["POST"]),
     ("/fishing/cancel", &["POST"]),
+    ("/scavenge", &["GET"]),
+    ("/scavenge/start", &["POST"]),
+    ("/scavenge/cancel", &["POST"]),
+    ("/scavenge/comment", &["POST"]),
     ("/foods", &["GET"]),
     ("/recipes", &["GET"]),
     ("/store", &["GET"]),
@@ -332,6 +336,27 @@ fn dispatch(state: &mut Survival, request: &Value) -> Value {
             Ok(payload) => ok(payload),
             Err(err) => failed(err.status_code(), err.to_json()),
         },
+        // Scavenging: the zero-cost fallback. A `GET` advances the session (and
+        // may complete it), so the card's poll is all it needs; the two `POST`s
+        // start and abandon a run.
+        ("GET", "/scavenge") => ok(state.scavenge_status()),
+        ("POST", "/scavenge/start") => match state.start_scavenge() {
+            Ok(payload) => ok(payload),
+            Err(err) => failed(err.status_code(), err.to_json()),
+        },
+        ("POST", "/scavenge/cancel") => match state.cancel_scavenge() {
+            Ok(payload) => ok(payload),
+            Err(err) => failed(err.status_code(), err.to_json()),
+        },
+        // Ambient muttering: the page supplies the window it can see, the guest
+        // decides whether this is one of the moments he says something.
+        ("POST", "/scavenge/comment") => {
+            let window = body.get("window").and_then(Value::as_str);
+            match state.scavenge_comment(window) {
+                Ok(payload) => ok(payload),
+                Err(err) => failed(err.status_code(), err.to_json()),
+            }
+        }
         _ => failed(
             404,
             json!({ "ok": false, "error": format!("{method} {path} is not a survival route") }),
@@ -397,6 +422,10 @@ mod tests {
                 "/fishing/hook",
                 "/fishing/reel",
                 "/fishing/cancel",
+                "/scavenge",
+                "/scavenge/start",
+                "/scavenge/cancel",
+                "/scavenge/comment",
                 "/foods",
                 "/recipes",
                 "/store",
@@ -1119,6 +1148,101 @@ mod tests {
             saved["stats"]["hunger"].as_f64().unwrap() > 40.0,
             "the saved bars must be the ones after the meal"
         );
+    }
+
+    #[test]
+    fn the_scavenge_routes_start_observe_and_cancel_a_run() {
+        let mut state = hungry_plugin();
+
+        let started = handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/scavenge/start" }),
+        );
+        assert_eq!(started["status"], json!(200));
+        assert_eq!(started["body"]["phase"], "rummaging");
+        assert!(started["body"]["ends_ms"].as_u64().unwrap() > started["body"]["started_ms"].as_u64().unwrap());
+
+        // The window's own read: same session, and it is what the card polls.
+        let status = handle(&mut state, &json!({ "method": "GET", "path": "/scavenge" }));
+        assert_eq!(status["status"], json!(200));
+        assert_eq!(status["body"]["session"]["phase"], "rummaging");
+        assert_eq!(status["body"]["enabled"], json!(true));
+        assert!(status["body"]["session"]["remaining_secs"].as_u64().unwrap() <= 30);
+
+        // A second start while one is out is a refusal, not a restart.
+        let again = handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/scavenge/start" }),
+        );
+        assert_eq!(again["status"], json!(409));
+
+        let cancelled = handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/scavenge/cancel" }),
+        );
+        assert_eq!(cancelled["status"], json!(200));
+        assert_eq!(cancelled["body"]["reason"], "cancelled");
+        assert_eq!(
+            handle(&mut state, &json!({ "method": "POST", "path": "/scavenge/cancel" }))["status"],
+            json!(409)
+        );
+    }
+
+    #[test]
+    fn the_comment_route_mutters_only_while_out() {
+        let mut state = hungry_plugin();
+        let idle = handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/scavenge/comment", "body": { "window": "Hermes" } }),
+        );
+        assert_eq!(idle["status"], json!(409), "nothing to comment on while idle");
+
+        handle(&mut state, &json!({ "method": "POST", "path": "/scavenge/start" }));
+        // The default chance is 300 per mille, so this either speaks or declines —
+        // both are 200s. What must hold is the shape.
+        let response = handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/scavenge/comment", "body": { "window": "Hermes" } }),
+        );
+        assert_eq!(response["status"], json!(200));
+        assert!(response["body"]["spoke"].is_boolean());
+        assert!(response["body"]["session"]["phase"].is_string());
+        // A body-less request is legal too: he mutters something generic.
+        let generic = handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/scavenge/comment" }),
+        );
+        assert_eq!(generic["status"], json!(200));
+        assert!(generic["body"]["window"].is_null());
+    }
+
+    #[test]
+    fn a_get_scavenge_finishes_the_run_and_persists_it() {
+        // The card's poll can be the caller that first sees the deadline, and a
+        // GET never reaches the dispatcher's flush — so completion saves itself.
+        let mut state = hungry_plugin();
+        let started = handle(
+            &mut state,
+            &json!({ "method": "POST", "path": "/scavenge/start" }),
+        );
+        let ends = started["body"]["ends_ms"].as_u64().expect("ends_ms");
+        let coins_before = state.coins();
+        advance_clock(ends - crate::host::now_ms());
+        take_recorded();
+
+        let status = handle(&mut state, &json!({ "method": "GET", "path": "/scavenge" }));
+        assert_eq!(status["status"], json!(200));
+        assert_eq!(status["body"]["session"]["phase"], "idle");
+        assert!(state.coins() > coins_before, "the run paid out on the poll");
+        let recorded = take_recorded();
+        assert!(
+            recorded
+                .events
+                .iter()
+                .any(|(name, _)| name == crate::plugin::EVENT_SCAVENGING_FINISHED),
+            "the poll published the findings"
+        );
+        assert!(!recorded.states.is_empty(), "and wrote them to the save");
     }
 
     #[test]

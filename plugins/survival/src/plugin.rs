@@ -28,6 +28,7 @@ use crate::model::{
 };
 use crate::fishing::{self, EscapeReason, Fishing, FishingPhase, ReelSpec};
 use crate::persist;
+use crate::scavenge::{self, Scavenge};
 use crate::store;
 
 /// `survival` — a periodic telemetry frame.
@@ -52,6 +53,15 @@ pub const EVENT_FISHING_BITE: &str = "fishing-bite";
 pub const EVENT_FISH_HOOKED: &str = "fish-hooked";
 /// `fishing-result` — the cast ended, caught or not.
 pub const EVENT_FISHING_RESULT: &str = "fishing-result";
+/// `scavenging-started` — the avatar walked off to rummage; the run's real
+/// duration rides on the payload so the page can animate it.
+pub const EVENT_SCAVENGING_STARTED: &str = "scavenging-started";
+/// `scavenging-finished` — the run ended. Carries the findings and the line.
+pub const EVENT_SCAVENGING_FINISHED: &str = "scavenging-finished";
+/// `scavenging-comment` — ambient muttering while out rummaging. **Never
+/// routed** by the watcher: nothing happened except the avatar looking around,
+/// and the guest is expected to say these itself.
+pub const EVENT_SCAVENGING_COMMENT: &str = "scavenging-comment";
 
 /// What the avatar says when the bobber goes under.
 const BITE_NOTICE: &str = "Something's on the line — now!";
@@ -218,6 +228,9 @@ pub struct Survival {
     inventory: Inventory,
     /// The fishing session (idle between casts).
     fishing: Fishing,
+    /// The scavenging session (idle between runs). Never persisted: a run is at
+    /// most 30 s, and nothing is banked until it completes.
+    scavenging: Scavenge,
     /// Where the host persists this session, as handed over at `plugin_init`.
     /// `None` until the host says (or when it has nowhere to write).
     state_path: Option<String>,
@@ -252,6 +265,7 @@ impl Survival {
             rng: Rng::new(started_ms ^ 0x5DEE_CE66_D001_A2F3),
             inventory,
             fishing: Fishing::default(),
+            scavenging: Scavenge::default(),
             state_path: None,
             restored: false,
             saved_ms: 0,
@@ -277,6 +291,11 @@ impl Survival {
     /// The fishing session, for tests.
     pub fn fishing(&self) -> &Fishing {
         &self.fishing
+    }
+
+    /// The scavenging session, for tests.
+    pub fn scavenging(&self) -> &Scavenge {
+        &self.scavenging
     }
 
     /// Adopt a config at runtime: the next tick uses the new drain rates, and
@@ -330,6 +349,7 @@ impl Survival {
             "coins": stats["coins"],
             "inventory": self.inventory.summary_json(),
             "fishing": self.fishing.to_json(now, &self.config.fishing),
+            "scavenge": self.scavenging.to_json(now),
             "persistence": {
                 "path": self.state_path,
                 "restored": self.restored,
@@ -524,6 +544,11 @@ impl Survival {
         // `GET /fishing` runs the same step, so a 120 ms poll reacts faster
         // than the 1 s tick without changing any rule.
         self.advance_fishing(now);
+
+        // Scavenging is pure timing as well, and for the same reason: the card
+        // polls `GET /scavenge`, so the run ends on whichever caller first sees
+        // its deadline.
+        self.advance_scavenge(now);
 
         if self.config.telemetry_secs > 0 {
             self.telemetry_elapsed += dt_secs;
@@ -1435,6 +1460,13 @@ impl Survival {
                 ),
             ));
         }
+        if self.scavenging.is_active() {
+            let left = self.scavenging.ends_ms().saturating_sub(now) / 1000;
+            return Err(FeedError::denied(
+                409,
+                format!("out scavenging for another {left}s — finish that first"),
+            ));
+        }
         if config.require_rod && self.inventory.count("fishing_rod") == 0 {
             return Err(FeedError::denied(
                 409,
@@ -1645,6 +1677,298 @@ impl Survival {
         Ok(payload)
     }
 
+    /* ---------------------------------------------------------------- *
+     * Scavenging
+     * ---------------------------------------------------------------- */
+
+    /// `GET /scavenge` — the session, advanced to the current moment.
+    ///
+    /// Like `GET /fishing`, the read is what can turn "still rummaging" into
+    /// "finished": the host tick is 1 s and the card polls this four times a
+    /// second, so a run ends on whichever caller first sees its deadline.
+    pub fn scavenge_status(&mut self) -> Value {
+        let now = host::now_ms();
+        self.advance_scavenge(now);
+        json!({
+            "ok": true,
+            "enabled": self.config.scavenge.enabled,
+            "session": self.scavenging.to_json(now),
+            "config": self.config.scavenge.to_json(),
+            "inventory": self.inventory.summary_json(),
+            "coins": self.stats.coins,
+        })
+    }
+
+    /// `POST /scavenge/start` — walk off and rummage around the windows.
+    ///
+    /// Deliberately **unconditional**: no rod, no bait, no coins and no
+    /// consumable is checked or spent. That is the entire point of the activity
+    /// — it is the one action a player can always take, so running out of bait
+    /// *and* coins can never dead-end the loop. The only refusals are honest
+    /// ones: the plugin is off, a run is already out, or there is a line in the
+    /// water.
+    pub fn start_scavenge(&mut self) -> Result<Value, FeedError> {
+        let now = host::now_ms();
+        let config = self.config.scavenge.clone();
+        if !self.config.enabled {
+            return Err(FeedError::denied(
+                409,
+                "survival is switched off (survival.enabled)",
+            ));
+        }
+        if !config.enabled {
+            return Err(FeedError::denied(
+                409,
+                "scavenging is switched off (survival.scavenge.enabled)",
+            ));
+        }
+        if self.scavenging.is_active() {
+            let left = self.scavenging.ends_ms().saturating_sub(now) / 1000;
+            return Err(FeedError::denied(
+                409,
+                format!("already out scavenging — about {left}s to go"),
+            ));
+        }
+        if self.fishing.is_active() {
+            return Err(FeedError::denied(
+                409,
+                format!(
+                    "a line is in the water ({}) — reel it in before wandering off",
+                    self.fishing.phase().as_str()
+                ),
+            ));
+        }
+
+        let duration =
+            scavenge::duration_secs(self.rng.next_u64(), config.min_secs, config.max_secs);
+        self.scavenging.begin_rummage(now, duration);
+        let line = scavenge::start_notice(self.rng.next_u64());
+        let session = self.scavenging.to_json(now);
+        // The page needs the real duration to walk the avatar around for exactly
+        // as long as the run lasts; `ends_ms` is the authoritative deadline.
+        let payload = json!({
+            "ok": true,
+            "phase": "rummaging",
+            "started_ms": now,
+            "ends_ms": self.scavenging.ends_ms(),
+            "duration_secs": duration,
+            "expression": "thinking",
+            "line": line,
+            "session": session,
+            "inventory": self.inventory.summary_json(),
+        });
+        host::emit(EVENT_SCAVENGING_STARTED, &payload);
+        self.say(line, "thinking");
+        Ok(payload)
+    }
+
+    /// `POST /scavenge/cancel` — come back early, with nothing.
+    pub fn cancel_scavenge(&mut self) -> Result<Value, FeedError> {
+        let now = host::now_ms();
+        if !self.scavenging.is_active() {
+            return Err(FeedError::denied(409, "not out scavenging"));
+        }
+        let line = scavenge::cancel_notice();
+        self.scavenging.abandon();
+        let payload = json!({
+            "ok": true,
+            "phase": "idle",
+            "reason": "cancelled",
+            "items": [],
+            "count": 0,
+            "stored_count": 0,
+            "coins": 0,
+            "expression": "neutral",
+            "line": line,
+            "finished_ms": now,
+            "session": self.scavenging.to_json(now),
+            "inventory": self.inventory.summary_json(),
+        });
+        host::emit(EVENT_SCAVENGING_FINISHED, &payload);
+        self.say(line, "neutral");
+        Ok(payload)
+    }
+
+    /// `POST /scavenge/comment` — one line of ambient muttering.
+    ///
+    /// The page calls this once per window it walks to, because only the page
+    /// can see the desktop (`GET /context`); the guest decides *whether* to
+    /// speak, *what* to say, and how often. Three things are deliberate:
+    ///
+    /// * it is **not** a reaction to a trigger — nothing happened except the
+    ///   avatar looking around — so it is spoken here **even with a brain
+    ///   attached**, and the watcher does not route `scavenging-comment`.
+    ///   Routing it would put a 10-30 s model turn on a mutter and still
+    ///   narrate it after the moment had passed.
+    /// * `config.notify` still silences it, like every other canned line.
+    /// * a declined request is a **200** with `spoke: false` and a reason, not
+    ///   an error: "he did not feel like talking this time" is the normal case.
+    pub fn scavenge_comment(&mut self, window: Option<&str>) -> Result<Value, FeedError> {
+        if !self.scavenging.is_active() {
+            return Err(FeedError::denied(409, "not out scavenging"));
+        }
+        let now = host::now_ms();
+        let config = self.config.scavenge.clone();
+        let window = window
+            .map(scavenge::clean_window)
+            .filter(|name| !name.is_empty());
+
+        // The cadence (run cap + gap) is the plugin's; the chance roll is what
+        // makes a comment an occasional aside rather than narration.
+        if !self.scavenging.comment_is_due(now) {
+            return Ok(json!({
+                "ok": true,
+                "spoke": false,
+                "reason": "quiet",
+                "window": window,
+                "session": self.scavenging.to_json(now),
+            }));
+        }
+        if (self.rng.below(1000) as u32) >= config.comment_chance_per_mille {
+            return Ok(json!({
+                "ok": true,
+                "spoke": false,
+                "reason": "declined",
+                "window": window,
+                "session": self.scavenging.to_json(now),
+            }));
+        }
+
+        let line = scavenge::comment_line(self.rng.next_u64(), window.as_deref());
+        self.scavenging.record_comment(now);
+        let payload = json!({
+            "ok": true,
+            "spoke": true,
+            "reason": "spoken",
+            "phase": "rummaging",
+            "line": line,
+            "expression": "thinking",
+            "window": window,
+            "comments": self.scavenging.comments,
+            "session": self.scavenging.to_json(now),
+        });
+        host::emit(EVENT_SCAVENGING_COMMENT, &payload);
+        if self.config.notify {
+            host::notify(&line, "thinking");
+        }
+        Ok(payload)
+    }
+
+    /// Advance the session to `now_ms`, completing it when the deadline lands.
+    ///
+    /// Called from [`Self::tick`] **and** from `GET /scavenge`, exactly like
+    /// [`Self::advance_fishing`]. Completion flips the phase to `Idle` before
+    /// anything is published, so whichever caller gets there first banks the
+    /// loot and every other caller sees `None` — one run can never pay twice.
+    pub fn advance_scavenge(&mut self, now_ms: u64) -> Option<Value> {
+        if !self.scavenging.is_due(now_ms) {
+            return None;
+        }
+        Some(self.complete_scavenge(now_ms))
+    }
+
+    /// Roll the findings, bank them and report them.
+    fn complete_scavenge(&mut self, now_ms: u64) -> Value {
+        let config = self.config.scavenge.clone();
+        let duration = self.scavenging.duration_secs();
+        let started_ms = self.scavenging.started_ms();
+
+        let mut findings = scavenge::Findings::default();
+        for _ in 0..scavenge::ordinary_count(self.rng.next_u64()) {
+            findings
+                .ordinary
+                .push(scavenge::pick_ordinary(self.rng.next_u64()).item);
+        }
+        if (self.rng.below(1000) as u32) < config.rare_chance_per_mille {
+            findings.rare = Some(scavenge::pick_rare(self.rng.next_u64()).item);
+        }
+        findings.coins = scavenge::coin_reward(self.rng.next_u64());
+
+        // Items go in first (room-aware), then the coins, which always land —
+        // that is what keeps a full bag from dead-ending the economy.
+        let rows = self.bank_findings(&findings);
+        let found = rows.len();
+        let stored: u32 = rows
+            .iter()
+            .map(|row| row["stored"].as_u64().unwrap_or(0) as u32)
+            .sum();
+        self.stats.add_coins(findings.coins);
+        let expression = if stored > 0 { "happy" } else { "sad" };
+        let line = scavenge::findings_notice(&rows, findings.coins, self.rng.next_u64());
+        // The counter is *units banked*, not rows: a run that found 2 minnows
+        // and a driftwood reports 3 items across 2 stacks (`count`).
+        self.scavenging.finish(stored as usize, findings.coins);
+        self.dirty = true;
+
+        let payload = json!({
+            "ok": true,
+            "phase": "idle",
+            "reason": "completed",
+            "started_ms": started_ms,
+            "finished_ms": now_ms,
+            "duration_secs": duration,
+            "items": rows,
+            "count": found,
+            "stored_count": stored,
+            "coins": findings.coins,
+            "rare": findings.rare,
+            "expression": expression,
+            "line": line,
+            "session": self.scavenging.to_json(now_ms),
+            "coins_total": self.stats.coins,
+            "inventory": self.inventory.summary_json(),
+        });
+        host::emit(EVENT_SCAVENGING_FINISHED, &payload);
+        self.say(&line, expression);
+        // The run banked loot, so write it now: a `GET /scavenge` may be what
+        // completed it, and a GET never reaches the dispatcher's flush.
+        self.save_after_change();
+        payload
+    }
+
+    /// Put the findings in the bag and publish one `inventory-changed` frame per
+    /// stack that actually landed.
+    ///
+    /// Room-aware on purpose: a full bag must not swallow a run silently — the
+    /// row carries `stored: 0` and the report says what stayed behind, while the
+    /// coins still bank. Rows are one per item id, so `2 x Driftwood` reads as
+    /// one line with `count: 2`.
+    fn bank_findings(&mut self, findings: &scavenge::Findings) -> Vec<Value> {
+        let mut rows: Vec<Value> = Vec::new();
+        for id in findings.items() {
+            let Some(definition) = inventory::find_item(id) else {
+                continue;
+            };
+            let added = self.inventory.add(definition.id, 1).added;
+            if added > 0 {
+                self.emit_inventory(definition.id, i64::from(added), "scavenge");
+            }
+            match rows
+                .iter_mut()
+                .find(|row| row["item"].as_str() == Some(definition.id))
+            {
+                Some(row) => {
+                    row["count"] = json!(row["count"].as_u64().unwrap_or(0) + 1);
+                    row["stored"] = json!(row["stored"].as_u64().unwrap_or(0) + u64::from(added));
+                }
+                None => rows.push(json!({
+                    "item": definition.id,
+                    "label": definition.label,
+                    "icon": definition.icon,
+                    "count": 1u32,
+                    "stored": added,
+                    // Which table it came from, so the card can badge a rare find.
+                    "rare": scavenge::RARE.iter().any(|row| row.item == definition.id),
+                    "kind": definition.kind.as_str(),
+                    "rarity": definition.rarity,
+                    "blurb": definition.blurb,
+                    "sell_price": store::sell_value(definition.id),
+                })),
+            }
+        }
+        rows
+    }
+
     /// The `status` half of `GET /plugins`.
     pub fn plugin_status_json(&self) -> Value {
         let now = host::now_ms();
@@ -1661,6 +1985,9 @@ impl Survival {
             "inventory_used": self.inventory.used(),
             "inventory_capacity": self.inventory.capacity(),
             "fishing_phase": self.fishing.phase().as_str(),
+            "scavenge_phase": self.scavenging.phase().as_str(),
+            "scavenges": self.scavenging.runs,
+            "scavenged_items": self.scavenging.items_found,
             "casts": self.fishing.casts,
             "catches": self.fishing.catches,
             "escapes": self.fishing.escapes,
@@ -2651,6 +2978,490 @@ mod tests {
         assert_eq!(plugin_status["inventory_used"], 3);
         assert_eq!(plugin_status["fishing_phase"], "idle");
         assert_eq!(plugin_status["catches"], 0);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Scavenging
+     * ---------------------------------------------------------------- */
+
+    /// An avatar with an empty purse, an empty bag and no rod: the state the
+    /// fishing loop dead-ended in. Built through the real restore path, so the
+    /// fixture is a save this build would actually load.
+    fn broke_scavenger() -> Survival {
+        let mut state = Survival::new(SurvivalConfig::default());
+        let document = json!({
+            "version": crate::persist::STATE_VERSION,
+            "saved_ms": 0,
+            "stats": { "hunger": 40.0, "saturation": 0.0, "coins": 0 },
+            "inventory": { "capacity": 20, "stacks": [] }
+        });
+        assert!(state.restore_state(&document).is_some(), "empty-pocket fixture");
+        take_recorded();
+        state
+    }
+
+    /// Jump the fake clock to the run's deadline and tick once.
+    fn run_to_completion(state: &mut Survival) {
+        let ends = state.scavenging().ends_ms();
+        crate::host::set_now_ms(ends);
+        state.tick(0.0).expect("tick");
+    }
+
+    /// The `scavenging-finished` payload out of a recorder's events.
+    fn finished_payload(events: &[(String, Value)]) -> Value {
+        events
+            .iter()
+            .find(|(name, _)| name == EVENT_SCAVENGING_FINISHED)
+            .map(|(_, payload)| payload.clone())
+            .expect("a scavenging-finished frame")
+    }
+
+    /// Ordinary units a payload banked (its rows are grouped by id).
+    fn ordinary_units(payload: &Value) -> u64 {
+        payload["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter(|row| row["rare"] != json!(true))
+            .map(|row| row["count"].as_u64().unwrap_or(0))
+            .sum()
+    }
+
+    #[test]
+    fn a_run_needs_no_rod_no_bait_and_no_coins() {
+        let mut state = broke_scavenger();
+        assert_eq!(state.coins(), 0);
+        assert_eq!(state.inventory().count("fishing_rod"), 0);
+        assert_eq!(state.inventory().count("worm_bait"), 0);
+        // Fishing really is closed to this avatar: no rod, and no coins to buy
+        // one. Scavenging is the way back.
+        assert_eq!(state.cast().expect_err("no rod").status_code(), 409);
+
+        let started = host::now_ms();
+        let payload = state.start_scavenge().expect("zero-cost run");
+        assert_eq!(payload["phase"], "rummaging");
+        let duration = payload["duration_secs"].as_u64().expect("duration");
+        assert!(
+            (scavenge::MIN_DURATION_SECS..=scavenge::MAX_DURATION_SECS).contains(&duration),
+            "{duration}s is outside the 10-30s window"
+        );
+        assert_eq!(payload["ends_ms"], json!(started + duration * 1000));
+        // Nothing was spent: the run costs no tool, no bait and no coin.
+        assert_eq!(state.coins(), 0);
+        assert_eq!(state.inventory().used(), 0);
+    }
+
+    #[test]
+    fn every_run_lasts_between_ten_and_thirty_seconds() {
+        let mut state = angler();
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..40 {
+            let payload = state.start_scavenge().expect("start");
+            let duration = payload["duration_secs"].as_u64().expect("duration");
+            assert!(
+                (10..=30).contains(&duration),
+                "a run lasted {duration}s"
+            );
+            assert_eq!(
+                state.scavenging().ends_ms(),
+                state.scavenging().started_ms() + duration * 1000,
+                "the deadline is the drawn duration"
+            );
+            run_to_completion(&mut state);
+            assert!(!state.scavenging().is_active(), "the run closed");
+            seen.insert(duration);
+        }
+        // The span is genuinely variable rather than a fixed 20 s.
+        assert!(seen.len() > 3, "durations drawn: {seen:?}");
+    }
+
+    #[test]
+    fn a_run_banks_one_to_three_ordinary_items_and_maybe_a_rare_one() {
+        let mut state = angler();
+        let mut rare_runs = 0;
+        let mut plain_runs = 0;
+        for _ in 0..80 {
+            take_recorded();
+            state.start_scavenge().expect("start");
+            run_to_completion(&mut state);
+            let recorded = take_recorded();
+            let payload = finished_payload(&recorded.events);
+
+            let ordinary = ordinary_units(&payload);
+            assert!(
+                (scavenge::MIN_ORDINARY_ITEMS as u64..=scavenge::MAX_ORDINARY_ITEMS as u64)
+                    .contains(&ordinary),
+                "a run banked {ordinary} ordinary items: {payload}"
+            );
+            let rare_rows: Vec<&Value> = payload["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .filter(|row| row["rare"] == json!(true))
+                .collect();
+            assert!(rare_rows.len() <= 1, "at most one rare find: {payload}");
+            for row in payload["items"].as_array().expect("items") {
+                let id = row["item"].as_str().expect("item");
+                if row["rare"] == json!(true) {
+                    assert!(
+                        scavenge::RARE.iter().any(|loot| loot.item == id),
+                        "{id} came out of the rare slot"
+                    );
+                } else {
+                    assert!(
+                        scavenge::ORDINARY.iter().any(|loot| loot.item == id),
+                        "{id} is not on the ordinary table"
+                    );
+                }
+            }
+            if rare_rows.is_empty() {
+                plain_runs += 1;
+            } else {
+                rare_runs += 1;
+            }
+            // Loot is really in the bag, not just in the report.
+            let stored: u64 = payload["stored_count"].as_u64().expect("stored_count");
+            assert_eq!(
+                stored,
+                payload["items"]
+                    .as_array()
+                    .expect("items")
+                    .iter()
+                    .map(|row| row["stored"].as_u64().unwrap_or(0))
+                    .sum::<u64>()
+            );
+        }
+        // A chance, not a certainty: both outcomes show up across 80 runs.
+        assert!(rare_runs > 0, "the rare table never fired");
+        assert!(plain_runs > 0, "every run paid a rare find — that is not a chance");
+    }
+
+    #[test]
+    fn a_completed_run_reports_its_findings_once() {
+        let mut state = angler();
+        state.start_scavenge().expect("start");
+        take_recorded();
+        run_to_completion(&mut state);
+        let recorded = take_recorded();
+        let payload = finished_payload(&recorded.events);
+
+        assert_eq!(payload["reason"], "completed");
+        assert_eq!(payload["phase"], "idle");
+        assert!(payload["coins"].as_u64().unwrap() >= 1, "coins always land");
+        assert_eq!(payload["coins_total"], json!(state.coins()));
+        let line = payload["line"].as_str().expect("a line");
+        assert!(!line.is_empty());
+        let expression = payload["expression"].as_str().expect("an expression");
+        assert!(crate::AVATAR_EXPRESSIONS.contains(&expression), "{expression}");
+        // Without a brain attached the plugin is the only voice, so it spoke.
+        assert!(
+            recorded.notifies.iter().any(|(text, _)| text == line),
+            "expected the findings line, got {:?}",
+            recorded.notifies
+        );
+        // And the run was written to disk immediately, not left for the tick.
+        assert!(!recorded.states.is_empty(), "the findings must be persisted");
+
+        // A second tick past the same deadline pays nothing twice.
+        crate::host::set_now_ms(state.scavenging().ends_ms() + 5_000);
+        state.tick(0.0).expect("tick");
+        assert!(
+            !take_recorded()
+                .events
+                .iter()
+                .any(|(name, _)| name == EVENT_SCAVENGING_FINISHED),
+            "the run finished twice"
+        );
+    }
+
+    #[test]
+    fn a_zero_coin_zero_bait_avatar_recovers_by_scavenging() {
+        let mut state = broke_scavenger();
+        let bait_price = store::find_item("worm_bait").expect("bait on the shelf").buy_price;
+
+        // Run one: no consumable, no cost, and something always comes back.
+        state.start_scavenge().expect("first run");
+        run_to_completion(&mut state);
+        assert!(state.coins() >= scavenge::MIN_COINS, "the purse moved");
+        let after_one: u64 = state
+            .inventory()
+            .totals()
+            .iter()
+            .map(|(id, count)| u64::from(store::sell_value(id).unwrap_or(0)) * u64::from(*count))
+            .sum();
+        assert!(
+            u64::from(state.coins()) + after_one >= u64::from(bait_price) / 2,
+            "one run should be most of the way to a bait restock"
+        );
+
+        // Run two: between them, coins plus what the bag would fetch is always
+        // enough to buy bait again — the loop can no longer dead-end.
+        state.start_scavenge().expect("second run");
+        run_to_completion(&mut state);
+        let sellable: u64 = state
+            .inventory()
+            .totals()
+            .iter()
+            .map(|(id, count)| u64::from(store::sell_value(id).unwrap_or(0)) * u64::from(*count))
+            .sum();
+        assert!(
+            u64::from(state.coins()) + sellable >= u64::from(bait_price),
+            "{} coins + {sellable} coins of loot cannot buy {} bait",
+            state.coins(),
+            bait_price
+        );
+        // Nothing was spent along the way.
+        assert_eq!(state.inventory().count("fishing_rod"), 0, "scavenging is never a purchase");
+    }
+
+    #[test]
+    fn a_full_bag_still_banks_the_coins_and_says_so() {
+        let mut state = angler();
+        // Empty the starter bag, then fill all 20 slots with stacks that are
+        // already at `stack_max`: a full bag still accepts a *top-up*, so a
+        // partially filled stack would let a find land and the fixture would
+        // stop being "full".
+        for (id, count) in [("fishing_rod", 1u32), ("worm_bait", 5), ("driftwood", 2)] {
+            state.inventory_remove(id, count).expect("empty the starter bag");
+        }
+        state.inventory_add("old_boot", 34).expect("17 slots of boots");
+        state.inventory_add("minnow", 20).expect("1 slot of minnows");
+        state.inventory_add("driftwood", 16).expect("1 slot of driftwood");
+        state.inventory_add("river_weed", 16).expect("1 slot of river weed");
+        assert_eq!(state.inventory().used(), 20, "the bag is genuinely full");
+        assert!(state.inventory().is_full());
+        let before = state.coins();
+
+        state.start_scavenge().expect("start");
+        run_to_completion(&mut state);
+        let recorded = take_recorded();
+        let payload = finished_payload(&recorded.events);
+
+        assert_eq!(payload["stored_count"], json!(0), "nothing fit");
+        assert!(payload["coins"].as_u64().unwrap() >= 1, "the coins still bank");
+        assert_eq!(state.coins(), before + payload["coins"].as_u64().unwrap() as u32);
+        let line = payload["line"].as_str().expect("a line");
+        assert!(line.to_lowercase().contains("bag is full"), "{line}");
+    }
+
+    #[test]
+    fn cancelling_a_run_banks_nothing() {
+        let mut state = angler();
+        let before = state.coins();
+        state.start_scavenge().expect("start");
+        take_recorded();
+
+        let payload = state.cancel_scavenge().expect("cancel");
+        assert_eq!(payload["reason"], "cancelled");
+        assert_eq!(payload["coins"], json!(0));
+        assert_eq!(state.coins(), before, "a cancelled run pays nothing");
+        assert!(!state.scavenging().is_active());
+        let recorded = take_recorded();
+        assert!(recorded
+            .events
+            .iter()
+            .any(|(name, _)| name == EVENT_SCAVENGING_FINISHED));
+        assert!(
+            !recorded
+                .events
+                .iter()
+                .any(|(name, _)| name == EVENT_INVENTORY),
+            "nothing moved in the bag"
+        );
+        assert_eq!(state.cancel_scavenge().expect_err("nothing to cancel").status_code(), 409);
+    }
+
+    #[test]
+    fn a_second_run_or_a_cast_while_scavenging_is_refused() {
+        let mut state = angler();
+        state.start_scavenge().expect("start");
+        let err = state.start_scavenge().expect_err("already out");
+        assert_eq!(err.status_code(), 409);
+        assert!(err.to_string().contains("already out"), "{err}");
+        // A cast would walk away mid-rummage.
+        let err = state.cast().expect_err("busy scavenging");
+        assert_eq!(err.status_code(), 409);
+        assert!(err.to_string().contains("scavenging"), "{err}");
+
+        state.cancel_scavenge().expect("cancel");
+        state.cast().expect("the water is free again");
+        // And the reverse: no scavenging while a line is out.
+        let err = state.start_scavenge().expect_err("fishing");
+        assert_eq!(err.status_code(), 409);
+        assert!(err.to_string().contains("line is in the water"), "{err}");
+    }
+
+    #[test]
+    fn scavenging_can_be_switched_off_without_breaking_the_routes() {
+        let config = SurvivalConfig {
+            scavenge: scavenge::ScavengeConfig {
+                enabled: false,
+                ..scavenge::ScavengeConfig::default()
+            },
+            ..SurvivalConfig::default()
+        };
+        let mut state = Survival::new(config);
+        let err = state.start_scavenge().expect_err("off");
+        assert_eq!(err.status_code(), 409);
+        // The status route still answers, and says why.
+        let status = state.scavenge_status();
+        assert_eq!(status["enabled"], json!(false));
+        assert_eq!(status["session"]["phase"], "idle");
+    }
+
+    #[test]
+    fn an_attached_brain_owns_the_findings_line() {
+        crate::host::set_ai_attached(true);
+        let mut state = angler();
+        state.start_scavenge().expect("start");
+        run_to_completion(&mut state);
+        let recorded = take_recorded();
+        crate::host::set_ai_attached(false);
+
+        let payload = finished_payload(&recorded.events);
+        assert!(payload["line"].as_str().is_some_and(|line| !line.is_empty()));
+        assert!(
+            recorded.notifies.is_empty(),
+            "a brain is attached, so the plugin must stay quiet: {:?}",
+            recorded.notifies
+        );
+    }
+
+    #[test]
+    fn a_comment_is_optional_and_names_the_window() {
+        let config = SurvivalConfig {
+            scavenge: scavenge::ScavengeConfig {
+                comment_chance_per_mille: 1000,
+                ..scavenge::ScavengeConfig::default()
+            },
+            ..SurvivalConfig::default()
+        };
+        let mut state = Survival::new(config);
+        // There is nothing to mutter about unless he is actually out.
+        assert_eq!(
+            state.scavenge_comment(Some("Hermes")).expect_err("idle").status_code(),
+            409
+        );
+
+        state.start_scavenge().expect("start");
+        take_recorded();
+        let reply = state.scavenge_comment(Some("Hermes")).expect("comment");
+        assert_eq!(reply["spoke"], json!(true));
+        let line = reply["line"].as_str().expect("line");
+        assert!(line.contains("Hermes"), "{line}");
+        let recorded = take_recorded();
+        assert!(
+            recorded
+                .events
+                .iter()
+                .any(|(name, _)| name == EVENT_SCAVENGING_COMMENT),
+            "the comment is published too"
+        );
+        assert!(
+            recorded.notifies.iter().any(|(text, _)| text == line),
+            "the bubble is the point: {:?}",
+            recorded.notifies
+        );
+
+        // The gap holds even at 1000 per mille: a window per leg must not turn
+        // into narration.
+        let quiet = state.scavenge_comment(Some("Code")).expect("comment");
+        assert_eq!(quiet["spoke"], json!(false));
+        assert_eq!(quiet["reason"], "quiet");
+    }
+
+    #[test]
+    fn a_zero_chance_never_says_anything() {
+        let config = SurvivalConfig {
+            scavenge: scavenge::ScavengeConfig {
+                comment_chance_per_mille: 0,
+                ..scavenge::ScavengeConfig::default()
+            },
+            ..SurvivalConfig::default()
+        };
+        let mut state = Survival::new(config);
+        state.start_scavenge().expect("start");
+        take_recorded();
+        for _ in 0..5 {
+            let reply = state.scavenge_comment(Some("Hermes")).expect("comment");
+            assert_eq!(reply["spoke"], json!(false));
+            assert_eq!(reply["reason"], "declined");
+        }
+        let recorded = take_recorded();
+        assert!(recorded.notifies.is_empty());
+        assert!(
+            !recorded
+                .events
+                .iter()
+                .any(|(name, _)| name == EVENT_SCAVENGING_COMMENT),
+            "a declined comment is not an event"
+        );
+    }
+
+    #[test]
+    fn a_muted_avatar_keeps_its_muttering_to_itself() {
+        // `notify: false` silences every canned line, and a comment is one.
+        let config = SurvivalConfig {
+            notify: false,
+            scavenge: scavenge::ScavengeConfig {
+                comment_chance_per_mille: 1000,
+                ..scavenge::ScavengeConfig::default()
+            },
+            ..SurvivalConfig::default()
+        };
+        let mut state = Survival::new(config);
+        state.start_scavenge().expect("start");
+        take_recorded();
+        let reply = state.scavenge_comment(Some("Code")).expect("comment");
+        assert_eq!(reply["spoke"], json!(true));
+        let recorded = take_recorded();
+        assert!(recorded.notifies.is_empty(), "notify: false means silent");
+        assert!(recorded
+            .events
+            .iter()
+            .any(|(name, _)| name == EVENT_SCAVENGING_COMMENT));
+    }
+
+    #[test]
+    fn a_brain_does_not_gag_the_muttering() {
+        // Ambient lines are the plugin's own voice. The watcher does not route
+        // `scavenging-comment`, so a brain on the bus must not silence it —
+        // otherwise the muttering would exist only when nobody is listening.
+        crate::host::set_ai_attached(true);
+        let config = SurvivalConfig {
+            scavenge: scavenge::ScavengeConfig {
+                comment_chance_per_mille: 1000,
+                ..scavenge::ScavengeConfig::default()
+            },
+            ..SurvivalConfig::default()
+        };
+        let mut state = Survival::new(config);
+        state.start_scavenge().expect("start");
+        take_recorded();
+        let reply = state.scavenge_comment(Some("Hermes")).expect("comment");
+        let recorded = take_recorded();
+        crate::host::set_ai_attached(false);
+        assert_eq!(reply["spoke"], json!(true));
+        assert!(
+            recorded.notifies.iter().any(|(text, _)| !text.is_empty()),
+            "it is still said out loud with a brain attached: {:?}",
+            recorded.notifies
+        );
+    }
+
+    #[test]
+    fn the_status_payloads_carry_the_scavenge() {
+        let state = plugin(100.0, 60.0);
+        let status = state.status_json();
+        assert_eq!(status["scavenge"]["phase"], "idle");
+        assert_eq!(status["scavenge"]["active"], json!(false));
+        assert_eq!(status["config"]["scavenge"]["min_secs"], json!(10));
+        assert_eq!(status["config"]["scavenge"]["max_secs"], json!(30));
+
+        let plugin_status = state.plugin_status_json();
+        assert_eq!(plugin_status["scavenge_phase"], "idle");
+        assert_eq!(plugin_status["scavenges"], json!(0));
+        assert_eq!(plugin_status["scavenged_items"], json!(0));
     }
 
     #[test]

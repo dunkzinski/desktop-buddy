@@ -65,6 +65,8 @@ import {
 
 import { setupPluginGate, pluginActive } from "./plugins.js";
 
+import { scavengeAnchors, scavengeComment, scavengeSession } from "./scavenge.js";
+
 import { setupPanelDrag } from "./drag.js";
 
 import { call, listen } from "./ipc.js";
@@ -79,12 +81,15 @@ function stepBlendshapes(dt) {
   }
 }
 
-function startWalk(x, y, notify) {
-  // A manual walk (W, centre, random) ends a perch; an agent's `POST /perch`
-  // arrives through applyRemoteState, which sets the target directly.
-  avatar.perched = false;
-  avatar.perchRect = null;
-  avatar.lookAt = null;
+/**
+ * Point the walker at `(x, y)`.
+ *
+ * The mechanism only: no face, no Rust round trip, no manual bookkeeping. It is
+ * split out of [`startWalk`] so the scavenging route can reuse the exact same
+ * interpolation without claiming to be a manual move (which would make it
+ * cancel itself — see `avatar.manualMoves`).
+ */
+function beginWalk(x, y) {
   avatar.targetX = x;
   avatar.targetY = y;
   avatar.startX = avatar.x;
@@ -93,7 +98,19 @@ function startWalk(x, y, notify) {
   avatar.mode = "walking";
   avatar.walkPhase = 0;
   avatar.idleTimer = 0;
+}
+
+function startWalk(x, y, notify) {
+  // A manual walk (W, centre, random) ends a perch; an agent's `POST /perch`
+  // arrives through applyRemoteState, which sets the target directly.
+  avatar.perched = false;
+  avatar.perchRect = null;
+  avatar.lookAt = null;
+  beginWalk(x, y);
   setExpression("surprised");
+  // Someone asked for this by hand (or over HTTP), so the scavenging walk must
+  // stand down rather than drag the avatar back out from under them.
+  avatar.manualMoves += 1;
   if (notify !== false) {
     markManual(15);
     call("set_avatar_position", { x: x, y: y });
@@ -104,6 +121,203 @@ function wander() {
   const margin = 120;
   startWalk(margin + Math.random() * Math.max(1, viewport.w - margin * 2),
     margin + Math.random() * Math.max(1, viewport.h - margin * 2));
+}
+
+/* ---------- scavenging (walk between open windows and dig) ---------- */
+
+/** How long one dig at a window lasts, in seconds. */
+const RUMMAGE_DWELL_SECS = 1.8;
+/** Cycles per second of the procedural dig (see `rig.js::rummageOffset`). */
+const RUMMAGE_HZ = 1.4;
+/** Grace on top of the guest's duration before the walk gives up on its own. */
+const SCAVENGE_GRACE_SECS = 5;
+
+/**
+ * The scavenging walk's controller.
+ *
+ * The *activity* is the survival plugin's: it draws a 10-30 s duration, rolls
+ * the loot and reports the findings. This object only makes the avatar look like
+ * it is doing it — walk to the bottom edge of each open window, dig for a beat,
+ * move on — and it stops the moment the guest says the run is over or the user
+ * takes the avatar somewhere. `phase` is `idle` / `walking` / `digging`.
+ */
+const scavengeWalk = {
+  active: false,
+  phase: "idle",
+  targets: [],
+  index: 0,
+  digUntil: 0,
+  deadline: 0,
+  manualMoves: 0,
+  /** How many times the page asked the plugin for a comment this run. */
+  commentRequests: 0,
+  /** Bumped whenever a walk starts or ends, so an in-flight start (it awaits
+   *  `GET /context`) cannot begin a walk for a run that already finished. */
+  seq: 0,
+};
+
+/**
+ * Start animating a run. `durationSecs` comes from the plugin's
+ * `scavenging-started` frame, so the walk and the guest's timer end together;
+ * `remainingSecs` is for a walk picked up mid-run by the reconcile beat.
+ */
+async function beginScavengeWalk(durationSecs, remainingSecs) {
+  if (scavengeWalk.active || RT.rigMode) return;
+  const wanted = Number(remainingSecs) > 0 ? Number(remainingSecs) : Number(durationSecs);
+  const duration = wanted > 0 ? wanted : 20;
+  const seq = (scavengeWalk.seq += 1);
+  const targets = await scavengeAnchors(viewport);
+  // The run can have finished (or been cancelled) while `/context` was in
+  // flight: `endScavengeWalk` bumps the sequence, and this start is stale.
+  if (seq !== scavengeWalk.seq || scavengeWalk.active || RT.rigMode) return;
+
+  scavengeWalk.active = true;
+  scavengeWalk.targets = Array.isArray(targets) ? targets : [];
+  scavengeWalk.index = 0;
+  scavengeWalk.phase = "idle";
+  scavengeWalk.digUntil = 0;
+  scavengeWalk.manualMoves = avatar.manualMoves;
+  scavengeWalk.commentRequests = 0;
+  scavengeWalk.deadline = avatar.time + duration + SCAVENGE_GRACE_SECS;
+
+  avatar.perched = false;
+  avatar.perchRect = null;
+  call("break_perch").catch(() => {});
+  // A thinking face for the whole run; the plugin's own report (or the watcher's
+  // ack) replaces it when the findings land.
+  setExpression("thinking", { durationMs: duration * 1000, revert: "neutral" });
+  markManual(duration + SCAVENGE_GRACE_SECS + 1);
+  nextScavengeLeg();
+}
+
+/** Walk to the next window, or keep digging where we are when they run out. */
+function nextScavengeLeg() {
+  const target = scavengeWalk.targets[scavengeWalk.index];
+  scavengeWalk.index += 1;
+  if (!target) {
+    // No window left: stay put and keep working the spot until the run ends.
+    scavengeWalk.phase = "digging";
+    scavengeWalk.digUntil = avatar.time + Math.max(1, scavengeWalk.deadline - avatar.time);
+    return;
+  }
+  const point = clampAvatarPosition(target.x, target.y);
+  avatar.perched = false;
+  avatar.perchRect = null;
+  avatar.lookAt = null;
+  beginWalk(point.x, point.y);
+  scavengeWalk.phase = "walking";
+  // Cover the rest of the run, not a flat 15 s: a short hold could expire while
+  // he is still digging the last window (see the wander guard in `step`).
+  markManual(Math.max(15, scavengeWalk.deadline - avatar.time + 1));
+  // Tell Rust where the walk is headed, the same way a manual walk does, so
+  // `GET /state` and the perch tracker agree with the screen.
+  call("set_avatar_position", { x: point.x, y: point.y }).catch(() => {});
+}
+
+/** Stop animating. The guest's run is unaffected — it reports on its own clock. */
+function endScavengeWalk() {
+  // Even a no-op end invalidates a start that is still awaiting `/context`.
+  scavengeWalk.seq += 1;
+  if (!scavengeWalk.active) return;
+  scavengeWalk.active = false;
+  scavengeWalk.phase = "idle";
+  scavengeWalk.targets = [];
+  scavengeWalk.index = 0;
+  scavengeWalk.digUntil = 0;
+  scavengeWalk.deadline = 0;
+  // The rummage blend eases out in `stepScavenge`; a walk in progress is left to
+  // finish rather than snapping the avatar to its target.
+}
+
+/** How often the walk checks that the guest still wants it moving, in seconds. */
+const SCAVENGE_RECONCILE_SECS = 2;
+
+/**
+ * Keep the walk and the guest's run in step.
+ *
+ * Two frames are the whole glue — `scavenging-started` and `scavenging-finished`
+ * — and either can be lost (an SSE reconnect) or outlive its welcome (a start
+ * that arrives while the previous walk is still winding down). `GET /scavenge`
+ * is the same call the card makes twice a second and completion is idempotent,
+ * so polling it is free; the price of a lost frame becomes one animation beat,
+ * never an avatar stuck digging with no run behind it or a live run with
+ * nothing on screen.
+ */
+async function reconcileScavenge() {
+  if (RT.rigMode) return;
+  const session = await scavengeSession();
+  if (!session) return;
+  const running = session.active === true || session.phase === "rummaging";
+  if (running && !scavengeWalk.active) {
+    await beginScavengeWalk(session.duration_secs, session.remaining_secs);
+  } else if (!running && scavengeWalk.active) {
+    endScavengeWalk();
+  }
+}
+
+/**
+ * One frame of the scavenging animation: the pose blend plus the leg machine.
+ *
+ * A manual move wins outright — the user dragging the avatar, W/centre, an
+ * agent's `POST /move` — because fighting the pointer is worse than a run that
+ * fizzles out visually while the plugin still finishes and reports it.
+ */
+function stepScavenge(dt) {
+  const want = scavengeWalk.active && scavengeWalk.phase === "digging" ? 1 : 0;
+  const k = Math.min(1, 6 * dt);
+  avatar.rummage += (want - avatar.rummage) * k;
+  if (avatar.rummage > 0.01) {
+    avatar.rummagePhase = (avatar.rummagePhase + dt * RUMMAGE_HZ) % 1;
+  } else {
+    avatar.rummage = 0;
+    avatar.rummagePhase = 0;
+  }
+
+  if (!scavengeWalk.active) return;
+  if (avatar.manualMoves !== scavengeWalk.manualMoves ||
+      avatar.time >= scavengeWalk.deadline) {
+    endScavengeWalk();
+    return;
+  }
+  if (scavengeWalk.phase === "walking") {
+    // `mode` leaves `walking` when the leg lands (or when something else took
+    // the avatar): either way it is time to dig here.
+    if (avatar.mode !== "walking") {
+      scavengeWalk.phase = "digging";
+      scavengeWalk.digUntil = avatar.time + RUMMAGE_DWELL_SECS;
+      maybeCommentHere();
+    }
+    return;
+  }
+  if (scavengeWalk.phase === "digging" && avatar.time >= scavengeWalk.digUntil) {
+    // Something else owns the avatar — the AI reaction that produced the bubble
+    // perched or moved him, or an agent called `/move`. Keep digging where he
+    // was put instead of dragging him back: the run still ends on its clock.
+    if (avatar.perched || avatar.mode === "walking") {
+      scavengeWalk.digUntil = avatar.time + RUMMAGE_DWELL_SECS;
+      return;
+    }
+    if (scavengeWalk.index < scavengeWalk.targets.length) {
+      nextScavengeLeg();
+    } else {
+      scavengeWalk.digUntil = avatar.time + RUMMAGE_DWELL_SECS;
+    }
+  }
+}
+
+/**
+ * Offer the plugin a chance to mutter about the window he just reached.
+ *
+ * The guest owns the cadence and the wording (a run cap, an 8 s gap and a
+ * per-mille chance); this only supplies the one thing it cannot see. Nothing is
+ * said while a bubble is already up, so a comment can never talk over the AI's
+ * own reply to the same run.
+ */
+function maybeCommentHere() {
+  if (speech.visible) return;
+  const target = scavengeWalk.targets[scavengeWalk.index - 1];
+  scavengeWalk.commentRequests += 1;
+  scavengeComment(target ? target.label : "");
 }
 
 /* ---------- gaze / eye tracking ---------- */
@@ -339,7 +553,13 @@ function step(dt) {
       avatar.idleTimer = 0;
     } else {
       avatar.idleTimer += dt;
-      if (avatar.idleTimer >= avatar.nextIdle && avatar.time > avatar.manualUntil) {
+      // `!scavengeWalk.active` is not an optimisation: `wander()` goes through
+      // `startWalk`, which counts as *the user* taking the avatar, so an idle
+      // wander mid-run used to end the walk — he stood up in the middle of a
+      // dig and idled while the card kept counting down. His own activity
+      // outranks his own fidgeting.
+      if (!scavengeWalk.active && avatar.idleTimer >= avatar.nextIdle &&
+          avatar.time > avatar.manualUntil) {
         wander();
         avatar.nextIdle = 2.5 + Math.random() * 3.5;
       }
@@ -375,6 +595,10 @@ function step(dt) {
     }
   }
 
+  // Scavenging runs after the mode machine: it needs to see whether a leg has
+  // landed, and it drives its own pose blend.
+  stepScavenge(dt);
+
   // Gaze runs last: the head bone has moved by now, and the next `render()`
   // turns the smoothed aim point into a pupil offset.
   updateGaze(dt);
@@ -384,16 +608,29 @@ function step(dt) {
 
 let lastFrame = performance.now();
 
+/** Frames that threw and were swallowed. Non-zero means a bug, not a hiccup. */
+let frameErrors = 0;
+
 function frame(now) {
   const dt = Math.min(0.05, (now - lastFrame) / 1000);
   lastFrame = now;
-  step(dt);
-  // `render()` refreshes RT.world (computeWorld) before drawing, so the bubble
-  // can be re-anchored against this frame's head position instead of the 10 Hz
-  // throttle it used to run on.
-  render();
-  positionBubble();
-  reportState(now);
+  // The loop must survive a bad frame. `requestAnimationFrame` is queued
+  // *outside* the guard, so one exception in one feature (a pose, a bubble, a
+  // route) costs a frame and a console line instead of freezing the avatar
+  // until the app restarts — which is exactly how a bug in an activity used to
+  // present: the animation simply stopped.
+  try {
+    step(dt);
+    // `render()` refreshes RT.world (computeWorld) before drawing, so the bubble
+    // can be re-anchored against this frame's head position instead of the 10 Hz
+    // throttle it used to run on.
+    render();
+    positionBubble();
+    reportState(now);
+  } catch (err) {
+    frameErrors += 1;
+    if (frameErrors <= 5) console.error("[avatar] frame failed:", err);
+  }
   requestAnimationFrame(frame);
 }
 
@@ -489,6 +726,9 @@ function attachInteractionDetection(canvas) {
       // Past the threshold: this press is a drag, not a click.
       grab.active = true;
       avatar.dragging = true;
+      // A drag outranks the scavenging walk: it stands down instead of pulling
+      // the avatar back to the window it had picked.
+      avatar.manualMoves += 1;
       // A drag is a manual move: tell Rust to drop the perch before the 60 ms
       // tracker re-targets the avatar back to the window border.
       call("break_perch").catch(() => {});
@@ -1179,6 +1419,7 @@ function installDebugSurface() {
     snapshot: () => ({
       expression: avatar.expression,
       talking: avatar.talk,
+      frameErrors,
       blinking: blinkActive(),
       blinks: avatar.blinkCount,
       speech: speech.visible ? { text: speech.full, shown: speech.shown } : null,
@@ -1192,6 +1433,23 @@ function installDebugSurface() {
     }),
 
     viewport: () => ({ w: viewport.w, h: viewport.h }),
+
+    /** The scavenging walk, as the page sees it (the guest owns the run). */
+    scavenge: () => ({
+      active: scavengeWalk.active,
+      phase: scavengeWalk.phase,
+      targets: scavengeWalk.targets.map((t) => ({ x: round(t.x, 1), y: round(t.y, 1) })),
+      index: scavengeWalk.index,
+      rummage: round(avatar.rummage, 3),
+      rummagePhase: round(avatar.rummagePhase, 3),
+      commentRequests: scavengeWalk.commentRequests,
+    }),
+
+    /** Test seam: behave as if the `scavenging-started` frame never landed. */
+    dropScavengeWalk: () => {
+      endScavengeWalk();
+      return scavengeWalk.active;
+    },
     position: () => ({ x: round(avatar.x, 1), y: round(avatar.y, 1), mode: avatar.mode }),
 
     /** API line + dot state, for CDP tests and for agents that want the truth. */
@@ -1303,6 +1561,26 @@ async function init() {
   if (pluginActive("survival")) {
     setupSurvival().catch((err) => console.error("[avatar] survival widget:", err));
   }
+  // Scavenging: the guest owns the run (duration, loot, the report) and this
+  // side owns the movement, so the two frames are all the glue it needs. Not
+  // gated on the plugin: with no survival plugin installed no frame ever
+  // arrives, and a listener costs nothing.
+  listen("scavenging-started", (event) => {
+    const payload = event && event.payload ? event.payload : {};
+    // A run can start while the previous walk is still winding down (a
+    // cancel-and-restart, or a second run queued by an agent). Replace the walk:
+    // an ignored start would leave the guest rummaging with nothing on screen.
+    if (scavengeWalk.active) endScavengeWalk();
+    beginScavengeWalk(payload.duration_secs, payload.remaining_secs).catch((err) =>
+      console.error("[avatar] scavenge walk failed:", err));
+  }).catch((err) => console.error("[avatar] scavenging-started listener failed:", err));
+  listen("scavenging-finished", () => endScavengeWalk())
+    .catch((err) => console.error("[avatar] scavenging-finished listener failed:", err));
+  setInterval(() => {
+    reconcileScavenge().catch((err) =>
+      console.error("[avatar] scavenge reconcile failed:", err));
+  }, SCAVENGE_RECONCILE_SECS * 1000);
+
   // Stage / growth / evolution branches over `GET /creature/status`. Same rule as
   // survival: a slow API must not hold up the first paint.
   if (pluginActive("metamorphosis")) {

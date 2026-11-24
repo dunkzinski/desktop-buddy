@@ -1665,6 +1665,185 @@ trigger (speaking `line` as its offline fallback).
 Gives up on the current cast and reports it as a `fishing-result` with
 `reason: "cancelled"`. Nothing to cancel is a **409**.
 
+## Scavenging (the `survival` plugin's fallback activity)
+
+Scavenging is the answer to a dead end: bait is spent per cast, bait costs
+coins, and an avatar with neither had no way back into the loop. A scavenging run
+needs **no rod, no bait, no coins and no food**, costs nothing, lasts **10–30
+seconds** and always pays out — one to three ordinary items, a chance at rarer
+loot, and a handful of coins.
+
+The *rules* are the plugin's (duration, loot, the report). The *movement* is the
+page's: the guest has no window API, so `ui/js/scavenge.js` reads `GET /context`
+and walks the avatar to the bottom edge of each open window while `main.js` runs
+a procedural rummaging animation (`rig.js::rummageOffset`). An agent only ever
+sees the session and the events.
+
+### `GET /scavenge`
+
+The live session. Like `GET /fishing`, this route **advances** the run, so a poll
+is what completes it when the 1 s host tick has not run yet (or the card is
+open and polling).
+
+```bash
+curl -s localhost:8765/scavenge
+```
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "session": {
+    "phase": "rummaging",
+    "active": true,
+    "started_ms": 1700000000000,
+    "ends_ms": 1700000018000,
+    "duration_secs": 18,
+    "remaining_secs": 11,
+    "progress": 0.39,
+    "runs": 2,
+    "items_found": 5,
+    "coins_found": 7
+  },
+  "config": {
+    "enabled": true,
+    "min_secs": 10,
+    "max_secs": 30,
+    "rare_chance_per_mille": 180
+  },
+  "inventory": {"capacity": 20, "used": 3, "free": 17, "full": false},
+  "coins": 100
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `phase` | `idle`, or `rummaging` while a run is out |
+| `active` | `true` exactly while `phase` is `rummaging` |
+| `started_ms` / `ends_ms` | epoch ms the run began and the deadline it is judged against (`null` when idle) |
+| `duration_secs` | the drawn run length, always 10–30 |
+| `remaining_secs` | whole seconds to the deadline, `0` when idle |
+| `progress` | `0.0`–`1.0`, what a progress bar draws |
+| `runs` / `items_found` / `coins_found` | counters for *completed* runs this session (not persisted); `items_found` counts units, so two minnows and a driftwood is three |
+| `comments` | how many asides he has muttered during the **current** run (reset when it starts) |
+| `config` | the `survival.scavenge` echo: the numbers actually being played |
+| `coins` | the wallet, because a run pays coins |
+
+### `POST /scavenge/start`
+
+Sets off. The body is optional and ignored — there is nothing to ask for.
+
+```bash
+curl -s -X POST localhost:8765/scavenge/start
+```
+
+```json
+{
+  "ok": true,
+  "phase": "rummaging",
+  "started_ms": 1700000000000,
+  "ends_ms": 1700000014000,
+  "duration_secs": 14,
+  "expression": "thinking",
+  "line": "Going to see what the desktop is hiding.",
+  "session": {"phase": "rummaging", "active": true, "duration_secs": 14, "remaining_secs": 14, "progress": 0.0},
+  "inventory": {"capacity": 20, "used": 3, "free": 17, "full": false}
+}
+```
+
+`scavenging-started` carries the same payload. Its `duration_secs` is what the
+page animates: the avatar walks between the open windows for exactly that long,
+then the run completes and emits `scavenging-finished`:
+
+```json
+{
+  "ok": true,
+  "phase": "idle",
+  "reason": "completed",
+  "started_ms": 1700000000000,
+  "finished_ms": 1700000014000,
+  "duration_secs": 14,
+  "items": [
+    {"item": "driftwood", "label": "Driftwood", "icon": "🪵", "count": 2, "stored": 2,
+     "rare": false, "kind": "material", "rarity": 1, "blurb": "…", "sell_price": 3},
+    {"item": "silver_trout", "label": "Silver trout", "icon": "🎏", "count": 1, "stored": 1,
+     "rare": true, "kind": "fish", "rarity": 3, "blurb": "…", "sell_price": 6}
+  ],
+  "count": 2,
+  "stored_count": 3,
+  "coins": 5,
+  "rare": "silver_trout",
+  "expression": "happy",
+  "line": "Lucky find. Came back with 2 x Driftwood and Silver trout, plus 5 coins.",
+  "coins_total": 105,
+  "session": {"phase": "idle", "active": false, "runs": 1, "items_found": 3, "coins_found": 5},
+  "inventory": {"capacity": 20, "used": 5, "free": 15, "full": false}
+}
+```
+
+`items` is one row per item id (`count` found, `stored` actually banked), so
+`2 × Driftwood` is one row. A full bag does not stop the payout: `stored` is `0`
+and the row stays in the report (the coins always bank, which is what keeps the
+economy from dead-ending). `rare` is the bonus find's id, or `null`.
+
+Refusals are all **409** and all about state, never about stock: `survival` or
+`survival.scavenge` switched off, a run already out, or a line in the water
+(`POST /fishing/cast` refuses the other way round). The run itself is never
+refused for a missing rod, bait, coin or food — that is the point of it.
+
+### `POST /scavenge/cancel`
+
+Comes back early with nothing: no items, no coins, `reason: "cancelled"`. It
+still emits `scavenging-finished` (so the page stops the walk and the report has
+one shape). Nothing to cancel is a **409**.
+
+```bash
+curl -s -X POST localhost:8765/scavenge/cancel
+```
+
+### `POST /scavenge/comment`
+
+One line of ambient muttering — "Let me look behind the Hermes window." The
+**page** calls this once per window it walks to, because only the page can see
+the desktop (`GET /context`); the guest decides *whether* he says anything,
+*what* he says, and how often.
+
+```bash
+curl -s -X POST localhost:8765/scavenge/comment \
+  -H 'content-type: application/json' -d '{"window": "Hermes"}'
+```
+
+```json
+{
+  "ok": true,
+  "spoke": true,
+  "reason": "spoken",
+  "phase": "rummaging",
+  "line": "Let me look behind the Hermes window.",
+  "expression": "thinking",
+  "window": "Hermes",
+  "comments": 1,
+  "session": {"phase": "rummaging", "active": true, "comments": 1, "remaining_secs": 12}
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `window` | the short name the caller supplied (`"Hermes"`, `"Code"`), trimmed to 40 chars; `null` when none was given, in which case the line is generic and names no window |
+| `spoke` | `true` when a line was said and `scavenging-comment` emitted |
+| `reason` | `spoken`, `declined` (the chance roll said no) or `quiet` (this run already has its two comments, or the 8 s gap has not passed) |
+
+Speech is throttled three ways, all in the guest: at most **2 comments per run**,
+at least **8 s** apart, and a `survival.scavenge.comment_chance_per_mille` roll
+(default **300** — roughly one request in three). A declined request is a normal
+**200** with `spoke: false`; only "not out scavenging" is a **409**.
+
+This is **not** a reaction to a trigger — nothing happened except the avatar
+looking around — so it is spoken by the plugin even when an AI brain is attached,
+and the watcher does **not** route `scavenging-comment`. Routing it would spend a
+10-30 s model turn on a mutter and narrate it after the moment had passed.
+`survival.notify: false` still silences it, like every other canned line.
+
 ## Metamorphosis (the `metamorphosis` plugin)
 
 The `metamorphosis` guest owns one procedurally generated creature: a seed, a

@@ -14,6 +14,7 @@ use crate::fishing::{
     MIN_DIFFICULTY, MIN_HOOK_WINDOW_MS, MIN_REEL_PERIOD_MS, MIN_SWEET_WIDTH, MIN_WAIT_SECS,
 };
 use crate::inventory::{MAX_SLOTS, MIN_SLOTS};
+use crate::scavenge::{MAX_DURATION_SECS as SCAVENGE_MAX_SECS, MIN_DURATION_SECS as SCAVENGE_MIN_SECS};
 use crate::model::{
     SurvivalConfig, HUNGER_MAX, MAX_CRAVING_DURATION_SECS, MAX_DRAIN_PER_MIN,
     MIN_CRAVING_DURATION_SECS, MIN_CRAVING_INTERVAL_SECS, MIN_DRAIN_PER_MIN,
@@ -39,6 +40,7 @@ const KNOWN_KEYS: &[&str] = &[
     "craving_duration_secs",
     "fishing",
     "inventory",
+    "scavenge",
 ];
 const KNOWN_METABOLISM_KEYS: &[&str] = &["hunger_per_min", "saturation_per_min"];
 /// The nested blocks that merge one level deep, so a patch can carry a single
@@ -63,6 +65,16 @@ const KNOWN_NESTED: &[(&str, &[&str])] = &[
         ],
     ),
     ("inventory", &["slots"]),
+    (
+        "scavenge",
+        &[
+            "enabled",
+            "min_secs",
+            "max_secs",
+            "rare_chance_per_mille",
+            "comment_chance_per_mille",
+        ],
+    ),
 ];
 
 /// The known keys of a nested block, if `key` names one.
@@ -217,6 +229,32 @@ fn check(config: &SurvivalConfig) -> Result<(), String> {
         return Err(format!(
             "`survival.inventory.slots` must be between {MIN_SLOTS} and {MAX_SLOTS}"
         ));
+    }
+    // Scavenging: the 10-30 s window is the design promise, not a suggestion, so
+    // a block that tries to leave it is refused by name.
+    let scavenge = &config.scavenge;
+    if !(SCAVENGE_MIN_SECS..=SCAVENGE_MAX_SECS).contains(&scavenge.min_secs) {
+        return Err(format!(
+            "`survival.scavenge.min_secs` must be between {SCAVENGE_MIN_SECS} and {SCAVENGE_MAX_SECS}"
+        ));
+    }
+    if !(SCAVENGE_MIN_SECS..=SCAVENGE_MAX_SECS).contains(&scavenge.max_secs) {
+        return Err(format!(
+            "`survival.scavenge.max_secs` must be between {SCAVENGE_MIN_SECS} and {SCAVENGE_MAX_SECS}"
+        ));
+    }
+    if scavenge.max_secs < scavenge.min_secs {
+        return Err("`survival.scavenge.max_secs` must not be below `min_secs`".to_string());
+    }
+    if scavenge.rare_chance_per_mille > 1000 {
+        return Err(
+            "`survival.scavenge.rare_chance_per_mille` must be between 0 and 1000".to_string(),
+        );
+    }
+    if scavenge.comment_chance_per_mille > 1000 {
+        return Err(
+            "`survival.scavenge.comment_chance_per_mille` must be between 0 and 1000".to_string(),
+        );
     }
     Ok(())
 }
@@ -406,6 +444,68 @@ mod tests {
         assert_eq!(block["inventory"]["slots"], 20);
         assert_eq!(block["fishing"]["hook_key"], "Space");
         assert!(block["fishing"]["difficulty"].is_number());
+    }
+
+    #[test]
+    fn validate_bounds_the_scavenge_window_by_name() {
+        let short =
+            validate(None, &json!({ "scavenge": { "min_secs": 2 } })).expect_err("too short");
+        assert!(short.contains("min_secs"), "{short}");
+
+        let long =
+            validate(None, &json!({ "scavenge": { "max_secs": 600 } })).expect_err("too long");
+        assert!(long.contains("max_secs"), "{long}");
+
+        let backwards = validate(
+            None,
+            &json!({ "scavenge": { "min_secs": 25, "max_secs": 12 } }),
+        )
+        .expect_err("max below min");
+        assert!(backwards.contains("max_secs"), "{backwards}");
+
+        let chance = validate(
+            None,
+            &json!({ "scavenge": { "rare_chance_per_mille": 4000 } }),
+        )
+        .expect_err("no such chance");
+        assert!(chance.contains("rare_chance_per_mille"), "{chance}");
+
+        let chatter = validate(
+            None,
+            &json!({ "scavenge": { "comment_chance_per_mille": 2000 } }),
+        )
+        .expect_err("no such chance");
+        assert!(chatter.contains("comment_chance_per_mille"), "{chatter}");
+
+        // The defaults validate cleanly and keep the documented window.
+        let text = validate(None, &json!({ "scavenge": {} })).expect("defaults");
+        let block: Value = serde_json::from_str(&text).expect("parse");
+        assert_eq!(block["scavenge"]["min_secs"], json!(10));
+        assert_eq!(block["scavenge"]["max_secs"], json!(30));
+    }
+
+    #[test]
+    fn a_scavenge_patch_merges_without_restating_the_block() {
+        let current = json!({ "scavenge": { "min_secs": 12, "max_secs": 20 } });
+        let text = validate(
+            Some(&current),
+            &json!({ "scavenge": { "rare_chance_per_mille": 500 } }),
+        )
+        .expect("validate");
+        let block: Value = serde_json::from_str(&text).expect("parse");
+        assert_eq!(block["scavenge"]["rare_chance_per_mille"], json!(500));
+        assert_eq!(block["scavenge"]["min_secs"], json!(12), "siblings survived");
+        assert_eq!(block["scavenge"]["max_secs"], json!(20));
+    }
+
+    #[test]
+    fn an_unknown_scavenge_key_is_reported_as_a_warning() {
+        let warnings = warnings(Some(&json!({
+            "enabled": true,
+            "scavenge": { "enabled": true, "loot_bias": 2 }
+        })));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("loot_bias"));
     }
 
     #[test]

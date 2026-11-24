@@ -377,6 +377,13 @@
               title="Open the fishing mini-game">🎣 Go fishing</button>
       <span class="survival-goto-state" id="survival-fishing-state">idle</span>
     </div>
+    <div class="survival-goto">
+      <button class="mini-btn" id="btn-scavenge"
+              title="Rummage around your open windows — needs no rod, bait, coins or food (POST /scavenge/start)">🧹 Scavenge</button>
+      <button class="mini-btn" id="btn-scavenge-cancel" hidden
+              title="Come back early with nothing (POST /scavenge/cancel)">Stop</button>
+      <span class="survival-goto-state" id="survival-scavenge-state">idle</span>
+    </div>
     <div class="survival-note" id="survival-note" aria-live="polite"></div>
   </div>
 

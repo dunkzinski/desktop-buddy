@@ -180,6 +180,13 @@
     },
     "inventory": {
       "slots": 20
+    },
+    "scavenge": {
+      "enabled": true,
+      "min_secs": 10,
+      "max_secs": 30,
+      "rare_chance_per_mille": 180,
+      "comment_chance_per_mille": 300
     }
   }
 }

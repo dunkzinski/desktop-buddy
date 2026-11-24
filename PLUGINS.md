@@ -256,6 +256,7 @@ plugins/survival/src/
   inventory.rs  ITEMS catalog, stack-aware bag, slots
   store.rs      CATALOG, buy/sell maths
   fishing.rs    FishingConfig, phase machine, sweep maths, loot table
+  scavenge.rs   ScavengeConfig, the 10-30 s window, both loot tables, lines
   persist.rs    Snapshot shape + version guard
   config.rs     ConfigDescriptor, KNOWN_KEYS, check()
   host.rs       the imports; recording stub off wasm32
@@ -451,6 +452,54 @@ Loot is sampled by cumulative weight over 100:
 A landed junk item still pays one coin at the counter, so a bad cast clears a
 slot for something better.
 
+### Scavenging
+
+The zero-cost fallback: **no rod, no bait, no coins, no food** is checked or
+spent, and a run always pays. That is what stops the bait/coin loop from
+dead-ending — the one state where fishing is closed and the shop is unaffordable
+is now recoverable in under a minute.
+
+| | |
+|---|---|
+| duration | a random **10–30 s** (`MIN_DURATION_SECS` / `MAX_DURATION_SECS`) |
+| ordinary finds | **1–3** (uniform), sampled by cumulative weight |
+| rare find | one extra, `rare_chance_per_mille` (default **180**, i.e. 18 %) |
+| coins | **1–6**, always banked, even with a full bag |
+
+The ordinary table is the desktop's flotsam — `driftwood` 20, `river_weed` 18,
+`minnow` 12, `apple` 12, `egg` 10, `bread` 10, `mushroom` 8, `old_boot` 6 and
+`worm_bait` 4 — so a run can hand back the exact thing the loop ran out of, not
+just the coins to buy it. The rare table is `silver_trout` 26, `glowing_lure` 22,
+`honey` 20, `cheese` 18 and `ember_eel` 14. Every id in both tables is a real
+`ITEMS` entry with a positive counter price (a test pins it), because an
+unsellable find would not be a way back into the economy.
+
+The phase is `idle` / `rummaging`; there is no intermediate step, because the
+walk itself is the page's animation. Completion runs from `plugin_tick` **and**
+from `GET /scavenge`, and flips the phase before publishing, so whichever caller
+first sees the deadline banks the loot exactly once. The session is **not
+persisted** — at most 30 s, and nothing is banked until it completes — so a
+restart mid-run loses an animation, never progress.
+
+Refusals are always about state, never stock: the plugin or the activity is
+switched off, a run is already out, or a line is in the water. `POST
+/fishing/cast` refuses the other way round, so the two activities cannot overlap.
+
+**He mutters while he works.** `POST /scavenge/comment` takes the window name the
+page derives from `GET /context` (`{"window": "Hermes"}`) and answers
+`{ok, spoke, reason, line, window, comments, session}`. The guest owns the
+cadence — at most **2 per run**, at least **8 s** apart, then a
+`comment_chance_per_mille` roll (default **300**) — and the phrasing, in four
+window-aware variants plus four generic ones for a backend that cannot name a
+window (`clean_window` trims a name to 40 chars). A declined request is a
+**200** with `spoke: false` and `reason: "declined"` (roll) or `"quiet"` (cap or
+gap); only "not out scavenging" is a **409**.
+
+Unlike every other survival line, a comment is **not** routed to the brain and is
+spoken by the guest **even with one attached**: nothing happened except the avatar
+looking around, so there is no trigger, and a model turn per mutter would still
+narrate it after the fact. `notify: false` silences it like any canned line.
+
 ### Routes
 
 | route | body | notes |
@@ -468,6 +517,10 @@ slot for something better.
 | `POST /fishing/hook` | — | only legal in `biting` |
 | `POST /fishing/reel` | — | judges the sweep; lands or escapes |
 | `POST /fishing/cancel` | — | give up the current cast |
+| `GET /scavenge` | — | `{ok, enabled, session, config, inventory, coins}`; advances (and may complete) the run |
+| `POST /scavenge/start` | — | 409 only when off, already out, or a line is in the water |
+| `POST /scavenge/cancel` | — | come back early; `reason: "cancelled"`, nothing banked |
+| `POST /scavenge/comment` | `{window?}` | one line of ambient muttering; 200 even when declined (`spoke: false`) |
 | `GET /foods` | — | catalog + recipe book + counts |
 | `GET /recipes` | — | `{count, recipes[] {id, label, blurb, ingredients[], result, result_label}}` |
 | `GET /store` | — | shelves with `owned` and `stack_max` per row |
@@ -491,6 +544,9 @@ Every `POST` flushes the guest's save before returning; a `GET` never writes.
 | `fishing-bite` | `phase: "biting"`, `window_ms`, `deadline_ms`, keybinds, `line` | yes |
 | `fish-hooked` | `phase: "reeling"`, `reel` spec, keybinds, `difficulty` | yes |
 | `fishing-result` | `caught`, `stored`, `item`, `label`, `icon`, `junk`, `species`, `rarity`, `value`, `blurb`, `expression`, `line`, `reason`, `position`, `sweet`, counters | yes — and it queues while busy |
+| `scavenging-started` | `phase: "rummaging"`, `started_ms`, `ends_ms`, `duration_secs`, `expression`, `line`, `session` | **no** — it is the page's cue to walk and dig |
+| `scavenging-finished` | `reason` (`completed`/`cancelled`), `items[]` (`item`, `label`, `icon`, `count`, `stored`, `rare`, `kind`, `rarity`, `blurb`, `sell_price`), `count`, `stored_count`, `coins`, `rare`, `expression`, `line`, `coins_total`, session counters | yes — own 5 s bucket |
+| `scavenging-comment` | `spoke`, `line`, `expression`, `window`, `comments`, `session` | **never** — ambient muttering, and the guest says it itself |
 
 **One voice per moment.** Every spontaneous emit carries `line` and
 `expression`, and the guest asks `host_ai_attached()` before speaking: with a
@@ -535,6 +591,11 @@ the `config` echo on `GET /survival`, never the file.
 | `craving_duration_secs` | `600` | 30–3600 |
 | `fishing.*` | see §Fishing | the nested block merges one level deep |
 | `inventory.slots` | `20` | 4–40 |
+| `scavenge.enabled` | `true` | master switch; `false` refuses every run |
+| `scavenge.min_secs` | `10` | 10–30 |
+| `scavenge.max_secs` | `30` | 10–30, never below `min_secs` |
+| `scavenge.rare_chance_per_mille` | `180` | 0–1000 |
+| `scavenge.comment_chance_per_mille` | `300` | 0–1000; chance a *requested* comment is said |
 
 ---
 
