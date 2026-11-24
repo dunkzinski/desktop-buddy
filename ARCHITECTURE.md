@@ -2419,6 +2419,20 @@ would pop in beside a gremlin who is only standing there. The `spawn` fallback
 remains for a host without the op (`ok:false` on the guest ABI), which is the rule
 for every tool that comes next.
 
+### The bag fills while he digs
+
+A scavenging run rolls its loot **when he sets out**, not when he gets back, and
+keeps it in the session (`scavenge::Scavenge::plan`). That is the whole reason: the
+bag can only fill with things that exist, so the loot has to exist early enough to
+be found one at a time.
+
+`due_units(now)` spreads those items evenly across the rummage window; each beat
+sends one `params { fullness }` update (the sack's generator widens it by up to
+18%), and the page turns the `entity-updated` frame into a fatter prop. At the end
+the sack is `full` — what it *is* — and then `resting`, what it is *doing*, which is
+what triggers the packing-up gesture. `full` and `resting` are different words on
+purpose; only one of them is a cue.
+
 ### Gestures: poses over time, not clips
 
 Some acts are too small and too universal to author: putting a tool away, reaching

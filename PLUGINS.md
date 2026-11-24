@@ -141,6 +141,10 @@ fit).
   guest never has to arrange furniture first. Keep the `spawn` fallback for a host
   without the op (it answers `ok:false`). `find` (search the contents) lives on HTTP
   only; a guest that needs a tool wants `withdraw`.
+* **Scavenging carries a bag the same way.** `start_scavenge` withdraws a `loot_bag`
+  (`hand_secondary` — the working paw stays free), then steps its `params.fullness`
+  up as each find lands, so the sack visibly fattens during the run. At the end it
+  goes `full` and then `resting`, which is the page's cue to pack it away.
 * The `survival` plugin uses this for the fishing rod: `plugins/survival/src/props.rs`
   asks the pod (`withdraw`) on every cast and falls back to `spawn` if the host
   refuses; it attaches the rod to `hand_primary`, walks it through

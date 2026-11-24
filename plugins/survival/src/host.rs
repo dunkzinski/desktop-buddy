@@ -323,6 +323,12 @@ mod tests {
                         } else if !field("attach").is_null() {
                             object.insert("attach".to_string(), field("attach"));
                         }
+                        // Params re-generate the prop on the real host (a fuller bag),
+                        // so the fake keeps them too — otherwise a test cannot see the
+                        // thing it is asserting about.
+                        if !field("params").is_null() {
+                            object.insert("params".to_string(), field("params"));
+                        }
                         recorder.revision += 1;
                     }
                 });

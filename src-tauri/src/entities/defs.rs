@@ -171,7 +171,9 @@ pub const LOOT_BAG: PropDef = PropDef {
     label: "Loot bag",
     category: PropCategory::Container,
     tags: &["bag", "container"],
-    states: &["stowed", "carried", "full", "torn"],
+    // `full` is what it is (bulging); `resting` is what it is doing (about to be
+    // put away), which is what the page answers with the packing-up gesture.
+    states: &["stowed", "carried", "full", "resting", "torn"],
     default_state: "stowed",
     animations: &["settle"],
     own_sockets: &["shoulder_strap"],

@@ -18,6 +18,21 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// an idempotent respawn is free rather than a second rod.
 pub const ROD_ID: &str = "survival:rod";
 
+/// The bag he carries while scavenging.
+pub const BAG_ID: &str = "survival:bag";
+pub const BAG_SEED: u64 = 0x5A17_B46;
+
+/// The **off** hand: the working paw has to stay free to dig. `LOOT_BAG` declares a
+/// grip for it, so the strap lands in the fingers rather than across the palm.
+pub const BAG_SOCKET: &str = "hand_secondary";
+
+/// A full bag hangs about for a moment — he looks at what he got — before it goes
+/// back in the pod.
+pub const BAG_LINGER_MS: u64 = 2_000;
+
+/// How long the last bag `withdraw` said to wait before it belongs in a hand.
+static BAG_PICKUP_MS: AtomicU64 = AtomicU64::new(0);
+
 /// The state a rod is in when fishing is over but he has not let go of it yet.
 pub const RESTING: &str = "resting";
 
@@ -132,6 +147,71 @@ pub fn rod_state() -> Option<String> {
         .and_then(|entity| entity.get("state"))
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+/* ------------------------------------------------------------------ *
+ * the bag
+ * ------------------------------------------------------------------ */
+
+/// Make sure the bag exists, **out of the pod**: the run starts with a rummage, the
+/// bag lands on the stage and he picks it up, exactly like the rod.
+pub fn ensure_bag() -> bool {
+    let reply = call(json!({
+        "op": "withdraw",
+        "def": "loot_bag",
+        "id": BAG_ID,
+        "seed": BAG_SEED,
+        "socket": "stage_ground",
+    }));
+    if accepted(reply.clone()) {
+        let wait = reply
+            .as_ref()
+            .and_then(|value| value.get("pickup_ms"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        BAG_PICKUP_MS.store(wait, Ordering::Relaxed);
+        return true;
+    }
+    accepted(call(json!({
+        "op": "spawn",
+        "def": "loot_bag",
+        "id": BAG_ID,
+        "seed": BAG_SEED,
+        "state": "stowed",
+    })))
+}
+
+/// How long the last `ensure_bag` said to wait before it goes into the off hand.
+pub fn bag_pickup_ms() -> u64 {
+    BAG_PICKUP_MS.load(Ordering::Relaxed)
+}
+
+/// Hang the bag on the off hand. `state` is `carried` while the run lasts and
+/// `full` once the findings are banked.
+pub fn hold_bag(state: &str) -> bool {
+    accepted(call(json!({
+        "op": "update",
+        "id": BAG_ID,
+        "state": state,
+        "visible": true,
+        "attach": { "parent": "avatar", "socket": BAG_SOCKET },
+    })))
+}
+
+/// Bulge the sack. `LOOT_BAG`'s generator reads `fullness` (0..1) and widens the
+/// body by up to 18%, so a params update is all "it is getting heavier" needs —
+/// the page re-renders the prop from the new params on the `entity-updated` frame.
+pub fn bag_fullness(level: f64) -> bool {
+    accepted(call(json!({
+        "op": "update",
+        "id": BAG_ID,
+        "params": { "fullness": level.clamp(0.0, 1.0) },
+    })))
+}
+
+/// Back in the pod.
+pub fn discard_bag() -> bool {
+    accepted(call(json!({ "op": "remove", "id": BAG_ID })))
 }
 
 #[cfg(test)]

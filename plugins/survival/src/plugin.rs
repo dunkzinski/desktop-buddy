@@ -252,6 +252,14 @@ pub struct Survival {
     rod_pickup_ms: u64,
     /// When a rod he is still holding should go back in the pod (0 = not lingering).
     rod_linger_ms: u64,
+    /// The scavenging bag: whether he has one, when it lands in his paw, when a
+    /// full bag goes back in the pod, and what state the host currently has it in.
+    bag_ready: bool,
+    bag_pickup_ms: u64,
+    bag_linger_ms: u64,
+    bag_state: Option<String>,
+    /// How many units the bag has been told about, so a fill is sent once per item.
+    bag_packed: usize,
     /// True once the rod entity exists on the host.
     rod_ready: bool,
     /// Epoch ms before which the rod is not worth another ABI attempt (a host
@@ -288,6 +296,11 @@ impl Survival {
             rod_state: None,
             rod_pickup_ms: 0,
             rod_linger_ms: 0,
+            bag_ready: false,
+            bag_pickup_ms: 0,
+            bag_linger_ms: 0,
+            bag_state: None,
+            bag_packed: 0,
             rod_ready: false,
             rod_retry_ms: 0,
         }
@@ -1876,6 +1889,11 @@ impl Survival {
         let duration =
             scavenge::duration_secs(self.rng.next_u64(), config.min_secs, config.max_secs);
         self.scavenging.begin_rummage(now, duration);
+        // Decide the loot now rather than at the end: the bag has to fill *while* he
+        // is down there, and it cannot fill with things nobody has rolled yet.
+        let findings = self.roll_findings(&config);
+        self.scavenging.plan(findings);
+        self.begin_bag(now);
         let line = scavenge::start_notice(self.rng.next_u64());
         let session = self.scavenging.to_json(now);
         // The page needs the real duration to walk the avatar around for exactly
@@ -1896,6 +1914,59 @@ impl Survival {
         Ok(payload)
     }
 
+    /// Ask the pod for the bag: the run starts with a rummage, the sack lands on the
+    /// stage and he picks it up before he sets off.
+    fn begin_bag(&mut self, now_ms: u64) {
+        self.bag_ready = false;
+        self.bag_state = None;
+        self.bag_linger_ms = 0;
+        self.bag_packed = 0;
+        if !props::ensure_bag() {
+            return;
+        }
+        self.bag_ready = true;
+        self.bag_pickup_ms = now_ms.saturating_add(props::bag_pickup_ms());
+    }
+
+    /// Keep the bag in step with the run: into his off hand, heavier as things go
+    /// in it, then back in the pod once it is full and he has stood up.
+    fn sync_bag(&mut self, now_ms: u64) {
+        if !self.bag_ready {
+            return;
+        }
+        if self.bag_state.is_none() {
+            if now_ms < self.bag_pickup_ms {
+                return;
+            }
+            if props::hold_bag("carried") {
+                self.bag_state = Some("carried".to_string());
+            }
+            return;
+        }
+        if self.bag_linger_ms > 0 {
+            if now_ms < self.bag_linger_ms {
+                return;
+            }
+            props::discard_bag();
+            self.bag_ready = false;
+            self.bag_state = None;
+            self.bag_linger_ms = 0;
+            self.bag_packed = 0;
+            return;
+        }
+        // Fill it as he finds things. Each step is one `params` update, which the
+        // page turns into a slightly fatter sack.
+        let due = self.scavenging.due_units(now_ms);
+        let carried = self.scavenging.packed(due);
+        if carried == self.bag_packed {
+            return;
+        }
+        self.bag_packed = carried;
+        let total = self.scavenging.planned_units().max(1);
+        let level = 0.15 + 0.8 * (carried as f64 / total as f64).min(1.0);
+        props::bag_fullness(level);
+    }
+
     /// `POST /scavenge/cancel` — come back early, with nothing.
     pub fn cancel_scavenge(&mut self) -> Result<Value, FeedError> {
         let now = host::now_ms();
@@ -1904,6 +1975,14 @@ impl Survival {
         }
         let line = scavenge::cancel_notice();
         self.scavenging.abandon();
+        // Nothing was found, so there is nothing to carry home.
+        if self.bag_ready {
+            props::discard_bag();
+            self.bag_ready = false;
+            self.bag_state = None;
+            self.bag_linger_ms = 0;
+            self.bag_packed = 0;
+        }
         let payload = json!({
             "ok": true,
             "phase": "idle",
@@ -1995,6 +2074,9 @@ impl Survival {
     /// anything is published, so whichever caller gets there first banks the
     /// loot and every other caller sees `None` — one run can never pay twice.
     pub fn advance_scavenge(&mut self, now_ms: u64) -> Option<Value> {
+        // The bag is filled on the same call the page already makes every 120 ms,
+        // so a heavier sack costs no extra polling.
+        self.sync_bag(now_ms);
         if !self.scavenging.is_due(now_ms) {
             return None;
         }
@@ -2002,11 +2084,10 @@ impl Survival {
     }
 
     /// Roll the findings, bank them and report them.
-    fn complete_scavenge(&mut self, now_ms: u64) -> Value {
-        let config = self.config.scavenge.clone();
-        let duration = self.scavenging.duration_secs();
-        let started_ms = self.scavenging.started_ms();
-
+    /// What a run finds. Rolled once, when he sets out (`start_scavenge`), and
+    /// banked when it ends — the numbers are the same as they would be rolled at the
+    /// end, they just exist early enough for the bag to fill.
+    fn roll_findings(&mut self, config: &scavenge::ScavengeConfig) -> scavenge::Findings {
         let mut findings = scavenge::Findings::default();
         for _ in 0..scavenge::ordinary_count(self.rng.next_u64()) {
             findings
@@ -2017,6 +2098,20 @@ impl Survival {
             findings.rare = Some(scavenge::pick_rare(self.rng.next_u64()).item);
         }
         findings.coins = scavenge::coin_reward(self.rng.next_u64());
+        findings
+    }
+
+    fn complete_scavenge(&mut self, now_ms: u64) -> Value {
+        let config = self.config.scavenge.clone();
+        let duration = self.scavenging.duration_secs();
+        let started_ms = self.scavenging.started_ms();
+
+        // The plan from the start of the run; a run that somehow lost it still
+        // banks something rather than nothing.
+        let findings = self
+            .scavenging
+            .take_plan()
+            .unwrap_or_else(|| self.roll_findings(&config));
 
         // Items go in first (room-aware), then the coins, which always land —
         // that is what keeps a full bag from dead-ending the economy.
@@ -2033,6 +2128,18 @@ impl Survival {
         // and a driftwood reports 3 items across 2 stacks (`count`).
         self.scavenging.finish(stored as usize, findings.coins);
         self.dirty = true;
+
+        // Full, and he has stood up: the sack hangs about for a beat and then goes
+        // back in the pod, the same way the rod does.
+        if self.bag_ready {
+            // Bulging, and `resting`: the page reads that as "about to go" and
+            // packs it up while it hangs about.
+            props::bag_fullness(1.0);
+            if props::hold_bag("resting") {
+                self.bag_state = Some("resting".to_string());
+            }
+            self.bag_linger_ms = now_ms.saturating_add(props::BAG_LINGER_MS);
+        }
 
         let payload = json!({
             "ok": true,
@@ -3268,6 +3375,88 @@ mod tests {
         // A chance, not a certainty: both outcomes show up across 80 runs.
         assert!(rare_runs > 0, "the rare table never fired");
         assert!(plain_runs > 0, "every run paid a rare find — that is not a chance");
+    }
+
+    #[test]
+    fn a_scavenge_run_pulls_the_bag_out_of_the_pod() {
+        let mut state = angler();
+        take_recorded();
+        state.start_scavenge().expect("start");
+        let requests = crate::host::entity_requests();
+        assert!(
+            requests
+                .iter()
+                .any(|r| r["op"] == json!("withdraw") && r["def"] == json!("loot_bag")),
+            "the bag comes out of the pod: {requests:?}"
+        );
+        // It lands on the stage, then hangs off the **off** hand — the working paw
+        // has to stay free.
+        advance_clock(props::bag_pickup_ms() + 50);
+        state.advance_scavenge(crate::host::now_ms());
+        let bag = crate::host::entity_snapshot(props::BAG_ID).expect("the bag");
+        assert_eq!(bag["attach"]["socket"], json!("hand_secondary"));
+        assert_eq!(bag["state"], json!("carried"));
+    }
+
+    #[test]
+    fn the_bag_gets_heavier_as_he_finds_things() {
+        let mut state = angler();
+        state.start_scavenge().expect("start");
+        let started = state.scavenging().started_ms();
+        let ends = state.scavenging().ends_ms();
+        let planned = state.scavenging().planned_units();
+        assert!(planned >= 1, "a run always finds something");
+
+        let mut levels: Vec<f64> = Vec::new();
+        let mut step = started + 1_000;
+        while step <= ends {
+            crate::host::set_now_ms(step);
+            state.advance_scavenge(crate::host::now_ms());
+            if let Some(bag) = crate::host::entity_snapshot(props::BAG_ID) {
+                if let Some(level) = bag["params"]["fullness"].as_f64() {
+                    levels.push(level);
+                }
+            }
+            step += 1_000;
+        }
+        assert!(!levels.is_empty(), "the bag was never filled");
+        // Heavier, never lighter: a stale poll must not empty it again.
+        assert!(
+            levels.windows(2).all(|pair| pair[1] >= pair[0]),
+            "fullness went backwards: {levels:?}"
+        );
+        assert!(
+            levels.last().copied().unwrap_or(0.0) > levels[0],
+            "it never actually got fuller: {levels:?}"
+        );
+
+        // The run banks, the sack reads full, and then it goes back in the pod.
+        // (`run_to_completion` reads `ends_ms`, which the finish has already zeroed —
+        // the deadline was captured before the loop.)
+        crate::host::set_now_ms(ends);
+        state.tick(0.0).expect("tick");
+        let bag = crate::host::entity_snapshot(props::BAG_ID).expect("the full bag");
+        assert_eq!(bag["state"], json!("resting"), "full, and about to be put away");
+        assert_eq!(bag["params"]["fullness"], json!(1.0));
+        advance_clock(props::BAG_LINGER_MS + 50);
+        state.advance_scavenge(crate::host::now_ms());
+        assert!(
+            crate::host::entity_snapshot(props::BAG_ID).is_none(),
+            "a full bag goes back in the pod"
+        );
+    }
+
+    #[test]
+    fn cancelling_puts_the_bag_away_without_banking() {
+        let mut state = angler();
+        let coins = state.coins();
+        state.start_scavenge().expect("start");
+        state.cancel_scavenge().expect("cancel");
+        assert!(
+            crate::host::entity_snapshot(props::BAG_ID).is_none(),
+            "nothing was found, so there is nothing to carry"
+        );
+        assert_eq!(state.coins(), coins);
     }
 
     #[test]

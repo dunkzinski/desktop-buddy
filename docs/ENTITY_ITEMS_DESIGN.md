@@ -1035,3 +1035,23 @@ with an arm range cannot be puppeted past it.
 The mining set is the test of the abstraction: `reach` already covers picking a
 pickaxe off the stage, and `pack-up` covers putting a lantern away — both without a
 single line of new animation.
+
+### 12.6 The loot bag: supply, carry, fill, return
+
+Scavenging used to be a number: he wandered, then reported items. Now it has
+props, and the props carry the story:
+
+1. **Out of the pod.** `start_scavenge` withdraws a `loot_bag` — the pod pops in,
+   junk flies, the sack lands, he reaches down and takes it (`reach`).
+2. **In the off hand.** `hand_secondary`, because the working paw has to stay free
+   to dig. `LOOT_BAG` already declared that grip, so the strap lands in the fingers.
+3. **It fills as he digs.** The run rolls its loot at the *start* and keeps it in the
+   session; each find's beat sends one `params.fullness` step, and the generator
+   widens the sack up to 18%. Measured on the same seed: `54×36` empty →
+   `58.9×39.2` half → `63.7×42.5` full.
+4. **Then it goes back.** `full` for a couple of seconds while the packing-up
+   gesture plays, then the entity is removed and the next run fishes it out again.
+
+The lesson generalises: **an activity that has props needs a beat schedule**, and
+the schedule belongs to the thing that owns the numbers (the guest), not the page.
+The page only knows how to draw a fatter sack.

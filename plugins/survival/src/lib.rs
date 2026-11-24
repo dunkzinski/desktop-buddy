@@ -203,6 +203,11 @@ pub extern "C" fn plugin_init(ptr: u32, len: u32) -> i64 {
         };
         *guard = Some(state);
     }
+    // Props outlive the process; the *activities* do not. A rod or a bag left
+    // behind by a previous session is stale furniture, so they go back in the pod
+    // before anything else happens — the next cast or run fetches them again.
+    props::discard_rod();
+    props::discard_bag();
     host::log(host::LEVEL_INFO, &format!(
         "survival wasm: initialised ({summary}; enabled {}, hunger {}/min)",
         config.enabled, config.metabolism.hunger_per_min

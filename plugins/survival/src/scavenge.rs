@@ -231,6 +231,12 @@ impl Findings {
 
     /// True when the run came back with nothing at all (only reachable through
     /// a hand-built value; a real run always pays coins).
+    /// How many things this is, counted the way the bag counts them: an item is an
+    /// item, however many the bag stacks of it.
+    pub fn units(&self) -> usize {
+        self.ordinary.len() + usize::from(self.rare.is_some())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.ordinary.is_empty() && self.rare.is_none() && self.coins == 0
     }
@@ -279,6 +285,12 @@ pub struct Scavenge {
     /// Epoch ms of the last comment, so the next one has to wait out
     /// [`COMMENT_GAP_MS`].
     last_comment_ms: u64,
+    /// What this run will bank, rolled when he **sets out**. Deciding the loot up
+    /// front is what lets the bag fill as he finds things instead of appearing full
+    /// at the end; the roll is the same roll either way.
+    pending: Option<Findings>,
+    /// How many of those items the bag is already carrying.
+    packed: usize,
 }
 
 impl Default for ScavengePhase {
@@ -309,6 +321,55 @@ impl Scavenge {
     }
 
     /// Begin a run that ends `duration` seconds after `now_ms`.
+    /// Hand the run its loot, rolled by the caller, and start the bag empty.
+    pub fn plan(&mut self, findings: Findings) {
+        self.pending = Some(findings);
+        self.packed = 0;
+    }
+
+    /// The loot this run is going to bank, consumed once.
+    pub fn take_plan(&mut self) -> Option<Findings> {
+        self.pending.take()
+    }
+
+    /// How many units the run is going to find in total.
+    pub fn planned_units(&self) -> usize {
+        self.pending.as_ref().map(Findings::units).unwrap_or(0)
+    }
+
+    /// How many of them belong in the bag by `now_ms`.
+    ///
+    /// Spread evenly across the rummage, with the first landing a little after it
+    /// starts and the last a little before it ends: the bag should be filling while
+    /// he is still down there, not after he stands up.
+    pub fn due_units(&self, now_ms: u64) -> usize {
+        let total = self.planned_units();
+        if total == 0 || self.phase != ScavengePhase::Rummaging {
+            return self.packed;
+        }
+        let span = self.ends_ms.saturating_sub(self.started_ms).max(1);
+        let elapsed = now_ms.saturating_sub(self.started_ms).min(span);
+        let mut due = 0;
+        for index in 0..total {
+            let beat = span * (index as u64 + 1) / (total as u64 + 1);
+            if elapsed >= beat {
+                due += 1;
+            }
+        }
+        due
+    }
+
+    /// Record that the bag has taken `units` — monotonic, so a stale poll cannot
+    /// empty it again.
+    pub fn packed(&mut self, units: usize) -> usize {
+        self.packed = self.packed.max(units);
+        self.packed
+    }
+
+    pub fn carried(&self) -> usize {
+        self.packed
+    }
+
     pub fn begin_rummage(&mut self, now_ms: u64, duration_secs: u64) {
         let duration = duration_secs.clamp(MIN_DURATION_SECS, MAX_DURATION_SECS);
         self.phase = ScavengePhase::Rummaging;
@@ -354,8 +415,11 @@ impl Scavenge {
         self.duration_secs = 0;
     }
 
-    /// Abandon the run without banking anything.
+    /// Abandon the run without banking anything — and lose the plan with it, so a
+    /// cancelled run cannot leak its loot into the next one.
     pub fn abandon(&mut self) {
+        self.pending = None;
+        self.packed = 0;
         self.phase = ScavengePhase::Idle;
         self.started_ms = 0;
         self.ends_ms = 0;
