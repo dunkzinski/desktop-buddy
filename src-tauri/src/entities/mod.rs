@@ -21,6 +21,7 @@
 
 pub mod defs;
 pub mod gen;
+pub mod guest;
 pub mod rng;
 pub mod store;
 

@@ -531,7 +531,7 @@ cd ../.. && python tools/verify_docs.py
 |---|---|---|
 | **0 — seams, no behaviour change** ✅ | `rig.js` rig-ctx extraction + `computeWorldInto`; `sockets.rs` + `LoadedModel.sockets` + `GET /sockets`; `sockets.json` sidecar loading | socket resolution on `xenomorph-7` (tentacles, no arms), a generated-shape rig (heuristic chain), a legs-named-like-arms stub; a sweep over every shipped `models/*/model.json` asserting `hand_primary` resolves; A/B `__avatarDebug.snapshot()` + screenshot over CDP proves the extraction changed nothing |
 | **1 — entity store + one prop** ✅ | `entities/{defs,gen,rng,store}.rs`; persistence, caps, ownership; `fishing_rod` + `loot_bag` builders; `GET/POST /entities*`, `GET /props`; `entities.js` + renderer merge | store unit tests (cap refusal, owner scoping, save/restore round-trip, dangling attachment); determinism test (same seed ⇒ identical rig); variety test ≥60 distinct shape tuples per 100 seeds; `validate_rig` on every generated prop; live: spawn a rod on `hand_primary`, screenshot, drag the avatar and watch it follow |
-| **2 — ABI + survival rod** | `host_entities` in `build_linker`; guest `host.rs` wrapper + thread-local recorder; guest `props.rs`; fishing state→rod wiring | guest tests assert the exact call sequence (one spawn, then updates in phase order, no spawn on cancel); live: cast with watcher off, screenshots at waiting/biting/reeling; `GET /entities` proves state transitions |
+| **2 — ABI + survival rod** ✅ | `host_entities` in `build_linker`; guest `host.rs` wrapper + thread-local recorder; guest `props.rs`; fishing state→rod wiring | guest tests assert the exact call sequence (one spawn, then updates in phase order, no spawn on cancel); live: cast with watcher off, screenshots at waiting/biting/reeling; `GET /entities` proves state transitions |
 | **3 — the chest** | `chest` def, `shape:"rect"`, slots, `appear/open/idle_open/close/vanish` clips; `summon/open/close/dismiss/put/take` routes; summon anchor (flip + clamp to monitor); `dismiss_after_ms`; the walk-to choreography + `avatar.activity` lock; **seeded decorative loot** (5–8 items, no economy); chest card (with `wireRegions` entry) | capacity/slot allocation; put↔take leaves bag counts and entity list consistent; interior items draw under the lid and vanish when closed; dismiss refuses while occupied (409 names slots) and `force:true` parking everything on `stage_ground`; restart mid-`opening` restores `closed`; a drag mid-walk stands the walk down without teleporting; a missed `chest-summoned` recovers within ~2 s; the same chest re-summons with the same seed and its contents |
 | **4 — scavenge bag + loot→entities** | `loot_bag` def, start/stow wiring, loot that yields a tool creates a seeded entity | 30 s live run with screenshots at dig + carry; a looted tool survives restart with the same seed/params; bag and chest never both claim one item |
 | **5 — mining-ready hardening** | nested sockets + depth/cycle guard; `accepts` validation; metamorphosis generator writes explicit `sockets`; `head_helmet`/`hand_secondary` verified on generated rigs | lantern-on-helmet-on-avatar resolves; a self-referential attach is refused at spawn with a 400; resolution stays under ~1 ms for a 3-deep chain |
@@ -702,3 +702,69 @@ Known limits, deliberately not fixed in this phase:
 | State sweep | `waiting → biting → reeling → stowed` each switched the clip; `stowed` → `clip: null` |
 | Hot-swap rigs | switched to `buddy-beast-fresh-prism-f6e986b0` (`hand_primary@arm_r`) and `xenomorph-7` (`hand_primary@tentacle_1_tip`); the rod followed both with no reload, `frameErrors` 0 |
 | Remove | `POST /entities/remove` → page `count: 0`, save file `{"version":1,"entities":[]}` |
+
+---
+
+## 9. Phase 2 — landed
+
+The rod is no longer placed by hand: the survival guest spawns it, puts it in the
+paw, walks it through the cast, and puts it away — over the ABI, with no HTTP call
+from the plugin and no knowledge of rigs in the page.
+
+| File | What |
+|---|---|
+| `src-tauri/src/entities/guest.rs` | the ABI: `spawn`/`update`/`remove`/`get`/`list` as JSON; ownership stamped from the caller id; **summaries, not rigs** |
+| `src-tauri/src/plugins/wasm_host.rs` | `host_entities(req, req_len, out, out_cap) -> i32`, writing into the guest's buffer and emitting the `entity-*` frames after the store lock is gone |
+| `plugins/survival/src/host.rs` | import + `entities(&Value) -> Option<Value>` over a 4 KiB buffer, and a native recorder that keeps a **fake host** so the plugin's tests see the world it built |
+| `plugins/survival/src/props.rs` | `ensure_rod` / `hold(state)` / `put_away` / `discard_rod` — the only place that knows which prop survival spawns and where it grips it |
+| `plugins/survival/src/plugin.rs` | `sync_rod()` — idempotent phase→state mapping, called from `advance_fishing`, `cast`, `hook`, `land`, `escape`; backs off 10 s if the host has no ABI and never spends a call when the phase has not changed |
+| `src-tauri/src/sockets.rs` | **grip placement**: the hand socket is derived from the limb's artwork (the far end of the outermost part), not from the bone's joint |
+
+### The grip bug (user-visible, now measured)
+
+"the item is more in its elbow/shoulder" was exactly right, and the cause was
+structural: a socket at the bone's origin is at the *start* of that bone. On a
+three-segment arm that is the wrist; on `buddy-beast`, whose whole arm is one bone
+with a 46-unit capsule, it is the **shoulder**. Generated creatures have no
+dedicated `hand` bone at all.
+
+`grip_point()` now reads the part geometry (`capsule` spans `[-h/2, w-h/2]`, an
+ellipse is centred on its offset — the same rules the renderer uses) and anchors
+half a thickness inside the outermost part:
+
+| Rig | bone | old `pos` | new `pos` | reads as |
+|---|---|---|---|---|
+| `buddy-beast-…` (one-bone arm) | `arm_r` | `[0, 0]` — shoulder | `[31.03, 0]` — 80% out | paw |
+| `buddy-alien-…` (two-bone arm) | `arm2_r` | `[0, 0]` — elbow | `[24.19, 0]` — the sucker pad | paw |
+| `xenomorph-7` (tentacles) | `tentacle_1_tip` | `[0, 0]` | unchanged (no parts) | tip |
+
+A sweep test asserts, for every shipped model, that a derived hand grip lands
+**on** the limb's artwork and never past its end.
+
+### Two bugs the ABI work found
+
+1. **The reply carried the rig.** A spawn's reply included the generated
+   mini-rig; at ~4 KiB it did not fit the guest's buffer, so `host_entities`
+   returned `-4` *after* the spawn had already landed. The guest read that as a
+   refusal, never reached `put_away`, and left the rod visible with no state
+   transition. Replies are summaries now; `get` takes `"rig": true` when a caller
+   really wants geometry. `props::accepted` logs the reply when it is refused,
+   and the guest logs any negative status instead of failing silently.
+2. **Stow ran before the phase flipped.** `land()` stowed at the top, while
+   `fishing.phase()` was still `Reeling`, so a catch left the rod in `reeling`
+   until the next tick. The stow now happens after `record()`/`finish()`, inside
+   the same call that announces the result — a test reels on the sweet spot and
+   asserts the rod is `stowed` and detached when the call returns.
+
+### Verification (what was actually run)
+
+| Check | Result |
+|---|---|
+| `cargo test --lib entities::` (host) | 36 passed (ownership, refusals, summarised replies, the reply-fits-a-small-buffer guard) |
+| `cargo test --lib` (survival guest) | 218 passed, incl. 6 new: cast→paw, bite, hook→reeling immediately, catch→stowed immediately, no-rod-no-entity, and "no ABI call per tick" |
+| Live, watcher **off**, generated `buddy-alien-mega-prism-…` | `stowed/invisible` at rest → `waiting/paw` on cast → `biting/paw` at the bite → `reeling/paw` on hook → `stowed/detached` on the catch; page `frameErrors` 0 |
+| Live catch | `POST /fishing/reel` on the sweet spot → `caught: true, Silver trout`, rod stowed in the same call, `river_perch` in the bag |
+| Restart | the rod comes back from `models/.entities.json` as `stowed`; the plugin re-spawns idempotently (`created: false`) |
+
+Still open, deliberately: `attach.flip` is not rendered; the bag is not a prop yet
+(it is the next activity, not this phase); the chest is Phase 3.

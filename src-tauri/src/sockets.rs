@@ -124,6 +124,41 @@ struct BoneInfo {
     scale: f64,
     tags: Vec<String>,
     depth: usize,
+    /// The bone's artwork, for placing a socket on the *paw* rather than on the
+    /// joint. A hand socket at the joint sits at the wrist/elbow — or, on a rig
+    /// with one arm bone, at the shoulder.
+    parts: Vec<PartGeom>,
+}
+
+/// One part's drawn extent along the bone's local +x (the limb's axis).
+#[derive(Debug, Clone)]
+struct PartGeom {
+    center: [f64; 2],
+    size: [f64; 2],
+    x_hi: f64,
+}
+
+fn part_geom(part: &Value) -> Option<PartGeom> {
+    let size = pair(part.get("size"));
+    if size[0] <= 0.0 || size[1] <= 0.0 {
+        return None;
+    }
+    let offset = pair(part.get("offset"));
+    let pivot = pair(part.get("pivot"));
+    let shape = part.get("shape").and_then(Value::as_str).unwrap_or("image");
+    // Mirrors `ui/js/renderer.js::drawShape` / `rig.js::partLocalRect`:
+    // a capsule spans [-h/2, w - h/2] (the pivot cancels), an ellipse/circle is
+    // centred on its offset, and an image/face paints -size*pivot..size*(1-pivot).
+    let x_hi = match shape {
+        "capsule" => offset[0] + size[0] - size[1] / 2.0,
+        "ellipse" | "circle" => offset[0] + size[0] / 2.0,
+        _ => offset[0] + size[0] * (1.0 - pivot[0]),
+    };
+    Some(PartGeom {
+        center: offset,
+        size,
+        x_hi,
+    })
 }
 
 fn pair(value: Option<&Value>) -> [f64; 2] {
@@ -164,6 +199,11 @@ fn collect_bones(rig: &Value) -> BTreeMap<String, BoneInfo> {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let parts = bone
+            .get("parts")
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter_map(part_geom).collect::<Vec<_>>())
+            .unwrap_or_default();
         bones.insert(
             id.to_string(),
             BoneInfo {
@@ -175,6 +215,7 @@ fn collect_bones(rig: &Value) -> BTreeMap<String, BoneInfo> {
                 rotation: number(bone.get("rotation"), 0.0),
                 scale: number(bone.get("scale"), 1.0).abs().max(0.0001),
                 tags,
+                parts,
                 depth: 0,
             },
         );
@@ -310,9 +351,12 @@ fn family(id: &str, tags: &[String]) -> Family {
         .unwrap_or("");
 
     if lower.contains("head")
-        || tags
-            .iter()
-            .any(|tag| matches!(tag.as_str(), "head" | "eye" | "mouth" | "brow" | "pupil" | "face"))
+        || tags.iter().any(|tag| {
+            matches!(
+                tag.as_str(),
+                "head" | "eye" | "mouth" | "brow" | "pupil" | "face"
+            )
+        })
     {
         return Family::Head;
     }
@@ -374,7 +418,10 @@ struct Candidate {
     spread: f64,
 }
 
-fn hand_pool(bones: &BTreeMap<String, BoneInfo>, places: &BTreeMap<String, (f64, f64)>) -> Vec<Candidate> {
+fn hand_pool(
+    bones: &BTreeMap<String, BoneInfo>,
+    places: &BTreeMap<String, (f64, f64)>,
+) -> Vec<Candidate> {
     let root_x = bones
         .iter()
         .find(|(_, bone)| bone.parent.is_none())
@@ -447,7 +494,10 @@ fn best_candidate(
     prefer: Side,
     from: Option<(f64, f64)>,
 ) -> Option<Candidate> {
-    let mut candidates: Vec<&Candidate> = pool.iter().filter(|item| !used.contains(&item.id)).collect();
+    let mut candidates: Vec<&Candidate> = pool
+        .iter()
+        .filter(|item| !used.contains(&item.id))
+        .collect();
     candidates.sort_by(|a, b| {
         b.weight
             .cmp(&a.weight)
@@ -469,6 +519,43 @@ fn best_candidate(
 
 fn list(value: &'static [&'static str]) -> Vec<String> {
     value.iter().map(|item| item.to_string()).collect()
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+/// Where the limb's **artwork** ends: the paw, not the wrist joint.
+///
+/// A socket at the joint is at the end of the previous segment — which reads as
+/// the elbow on a three-segment arm and as the *shoulder* on a rig whose whole
+/// arm is one bone (many generated creatures have exactly that). So the anchor is
+/// placed a half-thickness inside the outermost part of the chosen bone: the
+/// centre of the paw pad where a grip would actually close.
+///
+/// A bone with no artwork keeps `[0, 0]` — an anchor at the joint is still better
+/// than no socket.
+fn grip_point(bone: Option<&BoneInfo>) -> [f64; 2] {
+    let Some(bone) = bone else {
+        return [0.0, 0.0];
+    };
+    let mut outermost: Option<&PartGeom> = None;
+    for part in &bone.parts {
+        if outermost
+            .map(|current| part.x_hi > current.x_hi)
+            .unwrap_or(true)
+        {
+            outermost = Some(part);
+        }
+    }
+    match outermost {
+        Some(part) => {
+            let inset = (part.size[1] / 2.0).clamp(0.5, 8.0);
+            let x = round2(part.x_hi - inset).max(0.0);
+            [x, round2(part.center[1])]
+        }
+        None => [0.0, 0.0],
+    }
 }
 
 fn bone_socket(
@@ -519,7 +606,9 @@ fn neck_bone(bones: &BTreeMap<String, BoneInfo>) -> Option<String> {
         .iter()
         .filter(|(id, bone)| {
             let lower = id.to_ascii_lowercase();
-            lower.contains("neck") || lower.contains("collar") || family(id, &bone.tags) == Family::Neck
+            lower.contains("neck")
+                || lower.contains("collar")
+                || family(id, &bone.tags) == Family::Neck
         })
         .map(|(id, bone)| (id, bone.depth))
         .collect();
@@ -531,16 +620,14 @@ fn head_bone(bones: &BTreeMap<String, BoneInfo>) -> Option<String> {
     let mut matches: Vec<(&String, bool, usize)> = bones
         .iter()
         .filter(|(id, bone)| family(id, &bone.tags) == Family::Head)
-        .map(|(id, bone)| {
-            (
-                id,
-                id.to_ascii_lowercase().contains("head"),
-                bone.depth,
-            )
-        })
+        .map(|(id, bone)| (id, id.to_ascii_lowercase().contains("head"), bone.depth))
         .collect();
     // Prefer a bone actually named `head*`, then the deepest, then the id.
-    matches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)).then_with(|| a.0.cmp(b.0)));
+    matches.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| a.0.cmp(b.0))
+    });
     matches.first().map(|(id, _, _)| (*id).clone())
 }
 
@@ -560,7 +647,11 @@ fn torso_bone(bones: &BTreeMap<String, BoneInfo>) -> Option<String> {
             (id, rank, bone.depth)
         })
         .collect();
-    matches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)).then_with(|| a.0.cmp(b.0)));
+    matches.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| a.0.cmp(b.0))
+    });
     matches.first().map(|(id, _, _)| (*id).clone())
 }
 
@@ -628,7 +719,11 @@ fn merge_explicit(
             continue;
         }
 
-        let bone = object.get("bone").and_then(Value::as_str).map(str::trim).filter(|bone| !bone.is_empty());
+        let bone = object
+            .get("bone")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|bone| !bone.is_empty());
         if let Some(bone) = bone {
             if !bones.contains_key(bone) {
                 log::warn!("sockets: {id:?} points at missing bone {bone:?}; skipped");
@@ -720,7 +815,7 @@ pub fn resolve(rig: &Value, sidecar: Option<&Value>) -> Vec<Socket> {
             out.push(bone_socket(
                 HAND_PRIMARY,
                 &chosen.id,
-                [0.0, 0.0],
+                grip_point(bones.get(&chosen.id)),
                 42,
                 list(&["rod", "tool", "bag"]),
                 Some(HAND_SECONDARY),
@@ -746,7 +841,7 @@ pub fn resolve(rig: &Value, sidecar: Option<&Value>) -> Vec<Socket> {
             out.push(bone_socket(
                 HAND_SECONDARY,
                 &chosen.id,
-                [0.0, 0.0],
+                grip_point(bones.get(&chosen.id)),
                 42,
                 list(&["rod", "tool", "bag"]),
                 Some(HAND_PRIMARY),
@@ -937,18 +1032,39 @@ mod tests {
     #[test]
     fn the_distal_arm_bone_is_the_hand_not_the_shoulder() {
         let sockets = resolve(&generated_rig(), None);
-        assert_eq!(find(&sockets, HAND_PRIMARY).and_then(|s| s.bone.as_deref()), Some("arm3_r"));
-        assert_eq!(find(&sockets, HAND_SECONDARY).and_then(|s| s.bone.as_deref()), Some("arm3_l"));
+        assert_eq!(
+            find(&sockets, HAND_PRIMARY).and_then(|s| s.bone.as_deref()),
+            Some("arm3_r")
+        );
+        assert_eq!(
+            find(&sockets, HAND_SECONDARY).and_then(|s| s.bone.as_deref()),
+            Some("arm3_l")
+        );
     }
 
     #[test]
     fn head_neck_and_chest_are_derived_from_the_bone_vocabulary() {
         let sockets = resolve(&generated_rig(), None);
-        assert_eq!(find(&sockets, HEAD_HELMET).and_then(|s| s.bone.as_deref()), Some("head"));
-        assert_eq!(find(&sockets, NECK_COLLAR).and_then(|s| s.bone.as_deref()), Some("neck"));
-        assert_eq!(find(&sockets, CHEST_FRONT).and_then(|s| s.bone.as_deref()), Some("torso"));
-        assert_eq!(find(&sockets, CHEST_BACK).and_then(|s| s.bone.as_deref()), Some("torso"));
-        assert_eq!(find(&sockets, BACK).and_then(|s| s.bone.as_deref()), Some("root"));
+        assert_eq!(
+            find(&sockets, HEAD_HELMET).and_then(|s| s.bone.as_deref()),
+            Some("head")
+        );
+        assert_eq!(
+            find(&sockets, NECK_COLLAR).and_then(|s| s.bone.as_deref()),
+            Some("neck")
+        );
+        assert_eq!(
+            find(&sockets, CHEST_FRONT).and_then(|s| s.bone.as_deref()),
+            Some("torso")
+        );
+        assert_eq!(
+            find(&sockets, CHEST_BACK).and_then(|s| s.bone.as_deref()),
+            Some("torso")
+        );
+        assert_eq!(
+            find(&sockets, BACK).and_then(|s| s.bone.as_deref()),
+            Some("root")
+        );
     }
 
     #[test]
@@ -992,8 +1108,14 @@ mod tests {
         let primary = find(&sockets, HAND_PRIMARY).expect("a hand socket must resolve");
         let secondary = find(&sockets, HAND_SECONDARY).expect("a second hand socket must resolve");
         assert!(primary.bone.is_some() && secondary.bone.is_some());
-        assert_ne!(primary.bone, secondary.bone, "both hands on one bone is useless");
-        assert!(find(&sockets, HEAD_HELMET).is_none(), "no head bone, no helmet socket");
+        assert_ne!(
+            primary.bone, secondary.bone,
+            "both hands on one bone is useless"
+        );
+        assert!(
+            find(&sockets, HEAD_HELMET).is_none(),
+            "no head bone, no helmet socket"
+        );
     }
 
     #[test]
@@ -1010,8 +1132,14 @@ mod tests {
         assert_eq!(primary.source, "sidecar");
         assert_eq!(primary.z, 500);
         assert_eq!(primary.pos, [3.0, -1.0]);
-        assert!(find(&sockets, "ghost").is_none(), "a missing bone is skipped, not guessed");
-        assert_eq!(find(&sockets, "tail_grip").and_then(|s| s.bone.as_deref()), Some("arm3_l"));
+        assert!(
+            find(&sockets, "ghost").is_none(),
+            "a missing bone is skipped, not guessed"
+        );
+        assert_eq!(
+            find(&sockets, "tail_grip").and_then(|s| s.bone.as_deref()),
+            Some("arm3_l")
+        );
         // The derived secondary still exists, and it may not reuse a bone an
         // explicit socket already claimed.
         let secondary = find(&sockets, HAND_SECONDARY).expect("secondary is still derived");
@@ -1037,7 +1165,10 @@ mod tests {
             { "id": "hand_primary", "bone": "arm_l" }
         ]);
         let sockets = resolve(&generated_rig(), Some(&sidecar));
-        assert_eq!(find(&sockets, HAND_PRIMARY).and_then(|s| s.bone.as_deref()), Some("arm_r"));
+        assert_eq!(
+            find(&sockets, HAND_PRIMARY).and_then(|s| s.bone.as_deref()),
+            Some("arm_r")
+        );
     }
 
     #[test]
@@ -1110,7 +1241,12 @@ mod tests {
             let Ok(rig) = serde_json::from_str::<Value>(&text) else {
                 continue;
             };
-            if rig.get("bones").and_then(Value::as_array).map(Vec::is_empty).unwrap_or(true) {
+            if rig
+                .get("bones")
+                .and_then(Value::as_array)
+                .map(Vec::is_empty)
+                .unwrap_or(true)
+            {
                 continue;
             }
             let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -1122,7 +1258,9 @@ mod tests {
             assert!(
                 rig.get("bones")
                     .and_then(Value::as_array)
-                    .map(|bones| bones.iter().any(|b| b.get("id").and_then(Value::as_str) == Some(bone)))
+                    .map(|bones| bones
+                        .iter()
+                        .any(|b| b.get("id").and_then(Value::as_str) == Some(bone)))
                     .unwrap_or(false),
                 "{name}: hand_primary points at {bone:?}, which is not a bone"
             );
@@ -1130,8 +1268,77 @@ mod tests {
                 find(&sockets, HAND_SECONDARY).is_some(),
                 "{name}: no hand_secondary socket"
             );
+            // A grip anchor must land on the limb's artwork, never past its end:
+            // the prop hangs off this point.
+            if let Some(bone) = rig
+                .get("bones")
+                .and_then(Value::as_array)
+                .and_then(|bones| {
+                    bones.iter().find(|b| {
+                        b.get("id").and_then(Value::as_str)
+                            == Some(primary.bone.as_deref().unwrap_or(""))
+                    })
+                })
+            {
+                let reach = bone
+                    .get("parts")
+                    .and_then(Value::as_array)
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(part_geom)
+                            .map(|part| part.x_hi)
+                            .fold(f64::MIN, f64::max)
+                    })
+                    .unwrap_or(f64::MIN);
+                if reach > 0.0 {
+                    assert!(
+                        primary.pos[0] <= reach + 0.01,
+                        "{name}: hand grip at x={} is past the paw's end ({reach})",
+                        primary.pos[0]
+                    );
+                }
+            }
             checked += 1;
         }
-        assert!(checked >= 5, "expected the shipped rigs to be checked, saw {checked}");
+        assert!(
+            checked >= 5,
+            "expected the shipped rigs to be checked, saw {checked}"
+        );
+    }
+
+    /// A rig whose whole arm is a single bone — the shape that made the rod sit
+    /// at the shoulder. The grip must land near the far end of the capsule.
+    #[test]
+    fn the_hand_socket_sits_on_the_paw_not_on_the_joint() {
+        let rig = json!({
+            "bones": [
+                { "id": "root", "pos": [0.0, 0.0] },
+                { "id": "torso", "parent": "root", "pos": [0.0, -50.0] },
+                { "id": "arm_r", "parent": "torso", "pos": [39.0, -24.5], "rotation": 1.0,
+                  "parts": [
+                    { "shape": "shoulder", "size": [22.97, 21.33], "offset": [0.0, 0.0] },
+                    { "shape": "capsule", "size": [46.03, 15.0], "offset": [0.0, 0.0], "pivot": [0.0, 0.5] }
+                  ] },
+                { "id": "arm_l", "parent": "torso", "pos": [-39.0, -24.5], "rotation": 2.1,
+                  "parts": [
+                    { "shape": "capsule", "size": [46.03, 15.0], "offset": [0.0, 0.0], "pivot": [0.0, 0.5] }
+                  ] }
+            ]
+        });
+        let sockets = resolve(&rig, None);
+        let hand = find(&sockets, HAND_PRIMARY).expect("a hand socket must resolve");
+        // capsule spans -7.5..38.53; a grip sits ~31, i.e. 80% out along the arm.
+        assert!(
+            (hand.pos[0] - 31.03).abs() < 0.05,
+            "grip anchored at {:?}, expected ~[31.03, 0]",
+            hand.pos
+        );
+        assert!(
+            hand.pos[0] > 20.0,
+            "grip at x={} is at the shoulder joint, not the paw",
+            hand.pos[0]
+        );
+        assert_eq!(hand.pos[1], 0.0);
     }
 }

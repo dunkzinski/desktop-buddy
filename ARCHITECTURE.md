@@ -2243,6 +2243,14 @@ two. Draw order is one merged pass: a prop's `z` is `socket.z + bone.z + part.z`
 the same units as the creature's own `z`, so a held rod draws in front of the torso
 and a pack on the back draws behind it.
 
+A **guest** reaches the same store through `host_entities` — one JSON request in,
+one JSON reply out (`PLUGINS.md`). `entities/guest.rs` is that handler: it applies
+the request against a store, stamps `owner` with the caller's plugin id, and
+returns a *summary* (never the rig — a 4 KiB guest buffer cannot hold one, and a
+guest cannot draw bones). The events are emitted by the host after the lock is
+gone, exactly as on the HTTP path. So a plugin and the API can do the same
+things to the same props, with the same rules.
+
 Frames: `entity-spawned` / `entity-updated` / `entity-removed` carry only ids
 (plus `revision`); the page marks itself dirty and refetches the roster, coalesced
 to one request per burst, with a 2 s reconcile so a dropped frame cannot leave a

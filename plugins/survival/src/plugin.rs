@@ -28,6 +28,7 @@ use crate::model::{
 };
 use crate::fishing::{self, EscapeReason, Fishing, FishingPhase, ReelSpec};
 use crate::persist;
+use crate::props;
 use crate::scavenge::{self, Scavenge};
 use crate::store;
 
@@ -244,6 +245,14 @@ pub struct Survival {
     dirty: bool,
     /// Epoch ms of the last save attempt, so the periodic flush has a cadence.
     last_save_ms: u64,
+    /// The state the rod entity is showing, as last pushed. `None` means "not
+    /// synced yet"; `Some("stowed")` means "away and known to be away".
+    rod_state: Option<String>,
+    /// True once the rod entity exists on the host.
+    rod_ready: bool,
+    /// Epoch ms before which the rod is not worth another ABI attempt (a host
+    /// without the entity ABI must not be asked ten times a second).
+    rod_retry_ms: u64,
 }
 
 impl Survival {
@@ -272,6 +281,9 @@ impl Survival {
             saves: 0,
             dirty: false,
             last_save_ms: 0,
+            rod_state: None,
+            rod_ready: false,
+            rod_retry_ms: 0,
         }
     }
 
@@ -1398,6 +1410,66 @@ impl Survival {
                 break;
             }
         }
+        // Whatever the transitions did, the prop follows the session.
+        self.sync_rod(now_ms);
+    }
+
+    /// Keep the rod **entity** in step with the fishing session.
+    ///
+    /// Cheap and idempotent: it only reaches for the host when the phase actually
+    /// changed, so a tick every second costs nothing. A host without the entity
+    /// ABI answers `false` and the plugin backs off — the prop is presentation,
+    /// never a rule, so fishing keeps working exactly as before without it.
+    fn sync_rod(&mut self, now_ms: u64) {
+        if !self.config.fishing.enabled {
+            return;
+        }
+        let desired = match self.fishing.phase() {
+            FishingPhase::Idle => "stowed",
+            FishingPhase::Waiting => "waiting",
+            FishingPhase::Biting => "biting",
+            FishingPhase::Reeling => "reeling",
+        };
+        if self.rod_state.as_deref() == Some(desired) {
+            return;
+        }
+        if now_ms < self.rod_retry_ms {
+            return;
+        }
+
+        // The bag says whether there is a rod to hold at all: the entity is the
+        // physical rod, the item is the fact that you own one.
+        if self.inventory.count("fishing_rod") == 0 {
+            if self.rod_ready {
+                props::discard_rod();
+                self.rod_ready = false;
+            }
+            self.rod_state = None;
+            return;
+        }
+
+        if !self.rod_ready {
+            if !props::ensure_rod() {
+                self.rod_retry_ms = now_ms.saturating_add(10_000);
+                return;
+            }
+            self.rod_ready = true;
+        }
+
+        let applied = if desired == "stowed" {
+            props::put_away()
+        } else {
+            props::hold(desired)
+        };
+        if applied {
+            self.rod_state = Some(desired.to_string());
+        } else {
+            // The host refused (or vanished): forget what we had and back off, so
+            // the next transition tries again instead of lying about the state.
+            self.rod_ready = false;
+            self.rod_state = None;
+            self.rod_retry_ms = now_ms.saturating_add(10_000);
+        }
     }
 
     /// One transition, if one is due. `true` means something changed.
@@ -1507,6 +1579,9 @@ impl Survival {
             "change": changed,
         });
         host::emit(EVENT_FISHING_STARTED, &payload);
+        // The rod goes into the paw the moment the line goes out, not on the
+        // next tick: the cast is the thing the player is looking at.
+        self.sync_rod(now);
         Ok(payload)
     }
 
@@ -1547,6 +1622,7 @@ impl Survival {
             deadline_ms: ReelSpec::deadline_for(now, period),
         };
         self.fishing.begin_reel(spec);
+        self.sync_rod(now);
         let payload = json!({
             "phase": "reeling",
             "reel": spec.to_json(),
@@ -1646,6 +1722,9 @@ impl Survival {
         });
         host::emit(EVENT_FISHING_RESULT, &payload);
         self.say(&line, expression);
+        // The session is Idle by now, so this is the stow — in the same call as
+        // the result, never a tick behind a catch.
+        self.sync_rod(host::now_ms());
         Ok(payload)
     }
 
@@ -1674,6 +1753,8 @@ impl Survival {
         });
         host::emit(EVENT_FISHING_RESULT, &payload);
         self.say(line, reason.expression());
+        // Idle by now: the rod leaves the paw in this call, not a tick later.
+        self.sync_rod(host::now_ms());
         Ok(payload)
     }
 
@@ -3462,6 +3543,112 @@ mod tests {
         assert_eq!(plugin_status["scavenge_phase"], "idle");
         assert_eq!(plugin_status["scavenges"], json!(0));
         assert_eq!(plugin_status["scavenged_items"], json!(0));
+    }
+
+    /* ---------------------------------------------------------------- *
+     * The rod, as an entity the host draws
+     * ---------------------------------------------------------------- */
+
+    #[test]
+    fn a_cast_puts_the_rod_in_the_paw() {
+        let mut state = angler();
+        state.cast().expect("cast");
+        let rod = crate::host::entity_snapshot(props::ROD_ID).expect("the rod exists");
+        assert_eq!(rod["def"], json!("fishing_rod"));
+        assert_eq!(rod["owner"], json!("survival"));
+        assert_eq!(rod["state"], json!("waiting"));
+        assert_eq!(rod["visible"], json!(true));
+        assert_eq!(rod["attach"]["parent"], json!("avatar"));
+        assert_eq!(rod["attach"]["socket"], json!("hand_primary"));
+    }
+
+    #[test]
+    fn the_rod_follows_the_bite_and_goes_away_when_the_cast_ends() {
+        let mut state = angler();
+        state.cast().expect("cast");
+        wait_for_the_bite(&mut state);
+        assert_eq!(state.fishing().phase(), FishingPhase::Biting);
+        assert_eq!(
+            crate::host::entity_snapshot(props::ROD_ID).expect("rod")["state"],
+            json!("biting")
+        );
+
+        // Let the window lapse: the fish is off, so the rod goes away.
+        advance_clock(5_000);
+        state.tick(0.0).expect("tick");
+        let rod = crate::host::entity_snapshot(props::ROD_ID).expect("rod");
+        assert_eq!(rod["state"], json!("stowed"));
+        assert_eq!(rod["visible"], json!(false));
+        assert!(rod["attach"].is_null(), "a stowed rod is not in a hand");
+    }
+
+    #[test]
+    fn hooking_and_cancelling_move_the_rod_the_same_way() {
+        let mut state = angler();
+        state.cast().expect("cast");
+        wait_for_the_bite(&mut state);
+        state.hook().expect("hook");
+        // The rod is already reeling when the hook returns: the prop must not
+        // wait for the next poll to catch up with a press.
+        assert_eq!(
+            crate::host::entity_snapshot(props::ROD_ID).expect("rod")["state"],
+            json!("reeling")
+        );
+
+        state.cancel_fishing().expect("cancel");
+        let rod = crate::host::entity_snapshot(props::ROD_ID).expect("rod");
+        assert_eq!(rod["state"], json!("stowed"));
+        assert_eq!(rod["visible"], json!(false));
+    }
+
+    #[test]
+    fn a_landed_fish_stows_the_rod_in_the_same_call() {
+        let mut state = angler();
+        state.cast().expect("cast");
+        wait_for_the_bite(&mut state);
+        state.hook().expect("hook");
+        assert_eq!(
+            crate::host::entity_snapshot(props::ROD_ID).expect("rod")["state"],
+            json!("reeling")
+        );
+
+        // Reel on the sweet spot, the way a player would.
+        let reel = *state.fishing().reel().expect("a reel spec");
+        let centre = reel.sweet_start + reel.sweet_width / 2.0;
+        crate::host::set_now_ms(reel.started_ms + elapsed_for(centre, reel.period_ms));
+        let payload = state.reel().expect("reel");
+        assert_eq!(payload["caught"], json!(true), "{payload}");
+
+        let rod = crate::host::entity_snapshot(props::ROD_ID).expect("rod");
+        assert_eq!(rod["state"], json!("stowed"), "the catch stows the rod");
+        assert_eq!(rod["visible"], json!(false));
+        assert!(rod["attach"].is_null());
+    }
+
+    #[test]
+    fn no_rod_in_the_bag_means_no_rod_in_the_world() {
+        let mut state = angler();
+        state.inventory_remove("fishing_rod", 1).expect("drop the rod");
+        state.tick(0.0).expect("tick");
+        assert!(
+            crate::host::entity_snapshot(props::ROD_ID).is_none(),
+            "an entity must not outlive the item it represents"
+        );
+    }
+
+    #[test]
+    fn the_rod_is_asked_for_once_per_phase_not_once_per_tick() {
+        let mut state = angler();
+        state.cast().expect("cast");
+        crate::host::take_recorded();
+        for _ in 0..5 {
+            state.tick(0.0).expect("tick");
+        }
+        let calls = crate::host::entity_requests();
+        assert!(
+            calls.is_empty(),
+            "a steady phase must not spend an ABI call per tick: {calls:?}"
+        );
     }
 
     #[test]

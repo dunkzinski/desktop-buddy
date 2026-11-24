@@ -94,9 +94,49 @@ into a plugin error, not a panic.
 | `host_model_write` | `(slug_ptr, slug_len, json_ptr, json_len) -> i32` | validates with the app loader, writes `models/<slug>/model.json` |
 | `host_model_activate` | `(ptr, len) -> i32` | hot-swap the avatar — `POST /model`'s code path |
 | `host_animate` | `(ptr, len) -> i32` | play a clip by name — `POST /animate`'s code path |
+| `host_entities` | `(req_ptr, req_len, out_ptr, out_cap) -> i32` | prop entities: one JSON request in, one JSON reply out (see below) |
 
 Everything else is unavailable by construction: a guest has no filesystem, no
 network, no environment and no way to reach the app's internals.
+
+### Props: `host_entities`
+
+One request, one reply, both JSON. The reply is written into a buffer **the guest
+allocates**; the return value is the number of bytes written, or a negative ABI
+status (`-1` no memory, `-2` request over 8 KiB, `-3` not JSON, `-4` reply did not
+fit).
+
+```json
+{"op":"spawn",  "def":"fishing_rod", "id":"survival:rod", "seed":739311, "state":"stowed"}
+{"op":"update", "id":"survival:rod", "state":"cast", "visible":true,
+                "attach":{"parent":"avatar","socket":"hand_primary"}}
+{"op":"update", "id":"survival:rod", "detach":true, "visible":false}
+{"op":"remove", "id":"survival:rod"}
+{"op":"get",    "id":"survival:rod", "rig":true}
+{"op":"list"}
+```
+
+* **Ownership is stamped by the host**, never sent: a guest spawns as itself and
+  can only update or remove what it owns. Another plugin's prop answers
+  `{"ok":false,"error":"entity … is owned by …"}`.
+* **A refusal is not an ABI failure.** The call returns a positive byte count and
+  `{"ok":false,"error":…}`; only `-1…-4` mean the ABI itself failed. Treat `ok`
+  as the answer and log the error, or a refused spawn looks like a crash.
+* **Replies are summaries** — `id`, `def`, `state`, `attach`, `visible`, `owner`,
+  `traits` — never the rig. A whole rod entity is several KiB, and a guest with a
+  4 KiB buffer would get `-4` *after* the spawn had already landed. `get` with
+  `"rig": true` returns geometry for a guest that really wants it (and needs the
+  buffer for it).
+* **`spawn` is idempotent by id+def**: a retry returns `{"created":false}` and the
+  existing entity, so a guest that missed its ack cannot make two rods.
+* **A state whose name is a clip plays that clip.** `{"state":"biting"}` is all a
+  guest needs; the page looks the name up in the entity's own animations, so no
+  guest ever ships animation data.
+* The `survival` plugin uses this for the fishing rod: `plugins/survival/src/props.rs`
+  spawns it once, attaches it to `hand_primary` on a cast, walks it through
+  `waiting → biting → reeling`, and detaches it when the cast ends. With no entity
+  ABI the calls fail and fishing is unchanged — the prop is presentation, never a
+  rule.
 
 ### Isolation
 

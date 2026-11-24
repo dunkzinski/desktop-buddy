@@ -64,6 +64,7 @@ pub mod inventory;
 pub mod model;
 pub mod persist;
 pub mod plugin;
+pub mod props;
 pub mod routes;
 pub mod scavenge;
 pub mod store;

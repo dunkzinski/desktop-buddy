@@ -828,6 +828,55 @@ fn build_linker(engine: &Engine) -> Result<Linker<HostState>, String> {
         )
         .map_err(|err| format!("could not define host_animate: {err}"))?;
 
+    // Props as entities: the guest's half of `/entities`. One JSON request in,
+    // one JSON reply out, written into a buffer the guest owns. Ownership is the
+    // caller's id, stamped here — a guest cannot spawn on another's behalf.
+    //
+    // Returns the reply length, or a negative ABI status (`entities::guest`).
+    // A refused *operation* is not a negative: the reply carries
+    // `{"ok":false,"error":…}` and the guest decides what to do about it.
+    linker
+        .func_wrap(
+            "env",
+            "host_entities",
+            |mut caller: Caller<'_, HostState>, rptr: u32, rlen: u32, optr: u32, ocap: u32| -> i32 {
+                use crate::entities::guest;
+
+                let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+                    return guest::STATUS_NO_MEMORY;
+                };
+                let request = read_string(memory.data(&caller), rptr, rlen);
+                let id = caller.data().id.clone();
+                let host = caller.data().host.clone();
+
+                // The store lock is taken and released inside `handle`; events
+                // are published after it returns, so a listener that calls back
+                // into the store cannot deadlock.
+                let reply = guest::handle(&id, &request);
+                if let Some(host) = host {
+                    for (event, payload) in &reply.events {
+                        host.emit(event, payload.clone());
+                    }
+                }
+
+                let body = serde_json::to_vec(&reply.body).unwrap_or_else(|_| b"{}".to_vec());
+                if body.len() > ocap as usize {
+                    return guest::STATUS_BUFFER_TOO_SMALL;
+                }
+                let start = optr as usize;
+                let mem = memory.data_mut(&mut caller);
+                let Some(end) = start.checked_add(body.len()) else {
+                    return guest::STATUS_TOO_LARGE;
+                };
+                if end > mem.len() {
+                    return guest::STATUS_TOO_LARGE;
+                }
+                mem[start..end].copy_from_slice(&body);
+                body.len() as i32
+            },
+        )
+        .map_err(|err| format!("could not define host_entities: {err}"))?;
+
     Ok(linker)
 }
 
