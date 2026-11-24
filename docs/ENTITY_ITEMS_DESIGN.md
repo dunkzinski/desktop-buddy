@@ -1055,3 +1055,22 @@ props, and the props carry the story:
 The lesson generalises: **an activity that has props needs a beat schedule**, and
 the schedule belongs to the thing that owns the numbers (the guest), not the page.
 The page only knows how to draw a fatter sack.
+
+### 12.7 The lid is part of the gag
+
+A pod that stays open never unfolds again: the clip is bound to the state, and a
+state that does not change plays nothing. So the rummage owns the whole lid:
+
+1. **Open it on the way in.** `find` and `withdraw` unfold a shut pod instead of
+   refusing; the lid swings wide, the junk comes out.
+2. **Announce the lid.** `open`/`close` emit `entity-updated`, the frame the page
+   draws from. (They had their own events for months, and nothing listened — the pod
+   only caught up on the two-second reconcile, which is why it appeared not to open.)
+3. **Shut it on the way out.** The page closes the pod once the sequence has finished
+   spawning — after the last item's beat, and after `pickup_ms` when a tool was taken.
+   Next pull starts from a closed lid, so the unfold is always visible.
+
+The general rule this settles: **a prop's state transition must be announced in the
+frame the renderer listens to**, not in a bespoke event. `chest-opened` is still
+emitted for anything that wants the semantic one, but presentation rides on
+`entity-updated`.

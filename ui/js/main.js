@@ -29,6 +29,7 @@ import {
   initEntities,
   markDirty,
   openChest,
+  closeChest,
   overChest,
   stepEntities,
 } from "./entities.js";
@@ -276,6 +277,30 @@ function nextScavengeLeg() {
  * rather than dragging the avatar back out from under the user, and it never
  * retries: a pod left closed is still a pod you can click.
  */
+/**
+ * Fold the pod once a rummage has finished spawning.
+ *
+ * The host decides *what* comes out and when; the page knows when the last one has
+ * landed, so the page is what closes the lid. Doing it here is also what makes the
+ * opening visible at all: a pod left open never plays its `open` clip again, so
+ * every pull now starts from a shut pod, unfolds, spits junk, and shuts.
+ */
+let chestFoldTimer = 0;
+function scheduleChestFold(delayMs) {
+  window.clearTimeout(chestFoldTimer);
+  chestFoldTimer = window.setTimeout(() => {
+    chestFoldTimer = 0;
+    // It may have been dismissed in the meantime, and a refused close is not an
+    // error worth showing — the pod is already not open.
+    closeChest().catch(() => {});
+  }, Math.max(200, Number(delayMs) || 200));
+}
+
+function cancelChestFold() {
+  window.clearTimeout(chestFoldTimer);
+  chestFoldTimer = 0;
+}
+
 const chestWalk = {
   active: false,
   phase: "idle",
@@ -1861,6 +1886,8 @@ async function init() {
     rummageTimer = window.setTimeout(() => {
       if (avatar.mode === "waving") avatar.mode = "idle";
     }, span);
+    // ...and shut the lid once the last thing has landed.
+    scheduleChestFold(span + 200);
   }).catch((err) => console.error("[avatar] chest-find listener failed:", err));
 
   /**
@@ -1884,6 +1911,10 @@ async function init() {
     const origin = chestOrigin();
     if (origin) avatar.lookAt = { x: origin.x, y: origin.y - 40 };
     window.clearTimeout(pickupTimer);
+    // The pod shuts once the junk has landed and he has taken the tool — not
+    // before, or the lid closes on his hand.
+    const foldAt = Math.max(landAt + 800, Number(payload && payload.pickup_ms) || 0);
+    scheduleChestFold(foldAt + 300);
     if (!at) return;
     // It has to be *on the ground* before he moves: land first, then go and get it.
     pickupTimer = window.setTimeout(() => {

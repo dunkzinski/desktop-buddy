@@ -625,6 +625,11 @@ expires on a timer.
 Body: `{ "def": "fishing_rod", "id": "survival:rod", "socket": "stage_ground",
 "owner": "survival", "seed": 5 }` — only `def` is required.
 
+**A rummage opens the pod.** Both `find` and `withdraw` unfold a shut one rather
+than refusing — "open it first" is a chore in the middle of a gag — and the page
+folds it again once the sequence has finished spawning (`item.at`/`pickup_ms` plus
+a beat). So every pull starts from a shut lid, unfolds, throws, and shuts.
+
 `find` searches what is *inside* the pod; `withdraw` asks the pod to **produce**
 something. That is the difference a bottomless pod makes: you rummage, junk comes
 out, and then the tool you asked for — whether or not it was ever in there. Same

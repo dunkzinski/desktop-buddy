@@ -329,12 +329,24 @@ pub fn open(store: &mut EntityStore) -> Result<Applied, String> {
     for id in ids {
         store.update(&id, UpdatePatch { visible: Some(true), ..Default::default() }, None)?;
     }
+    // `entity-updated` is what the page actually listens to; `chest-opened` is the
+    // semantic one. Without the first the lid only moves on the two-second
+    // reconcile — which is why a pod "never opened" during a rummage.
+    let rendered = store.render_one(CHEST_ID);
     Ok(Applied::new(json!({
         "ok": true,
         "changed": true,
         "chest": view(store),
     }))
-    .with("chest-opened", json!({ "id": CHEST_ID })))
+    .with("chest-opened", json!({ "id": CHEST_ID }))
+    .with(
+        "entity-updated",
+        json!({
+            "id": CHEST_ID,
+            "state": rendered.as_ref().map(|entity| entity["state"].clone()).unwrap_or(json!("open")),
+            "attach": rendered.map(|entity| entity["attach"].clone()).unwrap_or(Value::Null),
+        }),
+    ))
 }
 
 /// Close it: contents go back into hiding.
@@ -371,7 +383,11 @@ pub fn close(store: &mut EntityStore) -> Result<Applied, String> {
         "changed": true,
         "chest": view(store),
     }))
-    .with("chest-closed", json!({ "id": CHEST_ID })))
+    .with("chest-closed", json!({ "id": CHEST_ID }))
+    .with(
+        "entity-updated",
+        json!({ "id": CHEST_ID, "state": "closed", "attach": Value::Null }),
+    ))
 }
 
 /// Make the pod go away. Refused while it holds something — the 409 names the
@@ -681,13 +697,16 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
     if store.state_of(CHEST_ID).is_none() {
         return Err("no chest on the stage".to_string());
     }
+    // A rummage **opens the pod**: it has to be open for anything to come out of it,
+    // and "open it first" is a chore in the middle of a gag. The lid unfolds, the
+    // junk flies, and the page folds it again when the sequence is over.
+    let mut opened: Vec<(&'static str, Value)> = Vec::new();
     match chest_state(store, CHEST_ID).as_deref() {
         Some("open") => {}
-        Some(state) => {
-            return Err(format!(
-                "the chest is {state} — open it before rummaging in it"
-            ))
+        Some("dormant") => {
+            return Err("the chest is not on the stage — summon it before rummaging".to_string())
         }
+        Some(_) => opened.extend(open(store)?.events),
         None => return Err("no chest on the stage".to_string()),
     }
 
@@ -806,6 +825,9 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
         "sequence": sequence,
         "narrative": applied.body.get("narrative").cloned().unwrap_or(Value::Null),
     });
+    for event in opened {
+        applied.events.push(event);
+    }
     for event in spawned {
         applied.events.push(event);
     }
@@ -1377,10 +1399,13 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_pod_refuses_a_rummage() {
+    fn a_dormant_pod_cannot_be_rummaged() {
+        // A shut lid is part of the show (`find` opens it); a pod that has left the
+        // stage is a different thing, and rummaging in it is meaningless.
         let mut store = store_with_chest();
-        let err = find(&mut store, "axe", Some(1)).expect_err("closed");
-        assert!(err.contains("open"), "{err}");
+        dismiss(&mut store, true).expect("dismiss");
+        let err = find(&mut store, "axe", Some(1)).expect_err("dormant");
+        assert!(err.contains("summon"), "{err}");
     }
 
     #[test]
@@ -1416,6 +1441,21 @@ mod tests {
             .expect("withdraw again");
         assert_eq!(again.body["changed"], json!(false));
         assert!(again.body.get("duds").is_none(), "no second rummage");
+    }
+
+    #[test]
+    fn a_rummage_opens_a_shut_pod_by_itself() {
+        // The lid is part of the show, not a chore: `find` on a closed pod unfolds it
+        // and gets on with the rummage.
+        let mut store = store_with_chest();
+        an_item(&mut store, "trinket");
+        assert_eq!(chest_state(&store, CHEST_ID).as_deref(), Some("closed"));
+        let applied = find(&mut store, "trinket", Some(2)).expect("find");
+        assert_eq!(chest_state(&store, CHEST_ID).as_deref(), Some("open"));
+        assert!(
+            applied.events.iter().any(|(event, _)| *event == "entity-updated"),
+            "the page has to hear the lid move"
+        );
     }
 
     #[test]

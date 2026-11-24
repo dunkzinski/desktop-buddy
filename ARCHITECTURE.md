@@ -2419,6 +2419,22 @@ would pop in beside a gremlin who is only standing there. The `spawn` fallback
 remains for a host without the op (`ok:false` on the guest ABI), which is the rule
 for every tool that comes next.
 
+### The lid: announce it like any other prop
+
+`chest-opened` and `chest-closed` were emitted for months and **nothing listened**:
+the page only re-renders from `entity-*` frames, so the pod's lid changed state and
+kept its old drawing until the two-second reconcile — long after a rummage had ended.
+`open` and `close` now emit `entity-updated` as well, which is the frame the page
+actually acts on.
+
+With that in place the beat closes itself: `main.js` schedules a `POST /chest/close`
+for when the sequence has finished spawning (the last `at_ms`, or `pickup_ms` when a
+tool was taken). A pod left open never replays its `open` clip, so this is also what
+makes the unfolding visible at all — every pull starts shut.
+
+Measured on the drawn pod: `clip: "open"` with `petal0.rotation = -3.12` (≈ -π)
+against `clip: "close"` with `rotation = 0`.
+
 ### The bag fills while he digs
 
 A scavenging run rolls its loot **when he sets out**, not when he gets back, and
