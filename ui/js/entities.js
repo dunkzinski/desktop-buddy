@@ -24,6 +24,7 @@ import { avatar, RT, num, round } from "./state.js";
 import { call } from "./ipc.js";
 import {
   addRegionSource,
+  avatarFit,
   computeWorldInto,
   makeRigContext,
   partLocalRect,
@@ -433,7 +434,11 @@ function resolveRoot(id, slots, depth = 0) {
     if (!socket) return null;
     const world = socketTransformIn(RT.world, socket);
     if (!world) return null;
-    base = { ...world, z: num(socket.z, 20) };
+    // Fit: props are authored in creature units (a rod is ~200 of them, two thirds
+    // of a generated gremlin), so a rig of a different size needs them scaled by
+    // the ratio — otherwise the same rod is a third of a xenomorph and two thirds
+    // of a gremlin. `attach.scale` multiplies this; it never replaces it.
+    base = { ...world, scale: world.scale * avatarFit(), z: num(socket.z, 20) };
   } else if (attach.parent === "stage") {
     // The stage is the ground under the avatar: where a dropped prop lands.
     base = { x: avatar.x, y: avatar.y + 62, rot: 0, scale: 1, z: 20 };

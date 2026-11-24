@@ -58,6 +58,10 @@ export function rebuildOrder() {
   const { bones, order } = orderBones(RT.boneList);
   RT.bones = bones;
   RT.order = order;
+  // How tall this creature is in its own units — the number props are fitted
+  // against (`avatarFit`). Measured from the bind pose, so a wave or a gesture
+  // never changes how big a held prop is.
+  RT.rigHeight = measureRigHeight(RT.model.rig);
 }
 
 /**
@@ -116,6 +120,84 @@ export function makeRigContext(rig) {
     lifeSigns: false,
     time: 0,
   };
+}
+
+/* ---------- fitting props to the creature holding them ---------- */
+
+/**
+ * The rig height a prop's authoring size is written against, in rig units.
+ *
+ * Props are authored in *creature* units: a rod is ~200 of them, about two
+ * thirds of a generated gremlin (~307 units tall). A rig that is 580 units tall
+ * (xenomorph-7) therefore draws that same rod as a third of its height instead of
+ * two thirds. `REFERENCE_RIG_HEIGHT` is the creature those numbers were written
+ * for; every other rig is a ratio against it.
+ *
+ * Not a constant anyone should tune per model: a new creature gets a correct fit
+ * from its own geometry, with no authoring.
+ */
+export const REFERENCE_RIG_HEIGHT = 300;
+
+/** A pathological rig must not produce comedy props. */
+const MIN_FIT = 0.5;
+const MAX_FIT = 3;
+
+/**
+ * The height of a rig, in its own units, from its bind pose.
+ *
+ * Computed against a private context at scale 1 so it is independent of where the
+ * creature stands, whether it is waving, and what the screen's scale is.
+ */
+export function measureRigHeight(rig) {
+  const probe = makeRigContext(rig);
+  if (!probe.boneList.length) return 0;
+  computeWorldInto(probe, { x: 0, y: 0, rot: 0, scale: 1 });
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const bone of probe.boneList) {
+    if (!probe.world[bone.id]) continue;
+    for (const part of bone.parts) {
+      if (part.visible === false) continue;
+      const m = partWorldMatrixIn(probe.world, bone, part);
+      if (!m) continue;
+      const rect = partLocalRect(part);
+      const mirror = m.mirror < 0 ? -1 : 1;
+      const cos = Math.cos(m.rot);
+      const sin = Math.sin(m.rot);
+      for (const [cx, cy] of [
+        [rect.x, rect.y],
+        [rect.x + rect.w, rect.y],
+        [rect.x + rect.w, rect.y + rect.h],
+        [rect.x, rect.y + rect.h],
+      ]) {
+        const y = m.y + (mirror * cx * sin + cy * cos) * m.scale;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (!Number.isFinite(minY) || maxY <= minY) return 0;
+  // The rig's own root scale is *not* part of its size: a gremlin's art is 307
+  // units tall drawn at 0.55, and both numbers describe the same creature. Props
+  // are authored in those units, so measure in them too.
+  const roots = probe.boneList.filter((bone) => !bone.parent || !probe.world[bone.parent]);
+  const rootWorld = roots.length ? probe.world[roots[0].id] : null;
+  const rootScale = Math.abs(num(rootWorld && rootWorld.scale, 1)) || 1;
+  return (maxY - minY) / rootScale;
+}
+
+/**
+ * How much a prop has to be scaled so it keeps its authoring proportion on the
+ * creature currently loaded. `1` means "this rig is the size the props were
+ * authored for".
+ *
+ * This is the one place prop *fit* is decided. `attach.scale` multiplies it; it
+ * never replaces it, which is what makes that field mean a single thing.
+ */
+export function avatarFit() {
+  const height = num(RT.rigHeight, 0);
+  if (!(height > 0)) return 1;
+  return clamp(height / REFERENCE_RIG_HEIGHT, MIN_FIT, MAX_FIT);
 }
 
 function loadImages(model) {

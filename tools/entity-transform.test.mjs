@@ -246,3 +246,78 @@ test("a dangling socket still resolves to nothing, flipped or not", async () => 
   const snap = mod.entitySnapshot();
   assert.equal(snap.entities[0].root, null);
 });
+
+/* ---------- fitting: one rule, and `attach.scale` means one thing ---------- */
+
+const state = await import("../ui/js/state.js");
+
+test("a rig's height is measured in its own units, at scale 1", () => {
+  const base = propRig();
+  const measured = rig.measureRigHeight(base);
+  assert.ok(measured > 0, "a rig with parts has a height");
+  assert.equal(rig.measureRigHeight({ bones: [] }), 0, "an empty rig has no height");
+
+  // Twice the body, twenty more units of height — the union is what is measured,
+  // not the root bone's own extent.
+  const taller = propRig();
+  taller.bones[0].parts[0].size = [30, 40];
+  near(rig.measureRigHeight(taller) - measured, 20);
+
+  // The rig's own root scale is not part of its size: the same art at 0.5 measures
+  // the same number of units, because that is the unit props are authored in.
+  const scaledRoot = propRig();
+  scaledRoot.bones[0].scale = 0.5;
+  near(rig.measureRigHeight(scaledRoot), measured);
+});
+
+test("the fit is the rig's height over the size props were authored for", () => {
+  const RT = state.RT;
+  const before = RT.rigHeight;
+  try {
+    RT.rigHeight = 0;
+    assert.equal(rig.avatarFit(), 1, "no measurement means no fit, not no props");
+    RT.rigHeight = rig.REFERENCE_RIG_HEIGHT;
+    near(rig.avatarFit(), 1);
+    RT.rigHeight = rig.REFERENCE_RIG_HEIGHT * 2;
+    near(rig.avatarFit(), 2);
+    // A 40-unit rig or a 4000-unit one must not produce comedy sizes.
+    RT.rigHeight = 10;
+    near(rig.avatarFit(), 0.5);
+    RT.rigHeight = 100000;
+    near(rig.avatarFit(), 3);
+  } finally {
+    RT.rigHeight = before;
+  }
+});
+
+test("the fit lands on whatever hangs from the avatar, and only that", async () => {
+  const RT = state.RT;
+  const saved = { sockets: RT.sockets, world: RT.world, rigHeight: RT.rigHeight };
+  try {
+    RT.sockets = [{ id: "hand_primary", bone: "hand", pos: [0, 0], scale: 1, z: 20 }];
+    RT.world = { hand: { x: 100, y: 200, rot: 0, scale: 0.55, mirror: 1 } };
+    RT.rigHeight = 600; // a rig twice the reference height → fit 2
+    const mod = await roster([
+      { id: "held", def: "fishing_rod", state: "idle", rig: FIXTURE_RIG, attach: { parent: "avatar", socket: "hand_primary" } },
+      {
+        id: "held-small", def: "fishing_rod", state: "idle", rig: FIXTURE_RIG,
+        attach: { parent: "avatar", socket: "hand_primary", scale: 0.5 },
+      },
+      { id: "onstage", def: "anvil", state: "idle", rig: FIXTURE_RIG, attach: worldAttach([400, 300]) },
+    ]);
+    const snap = mod.entitySnapshot();
+    const held = snap.entities.find((entry) => entry.id === "held").root;
+    const small = snap.entities.find((entry) => entry.id === "held-small").root;
+    const onstage = snap.entities.find((entry) => entry.id === "onstage").root;
+    // 0.55 (the socket's own scale) × 2 (fit) × 1 (no attach.scale).
+    near(held.scale, 1.1, 0.01);
+    // `attach.scale` multiplies the fit; it does not replace it.
+    near(small.scale, 0.55, 0.01);
+    // The stage is not a creature: no fit.
+    near(onstage.scale, 1, 0.01);
+  } finally {
+    RT.sockets = saved.sockets;
+    RT.world = saved.world;
+    RT.rigHeight = saved.rigHeight;
+  }
+});

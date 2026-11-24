@@ -2500,8 +2500,39 @@ Two rules worth keeping:
 * **A state that names a clip plays that clip**, derived on the host (`store::
   clip_for_state`) on spawn *and* on update — so `{"state":"open"}` is the whole
   protocol, and `GET /entities` is the whole truth.
-* **Fit belongs to the attachment** (`attach.scale`): an item put into a pod is
-  drawn at 45% of its own scale rather than at gremlin scale.
+* **Fit belongs to the attachment** (`attach.scale`): a multiplier on the prop's
+  *fitted* size (see "Fitting" below), so an item put into a pod is drawn at 45% of
+  the size it would have in the pod's own frame.
+
+### Fitting a prop to the rig holding it
+
+Props are authored in **creature units** — a rod is ~200 units long, about two
+thirds of a generated gremlin (~307 units tall) — and a rig's art is not the same
+number of units as another gremlin's. So a prop's size has to be a *ratio to the
+creature*, not a number of pixels:
+
+* `rig.js::measureRigHeight(rig)` measures the rig's bind-pose height in its own
+  units (the rig's own root scale is deliberately excluded: a gremlin's art is 307
+  units tall drawn at 0.55, and both describe the same creature). Measured once per
+  model load into `RT.rigHeight`, so a wave or a gesture never resizes a held prop.
+* `rig.js::avatarFit()` = `rigHeight / REFERENCE_RIG_HEIGHT` (300 units: what the
+  prop table was authored against), clamped to 0.5…3 so a pathological rig cannot
+  produce comedy props. 1 means "this rig is the size the props were written for".
+* `entities.js::resolveRoot` multiplies the socket's world scale by the fit **for
+  avatar-parented entities only**. `stage` and `world` are not creatures, so nothing
+  on the ground is fitted; a nested prop inherits its parent's scale chain, so a
+  fish on a big creature's rod is big with it.
+
+That leaves `attach.scale` meaning exactly one thing: a multiplier on the prop's
+fitted size (1.0 = "the size it should be in this holder"), which is what the pod's
+0.45 for contents already relied on.
+
+Measured on the same rod (seed 4242, `hand_primary`): its 73.7-unit height draws
+**41.4 px** on a generated gremlin (fit 1.02, root scale 0.562) and **141.1 px** on
+`xenomorph-7` (fit 1.91, root scale 1.914) — 0.245 and 0.246 of each creature's
+drawn height. Before the fit it was 0.240 of the gremlin and 0.128 of the xenomorph.
+A `world`-parented anvil stays at scale 1 on both, and the gremlin's own props grew
+2% (its measured fit is 1.02, not 1.00).
 
 ### The mirror: `attach.flip` is a parity, not a negative scale
 

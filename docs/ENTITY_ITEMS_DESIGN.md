@@ -1210,3 +1210,49 @@ the_generator_emits` already required every `own_sockets` id to exist in the
 generated rig, and now also that each generated socket names a bone that rig
 actually has and that ids are unique — a renamed bone used to keep the id check
 green while resolving to nothing at draw time.
+
+### 14.3 Per-rig fitting: props are a ratio, not a number
+
+The last of §8's known limits: props were authored in rig units, which read right on
+a generated gremlin (root scale 0.55) and small on `xenomorph-7` (root scale 1.0,
+580 px tall). Measuring it made the real problem visible — it was never the root
+scale:
+
+| | rig height | prop authored for |
+|---|---|---|
+| generated gremlin | **306.5 units** (drawn at 0.55 → 169 px) | 300 units |
+| `xenomorph-7` | **574.2 units** (drawn at 1.0 → 574 px) | 300 units |
+
+A prop is one number of units, so on a creature written in 574 units the same rod is
+half as big *relative to the creature* as it is on a gremlin. The fix is a ratio:
+
+* `rig.js::measureRigHeight(rig)` — the bind-pose height in the **rig's own units**,
+  from part geometry, with the rig's root scale divided out (that is the unit props
+  are authored in). Measured once per model load (`RT.rigHeight`), so a wave, a
+  gesture or a clip never resizes a held prop.
+* `rig.js::avatarFit()` = `rigHeight / REFERENCE_RIG_HEIGHT` (300), clamped 0.5…3 —
+  the clamp is the difference between "a tall creature holds a big rod" and "a bad
+  rig holds a telephone pole".
+* `entities.js::resolveRoot` applies it to **avatar-parented** entities only, so
+  `stage` and `world` props keep their authored size (the stage is not a creature),
+  and a nested prop inherits its parent's chain for free.
+
+`attach.scale` therefore means exactly one thing: **a multiplier on the fitted
+size**, `1.0` = "the size it should be in this holder". The pod's 0.45 for contents
+already read that way; it is now the only reading.
+
+**Proof** (same rod, seed 4242, `hand_primary`, both rigs):
+
+| rig | fit | rod root scale | rod drawn | rod / creature |
+|---|---|---|---|---|
+| generated gremlin | 1.02 | 0.562 | 41.4 px | **0.245** |
+| `xenomorph-7` | 1.91 | 1.914 | 141.1 px | **0.246** |
+
+Before the fit the same rod was 0.240 of the gremlin and 0.128 of the xenomorph. A
+`world`-parented anvil reports `scale: 1` on both rigs, and the gremlin's own props
+grew 2% (its measured fit is 1.02 against the 300-unit reference — stated rather
+than hidden, since "unchanged" would be a lie by two percent).
+
+`tools/entity-transform.test.mjs` pins the measurement (a taller body → a taller
+rig, a rig's own root scale → the same measurement), the clamp, and that the fit
+lands on avatar-parented props only.

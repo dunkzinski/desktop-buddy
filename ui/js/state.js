@@ -196,6 +196,11 @@ export const RT = {
   // the resolver could not make sense of — `socketWorld()` then simply answers
   // null and nothing attaches.
   sockets: [],
+  // The loaded rig's height **in its own units**, measured from the bind pose by
+  // `rig.js::measureRigHeight`. Props are authored in creature units, so this is
+  // what turns "a rod is two thirds of a gremlin" into a number any rig can use
+  // (`rig.js::avatarFit`). 0 until a model is loaded.
+  rigHeight: 0,
 };
 
 /* ---------- custom keyframe animation runtime ---------- */

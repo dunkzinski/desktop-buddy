@@ -476,6 +476,11 @@ prop-agnostic: `{"state": "cast"}` is all a caller needs to animate a rod.
   `offset` and `scale` mean the same thing either way, and a prop hung on a flipped
   prop inherits the mirror. The axis is the prop's own vertical, so a rotated prop
   is mirrored about its rotated axis rather than the screen's.
+* `attach.scale` is a multiplier on the prop's **fitted** size, and means nothing
+  else: props are authored in creature units, the page fits them to the rig holding
+  them (`avatarFit()`, measured from the rig's own height), and `attach.scale: 0.45`
+  on something in the pod is 45% of the size it would have in the pod's frame. It is
+  not applied to `stage` / `world` attachments, because the stage is not a creature.
 * `traits` and `seed` default from the id; `params` are merged into the
   generator and change the look (a param change regenerates the rig).
 * Refused with a 400: unknown def, unknown state, bad attachment shape, more than
