@@ -2390,6 +2390,17 @@ page: the store can drop a row, but only the API knows how to emit
 /entities/spawn` accepts `ttl_ms` so an HTTP caller can make its own debris
 without knowing the host clock.
 
+The same tick carries the **chest's idle rule** (`entities::sweep_idle` →
+`chest::sweep_idle`): an open pod left untouched for `IDLE_DISMISS_MS` (20 s)
+dismisses itself. The clock is `Entity.touched_at`, refreshed by every accepted
+`update` and touched explicitly by `put`/`take` — those move the *item*, so the
+pod's own stamp would never see them. Two guards keep the auto-dismiss from
+surprising: only an `open` pod qualifies (so the dismissal and its one
+`chest-dismissed` frame happen exactly once), and a pod holding anything of the
+caller's is left alone, because an item leaving the stage on a timer is theft.
+`load` re-arms `touched_at`, so a pod restored from disk does not vanish during
+startup because its save is hours old.
+
 ### Tools come out of the pod
 
 `POST /chest/withdraw` (and the `withdraw` guest op) asks the pod to **produce** a

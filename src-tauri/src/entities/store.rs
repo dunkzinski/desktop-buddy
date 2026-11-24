@@ -177,6 +177,15 @@ pub struct Entity {
     pub state: String,
     #[serde(default)]
     pub state_since_ms: u64,
+    /// When a caller last touched this entity, in host epoch ms: any accepted
+    /// patch, plus an explicit [`EntityStore::touch`] for an interaction that
+    /// lands on a *child* (a put into the pod updates the item, not the pod).
+    ///
+    /// Not drawn and not a state: it is the clock an idle rule counts from, and
+    /// `0` means "never touched since it was restored", which `load` re-arms
+    /// rather than reading as "idle since 1970".
+    #[serde(default)]
+    pub touched_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anim: Option<EntityAnim>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -330,6 +339,11 @@ impl EntityStore {
                 log::warn!("entities: save file has more than {MAX_ENTITIES}; rest dropped");
                 break;
             }
+            // A restart re-arms the idle clock instead of firing it: a pod that
+            // was open when the app closed must not vanish during startup
+            // because its save is hours old.
+            let mut entity = entity;
+            entity.touched_at = crate::plugins::epoch_ms();
             self.entities.insert(entity.id.clone(), entity);
         }
         log::info!("entities: restored {} from {}", self.entities.len(), path.display());
@@ -346,6 +360,27 @@ impl EntityStore {
     /// An entity's state, without rendering it (and without needing `&mut`).
     pub fn state_of(&self, id: &str) -> Option<&str> {
         self.entities.get(id).map(|entity| entity.state.as_str())
+    }
+
+    /// When a caller last touched `id` (`0` when unknown or never recorded).
+    pub fn touched_at(&self, id: &str) -> u64 {
+        self.entities
+            .get(id)
+            .map(|entity| entity.touched_at)
+            .unwrap_or(0)
+    }
+
+    /// Record an interaction with `id` without changing anything a caller can see.
+    ///
+    /// A put into the pod updates the *item*, so the pod's own clock would never
+    /// move; this is how a container is told "the user just handled you". It does
+    /// not bump the revision — nothing in the roster changed — but it does mark
+    /// the store dirty so the stamp survives the next flush.
+    pub fn touch(&mut self, id: &str) {
+        if let Some(entity) = self.entities.get_mut(id) {
+            entity.touched_at = crate::plugins::epoch_ms();
+            self.dirty = true;
+        }
     }
 
     /// The entities living inside `id` — those attached to `entity:<id>`.
@@ -482,6 +517,7 @@ impl EntityStore {
             traits,
             state,
             state_since_ms: now,
+            touched_at: now,
             anim: initial_clip.map(|clip| EntityAnim {
                 clip: clip.to_string(),
                 started_ms: now,
@@ -649,6 +685,9 @@ fn clip_for_state(def: &defs::PropDef, state: &str) -> Option<&'static str> {
             entity.reveal_at = Some(reveal_at);
         }
 
+        // Any accepted patch is an interaction: this is the clock an idle rule
+        // counts from (the chest's, today).
+        entity.touched_at = crate::plugins::epoch_ms();
         let entity = entity.clone();
         self.bump();
         Ok(entity)

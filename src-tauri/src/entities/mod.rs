@@ -60,6 +60,22 @@ pub fn reap(now_ms: u64) -> Result<Vec<String>, String> {
     Ok(removed)
 }
 
+/// The chest's idle rule, on the same once-a-second tick as the reaper.
+///
+/// Returns the events to publish (`chest-dismissed`), because only the API knows
+/// how to reach the page and the SSE bus: the store can change a row, not emit.
+/// Empty means "nothing to do", which is the answer on almost every tick.
+pub fn sweep_idle(now_ms: u64) -> Result<Vec<(&'static str, serde_json::Value)>, String> {
+    let mut store = store::lock();
+    let Some(applied) = chest::sweep_idle(&mut store, now_ms)? else {
+        return Ok(Vec::new());
+    };
+    if let Err(err) = store.flush() {
+        log::warn!("entities: could not persist after the idle dismiss: {err}");
+    }
+    Ok(applied.events)
+}
+
 pub fn roster() -> (u64, Vec<serde_json::Value>) {
     let mut store = store::lock();
     let entities = store.snapshot();

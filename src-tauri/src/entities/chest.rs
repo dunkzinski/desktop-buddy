@@ -477,6 +477,45 @@ pub fn dismiss(store: &mut EntityStore, force: bool) -> Result<Applied, String> 
     ))
 }
 
+/// How long an open pod may stand untouched before it dismisses itself.
+///
+/// §2.3 of the design doc: "20 s after the last interaction". A **const**, not a
+/// config key — a key would cost `watcher_rules.json`'s known set, a settings row
+/// and a `CONFIGURATION.md` entry for a behaviour nobody has asked to configure.
+pub const IDLE_DISMISS_MS: u64 = 20_000;
+
+/// The idle rule: dismiss a pod that has stood open and untouched for
+/// [`IDLE_DISMISS_MS`].
+///
+/// Held to four conditions, because an auto-dismiss that surprises is worse than
+/// no auto-dismiss: the pod must be **open** (so `dormant` fires exactly once and
+/// a closed or `appearing` pod never moves), the wait is measured from the last
+/// interaction (`open`, `put`, `take` — all of which touch the pod), the pod must
+/// hold nothing of the caller's (their item leaving the stage on a timer would be
+/// theft), and the check runs under the store lock a caller's `put` also holds, so
+/// it can never fire mid-put.
+///
+/// `now` is passed in rather than read here so a test can sweep the future.
+pub fn sweep_idle(store: &mut EntityStore, now: u64) -> Result<Option<Applied>, String> {
+    if chest_state(store, CHEST_ID).as_deref() != Some("open") {
+        return Ok(None);
+    }
+    if now.saturating_sub(store.touched_at(CHEST_ID)) < IDLE_DISMISS_MS {
+        return Ok(None);
+    }
+    // The pod's own trinkets leave with it; anything of the caller's keeps it up.
+    // The clock is not reset here: taking the last item touches the pod, so the
+    // wait starts over from that moment.
+    let caller_property = store
+        .contents_of(CHEST_ID)
+        .iter()
+        .any(|entity| !is_pod_property(store, &entity.id));
+    if caller_property {
+        return Ok(None);
+    }
+    dismiss(store, false).map(Some)
+}
+
 /// Put an entity into the pod. Requires it to be open — a closed pod is a lid,
 /// not a hole.
 pub fn put(store: &mut EntityStore, item: &str) -> Result<Applied, String> {
@@ -518,6 +557,8 @@ pub fn put(store: &mut EntityStore, item: &str) -> Result<Applied, String> {
         },
         None,
     )?;
+    // The item moved, not the pod: the idle clock would never see this one.
+    store.touch(CHEST_ID);
     Ok(Applied::new(json!({
         "ok": true,
         "stored": item,
@@ -550,6 +591,8 @@ pub fn take(store: &mut EntityStore, item: &str) -> Result<Applied, String> {
         },
         None,
     )?;
+    // Taking one out is handling the pod.
+    store.touch(CHEST_ID);
     Ok(Applied::new(json!({
         "ok": true,
         "taken": item,
@@ -1657,5 +1700,102 @@ mod tests {
         dismiss(&mut store, false).expect("dismiss");
         let err = open(&mut store).expect_err("not on the stage");
         assert!(err.contains("summon"), "{err}");
+    }
+
+    #[test]
+    fn an_idle_open_pod_dismisses_itself_exactly_once() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        let opened_at = store.touched_at(CHEST_ID);
+        assert!(opened_at > 0, "opening must start the clock");
+
+        // One millisecond short of the deadline is still "in use".
+        assert!(
+            sweep_idle(&mut store, opened_at + IDLE_DISMISS_MS - 1)
+                .expect("sweep")
+                .is_none(),
+            "the pod must not leave early"
+        );
+        assert_eq!(store.state_of(CHEST_ID), Some("open"));
+
+        let applied = sweep_idle(&mut store, opened_at + IDLE_DISMISS_MS)
+            .expect("sweep")
+            .expect("the pod should dismiss itself");
+        assert_eq!(applied.body["dismissed"], json!(true));
+        assert_eq!(
+            applied
+                .events
+                .iter()
+                .filter(|(event, _)| *event == "chest-dismissed")
+                .count(),
+            1,
+            "one dismissal, one event"
+        );
+        assert_eq!(store.state_of(CHEST_ID), Some("dormant"));
+        // Its own trinkets left with it: they are the pod, not the caller's loot.
+        assert!(chest_loot(&store).is_empty());
+
+        // The second tick sees `dormant` and does nothing at all.
+        assert!(sweep_idle(&mut store, opened_at + IDLE_DISMISS_MS * 10)
+            .expect("sweep")
+            .is_none());
+        assert_eq!(store.state_of(CHEST_ID), Some("dormant"));
+    }
+
+    #[test]
+    fn an_interaction_resets_the_idle_clock_and_a_full_pod_is_left_alone() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        let opened_at = store.touched_at(CHEST_ID);
+
+        // A put updates the *item*, so the pod's clock only moves because `put`
+        // touches it explicitly.
+        an_item(&mut store, "demo:bag");
+        put(&mut store, "demo:bag").expect("put");
+        let after_put = store.touched_at(CHEST_ID);
+        assert!(after_put >= opened_at, "a put is an interaction");
+
+        // However long it stands, a pod holding the caller's item stays up: an
+        // auto-dismiss that moved their bag to the stage would be theft.
+        assert!(sweep_idle(&mut store, after_put + IDLE_DISMISS_MS * 100)
+            .expect("sweep")
+            .is_none());
+        assert_eq!(store.state_of(CHEST_ID), Some("open"));
+        assert_eq!(
+            store.render_one("demo:bag").expect("bag")["attach"]["parent"],
+            json!("entity:chest"),
+            "the bag never moved"
+        );
+
+        // Taking it out is the last interaction: the wait starts over from there,
+        // so the stale deadline above must not fire the moment it empties.
+        take(&mut store, "demo:bag").expect("take");
+        let after_take = store.touched_at(CHEST_ID);
+        assert!(after_take >= after_put);
+        assert!(
+            sweep_idle(&mut store, after_take + IDLE_DISMISS_MS - 1)
+                .expect("sweep")
+                .is_none(),
+            "the clock resets on a take, even though it read past the old deadline"
+        );
+        assert!(sweep_idle(&mut store, after_take + IDLE_DISMISS_MS)
+            .expect("sweep")
+            .is_some());
+        assert_eq!(store.state_of(CHEST_ID), Some("dormant"));
+    }
+
+    #[test]
+    fn the_idle_rule_never_touches_a_closed_pod_or_an_empty_stage() {
+        let mut store = EntityStore::new(None);
+        // No pod at all: a tick is a no-op rather than an error.
+        assert!(sweep_idle(&mut store, u64::MAX).expect("sweep").is_none());
+
+        summon(&mut store, 7, [900.0, 640.0]).expect("summon");
+        let summoned_at = store.touched_at(CHEST_ID);
+        assert!(sweep_idle(&mut store, summoned_at + IDLE_DISMISS_MS * 100)
+            .expect("sweep")
+            .is_none());
+        // `closed` is what it is: the idle rule only ever dismisses an open pod.
+        assert_eq!(store.state_of(CHEST_ID), Some("closed"));
     }
 }

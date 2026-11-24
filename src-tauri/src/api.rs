@@ -1260,12 +1260,14 @@ async fn get_sockets(
 ///
 /// Called **after** the store lock is released: a listener that reads
 /// `GET /entities` from inside this emit must not deadlock against the mutation.
-/// Once a second: remove entities whose lifetime ran out and tell the page.
+/// Once a second: remove entities whose lifetime ran out and tell the page, then
+/// let the chest's idle rule dismiss a pod that has stood open untouched.
 ///
 /// The reaper is the *only* thing that deletes on a timer — everything else is
 /// caller-driven — so it is also the one place that has to publish its own
 /// `entity-removed` frames: the store can remove a row, but only the API knows how
-/// to reach the page and the SSE bus.
+/// to reach the page and the SSE bus. The idle sweep shares the tick for the same
+/// reason: one owner for timers, one place that emits.
 async fn housekeeping(api: ApiCtx) {
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1282,6 +1284,16 @@ async fn housekeeping(api: ApiCtx) {
                 }
             }
             Err(err) => log::debug!("entity reaper: {err}"),
+        }
+        // The chest's idle rule shares this tick: one owner for timers, so a pod
+        // cannot be dismissed from two places at once.
+        match crate::entities::sweep_idle(now_ms()) {
+            Ok(events) => {
+                for (event, payload) in events {
+                    emit_entity(&api, event, payload);
+                }
+            }
+            Err(err) => log::debug!("chest idle sweep: {err}"),
         }
     }
 }

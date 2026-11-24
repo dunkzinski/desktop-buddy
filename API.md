@@ -448,6 +448,7 @@ the same store through the ABI, not HTTP).
     { "id": "survival:rod", "def": "fishing_rod", "seed": 12345,
       "params": {}, "traits": { "bite_luck": 0.09, "durability": 1.16 },
       "state": "cast", "state_since_ms": 1764000000000,
+      "touched_at": 1764000000000,
       "anim": null,
       "attach": { "parent": "avatar", "socket": "hand_primary",
                   "flip": false, "rotation": -1.25 },
@@ -463,6 +464,11 @@ mutation and is also echoed in the `entity-*` events.
 A state whose name matches a clip in the entity's own `rig.animations` plays that
 clip by itself (started at `state_since_ms`). That is what keeps the page
 prop-agnostic: `{"state": "cast"}` is all a caller needs to animate a rod.
+
+`touched_at` is when a caller last interacted with the entity: every accepted
+`update` refreshes it, and a container route that moves a *child* (`put`, `take`)
+touches the container explicitly. Nothing draws it; it is the clock an idle rule
+counts from, and the chest's auto-dismiss is the only reader today.
 
 #### `POST /entities/spawn`
 
@@ -608,6 +614,15 @@ deleted) and then dismisses it.
 The pod goes `dormant` playing `vanish`; the page draws a dormant entity only
 while that clip is still running, so it leaves instead of blinking out. `summon`
 brings the same one back.
+
+An open pod also **dismisses itself after 20 s with no interaction**
+(`chest::IDLE_DISMISS_MS` — a const, not a config key). An interaction is `open`,
+`put` or `take`; the rule rides the API's once-a-second housekeeping tick and only
+ever fires on an `open` pod, so `dormant` and one `chest-dismissed` (`dropped: 0`)
+happen exactly once. A pod holding anything **you** put in it is left alone no
+matter how long it stands — take the item out and the wait starts over. There is
+no `dismiss_after_ms` key: a number nobody has needed to configure did not earn a
+settings row.
 
 #### `POST /chest/put` / `POST /chest/take`
 

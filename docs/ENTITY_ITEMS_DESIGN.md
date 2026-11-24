@@ -288,9 +288,12 @@ owns the avatar position and the monitor list) and published in the
 `closing → dismissing → dormant`. `dormant` keeps the entity and its entity id,
 so a later summon reuses the same chest — same seed, same wood, same dents.
 
-Auto-dismiss: `dismiss_after_ms` in the chest config (default 20 s after the
-last interaction: a put, a take, or the walk-up). The timer resets on any
-interaction and never fires mid-`put`.
+Auto-dismiss: **shipped as `chest::IDLE_DISMISS_MS` = 20 s** after the last
+interaction (a put, a take, or the walk-up), on the API's one-second housekeeping
+tick. It is a const, not the `dismiss_after_ms` config key proposed here — a key would
+cost `watcher_rules.json`'s known set, a settings row and a `CONFIGURATION.md` entry
+for a number nobody has configured. The wait resets on any interaction, never fires
+mid-`put`, and leaves a pod holding anything of the caller's alone (§14.5.3).
 
 Contents are child entities with `attach.parent = chest.id`. A **transactional**
 surface keeps bag counts and entity instances from drifting apart:
@@ -1289,7 +1292,7 @@ plan's Phase 5 and Phase 6 were never closed, and the arc §13–§14 calls "Pha
 | 0 — seams | **landed** | `sockets.rs` + `GET /sockets` + sweep over every shipped model; A/B `maxDiff 0`; `frameErrors 0` (§7) |
 | 1 — store + one prop | **landed** | determinism, ≥60 structural tuples/100 seeds, `validate_rig` on every prop, live rod in a paw (§8) |
 | 2 — ABI + survival rod | **landed** | `host_entities`, summaries-not-rigs, guest call-order tests, live cast→pounce→catch (§9) |
-| 3 — the chest | **landed**, three plan items changed | `shape:"rect"` was replaced by `poly` (a faceted shell needs geometry, §10); the 5–8 slot capacity was removed on purpose (§12). Two items did **not** ship: `dismiss_after_ms` auto-dismiss (grep finds it only in this document — the pod stays until the card's Fold or a caller dismisses it) and the single `avatar.activity ∈ {none, scavenge, chest}` lock (§2.8 item 5) — the page kept two walk objects (`scavengeWalk`, `chestWalk`) plus `avatar.manualMoves`, which arbitrates two activities fine and was never tested with a third |
+| 3 — the chest | **landed**, three plan items changed | `shape:"rect"` was replaced by `poly` (a faceted shell needs geometry, §10); the 5–8 slot capacity was removed on purpose (§12); `dismiss_after_ms` shipped as a **const** rather than a config key (§14.5.3). One item did **not** ship: the single `avatar.activity ∈ {none, scavenge, chest}` lock (§2.8 item 5) — the page kept two walk objects (`scavengeWalk`, `chestWalk`) plus `avatar.manualMoves`, which arbitrates two activities fine and was never tested with a third |
 | 4 — scavenge bag + loot→entities | **landed as §11–§13**, two criteria superseded | The bag carries counts, and the only tools (rod, bag) are **withdrawn from the pod** (§12.4, §12.6), so "loot that yields a tool creates a seeded entity" and "a looted tool survives restart with the same seed/params" lost their subject rather than being met. §2.4(A)'s `item_id` on an entity was never built and `chest::put` never touches the guest's inventory, so "bag and chest never both claim one item" is vacuously true — the two stores never name the same item |
 | 5 — mining-ready hardening | **partly** | nested sockets + depth/cycle guard: **yes**, and better than planned (the catch is the caller, §14.2). Verified live 3-deep: trinket on the fish's `mouth` on the rod's `line_end` in the paw → roots `1944.5, 530.5` / `1956.7, 546.3` / `1827.6, 635.3`. `accepts` validation: **no, and now declared advisory** — `Socket.accepts` is parsed and surfaced to `__avatarDebug.sockets()`, no code compares a prop's `tags` to it, and §14.5.2 turned the claim into a documented decision plus a round-trip test. metamorphosis writes explicit `sockets`: **no** — its generator emits none and those rigs ride the `sockets.rs` heuristics. `head_helmet`/`hand_secondary`: `hand_secondary` is swept over every shipped model, `head_helmet` is asserted on one generated test rig, not swept. "self-attach refused at spawn with a 400": **yes, as of §14.5.1** — `spawn` and `update` now share one attach rule: an entity cannot hang off itself, and neither route will create or keep a child under a parent that does not exist. Live: spawn self → 400, spawn missing → 400, spawn valid parent → 200, update self → 400, update missing → 400. |
 | 6 — docs + MCP | **docs yes, MCP no** | `API.md` / `ARCHITECTURE.md` / `PLUGINS.md` / `MODEL_FORMAT.md` all carry the arc; `CONFIGURATION.md` needed nothing because no config key shipped. But `desktop-buddy-mcp` still exposes **14** `avatar_*` tools and `verify_docs.py` asserts exactly 14 tools and 14 mapped routes — no entity, prop or chest tool was ever added, and the count gate is what makes that a deliberate decision rather than drift |
@@ -1369,3 +1372,44 @@ Enforcement would need one owner for both tables — plausibly a prop/socket reg
 by `defs::PROPS` **and** the resolved tables of every rig the store can see. Until such
 a layer exists, a test that refuses a mismatch would have to special-case the avatar to
 pass, which is a claim, not a check.
+
+#### 14.5.3 The pod dismisses itself, as a const
+
+`dismiss_after_ms` existed only in this document. The plan put it in the chest config;
+it ships as `chest::IDLE_DISMISS_MS = 20_000`, a **const**, because a config key costs
+`watcher_rules.json`'s known set, a settings row, a `CONFIGURATION.md` entry and a
+`verify_docs` assertion — a real bill for a behaviour nobody has asked to tune.
+
+The rule (`chest::sweep_idle`) rides the existing once-a-second
+`api.rs::housekeeping` tick, the same task that reaps `expires_at` debris. It acts only
+when all four hold: the pod is **open**; `now - touched_at >= 20 s`; it holds nothing
+of the caller's; and the sweep can take the store lock (a `put` holds it for its whole
+mutation, so the check cannot land mid-put). On the tick that qualifies it calls
+`dismiss(store, false)` — the ordinary dismissal, so `dormant`, the `vanish` clip, one
+`chest-dismissed` and the pod's own trinkets leaving with it all come from one code
+path. The next tick sees `dormant` and does nothing, which is what makes "exactly once"
+structural rather than a flag.
+
+Two small things came with it:
+
+* `Entity.touched_at` — a persisted stamp, refreshed by every accepted `update` and
+  set by a new `EntityStore::touch(id)` for `put`/`take`, which move the *item* and so
+  would never move the pod's clock. `load` re-arms it, so a pod restored from a save
+  does not vanish during startup because the save is hours old.
+* A **pod holding the caller's item is never dismissed by the clock**, however long it
+  stands. Moving their thing to the stage on a timer is the one outcome worse than a
+  pod left open; taking the last item touches the pod, so the wait restarts from there.
+
+Measured live (built app, seeded pod at `[700, 700]`): `POST /chest/open` at
+`touched_at = 1795563758934`; `GET /chest` at +37.5 s reports `state: dormant`,
+`clip: vanish`; the page screenshot before shows the splayed pod beside the gremlin and
+the one after shows an empty stage. A second cycle subscribed to `GET /events`: open at
+`1795563818773`, and exactly **one** `chest-dismissed` frame
+`{"id":"chest","dropped":0}` at `ts_ms 1795563839524` — **20.75 s** later, i.e. the
+first tick past the deadline.
+
+Tests: `an_idle_open_pod_dismisses_itself_exactly_once` (one ms early → nothing, at the
+deadline → `dormant` + one event, next tick → nothing),
+`an_interaction_resets_the_idle_clock_and_a_full_pod_is_left_alone` (a put at
+`deadline × 100` still does not move the pod; taking the item resets the wait), and
+`the_idle_rule_never_touches_a_closed_pod_or_an_empty_stage`.
