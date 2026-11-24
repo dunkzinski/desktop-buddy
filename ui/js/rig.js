@@ -15,6 +15,7 @@ import {
 } from "./state.js";
 
 import { call } from "./ipc.js";
+import { gestureOffset } from "./gestures.js";
 
 /** Head tilt (radians, ~3°) at full hover — the "the cursor is on me" sign. */
 const HOVER_HEAD_TILT = 0.05;
@@ -336,6 +337,14 @@ export function animOffset(bone, ctx = RT) {
     const dig = rummageOffset(bone, avatar.rummage);
     rot += dig.rot;
     bob += dig.bob;
+  }
+  // A gesture is the same idea with a name: `gestures.js` owns the shape, this is
+  // where it lands. Added last so it is the strongest thing on the bone — a
+  // gesture is a deliberate act, and it outranks idle sway and a dig.
+  if (lifeSigns && avatar.gesture && avatar.gestureBlend > 0) {
+    const move = gestureOffset(avatar.gesture, bone, avatar.gestureT, avatar.gestureBlend);
+    rot += move.rot;
+    bob += move.bob;
   }
   return { rot, bob };
 }

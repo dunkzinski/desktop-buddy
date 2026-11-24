@@ -83,6 +83,7 @@ ui/
     ├── entities.js     # Prop entities on the canvas: `fetchEntities` / `markDirty` (2 s reconcile + event-driven refetch), `entityDrawables` (z-sorted, per-socket parents, `world` parent for stage-anchored props), `stepEntities`, `clip_for_state` mirroring, the chatty chest API (`chestStatus`, `summonChest`, `openChest`, `closeChest`, `putInChest`, `takeFromChest`, `dismissChest` — refusals thrown with the host's own words), and `chestBounds` / `overChest` for the pod's click region
     ├── chest-card.js   # The **Curiosity pod** card: `render` (state pill, slot bar, one row per item with a Take button), `openChestCard` / `closeChestCard` / `toggleChestCard`, `refreshChestCard` (called by the entity-event listeners, so the card tracks pods moved by plugins or agents); a 2 s poll only while it is open
     ├── behaviour-card.js # The **Brain & body** card: watcher, AI brain, voice, push-to-talk and walk speed. It owns the card only — every control kept its element id when it moved out of the control panel, so the code that drives each behaviour did not move
+    ├── gestures.js     # **Procedural gestures**: bone offsets over time, no clips (`GESTURES`, `gestureOffset`, `gestureDuration`). `pack-up` and `reach` today; `rig.js` layers the running one on top of the pose, `main.js` drives the clock
     ├── survival.js     # The **Survival** pop-out card and its four tabs: `setupSurvival` (hydrate from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follow the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events, 15 s survival poll floor), `renderSurvival` (tier badge, the two bars and the craving row, from any of the payload shapes), `feed` (the real `POST /survival/feed`), `setCraving` / `clearCraving`, `craft` + `syncCraftButton` (the recipe picker's `can_cook`/`missing`, so a cook the bag cannot pay for is not clickable), `showSurvivalTab` (status / bag / fishing / store), `renderInventory` + `addItem` + `useItem` + `sellPickedItem` (`GET /inventory`, `POST /inventory/add`, `POST /inventory/use`, plus a one-unit `POST /store/sell` straight from the bag at the slot's `sell_price`), `syncInventoryButtons` (Use for edibles, Sell for anything the counter prices), the shop (`renderStore` + `renderWallet` + `pickStoreItem` + `syncStoreButtons` + `trade` over `GET /store`, `POST /store/buy`, `POST /store/sell`), the fishing mini-game (`castLine` / `hookFish` / `reelFish` / `cancelFishing`, a 120 ms `GET /fishing` poll, `startMarker` animating off the plugin's sweep), `toggleSurvivalCard` / `survivalCardOpen`
     ├── metamorphose.js    # The **Metamorphosis** pop-out card: `setupMetamorphose` (hydrate from
     │                  # `GET /creature/status`, follow the `creature` event, 10 s poll), `renderCreature`
@@ -2417,6 +2418,28 @@ happening: the rod is fetched when the phase leaves `Idle`, not at boot, or a po
 would pop in beside a gremlin who is only standing there. The `spawn` fallback
 remains for a host without the op (`ok:false` on the guest ABI), which is the rule
 for every tool that comes next.
+
+### Gestures: poses over time, not clips
+
+Some acts are too small and too universal to author: putting a tool away, reaching
+down for one. A **clip** is per-rig animation data; a **gesture**
+(`ui/js/gestures.js`) is a table of bone *roles* (`arm`, `torso`, `head`, `root`)
+that every rig answers, generated or hand-made, evaluated as offsets over `t` 0..1.
+
+It is the same mechanism `rig.js::rummageOffset` already used for scavenging,
+lifted into a named thing so more than one caller can ask for one:
+
+* `avatar.gesture` / `gestureT` / `gestureBlend` (in `state.js`) are the channel.
+* `main.js::startGesture(name)` starts one; `stepGestures(dt)` advances it; both go
+  through `gestureDuration` so a gesture and its host-side beat can be timed to end
+  together (`pack-up` is 2 s, the rod's `LINGER_MS` is 2 s).
+* `rig.js::animOffset` adds the offset **last**, after the rig's own pose, its
+  life-signs and a dig — a deliberate act outranks idle sway, and `localRotation`
+  still clamps to the bone's declared limits afterwards.
+
+Triggers are prop states, not def names: **`resting` means "the work is over, I am
+about to go"**, and the page answers with `pack-up`. Any tool that adopts the state
+gets the performance for free — which is the whole plan for the mining set.
 
 ### Picking the pod up
 

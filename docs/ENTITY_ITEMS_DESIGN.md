@@ -1011,3 +1011,27 @@ fishing degrades to a rod in the hand with no theatre.
 The same shape serves mining later: `withdraw {def:"lantern", socket:"head_lamp"}`,
 `withdraw {def:"pickaxe", socket:"hand_primary"}` — no new host code, and the gag
 happens automatically.
+
+### 12.5 Gestures, so props have hands to come out of
+
+A prop that appears in a paw without the avatar *doing* anything is a sprite swap.
+The rigs have no spare animation data — the catalogue is `breathe`, `wave`,
+`metamorphose` — and the generated ones will never get bespoke clips for "put the
+pickaxe away".
+
+So gestures are procedural: a table of bone roles plus an envelope over `t`, in
+`ui/js/gestures.js`. Two exist:
+
+| gesture | reads as | used by |
+|---|---|---|
+| `pack-up` | arm drops, he leans off the work, looks at what he is holding, lets go | the rod's `resting` state — and any tool that adopts it |
+| `reach` | he bends, takes what is on the floor, straightens up | arriving at a withdrawn tool |
+
+They compose with everything else rather than replacing it: `rig.js` adds the
+offset on top of the pose, the life-signs and a scavenging dig, then clamps to the
+bone's declared limits, so a rig that sways still sways while it packs up and a rig
+with an arm range cannot be puppeted past it.
+
+The mining set is the test of the abstraction: `reach` already covers picking a
+pickaxe off the stage, and `pack-up` covers putting a lantern away — both without a
+single line of new animation.

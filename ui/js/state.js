@@ -81,6 +81,17 @@ export const avatar = {
   // bones, so no rig needs a "rummage" clip to be scavenged with.
   rummage: 0,
   rummagePhase: 0,
+  // Procedural gestures (`ui/js/gestures.js`): a named shape of bone offsets that
+  // plays over `gestureDuration(name)` seconds. `gestureT` is progress 0..1 and
+  // `gestureBlend` fades the whole thing, so two gestures can cross-fade later
+  // without every caller learning about it. Set through `startGesture()` in
+  // `main.js`; `rig.js` layers it on top of the rig's own pose.
+  gesture: "",
+  gestureT: 0,
+  gestureBlend: 0,
+  // A walk that ends in a grab: set when the walk targets something on the floor,
+  // consumed when he arrives (he bends with `reach` and the prop goes to his hand).
+  reachOnArrival: false,
   // Bumped when *the user* takes the avatar somewhere: a drag, or W / centre /
   // random. The scavenging walk compares it and stands down instead of
   // pulling the avatar back out from under the pointer. Agent moves

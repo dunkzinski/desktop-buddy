@@ -33,6 +33,7 @@ import {
   stepEntities,
 } from "./entities.js";
 import { initChestCard, openChestCard, refreshChestCard } from "./chest-card.js";
+import { gestureDuration } from "./gestures.js";
 import { initBehaviourCard } from "./behaviour-card.js";
 
 import { initRenderer, render, resizeCanvas } from "./renderer.js";
@@ -105,6 +106,41 @@ function stepBlendshapes(dt) {
  * interpolation without claiming to be a manual move (which would make it
  * cancel itself — see `avatar.manualMoves`).
  */
+/**
+ * Play a procedural gesture (see `ui/js/gestures.js`).
+ *
+ * They are *poses over time*, not clips, so a generated rig that has never been
+ * animated can still pack a rod away or reach down for a pickaxe. Idempotent within
+ * the first fifth of its run, because a burst of `entity-updated` frames must not
+ * restart the same gesture from the top: `restart` is how a caller says otherwise.
+ */
+function startGesture(name, { restart = false } = {}) {
+  if (!gestureDuration(name)) return false;
+  if (!restart && avatar.gesture === name && avatar.gestureT < 0.2) return false;
+  avatar.gesture = name;
+  avatar.gestureT = 0;
+  avatar.gestureBlend = 1;
+  return true;
+}
+
+/** Advance the running gesture; a finished one leaves the avatar neutral. */
+function stepGestures(dt) {
+  if (!avatar.gesture) return;
+  const duration = gestureDuration(avatar.gesture);
+  if (!duration) {
+    avatar.gesture = "";
+    avatar.gestureT = 0;
+    avatar.gestureBlend = 0;
+    return;
+  }
+  avatar.gestureT += dt / duration;
+  if (avatar.gestureT >= 1) {
+    avatar.gesture = "";
+    avatar.gestureT = 0;
+    avatar.gestureBlend = 0;
+  }
+}
+
 function beginWalk(x, y) {
   avatar.targetX = x;
   avatar.targetY = y;
@@ -668,6 +704,11 @@ function step(dt) {
       avatar.mode = "idle";
       avatar.idleTimer = 0;
       avatar.walkPhase = 0;
+      // He arrived at something on the floor: bend and take it.
+      if (avatar.reachOnArrival) {
+        avatar.reachOnArrival = false;
+        startGesture("reach");
+      }
       // a held expression (e.g. /emote) outranks the idle neutral face
       if (avatar.time > avatar.manualUntil && avatar.expressionHold <= 0) setExpression("neutral");
       updateStatusUI();
@@ -691,6 +732,7 @@ function step(dt) {
   // landed, and it drives its own pose blend.
   stepScavenge(dt);
   stepChestWalk();
+  stepGestures(dt);
 
   // Gaze runs last: the head bone has moved by now, and the next `render()`
   // turns the smoothed aim point into a pupil offset.
@@ -1439,7 +1481,14 @@ function installDebugSurface() {
     settleExpression: settleExpression,
     speak: speak,
     /** Motion state: `mode` turns "waving" on, `wavePhase` proves it advances. */
-    anim: () => ({ mode: avatar.mode, wavePhase: avatar.wavePhase, time: avatar.time }),
+    anim: () => ({
+      mode: avatar.mode,
+      wavePhase: avatar.wavePhase,
+      time: avatar.time,
+      gesture: avatar.gesture,
+      gestureT: round(avatar.gestureT, 3),
+    }),
+    gesture: (name) => startGesture(name, { restart: true }),
     hideSpeech: hideSpeech,
     /** Open the bubble's quick-reply box (CDP tests can drive it from here). */
     openReply: () => openReply(),
@@ -1843,12 +1892,21 @@ async function init() {
       // reason he does not stand at the pod's skirt and wait.
       avatar.manualMoves += 1;
       endChestWalk();
+      // Arriving is where the reach goes: he bends, takes it, straightens up.
+      avatar.reachOnArrival = true;
       beginWalk(stand.x, stand.y);
     }, Math.max(240, landAt + 240));
   }).catch((err) => console.error("[avatar] chest-withdraw listener failed:", err));
 
     for (const name of ["entity-spawned", "entity-updated", "entity-removed"]) {
-    listen(name, () => {
+    listen(name, (event) => {
+      const payload = event && event.payload ? event.payload : event || {};
+      // `resting` is the prop's own word for "the work is over, I am about to go":
+      // the avatar answers with the packing-up gesture. Any tool that adopts the
+      // state gets the performance for free — that is the mining plan.
+      if (name === "entity-updated" && String(payload.state || "") === "resting") {
+        startGesture("pack-up");
+      }
       markDirty();
       // The card is a view of the same store; a pod moved by a plugin or an agent
       // should show up there without waiting for the two-second poll.
