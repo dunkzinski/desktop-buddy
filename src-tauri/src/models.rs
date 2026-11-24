@@ -391,6 +391,34 @@ pub fn validate_rig(rig: &Value) -> Result<(usize, usize), String> {
                         part.get("id").and_then(Value::as_str).unwrap_or("?")
                     ));
                 }
+                // A polygon is geometry, so it has to carry some: three points
+                // minimum, each a pair of finite numbers. A `poly` with an empty
+                // or malformed `points` draws nothing and looks like a bug in the
+                // generator rather than in the rig.
+                if part.get("shape").and_then(Value::as_str) == Some("poly") {
+                    let name = part.get("id").and_then(Value::as_str).unwrap_or("?");
+                    let points = part
+                        .get("points")
+                        .and_then(Value::as_array)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    if points.len() < 3 {
+                        return Err(format!(
+                            "poly part {name:?} on bone {id:?} needs at least 3 `points`"
+                        ));
+                    }
+                    for point in points {
+                        let pair = point.as_array().map(Vec::as_slice).unwrap_or(&[]);
+                        if pair.len() != 2
+                            || !pair[0].as_f64().is_some_and(f64::is_finite)
+                            || !pair[1].as_f64().is_some_and(f64::is_finite)
+                        {
+                            return Err(format!(
+                                "poly part {name:?} on bone {id:?} has a bad point {point}"
+                            ));
+                        }
+                    }
+                }
                 parts += 1;
             }
         }

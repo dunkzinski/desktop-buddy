@@ -55,6 +55,16 @@ pub struct Attachment {
     pub flip: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation: Option<f64>,
+    /// Where, in the parent's frame: absolute stage coordinates for a `world`
+    /// parent (so a summoned chest stays where it was put), or a nudge from a
+    /// socket otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<[f64; 2]>,
+    /// Fit, as a multiplier of the parent's scale. A rod is twice the size of the
+    /// pod it goes into; without this it would be drawn at gremlin scale inside a
+    /// chest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
 }
 
 impl Attachment {
@@ -64,6 +74,20 @@ impl Attachment {
             socket: socket.to_string(),
             flip: false,
             rotation: None,
+            offset: None,
+            scale: None,
+        }
+    }
+
+    /// A prop standing at an absolute point on the stage.
+    pub fn world(x: f64, y: f64) -> Self {
+        Self {
+            parent: "world".to_string(),
+            socket: "stage_ground".to_string(),
+            flip: false,
+            rotation: None,
+            offset: Some([x, y]),
+            scale: None,
         }
     }
 
@@ -81,10 +105,15 @@ impl Attachment {
         let parent = self.parent.trim();
         match parent {
             "avatar" | "stage" => {}
+            "world" => {
+                if self.offset.is_none() {
+                    return Err("a `world` attachment needs an `offset` [x, y]".to_string());
+                }
+            }
             other => {
                 let Some(id) = other.strip_prefix("entity:") else {
                     return Err(format!(
-                        "attachment parent {other:?} must be `avatar`, `stage` or `entity:<id>`"
+                        "attachment parent {other:?} must be `avatar`, `stage`, `world` or `entity:<id>`"
                     ));
                 };
                 if id.trim().is_empty() {
@@ -95,6 +124,16 @@ impl Attachment {
         if let Some(rotation) = self.rotation {
             if !rotation.is_finite() {
                 return Err("attachment rotation must be a finite number".to_string());
+            }
+        }
+        if let Some([x, y]) = self.offset {
+            if !x.is_finite() || !y.is_finite() {
+                return Err("attachment offset must be two finite numbers".to_string());
+            }
+        }
+        if let Some(scale) = self.scale {
+            if !scale.is_finite() || scale <= 0.0 || scale > 20.0 {
+                return Err("attachment scale must be a positive number (max 20)".to_string());
             }
         }
         Ok(())
@@ -270,6 +309,38 @@ impl EntityStore {
         log::info!("entities: restored {} from {}", self.entities.len(), path.display());
     }
 
+    /// An entity's state, without rendering it (and without needing `&mut`).
+    pub fn state_of(&self, id: &str) -> Option<&str> {
+        self.entities.get(id).map(|entity| entity.state.as_str())
+    }
+
+    /// The entities living inside `id` — those attached to `entity:<id>`.
+    ///
+    /// Slots are *derived* from attachments rather than stored in a list: one
+    /// source of truth, so a container cannot claim to hold things that are not
+    /// actually inside it. Sorted by id so a reply is stable across calls.
+    pub fn contents_of(&self, id: &str) -> Vec<&Entity> {
+        let mut inside: Vec<&Entity> = self
+            .entities
+            .values()
+            .filter(|entity| entity.attach.as_ref().and_then(Attachment::parent_entity) == Some(id))
+            .collect();
+        inside.sort_by(|a, b| a.id.cmp(&b.id));
+        inside
+    }
+
+    /// How many slots the container's definition allows (0 for a non-container).
+    pub fn capacity_of(&self, id: &str) -> usize {
+        let Some(entity) = self.entities.get(id) else {
+            return 0;
+        };
+        entity
+            .traits
+            .get("capacity")
+            .map(|value| value.max(0.0) as usize)
+            .unwrap_or(0)
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -350,6 +421,8 @@ impl EntityStore {
             .traits
             .unwrap_or_else(|| gen::traits(def, seed));
         let now = crate::plugins::epoch_ms();
+        // Resolved before the struct literal: `state` is moved into it below.
+        let initial_clip = Self::clip_for_state(def, &state);
         let entity = Entity {
             id,
             def: def.id.to_string(),
@@ -358,7 +431,11 @@ impl EntityStore {
             traits,
             state,
             state_since_ms: now,
-            anim: None,
+            anim: initial_clip.map(|clip| EntityAnim {
+                clip: clip.to_string(),
+                started_ms: now,
+                speed: 1.0,
+            }),
             attach,
             visible: true,
             owner: request.owner.map(|owner| owner.trim().to_string()).filter(|owner| !owner.is_empty()),
@@ -369,7 +446,18 @@ impl EntityStore {
         Ok(SpawnOutcome { entity, created: true })
     }
 
-    /// Apply a patch. `actor` is the calling plugin id, or `None` for the host,
+    
+/// A state whose name is a clip plays that clip.
+///
+/// Derived on the **host**, not on the page: `GET /entities` is then the whole
+/// truth about what an entity looks like, and a caller that only says
+/// `{"state":"open"}` gets the bloom without knowing a clip name. A state that
+/// is not a clip leaves the prop in its rest pose.
+fn clip_for_state(def: &defs::PropDef, state: &str) -> Option<&'static str> {
+    def.animations.iter().find(|clip| **clip == state).copied()
+}
+
+/// Apply a patch. `actor` is the calling plugin id, or `None` for the host,
     /// the user or an HTTP caller — those outrank every plugin.
     pub fn update(
         &mut self,
@@ -445,10 +533,12 @@ impl EntityStore {
             .get_mut(id)
             .ok_or_else(|| format!("no entity {id:?}"))?;
 
+        let mut state_changed = false;
         if let Some(state) = state {
             if entity.state != state {
                 entity.state = state;
                 entity.state_since_ms = crate::plugins::epoch_ms();
+                state_changed = true;
             }
         }
 
@@ -462,7 +552,22 @@ impl EntityStore {
             }
             Some(None) => entity.anim = None,
             None => {
-                if let Some(speed) = patch.speed {
+                // No explicit clip: a state that names a clip becomes that clip,
+                // so a phase change animates itself. Re-setting the same state
+                // does not restart the clip (`state_changed` guards that).
+                let derived = state_changed
+                    .then(|| {
+                        defs::find(&entity.def)
+                            .and_then(|def| Self::clip_for_state(def, &entity.state))
+                    })
+                    .flatten();
+                if let Some(clip) = derived {
+                    entity.anim = Some(EntityAnim {
+                        clip: clip.to_string(),
+                        started_ms: crate::plugins::epoch_ms(),
+                        speed: 1.0,
+                    });
+                } else if let Some(speed) = patch.speed {
                     if let Some(anim) = entity.anim.as_mut() {
                         anim.speed = speed.clamp(0.1, 8.0);
                     }
@@ -815,7 +920,8 @@ mod tests {
                     parent: "somewhere".to_string(),
                     socket: "hand_primary".to_string(),
                     flip: false,
-                    rotation: None,
+                    rotation: None, offset: None,
+                    scale: None,
                 }),
                 ..Default::default()
             })
@@ -827,7 +933,8 @@ mod tests {
                     parent: "avatar".to_string(),
                     socket: "   ".to_string(),
                     flip: false,
-                    rotation: None,
+                    rotation: None, offset: None,
+                    scale: None,
                 }),
                 ..Default::default()
             })
@@ -957,6 +1064,8 @@ mod tests {
                         socket: "lamp".to_string(),
                         flip: false,
                         rotation: None,
+                        offset: None,
+                        scale: None,
                     }),
                     ..Default::default()
                 },
@@ -973,6 +1082,8 @@ mod tests {
                     socket: "head_helmet".to_string(),
                     flip: false,
                     rotation: None,
+                    offset: None,
+                    scale: None,
                 }),
                 ..Default::default()
             },
@@ -989,6 +1100,8 @@ mod tests {
                     socket: "lamp".to_string(),
                     flip: false,
                     rotation: None,
+                    offset: None,
+                    scale: None,
                 }),
                 ..Default::default()
             },
@@ -1011,6 +1124,8 @@ mod tests {
                         socket: "lamp".to_string(),
                         flip: false,
                         rotation: None,
+                        offset: None,
+                        scale: None,
                     }),
                     ..Default::default()
                 },

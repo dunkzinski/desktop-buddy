@@ -380,6 +380,13 @@ fn router(api: ApiCtx) -> Router {
         .route("/entities/spawn", post(spawn_entity))
         .route("/entities/update", post(update_entity))
         .route("/entities/remove", post(remove_entity))
+        .route("/chest", get(chest_status))
+        .route("/chest/summon", post(chest_summon))
+        .route("/chest/open", post(chest_open))
+        .route("/chest/close", post(chest_close))
+        .route("/chest/dismiss", post(chest_dismiss))
+        .route("/chest/put", post(chest_put))
+        .route("/chest/take", post(chest_take))
         .route("/props", get(list_props))
         .route("/import", post(import_asset))
         .route("/parts", get(get_parts))
@@ -1366,6 +1373,107 @@ async fn remove_entity(
         json!({ "id": removed.0.id, "revision": removed.1 }),
     );
     Ok(Json(json!({ "ok": true, "revision": removed.1, "id": removed.0.id })))
+}
+
+/* ------------------------------------------------------------------ *
+ * chest (one pod on the stage, at an absolute anchor)
+ * ------------------------------------------------------------------ */
+
+/// Run a chest mutation against the store, then publish its events **after** the
+/// lock is gone (a listener that reads `GET /chest` must not deadlock).
+fn apply_chest(
+    api: &ApiCtx,
+    apply: impl FnOnce(&mut crate::entities::store::EntityStore) -> Result<crate::entities::ChestApplied, String>,
+) -> Result<Json<Value>, ApiError> {
+    let (applied, revision) = crate::entities::commit(apply).map_err(ApiError::bad_request)?;
+    for (event, payload) in &applied.events {
+        emit_entity(api, event, payload.clone());
+    }
+    let mut body = applied.body;
+    if let Some(object) = body.as_object_mut() {
+        object.insert("revision".to_string(), json!(revision));
+    }
+    Ok(Json(body))
+}
+
+/// `GET /chest` — state, slots used, and what is inside.
+async fn chest_status() -> Json<Value> {
+    let (view, _revision) = crate::entities::commit(|store| Ok(crate::entities::chest::view(store)))
+        .unwrap_or_else(|err| {
+            log::warn!("chest: {err}");
+            (json!({ "exists": false }), 0)
+        });
+    Json(json!({ "ok": true, "chest": view }))
+}
+
+/// `POST /chest/summon` — bring the pod to the stage beside the avatar (or to an
+/// explicit `at` point), spawn it the first time.
+async fn chest_summon(
+    State(api): State<ApiCtx>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let at = body
+        .get("at")
+        .and_then(Value::as_array)
+        .and_then(|pair| Some((pair.first()?.as_f64()?, pair.get(1)?.as_f64()?)));
+    let anchor = match at {
+        Some((x, y)) => [x, y],
+        None => {
+            // Beside the gremlin, on its right, a little below its feet: where a
+            // helper would put something down within reach.
+            let guard = lock_or_recover(&api.shared.avatar);
+            [guard.position.0 + 110.0, guard.position.1 + 62.0]
+        }
+    };
+    let seed = body
+        .get("seed")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| (crate::plugins::epoch_ms() / 1000) & 0xFFFF_FFFF);
+    apply_chest(&api, |store| crate::entities::chest::summon(store, seed, anchor))
+}
+
+async fn chest_open(State(api): State<ApiCtx>) -> Result<Json<Value>, ApiError> {
+    apply_chest(&api, crate::entities::chest::open)
+}
+
+async fn chest_close(State(api): State<ApiCtx>) -> Result<Json<Value>, ApiError> {
+    apply_chest(&api, crate::entities::chest::close)
+}
+
+async fn chest_dismiss(
+    State(api): State<ApiCtx>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
+    apply_chest(&api, move |store| crate::entities::chest::dismiss(store, force))
+}
+
+async fn chest_put(
+    State(api): State<ApiCtx>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ApiError::bad_request("`id` is required"))?;
+    apply_chest(&api, move |store| crate::entities::chest::put(store, &id))
+}
+
+async fn chest_take(
+    State(api): State<ApiCtx>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ApiError::bad_request("`id` is required"))?;
+    apply_chest(&api, move |store| crate::entities::chest::take(store, &id))
 }
 
 async fn switch_model(

@@ -532,7 +532,7 @@ cd ../.. && python tools/verify_docs.py
 | **0 — seams, no behaviour change** ✅ | `rig.js` rig-ctx extraction + `computeWorldInto`; `sockets.rs` + `LoadedModel.sockets` + `GET /sockets`; `sockets.json` sidecar loading | socket resolution on `xenomorph-7` (tentacles, no arms), a generated-shape rig (heuristic chain), a legs-named-like-arms stub; a sweep over every shipped `models/*/model.json` asserting `hand_primary` resolves; A/B `__avatarDebug.snapshot()` + screenshot over CDP proves the extraction changed nothing |
 | **1 — entity store + one prop** ✅ | `entities/{defs,gen,rng,store}.rs`; persistence, caps, ownership; `fishing_rod` + `loot_bag` builders; `GET/POST /entities*`, `GET /props`; `entities.js` + renderer merge | store unit tests (cap refusal, owner scoping, save/restore round-trip, dangling attachment); determinism test (same seed ⇒ identical rig); variety test ≥60 distinct shape tuples per 100 seeds; `validate_rig` on every generated prop; live: spawn a rod on `hand_primary`, screenshot, drag the avatar and watch it follow |
 | **2 — ABI + survival rod** ✅ | `host_entities` in `build_linker`; guest `host.rs` wrapper + thread-local recorder; guest `props.rs`; fishing state→rod wiring | guest tests assert the exact call sequence (one spawn, then updates in phase order, no spawn on cancel); live: cast with watcher off, screenshots at waiting/biting/reeling; `GET /entities` proves state transitions |
-| **3 — the chest** | `chest` def, `shape:"rect"`, slots, `appear/open/idle_open/close/vanish` clips; `summon/open/close/dismiss/put/take` routes; summon anchor (flip + clamp to monitor); `dismiss_after_ms`; the walk-to choreography + `avatar.activity` lock; **seeded decorative loot** (5–8 items, no economy); chest card (with `wireRegions` entry) | capacity/slot allocation; put↔take leaves bag counts and entity list consistent; interior items draw under the lid and vanish when closed; dismiss refuses while occupied (409 names slots) and `force:true` parking everything on `stage_ground`; restart mid-`opening` restores `closed`; a drag mid-walk stands the walk down without teleporting; a missed `chest-summoned` recovers within ~2 s; the same chest re-summons with the same seed and its contents |
+| **3 — the chest** ✅ | `chest` def, `shape:"rect"`, slots, `appear/open/idle_open/close/vanish` clips; `summon/open/close/dismiss/put/take` routes; summon anchor (flip + clamp to monitor); `dismiss_after_ms`; the walk-to choreography + `avatar.activity` lock; **seeded decorative loot** (5–8 items, no economy); chest card (with `wireRegions` entry) | capacity/slot allocation; put↔take leaves bag counts and entity list consistent; interior items draw under the lid and vanish when closed; dismiss refuses while occupied (409 names slots) and `force:true` parking everything on `stage_ground`; restart mid-`opening` restores `closed`; a drag mid-walk stands the walk down without teleporting; a missed `chest-summoned` recovers within ~2 s; the same chest re-summons with the same seed and its contents |
 | **4 — scavenge bag + loot→entities** | `loot_bag` def, start/stow wiring, loot that yields a tool creates a seeded entity | 30 s live run with screenshots at dig + carry; a looted tool survives restart with the same seed/params; bag and chest never both claim one item |
 | **5 — mining-ready hardening** | nested sockets + depth/cycle guard; `accepts` validation; metamorphosis generator writes explicit `sockets`; `head_helmet`/`hand_secondary` verified on generated rigs | lantern-on-helmet-on-avatar resolves; a self-referential attach is refused at spawn with a 400; resolution stays under ~1 ms for a 3-deep chain |
 | **6 — docs + MCP** | `API.md`, `ARCHITECTURE.md`, `PLUGINS.md` (ABI table + import), `MODEL_FORMAT.md` (sockets, `rect`), `CONFIGURATION.md` if a key is added; MCP tools + the `expected 14` route assertion | `verify_docs.py` green; MCP tool list updated deliberately (the count assertion is a doc gate) |
@@ -768,3 +768,68 @@ A sweep test asserts, for every shipped model, that a derived hand grip lands
 
 Still open, deliberately: `attach.flip` is not rendered; the bag is not a prop yet
 (it is the next activity, not this phase); the chest is Phase 3.
+
+---
+
+## 10. Phase 3 — landed: the pod
+
+The brief was "more whimsical than a chest". The answer is a **seed-pod whose lid
+is a flower**: a faceted polygon shell (5–6 sides, three facet styles, an optional
+face, feet, a charm) with a rosette of petals hinged at the rim. Closed, the blades
+meet in the middle and the silhouette reads as a die; open, each blade swings 180°
+about its own bone and lies flat, and the lit well inside is where your things are.
+The "d12" idea survives as the shell; the whimsy is that it is a creature you keep
+things in — and it breathes: the appear/close clips twitch the blades with a little
+seeded jitter, because a perfectly synchronised rosette reads as a machine part.
+
+| File | What |
+|---|---|
+| `src-tauri/src/entities/gen.rs::chest` | the generator: shell, facets, well, face, feet, petals, four clips, three sockets |
+| `src-tauri/src/entities/defs.rs::CHEST` | `dormant`/`closed`/`open`, clips `appear`/`open`/`close`/`vanish`, sockets `chest_interior`/`chest_lid`/`chest_side` |
+| `src-tauri/src/entities/chest.rs` | the lifecycle: summon / open / close / dismiss / put / take, slots, refusals, 8 tests |
+| `src-tauri/src/api.rs` | the seven routes, events emitted after the store lock |
+| `ui/js/renderer.js` · `rig.js` | the **`poly` shape**: `points` in rig units, bbox cached in a `WeakMap` (never written back into the rig JSON) |
+| `ui/js/entities.js` | `world` anchors, `attach.offset`, `attach.scale`, and one clock for every entity |
+
+### Three primitives, and why each was necessary
+
+1. **`poly` parts.** An ellipse stack can look like a potato; it cannot look like a
+   polyhedron. `points` are geometry, `size` is the bbox so bounds/hit-tests/editor
+   keep working, and `validate_rig` refuses a `poly` with fewer than three finite
+   points — a silent empty shape is the worst failure mode for a generator.
+2. **`world` anchors** (`attach.parent: "world"` + `offset`). `stage` follows the
+   avatar; a summoned pod must not. This is what lets the gremlin walk to it later,
+   and what makes `dismiss` → `summon` put it somewhere new.
+3. **`attach.scale`.** Contents are drawn at 45% while inside, so a rod sits *in*
+   the pod instead of through it.
+
+### Bugs the build found (all real, all fixed)
+
+| Symptom | Cause |
+|---|---|
+| every entity clip stuck on its first frame (petals would not splay, the rod never moved) | `stepEntities()` was handed the page's **relative** frame clock while clip start times are **epoch ms**; `t` was hugely negative and clamped to 0. Entities now use `Date.now()` for clip timing and `lastFetch` too — that one was also refetching every frame |
+| the rosette read as a pinwheel | the petal hinge was `θ + π` instead of `θ + π/2`: rotating a bone by `a` sends local +y to `(-sin a, cos a)`, so "inward" is a quarter turn, not a half |
+| `open` worked on a dismissed pod; `summon` refused to move a closed one | states were doing double duty as animations. States are now what the pod *is* (`dormant`/`closed`/`open`), clips are what it is *doing*, and an **open** pod is never teleported by a summon |
+| contents drawn at full size through the pod | no per-attachment fit — `attach.scale` |
+| the page kept serving old JS after an edit | `frontendDist` is **embedded into the binary**: a `ui/js` change needs `cargo build`, not a restart. This cost the most time of anything here |
+
+### Verification (what was actually run)
+
+| Check | Result |
+|---|---|
+| `cargo test --lib entities::` | 45 passed (8 chest: singleton summon, move-vs-leave-alone, open reveals / close hides, closed refuses put, capacity refusal, take lands beside, dismiss names slots and force drops them) |
+| variety | 100 seeds produce ≥60 distinct structures (petal count, facet style, face, feet, charm, radius) |
+| `validate_rig` | every generated pod is a rig the loader accepts, with its four advertised clips |
+| Live: `summon` | created, `closed`, capacity 7, anchor = avatar + (110, 62) |
+| Live: `open` → `put survival:rod` | contents `1 / 7`, rod attached at `chest_interior`, scale 0.45, drawn inside the pod |
+| Live: `close` → `dismiss` | 400 naming `survival:rod`; `take` → rod back on the stage at `world`, `dismiss` → `dormant` |
+| Live: re-`summon` | the same pod returns at the new anchor, `created: false` |
+
+### Deferred, deliberately
+
+The **walk-to choreography** (gremlin walks over before it opens) and the **chest
+card** (a panel with the slots, plus a `wireRegions` entry so the pod is
+clickable) are the next slice; they are page work and touch movement, so they get
+their own change. Also deferred: **seeded decorative loot** on first summon, and a
+real `vanish` animation (a dismiss is currently instant — hiding is `visible:
+false`, there is no scheduler to run the clip and then hide).

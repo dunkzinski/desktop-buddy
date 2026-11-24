@@ -1969,6 +1969,11 @@ unknown routes are **404**.
 | POST | `/entities/update` | move / re-state / attach / detach a prop |
 | POST | `/entities/remove` | delete a prop, detaching its children |
 | GET | `/props` | prop catalogue (defs, states, clips, grip sockets) |
+| GET | `/chest` | the pod: state, slots, contents |
+| POST | `/chest/summon` | spawn or bring back the pod at an anchor (`at`, or beside the avatar) |
+| POST | `/chest/open` · `/chest/close` | splay the petals and reveal contents, or fold them and hide them |
+| POST | `/chest/dismiss` | send it away; refuses while occupied unless `force` drops the contents on the stage |
+| POST | `/chest/put` · `/chest/take` | move an entity into a slot, or out onto the stage |
 | POST | `/import` | import rig or image |
 | GET | `/parts` | parts + tags + variants + runtime patches |
 | POST | `/part` | patch parts by tag/id |
@@ -2256,6 +2261,39 @@ Frames: `entity-spawned` / `entity-updated` / `entity-removed` carry only ids
 to one request per burst, with a 2 s reconcile so a dropped frame cannot leave a
 stale prop on screen. They are not watcher-routed (no model turn is spent on a rod
 being equipped), so they are outside the routed-frame check in `verify_docs.py`.
+
+### `/chest` — one pod, blooming
+
+The chest is an entity, not a subsystem: same store, same events, same ownership.
+Three things make it a *chest*:
+
+* **It is a singleton** (`id: "chest"`), so `summon` is idempotent by construction
+  and a restart re-opens the same pod rather than growing a second one.
+* **Contents are derived** from attachments (`entity:chest` at `chest_interior`),
+  not stored in a slot list — so `GET /chest` cannot disagree with what is really
+  inside, and a removed pod can never leave a phantom inventory behind.
+* **It stands at an absolute anchor** (`attach.parent: "world"` with an `offset`).
+  `stage` follows the avatar; `world` does not, which is what lets the gremlin
+  walk over to it.
+
+`entities/chest.rs` holds the lifecycle and its refusals; `api.rs` only adapts
+requests to it and emits `chest-summoned` / `chest-opened` / `chest-closed` /
+`chest-put` / `chest-took` / `chest-dismissed` **after** the store lock is gone.
+
+Its look is generated like a prop's (`entities/gen.rs::chest`): a faceted polygon
+shell — five or six sides, three facet styles, optional face, feet, charm — with a
+rosette of petals hinged at the rim. Closed, the blades meet in the middle and the
+silhouette reads as a die; open, each blade swings 180° about its own bone and
+lies flat, and the well inside is lit. `poly` parts (`points` in rig units) are
+what make a faceted shell possible; ellipses alone cannot look like a polyhedron.
+
+Two rules worth keeping:
+
+* **A state that names a clip plays that clip**, derived on the host (`store::
+  clip_for_state`) on spawn *and* on update — so `{"state":"open"}` is the whole
+  protocol, and `GET /entities` is the whole truth.
+* **Fit belongs to the attachment** (`attach.scale`): an item put into a pod is
+  drawn at 45% of its own scale rather than at gremlin scale.
 
 ### `/parts`, `/part`, `/mouth`
 

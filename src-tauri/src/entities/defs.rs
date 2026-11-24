@@ -118,6 +118,31 @@ pub const FISHING_ROD: PropDef = PropDef {
     summary: "A rod, a line and a bobber. Varies in length, wood and tackle.",
 };
 
+/// A **chest that is not a chest**: a faceted seed-pod, five or six petals
+/// folded over the d12 face, that blooms open when you ask it to.
+///
+/// The whimsy is structural, not decorative — the lid *is* the flower. Closed, a
+/// pentagon of blades meets in the middle and reads as a die; open, the blades
+/// splay flat and the pod's core is a lit well with your things in it. Everything
+/// else (petal count, facet style, a face, feet, moss, the palette) is seeded, so
+/// two pods on the same stage are visibly different objects that behave the same.
+pub const CHEST: PropDef = PropDef {
+    id: "chest",
+    label: "Curiosity pod",
+    category: PropCategory::Container,
+    tags: &["chest", "container", "storage", "pod"],
+    // What the pod *is*. The motion between these (appear / opening / closing /
+    // vanish) is a clip, not a state: there is no scheduler to move a state on
+    // when a 400 ms animation finishes, so a state named "appearing" would just
+    // linger and lie.
+    states: &["dormant", "closed", "open"],
+    default_state: "closed",
+    animations: &["appear", "open", "close", "vanish"],
+    own_sockets: &["chest_interior", "chest_lid", "chest_side"],
+    grips: &[("stage_ground", 0.0), ("world", 0.0)],
+    summary: "A seed-pod that blooms: faceted shell, petal lid, a lit well inside.",
+};
+
 /// The sack the scavenging run carries. Phase 1 ships the definition and the
 /// generator so the next activity needs no core change; nothing spawns it yet.
 pub const LOOT_BAG: PropDef = PropDef {
@@ -140,7 +165,7 @@ pub const LOOT_BAG: PropDef = PropDef {
 };
 
 /// Every prop this build knows.
-pub const PROPS: &[PropDef] = &[FISHING_ROD, LOOT_BAG];
+pub const PROPS: &[PropDef] = &[FISHING_ROD, LOOT_BAG, CHEST];
 
 pub fn find(id: &str) -> Option<&'static PropDef> {
     PROPS.iter().find(|def| def.id == id)

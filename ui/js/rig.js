@@ -429,7 +429,45 @@ export function computeWorld() {
 
 /* ---------- part geometry ---------- */
 
+/**
+ * Bounding box of a `poly` part, in the part's own units.
+ *
+ * Cached in a WeakMap rather than on the part: `serializeRig` writes parts back
+ * out, and a cached bbox in the JSON would leak into every saved model (and then
+ * into every diff).
+ */
+const polyBoxes = new WeakMap();
+
+export function polyBounds(part) {
+  const cached = polyBoxes.get(part);
+  if (cached) return cached;
+  const points = Array.isArray(part.points) ? part.points : [];
+  let minX = 0;
+  let minY = 0;
+  let maxX = 0;
+  let maxY = 0;
+  if (points.length) {
+    minX = maxX = num(points[0][0]);
+    minY = maxY = num(points[0][1]);
+    for (const point of points) {
+      const x = num(point[0]);
+      const y = num(point[1]);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  const box = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  polyBoxes.set(part, box);
+  return box;
+}
+
 export function partSize(part) {
+  if (part.shape === "poly" && Array.isArray(part.points)) {
+    const box = polyBounds(part);
+    return [box.w, box.h];
+  }
   if (Array.isArray(part.size)) return part.size;
   const img = part.image ? RT.images[part.image] : null;
   if (img && img.naturalWidth) return [img.naturalWidth, img.naturalHeight];
@@ -507,6 +545,10 @@ export function partLocalRect(part) {
   const hasImage = !!part.image || !!(part.variants && Object.keys(part.variants).length);
   if (hasImage || !part.shape) {
     return { x: -w * px, y: -h * py, w, h };
+  }
+  if (part.shape === "poly" && Array.isArray(part.points)) {
+    // Points are absolute in part space; the box is exactly their extent.
+    return polyBounds(part);
   }
   if (part.shape === "capsule") {
     // Capsules are drawn from a round cap at the pivot to `w - h/2`.

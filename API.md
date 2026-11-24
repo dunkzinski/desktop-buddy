@@ -499,6 +499,67 @@ rather than leaving them pointing at a missing id.
 The catalogue: id, label, category, tags, states, default state, clips, own
 sockets and `summary`, for UIs and for agents deciding what to spawn.
 
+## The chest (a pod that blooms)
+
+One pod on the stage at a time, id `chest`. It is an entity like any other — same
+store, same events, same ownership rules — with three rules of its own: it is a
+**singleton**, its **contents are derived** from attachments rather than kept in a
+list, and it stands at an **absolute anchor** (`parent: "world"`), so it stays put
+while the gremlin walks around.
+
+Grab a pod and see it: `POST /chest/summon` → `POST /chest/open` → `POST
+/chest/put {"id":"survival:rod"}` → `POST /chest/close` → `POST /chest/take` →
+`POST /chest/dismiss`.
+
+#### `GET /chest`
+
+```json
+{ "ok": true,
+  "chest": { "id": "chest", "exists": true, "state": "open",
+             "capacity": 7, "occupied": 1, "free": 6,
+             "contents": [{ "id": "survival:rod", "def": "fishing_rod",
+                            "state": "stowed", "visible": true }],
+             "entity": { … the entity, rig included … } } }
+```
+
+`state` is what it *is* — `dormant`, `closed` or `open`. The motion between them
+(`appear`, `open`, `close`, `vanish`) is a clip, not a state: nothing has to move
+a state on when a 400 ms animation ends, so a state called "appearing" would only
+linger and lie.
+
+#### `POST /chest/summon`
+
+Body: `{ "seed": 2024, "at": [x, y] }`, both optional. Without `at` it lands
+beside the avatar (`+110, +62`); the seed decides the look and the slot count
+(5–8), and is remembered, so the same pod comes back.
+
+* no chest → spawns it, state `closed`, playing `appear`
+* `closed` → moves it to the new anchor and plays `appear` again
+* `open` → **left alone** (`changed: false`): something is being put into it, and
+  yanking a chest to a new spot mid-use is how a user loses a thing
+* `dormant` → brought back, state `closed`
+
+#### `POST /chest/open` / `POST /chest/close`
+
+`open` splays the petals, makes the contents visible and returns the new view;
+opening an already-open pod is a 200 with `changed: false`. A `dormant` pod is a
+400 — summon it first. `close` folds the petals and hides the contents again.
+
+#### `POST /chest/dismiss`
+
+Body: `{ "force": false }`. Refused with a 400 that **names the slots** while
+anything is inside. `force: true` lays the contents out on the stage beside the
+pod (nothing is ever deleted) and then dismisses it — the pod goes `dormant` and
+invisible, and `summon` brings the same one back.
+
+#### `POST /chest/put` / `POST /chest/take`
+
+Body: `{ "id": "<entity>" }`. `put` requires an **open** pod and a free slot, and
+refuses with the count when full (`the chest is full (7 of 7 slots)`). The item is
+attached to `entity:chest` at `chest_interior`, fitted to 45% of its own scale so
+a rod sits *in* the pod rather than through it. `take` detaches it to `world`
+beside the pod, visible again.
+
 ### Posing individual joints
 
 #### `GET /joints`

@@ -626,7 +626,7 @@ function frame(now) {
     step(dt);
     // Props move with the avatar and run their own clips; this is also the
     // reconcile tick that recovers a missed `entity-*` frame.
-    stepEntities(now);
+    stepEntities();
     // `render()` refreshes RT.world (computeWorld) before drawing, so the bubble
     // can be re-anchored against this frame's head position instead of the 10 Hz
     // throttle it used to run on.

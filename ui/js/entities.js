@@ -114,7 +114,7 @@ export async function refresh() {
   } finally {
     inflight = false;
     dirty = false;
-    lastFetch = performance.now();
+    lastFetch = Date.now();
   }
 }
 
@@ -130,7 +130,20 @@ export function initEntities() {
  * property that keeps this module prop-agnostic: the rod has a `cast` state and a
  * `cast` clip, so `POST /entities/update {"state":"cast"}` is all a plugin needs.
  */
-export function stepEntities(nowMs) {
+/**
+ * Advance every entity's clock.
+ *
+ * `frameMs` is the page's frame clock (a relative `performance.now()`, which is
+ * what the avatar's own animation runs on). Clip start times come from the
+ * **host** and are epoch milliseconds, so the two must never be subtracted
+ * directly: doing that once made every entity clip sit on its first frame (`t`
+ * went hugely negative and clamped to 0) while the state names and `clip` fields
+ * all looked correct.
+ */
+export function stepEntities() {
+  // One clock for entities: the host's epoch milliseconds. `performance.now()`
+  // is the avatar's frame clock and is not comparable with `started_ms`.
+  const nowMs = Date.now();
   if (!inflight) {
     const due = dirty
       ? nowMs - lastFetch > REFRESH_DEBOUNCE_MS
@@ -210,9 +223,14 @@ function resolveRoot(id, slots, depth = 0) {
     if (!world) return null;
     base = { ...world, z: num(socket.z, 20) };
   } else if (attach.parent === "stage") {
-    // The stage is the ground under the avatar. The chest will own a real anchor
-    // in Phase 3; until then this is where a dropped prop lands.
+    // The stage is the ground under the avatar: where a dropped prop lands.
     base = { x: avatar.x, y: avatar.y + 62, rot: 0, scale: 1, z: 20 };
+  } else if (attach.parent === "world") {
+    // Absolute stage coordinates. This is what lets a summoned chest stay where
+    // it was put while the gremlin walks to it — `stage` would follow the avatar.
+    const at = Array.isArray(attach.offset) ? attach.offset : null;
+    if (!at) return null;
+    base = { x: num(at[0]), y: num(at[1]), rot: 0, scale: 1, z: 20 };
   } else if (typeof attach.parent === "string" && attach.parent.startsWith("entity:")) {
     const parentId = attach.parent.slice("entity:".length);
     const parentSlot = slots.get(parentId);
@@ -229,11 +247,17 @@ function resolveRoot(id, slots, depth = 0) {
   }
   if (!base) return null;
 
+  // A nudge in the parent's frame (a prop standing off to one side of a socket,
+  // or a `world` anchor's own point, which is already absolute and needs none).
+  const nudge = attach.parent === "world" ? [0, 0] : (Array.isArray(attach.offset) ? attach.offset : [0, 0]);
+
   slot.root = {
-    x: base.x,
-    y: base.y,
+    x: base.x + num(nudge[0], 0),
+    y: base.y + num(nudge[1], 0),
     rot: base.rot + num(attach.rotation, 0),
-    scale: base.scale,
+    // `scale` is a fit multiplier: a rod put inside a pod is drawn at the pod's
+    // scale, not at gremlin scale.
+    scale: base.scale * num(attach.scale, 1),
     z: base.z,
   };
   return slot.root;
@@ -295,6 +319,7 @@ export function entitySnapshot() {
       attach: entity.attach || null,
       visible: entity.visible !== false,
       bones: slot.entry.ctx.boneList.length,
+      pose: slot.entry.ctx.clips || null,
       root: root ? { x: round(root.x, 1), y: round(root.y, 1), rot: round(root.rot, 3) } : null,
     });
   }

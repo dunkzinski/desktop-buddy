@@ -157,6 +157,26 @@ function drawShape(part, w, h, px) {
     ctx.fill();
     return;
   }
+  if (part.shape === "poly" && Array.isArray(part.points) && part.points.length >= 3) {
+    // Points are in the part's own units (the matrix already scaled them), so a
+    // faceted pod is authored as geometry instead of a stack of ellipses.
+    const points = part.points;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(num(points[0][0]), num(points[0][1]));
+    for (let i = 1; i < points.length; i += 1) {
+      ctx.lineTo(num(points[i][0]), num(points[i][1]));
+    }
+    ctx.closePath();
+    ctx.fill();
+    if (part.stroke) {
+      ctx.strokeStyle = part.stroke;
+      ctx.lineWidth = num(part.stroke_width, 1);
+      ctx.lineJoin = "round";
+      ctx.stroke();
+    }
+    return;
+  }
   if (part.shape === "face") drawFace(w, h);
 }
 

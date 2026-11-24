@@ -19,12 +19,14 @@
 //! The host owns this layer. The survival guest owns the economy that pays for
 //! the props; `POST /entities/*` (or, from a guest, the ABI) is the seam.
 
+pub mod chest;
 pub mod defs;
 pub mod gen;
 pub mod guest;
 pub mod rng;
 pub mod store;
 
+pub use chest::{CHEST_ID, Applied as ChestApplied};
 pub use defs::{PropCategory, PropDef, PROPS};
 pub use store::{
     Attachment, Entity, EntityAnim, EntityStore, SpawnOutcome, SpawnRequest, UpdatePatch,
