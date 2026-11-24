@@ -991,6 +991,9 @@ fn report_state(
     if !x.is_finite() || !y.is_finite() || !tx.is_finite() || !ty.is_finite() {
         return Err("positions must be finite numbers".to_string());
     }
+    // The page is the only thing that knows where the gremlin is standing, and the
+    // chest needs that to put itself within reach when a tool is called for.
+    crate::entities::remember_avatar(position);
     if let Some(reported) = bounds {
         let reported = reported.sanitized();
         if reported.width() > 0.0 && reported.height() > 0.0 {

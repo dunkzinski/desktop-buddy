@@ -2394,11 +2394,22 @@ tool: the same rummage and the same throws as `find`, then the tool — on the s
 or straight into a socket. `find` searches the contents; `withdraw` supplies what
 you ask for, which is the whole point of a bottomless pod.
 
-It is **idempotent by id** (one gag per session, not one per cast), the tool gets
-no `expires_at` (it is not debris), and it **fails when the pod is absent or
-closed** — on purpose. The survival plugin asks the pod first and falls back to a
-plain `spawn`, so fishing never depends on furniture. That ordering is the design
-rule for every tool that comes next: the pod is the nice way, not the only way.
+It is **idempotent by id** and the tool gets no `expires_at` (it is not debris).
+
+**The pod comes when it is called for.** With no pod on the stage (or a dormant
+one) `withdraw` summons it *beside the gremlin* — `report_state` feeds
+`entities::remember_avatar` at 8 Hz, so the store always knows where he stands —
+then opens it. The entity store owns that one piece of stage geometry for exactly
+this reason: the page is the only thing that knows where the avatar is, and "put it
+next to him" cannot be answered from the prop store alone.
+
+The survival plugin therefore asks the pod for the rod on every cast and puts it
+**back in the pod** when the session ends — a landed fish, a lapsed bite, a cancel —
+so the next cast fishes it out again. Nothing is created for a cast that is not
+happening: the rod is fetched when the phase leaves `Idle`, not at boot, or a pod
+would pop in beside a gremlin who is only standing there. The `spawn` fallback
+remains for a host without the op (`ok:false` on the guest ABI), which is the rule
+for every tool that comes next.
 
 ### Picking the pod up
 

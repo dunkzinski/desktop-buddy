@@ -74,6 +74,20 @@ pub fn roster() -> (u64, Vec<serde_json::Value>) {
 ///
 /// Callers emit **after** this returns: the store lock must never be held across
 /// an event, or a listener that reads `GET /entities` deadlocks against it.
+/// Remember where the gremlin stands.
+///
+/// `report_state` calls this at 8 Hz, so it compares before it writes: while the
+/// gremlin is standing still this is one lock and no work, and only walking dirties
+/// anything. The chest reads it when it has to *appear* somewhere — "beside him"
+/// needs to know where he is, and the page is the only thing that knows.
+pub fn remember_avatar(at: (f64, f64)) {
+    let at = [at.0, at.1];
+    let mut store = store::lock();
+    if store.avatar() != Some(at) {
+        store.set_avatar(at);
+    }
+}
+
 pub fn commit<T>(apply: impl FnOnce(&mut EntityStore) -> Result<T, String>) -> Result<(T, u64), String> {
     let mut store = store::lock();
     let value = apply(&mut store)?;

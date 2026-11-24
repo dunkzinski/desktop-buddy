@@ -623,8 +623,7 @@ expires on a timer.
 #### `POST /chest/withdraw`
 
 Body: `{ "def": "fishing_rod", "id": "survival:rod", "socket": "stage_ground",
-"owner": "survival", "seed": 5 }` — only `def` is required. The pod must be
-**open**.
+"owner": "survival", "seed": 5 }` — only `def` is required.
 
 `find` searches what is *inside* the pod; `withdraw` asks the pod to **produce**
 something. That is the difference a bottomless pod makes: you rummage, junk comes
@@ -645,8 +644,15 @@ beats, same throws, same `sequence`:
 * **`socket`**: `stage_ground` (default) lays the tool beside the pod;
   `hand_primary` puts it straight into the paw. Anything else is an avatar socket.
 * **A tool never expires** — it is not debris, so no `expires_at`.
-* **No pod, or a closed one, is an error**, deliberately: callers fall back to
-  `POST /entities/spawn` and nothing about their feature depends on furniture.
+* **It brings the pod with it.** No pod (or a dormant one) and it is summoned
+  **beside the gremlin** — 110 px right, 62 px below, the same spot
+  `POST /chest/summon` uses — and opened; a closed pod is simply opened. That is
+  what makes `POST /fishing/cast` work on a bare stage: the pod pops in, unfolds,
+  and he rummages. It is announced as `chest-summoned`, so the page walks him over
+  and draws it.
+* **It refuses only when it cannot know where he stands** — the page reports the
+  gremlin's position 8 Hz, so this is a millisecond after boot, and the caller's
+  retry covers it.
 
 #### `POST /chest/tidy`
 

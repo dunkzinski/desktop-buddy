@@ -277,6 +277,10 @@ pub struct EntityStore {
     counter: u64,
     path: Option<PathBuf>,
     dirty: bool,
+    /// Where the gremlin is standing, so anything that has to *appear* somewhere
+    /// can appear next to it. Stage ephemera, not furniture: never written to
+    /// disk, because a remembered position from last week is a lie.
+    avatar: Option<[f64; 2]>,
 }
 
 impl EntityStore {
@@ -289,6 +293,7 @@ impl EntityStore {
             counter: 0,
             path,
             dirty: false,
+            avatar: None,
         };
         store.load();
         store
@@ -368,6 +373,17 @@ impl EntityStore {
             .get("capacity")
             .map(|value| value.max(0.0) as usize)
             .unwrap_or(0)
+    }
+
+    /// Remember where the gremlin stands. Called on every move, so a chest that
+    /// needs to appear "beside him" can be placed without asking the page.
+    pub fn set_avatar(&mut self, at: [f64; 2]) {
+        self.avatar = Some(at);
+    }
+
+    /// Where the gremlin last stood, if it has ever moved.
+    pub fn avatar(&self) -> Option<[f64; 2]> {
+        self.avatar
     }
 
     pub fn revision(&self) -> u64 {

@@ -135,13 +135,17 @@ fit).
   guest ever ships animation data.
 * **`withdraw` asks the curiosity pod to *produce* a tool**: a rummage first (one
   to three junk props thrown onto the stage), then the tool, on the stage or
-  straight into a `socket`. It is idempotent by id, and it **refuses when the pod
-  is absent or closed** — so a guest must keep its `spawn` fallback. `find` (search
-  the contents) lives on HTTP only; a guest that needs a tool wants `withdraw`.
+  straight into a `socket`. It is idempotent by id, and it **brings the pod with
+  it** — no pod, or a dormant one, is summoned beside the gremlin and opened, so a
+  guest never has to arrange furniture first. Keep the `spawn` fallback for a host
+  without the op (it answers `ok:false`). `find` (search the contents) lives on HTTP
+  only; a guest that needs a tool wants `withdraw`.
 * The `survival` plugin uses this for the fishing rod: `plugins/survival/src/props.rs`
-  first asks the pod (`withdraw`), then falls back to `spawn` if there is no pod;
-  it attaches the rod to `hand_primary` on a cast, walks it through
-  `waiting → biting → reeling`, and detaches it when the cast ends. With no entity
+  asks the pod (`withdraw`) on every cast and falls back to `spawn` if the host
+  refuses; it attaches the rod to `hand_primary`, walks it through
+  `waiting → biting → reeling`, and **removes it when the session ends** — the rod
+  goes back in the pod, so the next cast is a rummage again. Nothing is fetched for
+  a cast that is not happening. With no entity
   ABI the calls fail and fishing is unchanged — the prop is presentation, never a
   rule.
 

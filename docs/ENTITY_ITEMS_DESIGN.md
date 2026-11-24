@@ -990,13 +990,20 @@ point: rummage first — junk, thrown, one at a time — then the tool. The surv
 plugin now asks for its rod instead of spawning it, so the first cast of a session
 starts with the gremlin digging in its pod.
 
-Two rules keep it from becoming a dependency:
+Three rules make it a beat rather than a dependency:
 
-1. **Refuse when there is no pod.** A dismissed or closed pod returns an error, and
-   the plugin falls back to `spawn`. Fishing must never break because a piece of
-   furniture is elsewhere.
-2. **Idempotent by id.** The tool is created once; every later withdraw returns it.
-   One rummage per session, not one per cast.
+1. **The pod comes when it is called for.** Absent or dormant, `withdraw` summons it
+   beside the gremlin (110 px right, 62 px below) and opens it. The store learns
+   where he stands from `report_state` — the page is the only thing that knows.
+2. **The rod goes back in the pod.** At the end of a session — landed fish, lapsed
+   bite, cancel — the plugin removes the rod entity, so the next cast fishes it out
+   again. Not "stowed on a shelf": back in the pod.
+3. **Nothing is fetched for a cast that is not happening.** The rod is made when the
+   phase leaves `Idle`, never at boot, or a pod would pop in beside a gremlin who is
+   only standing there.
+
+And one for old hosts: if the op is refused outright, `spawn` still works, so
+fishing degrades to a rod in the hand with no theatre.
 
 The same shape serves mining later: `withdraw {def:"lantern", socket:"head_lamp"}`,
 `withdraw {def:"pickaxe", socket:"hand_primary"}` — no new host code, and the gag

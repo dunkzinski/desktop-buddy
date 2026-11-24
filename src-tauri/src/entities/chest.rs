@@ -825,18 +825,12 @@ pub fn withdraw(
     if def.id == defs::CHEST.id {
         return Err("the chest cannot produce a chest".to_string());
     }
-    if store.state_of(CHEST_ID).is_none() {
-        return Err("no chest on the stage — summon it before withdrawing a tool".to_string());
-    }
-    match chest_state(store, CHEST_ID).as_deref() {
-        Some("open") => {}
-        Some(state) => {
-            return Err(format!(
-                "the chest is {state} — open it before withdrawing a tool"
-            ))
-        }
-        None => return Err("no chest on the stage".to_string()),
-    }
+    let seed = seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos() as u64)
+            .unwrap_or(0x7EED_5EED)
+    });
     let id = id.unwrap_or(def.id).to_string();
     // Idempotent: the second ask for a rod returns the rod.
     if let Some(existing) = store.render_one(&id) {
@@ -850,17 +844,35 @@ pub fn withdraw(
         })));
     }
 
-    let seed = seed.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos() as u64)
-            .unwrap_or(0x7EED_5EED)
-    });
+    // Furniture first: a tool withdrawal **brings the pod** instead of failing on
+    // it. That is what makes "cast the line" work on a bare stage — the pod pops in
+    // beside the gremlin, unfolds, and he rummages.
+    let mut events: Vec<(&'static str, Value)> = Vec::new();
+    let absent = store.state_of(CHEST_ID).is_none();
+    let dormant = chest_state(store, CHEST_ID).as_deref() == Some("dormant");
+    if absent || dormant {
+        let Some([ax, ay]) = store.avatar() else {
+            return Err(
+                "the gremlin has not reported where it stands yet — try again in a moment"
+                    .to_string(),
+            );
+        };
+        // To its right and a little below its feet, where a helper would put
+        // something down within reach.
+        let summoned = summon(store, seed ^ 0x0C4E_57AB, [ax + 110.0, ay + 62.0])?;
+        events.extend(summoned.events);
+    }
+    if chest_state(store, CHEST_ID).as_deref() != Some("open") {
+        let opened = open(store)?;
+        events.extend(opened.events);
+    }
+
     let mut rng = Rng::new(seed ^ 0x7217_0DED_1234_5678);
 
     let started = now_ms() + FIRST_REVEAL_MS;
     let anchor = anchor_of(store);
-    let (duds, mut events, last_reveal) = spill_duds(store, &mut rng, anchor, started)?;
+    let (duds, spilled, last_reveal) = spill_duds(store, &mut rng, anchor, started)?;
+    events.extend(spilled);
     let item_at = last_reveal + REVEAL_STAGGER_MS - started;
 
     let socket = socket.unwrap_or(STAGE_SOCKET);
@@ -1359,15 +1371,45 @@ mod tests {
     }
 
     #[test]
-    fn withdraw_needs_an_open_pod() {
+    fn withdraw_opens_a_closed_pod_itself() {
         let mut store = store_with_chest();
+        store.set_avatar([900.0, 560.0]);
         let rod = defs::find("fishing_rod").expect("rod");
-        let err = withdraw(&mut store, rod, None, None, None, Some(1)).expect_err("closed");
-        assert!(err.contains("open"), "{err}");
+        // A closed pod is a lid, not a refusal: the tool comes out either way.
+        withdraw(&mut store, rod, None, None, None, Some(1)).expect("closed pod");
+        assert_eq!(chest_state(&store, CHEST_ID).as_deref(), Some("open"));
+    }
 
-        dismiss(&mut store, true).expect("dismiss");
-        let err = withdraw(&mut store, rod, None, None, None, Some(1)).expect_err("dormant");
-        assert!(err.contains("open") || err.contains("summon"), "{err}");
+    #[test]
+    fn withdraw_brings_the_pod_beside_the_gremlin() {
+        let mut store = EntityStore::new(None);
+        store.set_avatar([500.0, 400.0]);
+        let rod = defs::find("fishing_rod").expect("rod");
+        let applied =
+            withdraw(&mut store, rod, Some("survival:rod"), None, Some("survival"), Some(3))
+                .expect("withdraw on a bare stage");
+
+        // The pod came with it, within reach, and already unfolded.
+        let chest = store.render_one(CHEST_ID).expect("the pod came");
+        assert_eq!(chest["state"], json!("open"));
+        let offset = chest["attach"]["offset"].as_array().expect("offset");
+        assert!(offset[0].as_f64().unwrap() > 500.0, "to his right: {offset:?}");
+        assert!(offset[1].as_f64().unwrap() > 400.0, "a little below: {offset:?}");
+        // And the page is told, so it can walk over and draw it.
+        assert!(
+            applied.events.iter().any(|(event, _)| *event == "chest-summoned"),
+            "the summon must be announced"
+        );
+        assert!(store.render_one("survival:rod").is_some());
+    }
+
+    #[test]
+    fn withdraw_without_knowing_where_he_stands_refuses_instead_of_guessing() {
+        let mut store = EntityStore::new(None);
+        let rod = defs::find("fishing_rod").expect("rod");
+        let err = withdraw(&mut store, rod, None, None, None, Some(1)).expect_err("no position");
+        assert!(err.contains("where it stands"), "{err}");
+        assert!(store.render_one(CHEST_ID).is_none(), "and it stays away");
     }
 
     #[test]

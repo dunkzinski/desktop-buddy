@@ -1448,7 +1448,14 @@ impl Survival {
             return;
         }
 
+        // The rod is fetched when it is **wanted**, not when it is stowed: a rod
+        // for a cast that is not happening would drag the pod onto the stage for
+        // nothing, and that is the whole point of the pod appearing.
         if !self.rod_ready {
+            if desired == "stowed" {
+                self.rod_state = None;
+                return;
+            }
             if !props::ensure_rod() {
                 self.rod_retry_ms = now_ms.saturating_add(10_000);
                 return;
@@ -1457,6 +1464,15 @@ impl Survival {
         }
 
         let applied = if desired == "stowed" {
+            // The session is over, so the rod goes **back in the pod** — which is
+            // what lets the next cast fish it out again. `put_away` is left for a
+            // rod that was made but never raised.
+            if self.rod_state.as_deref().is_some_and(|state| state != "stowed") {
+                props::discard_rod();
+                self.rod_ready = false;
+                self.rod_state = None;
+                return;
+            }
             props::put_away()
         } else {
             props::hold(desired)
@@ -3573,13 +3589,19 @@ mod tests {
             json!("biting")
         );
 
-        // Let the window lapse: the fish is off, so the rod goes away.
+        // Let the window lapse: the fish is off, so the rod goes **back in the
+        // pod** — the entity is gone rather than stowed on a shelf, which is what
+        // makes the next cast a rummage again.
         advance_clock(5_000);
         state.tick(0.0).expect("tick");
+        assert!(
+            crate::host::entity_snapshot(props::ROD_ID).is_none(),
+            "the rod went back in the pod"
+        );
+        // ...and fishing it out again is the next cast's job.
+        state.cast().expect("cast");
         let rod = crate::host::entity_snapshot(props::ROD_ID).expect("rod");
-        assert_eq!(rod["state"], json!("stowed"));
-        assert_eq!(rod["visible"], json!(false));
-        assert!(rod["attach"].is_null(), "a stowed rod is not in a hand");
+        assert_eq!(rod["attach"]["socket"], json!("hand_primary"));
     }
 
     #[test]
@@ -3596,13 +3618,14 @@ mod tests {
         );
 
         state.cancel_fishing().expect("cancel");
-        let rod = crate::host::entity_snapshot(props::ROD_ID).expect("rod");
-        assert_eq!(rod["state"], json!("stowed"));
-        assert_eq!(rod["visible"], json!(false));
+        assert!(
+            crate::host::entity_snapshot(props::ROD_ID).is_none(),
+            "cancelling puts the rod back in the pod too"
+        );
     }
 
     #[test]
-    fn a_landed_fish_stows_the_rod_in_the_same_call() {
+    fn a_landed_fish_puts_the_rod_back_in_the_pod_in_the_same_call() {
         let mut state = angler();
         state.cast().expect("cast");
         wait_for_the_bite(&mut state);
@@ -3619,10 +3642,10 @@ mod tests {
         let payload = state.reel().expect("reel");
         assert_eq!(payload["caught"], json!(true), "{payload}");
 
-        let rod = crate::host::entity_snapshot(props::ROD_ID).expect("rod");
-        assert_eq!(rod["state"], json!("stowed"), "the catch stows the rod");
-        assert_eq!(rod["visible"], json!(false));
-        assert!(rod["attach"].is_null());
+        assert!(
+            crate::host::entity_snapshot(props::ROD_ID).is_none(),
+            "the catch puts the rod back in the pod"
+        );
     }
 
     #[test]
