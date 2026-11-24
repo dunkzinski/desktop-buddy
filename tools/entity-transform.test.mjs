@@ -247,6 +247,36 @@ test("a dangling socket still resolves to nothing, flipped or not", async () => 
   assert.equal(snap.entities[0].root, null);
 });
 
+/* ---------- cost: the chain is cheap, and here is the number ---------- */
+
+test("a 3-deep chain resolves far inside the frame budget", async () => {
+  // The design doc's Phase 5 claimed "~1 ms for a 3-deep chain" and nothing ever
+  // measured it. `entitySnapshot()` rebuilds the slot map on every call, so each
+  // iteration re-resolves the whole chain rather than reading the memo — this is
+  // the real path the frame loop takes once per reconcile.
+  const mod = await roster([
+    { id: "rod", def: "fishing_rod", state: "idle", rig: FIXTURE_RIG, attach: worldAttach([400, 300]) },
+    { id: "fish", def: "fish", state: "idle", rig: FIXTURE_RIG, attach: { parent: "entity:rod", socket: "line_end" } },
+    { id: "trinket", def: "trinket", state: "idle", rig: FIXTURE_RIG, attach: { parent: "entity:fish", socket: "line_end" } },
+  ]);
+
+  const runs = 100;
+  const started = performance.now();
+  for (let i = 0; i < runs; i += 1) {
+    const snap = mod.entitySnapshot();
+    const deepest = snap.entities.find((entry) => entry.id === "trinket");
+    assert.ok(deepest && deepest.root, "the deepest prop must resolve every run");
+  }
+  const elapsed = performance.now() - started;
+  console.log(
+    `3-deep chain: ${(elapsed / runs).toFixed(3)} ms per chain over ${runs} runs (${elapsed.toFixed(1)} ms total)`,
+  );
+  // Deliberately generous: this is a complexity guard, not a wall-clock budget,
+  // so a loaded CI runner cannot make it flake. One frame is 16.7 ms; 100 chains
+  // in 50 ms would still leave the reconcile at a third of a frame.
+  assert.ok(elapsed < 50, `100 three-deep resolutions took ${elapsed.toFixed(1)} ms`);
+});
+
 /* ---------- fitting: one rule, and `attach.scale` means one thing ---------- */
 
 const state = await import("../ui/js/state.js");
