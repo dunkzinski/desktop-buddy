@@ -463,7 +463,8 @@ prop-agnostic: `{"state": "cast"}` is all a caller needs to animate a rod.
   "params": { "segments": 3, "reel": true }, "owner": "survival" }
 ```
 
-* `def` is required; `GET /props` lists them (`fishing_rod`, `loot_bag`).
+* `def` is required; `GET /props` lists them (`fishing_rod`, `loot_bag`, `chest`,
+  `trinket`, `rubber_duck`, `anvil`, `magnifying_glass`, `boot`, `fish`).
 * `id` is optional. Supplying one makes the call **idempotent**: a retry with the
   same id+def returns `created: false` and the existing entity, so a guest that
   missed its ack cannot make two rods. A different def under a used id is a 400.
@@ -479,6 +480,19 @@ prop-agnostic: `{"state": "cast"}` is all a caller needs to animate a rod.
   generator and change the look (a param change regenerates the rig).
 * Refused with a 400: unknown def, unknown state, bad attachment shape, more than
   64 entities, `params` over 4 KiB.
+
+Nesting is a normal attachment, not a special case — a socket on a **prop**:
+
+```json
+{ "def": "fish", "id": "survival:catch", "params": { "species": "river_perch" },
+  "attach": { "parent": "entity:survival:rod", "socket": "line_end" } }
+```
+
+The socket is looked up on the parent entity's **own generated rig** (the rod
+declares `line_end` on its bobber bone), the parent's transform resolves first, and
+the child inherits the parent's mirror and scale. A socket the parent's rig does not
+have draws nothing — it never fails the spawn, and it never draws at the world
+origin. Chains are capped at depth 4 and a cycle resolves to invisible.
 
 #### `POST /entities/update`
 

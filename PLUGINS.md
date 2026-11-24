@@ -150,11 +150,17 @@ fit).
   refuses; it attaches the rod to `hand_primary`, walks it through
   `waiting → biting → reeling`, holds it on the stage for `pickup_ms` first, rests it
   in paw (`resting`) for a couple of seconds when the session ends, and **then stows
-  it** — the entity survives, so a back-to-back cast never re-rummages — the rod
-  goes back in the pod, so the next cast is a rummage again. Nothing is fetched for
-  a cast that is not happening. With no entity
-  ABI the calls fail and fishing is unchanged — the prop is presentation, never a
-  rule.
+  it** — the entity survives, invisible, so a back-to-back cast raises the rod it
+  already has instead of playing the pod ritual again. Nothing is fetched for a cast
+  that is not happening. With no entity ABI the calls fail and fishing is unchanged
+  — the prop is presentation, never a rule.
+* **The catch hangs off the rod, not the gremlin.** `land` spawns a `fish` (or a
+  `boot` when the river hands back `old_boot`) attached to `entity:survival:rod` at
+  the rod's **own** `line_end` socket — the first nested prop in the game — and
+  removes it when the rod's two-second linger ends, so the thing in the bag is one
+  he was holding. No `state` is sent: a state the def does not declare is a refusal,
+  and each catch prop's own default is the one that knows how it arrives (the fish's
+  is `flopping`; the boot just hangs there).
 
 ### Isolation
 

@@ -20,6 +20,10 @@ pub enum PropCategory {
     Container,
     Apparel,
     Furniture,
+    /// Something that came out of the world rather than the pod: a fish on the
+    /// end of the line. It has no place in the economy of props — it is the
+    /// visible *result* of one.
+    Catch,
 }
 
 impl PropCategory {
@@ -29,6 +33,7 @@ impl PropCategory {
             Self::Container => "container",
             Self::Apparel => "apparel",
             Self::Furniture => "furniture",
+            Self::Catch => "catch",
         }
     }
 }
@@ -258,6 +263,32 @@ pub const BOOT: PropDef = PropDef {
 /// The rummage pool, in the order `chest::find` picks from.
 pub const JUNK: &[&PropDef] = &[&RUBBER_DUCK, &ANVIL, &MAGNIFYING_GLASS, &BOOT];
 
+/// The first prop that exists only as a **child of another prop**: it hangs off
+/// the rod's `line_end` for the length of a catch beat.
+///
+/// That is what makes nested sockets a used capability rather than a supported
+/// one: a fish appeared in the bag and nowhere on the stage, so the whole `entity:`
+/// branch of `resolveRoot` had no caller it could be wrong about. `species` comes
+/// from the survival loot table, so the thing on the line is the thing in the bag.
+pub const FISH: PropDef = PropDef {
+    id: "fish",
+    label: "Catch",
+    category: PropCategory::Catch,
+    tags: &["fish", "catch", "food"],
+    states: &["idle", "flopping"],
+    default_state: "flopping",
+    animations: &["idle", "flopping"],
+    own_sockets: &["mouth"],
+    // Hung from the rod's line: head up, tail down. The line socket is upright on
+    // the rod, so a fish whose head faces +x needs a quarter turn to hang.
+    grips: &[
+        ("line_end", -1.5708),
+        ("hand_primary", 0.0),
+        ("stage_ground", 1.5708),
+    ],
+    summary: "Whatever came out of the water. In this river, that is a surprise.",
+};
+
 /// Every prop this build knows.
 pub const PROPS: &[PropDef] = &[
     FISHING_ROD,
@@ -268,6 +299,7 @@ pub const PROPS: &[PropDef] = &[
     ANVIL,
     MAGNIFYING_GLASS,
     BOOT,
+    FISH,
 ];
 
 pub fn find(id: &str) -> Option<&'static PropDef> {
@@ -330,22 +362,74 @@ mod tests {
                 );
             }
             for socket in def.own_sockets {
-                let ids: Vec<&str> = rig
+                let list = rig
                     .get("sockets")
                     .and_then(Value::as_array)
-                    .map(|list| {
-                        list.iter()
-                            .filter_map(|entry| entry.get("id").and_then(Value::as_str))
-                            .collect()
-                    })
+                    .cloned()
                     .unwrap_or_default();
+                let ids: Vec<&str> = list
+                    .iter()
+                    .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+                    .collect();
                 assert!(
                     ids.contains(socket),
                     "{}: own socket {socket:?} is missing (has {ids:?})",
                     def.id
                 );
+                // A socket whose bone was renamed would still "exist" by id and
+                // then resolve to nothing at draw time — the drift this catches.
+                let bones: Vec<&str> = rig
+                    .get("bones")
+                    .and_then(Value::as_array)
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|bone| bone.get("id").and_then(Value::as_str))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for entry in &list {
+                    let id = entry.get("id").and_then(Value::as_str).unwrap_or("?");
+                    let bone = entry.get("bone").and_then(Value::as_str).unwrap_or("");
+                    assert!(
+                        bones.contains(&bone),
+                        "{}: socket {id:?} hangs on {bone:?}, which is not a bone of the rig",
+                        def.id
+                    );
+                }
+                let mut seen = std::collections::HashSet::new();
+                for id in &ids {
+                    assert!(seen.insert(*id), "{}: duplicate socket id {id:?}", def.id);
+                }
             }
         }
+    }
+
+    #[test]
+    fn a_catch_hangs_from_the_rod_by_its_mouth() {
+        // The first nested attachment in the game is a *pairing* across three
+        // spellings of one word: the fish's grip, the rod's own socket, and
+        // `props::LINE_SOCKET` in the survival guest (a different crate, so no
+        // compiler checks it). Pin the two the host owns.
+        assert!(FISH.grips.iter().any(|(socket, _)| *socket == "line_end"));
+        assert!(
+            FISHING_ROD.own_sockets.contains(&"line_end"),
+            "the rod must offer the socket the catch is hung from"
+        );
+        assert!(FISH.own_sockets.contains(&"mouth"));
+
+        let rod = build_rig(&FISHING_ROD, 12_345, &json!({})).expect("rod");
+        let sockets = rod["sockets"].as_array().expect("sockets");
+        assert!(
+            sockets
+                .iter()
+                .any(|entry| entry["id"] == "line_end" && entry["bone"] == "bobber"),
+            "the line has to end on the bobber bone, or the fish hangs off the grip"
+        );
+
+        let fish = build_rig(&FISH, 9, &json!({ "species": "river_perch" })).expect("fish");
+        let fish_sockets = fish["sockets"].as_array().expect("fish sockets");
+        assert_eq!(fish_sockets.len(), 1);
+        assert_eq!(fish_sockets[0]["id"], json!("mouth"));
     }
 
     #[test]

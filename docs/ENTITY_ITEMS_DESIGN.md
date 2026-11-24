@@ -1165,3 +1165,48 @@ the editor and every existing prop kept their numbers.
   pixel and is 40° away from what a screen-space flip would give. `scratch/flip2.png`.
 
 ---
+
+### 14.2 Nested sockets, proved and then used
+
+The `entity:<id>` branch of `resolveRoot` shipped in Phase 1 and had **no caller**
+until now — which is why "does it work" could not be answered from the tree. It was
+answered by pixels first, on the unmodified build:
+
+| Step | Evidence |
+|---|---|
+| anvil on the rod's line | `{"def":"anvil","attach":{"parent":"entity:demo:rod","socket":"line_end"}}` resolved to `root {x: 448.6, y: 229.5, rot: -0.712}` while the rod sat at `{328.4, 295.3, rot: -0.752}` |
+| it draws | **812** pixels of the anvil's greys (`#4a4f5c`/`#6d7484`/`#33363f`) inside the predicted box, all within 55 px of that root |
+| and only it | removing the child: **0** such pixels anywhere on the 1920×1080 frame |
+| it follows its parent | re-socketing the child to `grip_point` put its root exactly on the rod's root; moving the rod from `hand_primary` to `hand_secondary` moved the child with it |
+| the socket is a real socket | the same child under a socket id the rig does not have resolves to `null` and paints nothing |
+
+Then it got a purpose: **a fish on the line.** `FISH` (`category: catch`) is the
+first prop that exists only as another prop's child.
+
+| Piece | Where |
+|---|---|
+| a species-tinted mini-rig, `flopping` on arrival | `gen.rs::fish` (spindle body, tail on its own bone, `mouth` anchor) |
+| the pairing, and the grip that hangs it head-up | `defs::FISH` (`grips: line_end → -1.5708`) |
+| spawn at `entity:survival:rod` / `line_end` when a catch is stored | `props::fish_on_line`, called from `plugin::land` |
+| gone when the rod's linger ends | `props::release_fish` in `sync_rod`, `discard_rod`, `plugin_init` |
+
+Three discoveries worth keeping:
+
+1. **A catch prop must not be given a state it does not declare.** The first
+   version sent `state: "flopping"` for fish *and* boot; `boot` has no such state,
+   so the spawn was refused — silently, because the guest only reads `ok`. The
+   catch now sends no state at all and the def's `default_state` decides, and a
+   refused hang logs a warning.
+2. **The fish has to be authored at the size it is seen at.** A 30-unit minnow
+   draws 16 px wide under a gremlin's 0.55 root scale and reads as a fleck; the
+   species table is now 78–146 units and the body is a polygon silhouette rather
+   than one ellipse, because at ~40 px the outline is the only thing that reads.
+3. **A parent's removal detaches its children.** Every path that drops the rod now
+   releases the catch too, or a dead session leaves a fish floating where the rod
+   used to be.
+
+The two socket vocabularies are pinned against drifting: `every_animation_is_a_clip_
+the_generator_emits` already required every `own_sockets` id to exist in the
+generated rig, and now also that each generated socket names a bone that rig
+actually has and that ids are unique — a renamed bone used to keep the id check
+green while resolving to nothing at draw time.

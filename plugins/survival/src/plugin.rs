@@ -67,6 +67,19 @@ pub const EVENT_SCAVENGING_COMMENT: &str = "scavenging-comment";
 /// What the avatar says when the bobber goes under.
 const BITE_NOTICE: &str = "Something's on the line — now!";
 
+/// Which prop stands in for a catch on the line.
+///
+/// A fish is a fish, a boot out of the river is the `boot` prop, and weed is not
+/// worth hanging up — the line comes in empty and only the bag changes.
+fn catch_prop(item: &str, definition: Option<&inventory::ItemDefinition>) -> Option<&'static str> {
+    match item {
+        "old_boot" => Some("boot"),
+        "river_weed" => None,
+        _ if definition.is_some_and(|entry| entry.kind == ItemKind::Fish) => Some("fish"),
+        _ => None,
+    }
+}
+
 
 /// How often a starving avatar repeats itself, in seconds.
 const STARVATION_REPEAT_SECS: f64 = 300.0;
@@ -1461,6 +1474,7 @@ impl Survival {
         if self.inventory.count("fishing_rod") == 0 {
             if self.rod_ready {
                 props::discard_rod();
+                props::release_fish();
                 self.rod_ready = false;
             }
             self.rod_state = None;
@@ -1525,6 +1539,8 @@ impl Survival {
                     self.rod_ready = false;
                     self.rod_state = None;
                 }
+                // The line is in: whatever was hanging from it is in the bag now.
+                props::release_fish();
                 self.rod_linger_ms = 0;
                 return;
             }
@@ -1795,6 +1811,14 @@ impl Survival {
         });
         host::emit(EVENT_FISHING_RESULT, &payload);
         self.say(&line, expression);
+        // The catch hangs on the line: the thing in the bag is one he is
+        // *holding*, not one that appeared in a list. It lives exactly as long as
+        // the rod's linger (see `sync_rod`), so the two ends of the beat agree.
+        if stored {
+            if let Some(prop) = catch_prop(loot.item, definition) {
+                props::fish_on_line(prop, loot.item);
+            }
+        }
         // The session is Idle by now, so this is the stow — in the same call as
         // the result, never a tick behind a catch.
         self.sync_rod(host::now_ms());

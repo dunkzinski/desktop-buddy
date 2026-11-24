@@ -2533,6 +2533,48 @@ mirrored chain) against the real modules, which is the only automated proof this
 lives in `ui/js` at all — `cargo` cannot see it. CI runs it as
 **Page transform tests**.
 
+### Nested props: a socket on a prop, and the first caller it has
+
+`resolveRoot` has walked `entity:<id>` parents since Phase 1 (depth cap 4, cycle →
+invisible, dangling socket → invisible), but until Phase 5 **nothing used it**: the
+whole branch was a capability with no caller, so "does it work" could only be
+answered by hand. The fishing catch is that caller:
+
+* `defs::FISH` declares `own_sockets: ["mouth"]` and a **grip for a socket that is
+  not on the avatar** (`line_end: -1.5708`) — the host fills grip defaults for any
+  parent, so the fish hangs head-up from the rod without the caller knowing which
+  way is up.
+* `props::fish_on_line(def, species)` spawns it with
+  `attach.parent = "entity:survival:rod"` and `socket = "line_end"`, which is a
+  socket on the **rod's generated mini-rig** (its bobber bone). `land` does it, the
+  rod's linger (`sync_rod`) removes it, and `plugin_init` sweeps a catch left by a
+  crashed session.
+* `defs.rs` pins the pairing from the host side: the fish's grip names a socket the
+  rod declares, the rod's `line_end` hangs on its `bobber` bone, and every
+  generated socket names a bone that exists in its own rig. The third spelling of
+  the word — `props::LINE_SOCKET` in the guest crate — is the one no compiler
+  checks, so the test names it.
+
+Measured live (a real cast → hook → reel, no API staging): `survival:catch` is
+`def: fish`, `state: flopping`, `params: {"species": "silver_trout"}`,
+`attach: {parent: "entity:survival:rod", socket: "line_end", rotation: -1.5708}`,
+and it is gone again exactly when the rod stows. The same attachment with an
+`anvil` measured **812** anvil-coloured pixels at the rod's tip and **0** with the
+child removed, all of them inside the box the resolved root predicted — that is the
+pixel proof the branch draws, not just that the API answered `ok`.
+
+Two rules that keep it honest:
+
+* **A catch prop must not be given a state it does not declare.** The first version
+  sent `state: "flopping"` for both fish and boot; `boot` has no such state, so the
+  spawn was refused — and silently, because the guest only checked `ok`. The catch
+  now sends **no** state and each def's `default_state` decides (fish → `flopping`,
+  boot → `idle`), with a warning logged on refusal so the next one is visible.
+* **A parent's removal detaches its children.** The store does this on purpose
+  (`removing_a_parent_detaches_its_children`), so a catch whose rod was discarded
+  becomes a free-floating prop; every path that drops the rod also releases the
+  catch.
+
 ### `/parts`, `/part`, `/mouth`
 
 ```bash

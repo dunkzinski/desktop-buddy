@@ -292,6 +292,10 @@ mod tests {
                                 "visible": true,
                                 "owner": "survival",
                                 "attach": field("attach"),
+                                // The real host stores params and regenerates the
+                                // rig from them, so the fake must too or a test
+                                // cannot see *which* fish was hung on the line.
+                                "params": field("params"),
                             }),
                         );
                         recorder.revision += 1;

@@ -44,6 +44,7 @@ pub fn build(def: &PropDef, seed: u64, params: &Value) -> Result<Value, String> 
         "anvil" => Ok(anvil(&mut rng, params)),
         "magnifying_glass" => Ok(magnifying_glass(&mut rng, params)),
         "boot" => Ok(boot(&mut rng, params)),
+        "fish" => Ok(fish(&mut rng, params)),
         other => Err(format!("no generator for prop {other:?}")),
     }
 }
@@ -90,6 +91,10 @@ pub fn traits(def: &PropDef, seed: u64) -> BTreeMap<String, f64> {
         "boot" => {
             out.insert("luck".to_string(), round2(rng.range(0.0, 0.2)));
             out.insert("smell".to_string(), round2(rng.range(0.5, 1.0)));
+        }
+        "fish" => {
+            out.insert("weight".to_string(), round2(rng.range(0.2, 3.4)));
+            out.insert("fight".to_string(), round2(rng.range(0.2, 1.0)));
         }
         _ => {}
     }
@@ -918,6 +923,207 @@ fn boot(rng: &mut Rng, _params: &Value) -> Value {
         ],
     );
     junk_rig("boot", "Boot", size, bones, vec![], None, Some(("tumbling", tumbling)))
+}
+
+/// A fish, species first.
+///
+/// The first prop authored to hang off **another prop** — the rod's `line_end` —
+/// so its frame is the line's: head up, tail down, and a `mouth` socket at the
+/// head where a hook would go. `species` is the survival loot id, so what comes
+/// out of the water is what lands in the bag; with no species it rolls one.
+fn fish(rng: &mut Rng, params: &Value) -> Value {
+    const SPECIES: [&str; 4] = ["minnow", "river_perch", "silver_trout", "ember_eel"];
+    let species = params
+        .get("species")
+        .and_then(Value::as_str)
+        .filter(|name| SPECIES.contains(name))
+        .unwrap_or_else(|| SPECIES[rng.below(SPECIES.len() as u32) as usize]);
+
+    // Shape before palette: an eel is long and thin, a perch is deep and banded,
+    // a minnow is barely there. These are rig units, and the rod hangs the catch
+    // where the line ends — on a gremlin (root scale 0.55) a 30-unit fish drew
+    // 16 px wide and read as a fleck, so the whole table is authored at the size
+    // it has to be *seen* at, not at the size a real minnow is.
+    let (body_w, body_h, back, belly, accent, fin_color) = match species {
+        "minnow" => (78.0, 33.0, "#8ea6b6", "#e6f0f5", "#6d8496", "#556a7e"),
+        "river_perch" => (98.0, 58.0, "#5f7a3f", "#d9d6a0", "#37502a", "#2b4220"),
+        "silver_trout" => (114.0, 46.0, "#7f93a8", "#eef3f7", "#c98f9b", "#5d7185"),
+        _ => (146.0, 32.0, "#c2552a", "#f0a24e", "#8a3418", "#5c2110"),
+    };
+    let w = round2(body_w * rng.range(0.92, 1.08));
+    let h = round2(body_h * rng.range(0.9, 1.1));
+    let bands = rng.below(5) as usize;
+    let spots = rng.below(5) as usize;
+    let fin = rng.below(3) as usize;
+    let dorsal = rng.below(2) == 0;
+
+    let mut body_parts = vec![
+        // A spindle, not an oval: nose, deep middle, narrow tail. At prop size
+        // (~40 px) the silhouette is the only part that reads, so it is geometry
+        // rather than one ellipse with features drawn on it.
+        polygon(
+            "body",
+            &[
+                [w * 0.50, 0.0],
+                [w * 0.30, -h * 0.34],
+                [-w * 0.02, -h * 0.50],
+                [-w * 0.30, -h * 0.26],
+                [-w * 0.46, -h * 0.10],
+                [-w * 0.46, h * 0.10],
+                [-w * 0.30, h * 0.26],
+                [-w * 0.02, h * 0.50],
+                [w * 0.30, h * 0.34],
+            ],
+            [0.0, 0.0],
+            back,
+            10,
+        ),
+        // A pale underside, not a pale body: kept low and narrow so the silhouette
+        // stays the back's colour.
+        ellipse("belly", w * 0.58, h * 0.32, [-w * 0.05, h * 0.27], belly, 12),
+    ];
+    for index in 0..bands {
+        let span = w * 0.58;
+        let x = -span / 2.0 + span * (index as f64 + 0.5) / bands as f64;
+        body_parts.push(ellipse(
+            &format!("band{index}"),
+            (w * 0.075).max(2.5),
+            h * 0.86,
+            [x, -h * 0.02],
+            accent,
+            11,
+        ));
+    }
+    for index in 0..spots {
+        let x = rng.range(-w * 0.24, w * 0.24);
+        let y = rng.range(-h * 0.24, h * 0.16);
+        body_parts.push(ellipse(
+            &format!("spot{index}"),
+            (h * 0.13).max(2.0),
+            (h * 0.13).max(2.0),
+            [x, y],
+            accent,
+            13,
+        ));
+    }
+    body_parts.push(ellipse(
+        "eye",
+        (h * 0.16).max(2.5),
+        (h * 0.16).max(2.5),
+        [w * 0.33, -h * 0.16],
+        "#20242c",
+        14,
+    ));
+    // A wedge of mouth at the head end: the one mark that says "this faces left".
+    body_parts.push(polygon(
+        "mouth",
+        &[
+            [w * 0.49, -h * 0.04],
+            [w * 0.38, 0.0],
+            [w * 0.49, h * 0.05],
+        ],
+        [0.0, 0.0],
+        "#20242c",
+        14,
+    ));
+    // A pectoral fin, so the profile is a fish and not an oval.
+    body_parts.push(polygon(
+        "pectoral",
+        &[
+            [w * 0.06, -h * 0.02],
+            [-w * 0.1, h * 0.3],
+            [w * 0.18, h * 0.12],
+        ],
+        [0.0, 0.0],
+        fin_color,
+        13,
+    ));
+    if dorsal {
+        body_parts.push(polygon(
+            "dorsal",
+            &[
+                [-w * 0.12, -h * 0.42],
+                [w * 0.06, -h * 0.86],
+                [w * 0.24, -h * 0.4],
+            ],
+            [0.0, 0.0],
+            fin_color,
+            9,
+        ));
+    }
+
+    // The tail is its own bone so `flopping` can actually flap it. It is drawn
+    // *past* the body's end and in its own darker colour, or the two silhouettes
+    // merge into one blob at prop size.
+    let tail_points = match fin {
+        0 => vec![
+            [-w * 0.02, -h * 0.5],
+            [-w * 0.34, -h * 0.22],
+            [-w * 0.2, 0.0],
+            [-w * 0.34, h * 0.22],
+            [-w * 0.02, h * 0.5],
+        ],
+        1 => vec![
+            [-w * 0.02, -h * 0.42],
+            [-w * 0.28, -h * 0.3],
+            [-w * 0.36, 0.0],
+            [-w * 0.28, h * 0.3],
+            [-w * 0.02, h * 0.42],
+        ],
+        _ => vec![
+            [-w * 0.02, -h * 0.55],
+            [-w * 0.4, -h * 0.12],
+            [-w * 0.14, 0.0],
+            [-w * 0.4, h * 0.12],
+            [-w * 0.02, h * 0.55],
+        ],
+    };
+    let tail_parts = vec![polygon("fin", &tail_points, [0.0, 0.0], fin_color, 9)];
+
+    let bones = vec![
+        bone("root", None, [0.0, 0.0], 0.0, 10, body_parts),
+        bone("tail", Some("root"), [-w * 0.44, 0.0], 0.0, 9, tail_parts),
+        // The mouth is an anchor, not artwork: the hook goes here.
+        bone("jaw", Some("root"), [w * 0.44, 0.0], 0.0, 20, vec![]),
+    ];
+
+    // Hanging still, it breathes with the line; caught, it flails.
+    let idle = clip(
+        2600.0,
+        true,
+        vec![
+            kf(0.0, json!({ "root": { "rotation": -0.05 }, "tail": { "rotation": 0.12 } })),
+            kf(0.5, json!({ "root": { "rotation": 0.06 }, "tail": { "rotation": -0.12 } })),
+            kf(1.0, json!({ "root": { "rotation": -0.05 }, "tail": { "rotation": 0.12 } })),
+        ],
+    );
+    let flopping = clip(
+        560.0,
+        true,
+        vec![
+            kf(0.0, json!({ "root": { "rotation": -0.32 }, "tail": { "rotation": 0.5 } })),
+            kf(0.3, json!({ "root": { "rotation": 0.28 }, "tail": { "rotation": -0.55 } })),
+            kf(0.6, json!({ "root": { "rotation": -0.22 }, "tail": { "rotation": 0.42 } })),
+            kf(1.0, json!({ "root": { "rotation": -0.32 }, "tail": { "rotation": 0.5 } })),
+        ],
+    );
+
+    json!({
+        "format": 1,
+        "name": "fish",
+        "label": "Catch",
+        "structure": {
+            "species": species,
+            "bands": bands,
+            "spots": spots,
+            "fin": fin,
+            "dorsal": dorsal,
+            "size": (w / 6.0).round() as i64,
+        },
+        "bones": bones,
+        "animations": { "idle": idle, "flopping": flopping },
+        "sockets": [socket("mouth", "jaw", [0.0, 0.0], "Mouth")],
+    })
 }
 
 /* ------------------------------------------------------------------ *

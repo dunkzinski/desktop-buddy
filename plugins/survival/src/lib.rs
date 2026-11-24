@@ -208,6 +208,7 @@ pub extern "C" fn plugin_init(ptr: u32, len: u32) -> i64 {
     // before anything else happens — the next cast or run fetches them again.
     props::discard_rod();
     props::discard_bag();
+    props::release_fish();
     host::log(host::LEVEL_INFO, &format!(
         "survival wasm: initialised ({summary}; enabled {}, hunger {}/min)",
         config.enabled, config.metabolism.hunger_per_min

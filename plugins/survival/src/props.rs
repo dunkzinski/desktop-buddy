@@ -150,6 +150,56 @@ pub fn rod_state() -> Option<String> {
 }
 
 /* ------------------------------------------------------------------ *
+ * the catch
+ * ------------------------------------------------------------------ */
+
+/// The thing on the end of the line.
+///
+/// One id, reused: a catch is a moment, not stock, so the previous one is removed
+/// before the next is hung. It never enters the inventory — that is the *item*;
+/// this is the fish you can see.
+pub const FISH_ID: &str = "survival:catch";
+
+/// The rod's own socket. `line_end` lives on the rod's **mini-rig**, not on the
+/// avatar, so this is the first nested attachment in the game: the host stores
+/// `parent: "entity:survival:rod"` and the page walks the parent chain to place it.
+pub const LINE_SOCKET: &str = "line_end";
+
+/// Hang `def` (a `fish`, or the `boot` for a boot) on the line, `species`-dressed.
+///
+/// Best-effort like everything here: a host without nesting draws nothing and the
+/// catch still lands in the bag, so fishing never depends on the theatre.
+///
+/// **No `state` is sent on purpose.** The host refuses a state the def does not
+/// declare, and each catch prop answers differently: a fish arrives `flopping`
+/// (its own default), a boot just hangs there. Naming one state for both refused
+/// the boot outright — and silently, because the reply was only checked for `ok`.
+pub fn fish_on_line(def: &str, species: &str) -> bool {
+    // Idempotent by id means the *previous* catch would keep its own species (and
+    // its own params) — so clear it first. Ignored when there is nothing there.
+    let _ = call(json!({ "op": "remove", "id": FISH_ID }));
+    let hung = accepted(call(json!({
+        "op": "spawn",
+        "def": def,
+        "id": FISH_ID,
+        "params": { "species": species },
+        "attach": { "parent": format!("entity:{ROD_ID}"), "socket": LINE_SOCKET },
+    })));
+    if !hung {
+        host::log(
+            host::LEVEL_WARN,
+            &format!("the catch ({def}) did not hang on the line: the host refused it"),
+        );
+    }
+    hung
+}
+
+/// The line is empty again — the catch is in the bag, and off the rod.
+pub fn release_fish() -> bool {
+    accepted(call(json!({ "op": "remove", "id": FISH_ID })))
+}
+
+/* ------------------------------------------------------------------ *
  * the bag
  * ------------------------------------------------------------------ */
 
@@ -284,5 +334,52 @@ mod tests {
         // plugin must simply report that it could not do it.
         assert!(!hold("cast"));
         assert!(ensure_rod(), "a spawn still works after a refused update");
+    }
+
+    #[test]
+    fn the_catch_hangs_on_the_rod_not_on_the_gremlin() {
+        reset();
+        assert!(ensure_rod());
+        assert!(hold("reeling"));
+        assert!(fish_on_line("fish", "river_perch"));
+        let catch = entity_snapshot(FISH_ID).expect("the fake host holds the catch");
+        assert_eq!(catch["def"], json!("fish"));
+        assert_eq!(catch["params"]["species"], json!("river_perch"));
+        // Nested: the line is a socket on the **rod's own rig**, so the parent is
+        // the rod entity and the page has to walk `entity:` to place it.
+        assert_eq!(catch["attach"]["parent"], json!(format!("entity:{ROD_ID}")));
+        assert_eq!(catch["attach"]["socket"], json!(LINE_SOCKET));
+        // No state is named: a state the def does not declare is a refusal, and the
+        // def's own default is the one that knows how a catch arrives.
+        let spawn = entity_requests()
+            .into_iter()
+            .find(|request| request["op"] == json!("spawn") && request["def"] == json!("fish"))
+            .expect("a spawn request");
+        assert!(
+            spawn.get("state").is_none(),
+            "the guest must let the def choose: {spawn}"
+        );
+        assert!(release_fish());
+        assert!(
+            entity_snapshot(FISH_ID).is_none(),
+            "the line is empty once the catch is in the bag"
+        );
+    }
+
+    #[test]
+    fn one_catch_replaces_the_last_one_instead_of_keeping_its_species() {
+        reset();
+        assert!(ensure_rod());
+        assert!(fish_on_line("fish", "minnow"));
+        assert!(fish_on_line("fish", "ember_eel"));
+        let catch = entity_snapshot(FISH_ID).expect("the catch");
+        // Spawn is idempotent by id: without the remove, a second catch would keep
+        // the *first* species and the fish on the line would be the wrong fish.
+        assert_eq!(catch["params"]["species"], json!("ember_eel"));
+        assert_eq!(catch["def"], json!("fish"));
+
+        // A boot on the line is a boot, not a fish.
+        assert!(fish_on_line("boot", "old_boot"));
+        assert_eq!(entity_snapshot(FISH_ID).expect("the boot")["def"], json!("boot"));
     }
 }
