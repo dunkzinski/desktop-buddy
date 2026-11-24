@@ -690,7 +690,7 @@ Known limits, deliberately not fixed in this phase:
   that sticks out is not clickable — cosmetic until props become draggable.
 * Prop size is authored in rig units: it reads right on a generated gremlin
   (root scale 0.55) and small on `xenomorph-7` (root scale 1.0, ~700 px tall).
-  Per-rig fitting is a later nicety, not a correctness bug.
+  Fixed in Phase 5 (§14.3) by fitting props to the creature's own height.
 
 ### Verification (what was actually run)
 
@@ -1113,11 +1113,10 @@ Not Phase 4 work — Phase 5, as named back in §8's known limits:
 * ~~`attach.flip` is stored and validated but **not rendered**~~ — rendered in Phase 5
   (§14.1). It is a mirror of the prop's own artwork, composed as a parity through
   the transform chain.
-* **Nested sockets** — a socket on a *prop* rather than on the avatar. The rig
-  supports sockets per bone; the store resolves attachment chains, but nothing yet
-  authors a socket inside an item (a lamp on a rod, a fish on a line).
-* Per-rig prop fitting (§8's note): prop size reads right on a generated gremlin and
-  small on `xenomorph-7`.
+* ~~**Nested sockets** — a socket on a *prop* rather than on the avatar~~ — shipped and
+  in use in Phase 5 (§14.2): the catch hangs from the rod's own `line_end`.
+* ~~Per-rig prop fitting (§8's note)~~ — props are now fitted by a ratio to the
+  creature holding them (§14.3), and `attach.scale` is a multiplier on that.
 
 Nothing in Phase 4's plan is unshipped. The remaining work is a new arc.
 
