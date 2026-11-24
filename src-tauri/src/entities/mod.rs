@@ -37,6 +37,29 @@ pub use store::{
 /// Flushes after snapshotting, so a spawn that the page can see is a spawn that
 /// survives a restart. The file write happens under the store lock and never
 /// calls back into anything that could take another lock.
+/// Host epoch milliseconds — the one clock entities are compared against.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Reap entities whose lifetime ran out. Returns the ids that went.
+pub fn reap(now_ms: u64) -> Result<Vec<String>, String> {
+    let mut store = store::lock();
+    let removed = store.reap_expired(now_ms);
+    if !removed.is_empty() {
+        let revision = store.revision();
+        if let Err(err) = store.flush() {
+            log::warn!("entities: could not persist after reaping: {err}");
+        }
+        log::debug!("entities: reaped {} expired", removed.len());
+        let _ = revision;
+    }
+    Ok(removed)
+}
+
 pub fn roster() -> (u64, Vec<serde_json::Value>) {
     let mut store = store::lock();
     let entities = store.snapshot();

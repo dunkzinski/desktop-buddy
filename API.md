@@ -593,11 +593,23 @@ loose: an entity id, a def, or a label containing the query.
 unchanged. A rummage that finds nothing still spills its duds (the joke needs the
 mess), and two duds in one rummage are always different props.
 
+**Duds expire.** Each one is spawned with `expires_at = now + 15000` and the host
+sweeps expired entities every second (emitting `entity-removed` with
+`"reason": "expired"`). Fifteen seconds is long enough to read and laugh at, short
+enough that a few searches do not carpet the desktop. The thing you asked for is
+*taken out*, never spawned, so it has no lifetime — nothing the user owns ever
+expires on a timer.
+
 #### `POST /chest/tidy`
 
 Body: none. Sweeps up what a rummage left on the stage: every entity the pod owns
 that is **not inside it**. Contents are never touched.
 → `{ "ok": true, "removed": 3, "ids": ["chest:junk0", "…"] }`.
+
+Body may carry **`ttl_ms`**: a relative lifetime in milliseconds. The host turns
+it into an absolute `expires_at` and the sweeper removes the entity when it comes,
+publishing `entity-removed`. Omit it and the prop is permanent — an unset lifetime
+is the only safe default for something a caller deliberately created.
 
 ### Posing individual joints
 

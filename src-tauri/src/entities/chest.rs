@@ -126,6 +126,8 @@ fn seed_loot(store: &mut EntityStore, chest_seed: u64) -> Result<usize, String> 
             attach: Some(seat),
             owner: Some("chest".to_string()),
             traits: None,
+            // Trinkets are the pod's furniture: they leave with it, not on a timer.
+            expires_at: None,
         })?;
         // Inside a closed pod: not drawn until it opens.
         store.update(
@@ -206,6 +208,7 @@ pub fn summon(store: &mut EntityStore, seed: u64, anchor: [f64; 2]) -> Result<Ap
             attach: Some(attachment),
             owner: None,
             traits: None,
+            expires_at: None,
         })?;
         // The spawn auto-clips the state name, so `appear` has to be asked for.
         store.update(
@@ -525,6 +528,16 @@ pub fn take(store: &mut EntityStore, item: &str) -> Result<Applied, String> {
 /// How many duds one rummage can produce, at most.
 const MAX_DUDS: u32 = 3;
 
+/// How long a dud stays on the stage, in ms.
+///
+/// Long enough to be read and laughed at, short enough that a few searches do not
+/// carpet the desktop. `POST /chest/tidy` is the impatient version.
+pub const JUNK_TTL_MS: u64 = 15_000;
+
+fn now_ms() -> u64 {
+    super::now_ms()
+}
+
 /// An id like `chest:junk3` that nothing is using.
 fn next_free_id(store: &EntityStore, prefix: &str) -> String {
     for index in 0..10_000u32 {
@@ -613,6 +626,9 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
             attach: Some(seat),
             owner: Some("chest".to_string()),
             traits: None,
+            // Debris, not furniture: it expires on its own, and `tidy` only
+            // shortcuts the wait.
+            expires_at: Some(now_ms() + JUNK_TTL_MS),
         })?;
         duds.push(json!({ "id": id, "def": def.id, "label": def.label }));
     }
@@ -739,6 +755,7 @@ mod tests {
                 attach: None,
                 owner: None,
                 traits: None,
+                expires_at: None,
             })
             .expect("item");
     }
@@ -887,6 +904,9 @@ mod tests {
             let entity = store.render_one(id).expect("the dud exists");
             assert_eq!(entity["attach"]["parent"], json!("world"));
             assert_ne!(entity["def"], json!("axe"));
+            // Debris, and it says so: a dud carries the moment it should go.
+            let expires = entity["expires_at"].as_u64().expect("a lifetime");
+            assert!(expires > now_ms(), "already stale?");
         }
         // The thing asked for left the pod and landed beside it.
         assert_eq!(
@@ -909,6 +929,58 @@ mod tests {
         assert!(!applied.body["duds"].as_array().expect("duds").is_empty());
         let narrative = applied.body["narrative"].as_str().expect("narrative");
         assert!(narrative.contains("banana"), "{narrative}");
+    }
+
+    #[test]
+    fn debris_expires_but_contents_do_not() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        an_item(&mut store, "demo:bag");
+        put(&mut store, "demo:bag").expect("put");
+        let applied = find(&mut store, "hammer", Some(21)).expect("find");
+        let duds: Vec<String> = applied.body["duds"]
+            .as_array()
+            .expect("duds")
+            .iter()
+            .map(|dud| dud["id"].as_str().expect("id").to_string())
+            .collect();
+        assert!(!duds.is_empty());
+        let before = view(&mut store)["count"].as_u64().expect("count");
+
+        // Reap against the duds' *own* deadlines: several milliseconds pass while
+        // the test runs, so `now + TTL` is not the moment they were stamped with.
+        let due = duds
+            .iter()
+            .filter_map(|id| store.render_one(id))
+            .filter_map(|entity| entity["expires_at"].as_u64())
+            .min()
+            .expect("a deadline");
+
+        // One millisecond early: everything is still there.
+        let early = store.reap_expired(due - 1);
+        assert!(early.is_empty(), "reaped too soon: {early:?}");
+
+        let gone = store.reap_expired(due);
+        assert_eq!(gone.len(), duds.len(), "every dud, and only duds: {gone:?}");
+        for id in &duds {
+            assert!(store.state_of(id).is_none(), "{id} survived its lifetime");
+        }
+        // The pod and everything in it are untouched by the reaper.
+        assert_eq!(store.state_of(CHEST_ID), Some("open"));
+        assert_eq!(view(&mut store)["count"].as_u64().expect("count"), before);
+        assert!(store.render_one("demo:bag").is_some(), "never reap loot");
+    }
+
+    #[test]
+    fn tidying_is_the_impatient_expiry() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        let spilled = find(&mut store, "hammer", Some(3)).expect("find");
+        let dud_count = spilled.body["duds"].as_array().expect("duds").len();
+        let cleaned = tidy(&mut store).expect("tidy");
+        assert_eq!(cleaned.body["removed"], json!(dud_count));
+        // Nothing left for the reaper to find.
+        assert!(store.reap_expired(now_ms() + JUNK_TTL_MS * 10).is_empty());
     }
 
     #[test]

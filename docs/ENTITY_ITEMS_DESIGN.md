@@ -927,3 +927,16 @@ mining plugin can add a pickaxe to the pool with one entry.
 The pod drags: press, move, release (one write). A press that does not move opens
 the card. Same threshold rule as the avatar drag, and `body.pod-dragging` keeps
 the window interactive for the gesture so the cursor tracker cannot drop it.
+
+### 12.1 Debris expires
+
+The mess is funny for about fifteen seconds and then it is just clutter. Entities
+carry an optional `expires_at`; duds set it, everything else leaves it unset, and
+`api.rs::housekeeping` sweeps once a second.
+
+The rule that matters: **an unset lifetime is never reaped.** Adding a TTL to the
+entity record is only safe if the default deletes nothing — otherwise a future
+change to a spawn path silently starts eating a user's props.
+
+`tidy` and the reaper share the same definition of debris (`owner: "chest"` plus a
+`world` attachment), differing only in patience.

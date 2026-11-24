@@ -2343,6 +2343,25 @@ asked for. Three rules make it work:
 
 A rummage that finds nothing still spills its duds. That is the point.
 
+### Debris has a lifetime
+
+An entity may carry `expires_at` (absolute host epoch ms); `None` means it stays
+until something removes it. Duds get `now + 15 s`. `EntityStore::reap_expired(now)`
+removes the due ones — taking `now` as an argument so tests reap the future instead
+of sleeping — and detaches their children first, so the reaper can never leave a
+dangling parent.
+
+The reaper is the **only** thing in the app that deletes on a timer, and it lives
+in `api.rs::housekeeping`, a one-second `tokio` task on the API runtime
+(`MissedTickBehavior::Delay`, so a suspended laptop does not fire a burst on wake).
+It has to live there rather than in the store because removal has to reach the
+page: the store can drop a row, but only the API knows how to emit
+`entity-removed` on both the Tauri channel and the SSE bus.
+
+`POST /chest/tidy` is the impatient version of the same rule, and `POST
+/entities/spawn` accepts `ttl_ms` so an HTTP caller can make its own debris
+without knowing the host clock.
+
 ### Picking the pod up
 
 The pod is draggable (`main.js`): a press inside `chestBounds` starts `podDrag`,

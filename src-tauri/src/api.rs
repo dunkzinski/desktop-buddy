@@ -249,6 +249,8 @@ pub fn start(
     let shutdown_ctx = Arc::clone(&shared);
 
     let api = ApiCtx { app, shared, model, started: Instant::now() };
+    // A clone for the reaper: `router` takes ownership of `api`.
+    let housekeeper = api.clone();
     let router = router(api);
 
     std::thread::Builder::new()
@@ -276,12 +278,19 @@ pub fn start(
                     }
                 };
 
+                // Debris has a lifetime; this is what enforces it. One second is
+                // fine: a 15 s TTL does not need sub-second precision, and the
+                // page refetches on the removal events this publishes.
+                let reaper = tokio::spawn(housekeeping(housekeeper));
+
                 let served = axum::serve(listener, router)
                     .with_graceful_shutdown(async move {
                         // Ignore a dropped sender: that means the app already exited.
                         let _ = shutdown.await;
                     })
                     .await;
+
+                reaper.abort();
 
                 if let Err(err) = served {
                     log::error!("api server stopped: {err}");
@@ -1250,6 +1259,32 @@ async fn get_sockets(
 ///
 /// Called **after** the store lock is released: a listener that reads
 /// `GET /entities` from inside this emit must not deadlock against the mutation.
+/// Once a second: remove entities whose lifetime ran out and tell the page.
+///
+/// The reaper is the *only* thing that deletes on a timer — everything else is
+/// caller-driven — so it is also the one place that has to publish its own
+/// `entity-removed` frames: the store can remove a row, but only the API knows how
+/// to reach the page and the SSE bus.
+async fn housekeeping(api: ApiCtx) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        match crate::entities::reap(now_ms()) {
+            Ok(removed) => {
+                for id in removed {
+                    emit_entity(
+                        &api,
+                        "entity-removed",
+                        json!({ "id": id, "reason": "expired" }),
+                    );
+                }
+            }
+            Err(err) => log::debug!("entity reaper: {err}"),
+        }
+    }
+}
+
 fn emit_entity(api: &ApiCtx, event: &str, payload: Value) {
     api.shared.emit_event(event, payload.clone());
     if let Err(err) = api.app.emit(event, payload) {
@@ -1282,11 +1317,24 @@ async fn list_props() -> Json<Value> {
 /// the existing entity, so a guest that missed its ack cannot make two rods.
 async fn spawn_entity(
     State(api): State<ApiCtx>,
-    Json(body): Json<crate::entities::SpawnRequest>,
+    Json(mut body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    // `ttl_ms` is the friendly form; `expires_at` is what actually gets stored.
+    // A caller should not have to know the host clock to say "fifteen seconds".
+    if let Some(ttl) = body.get("ttl_ms").and_then(Value::as_u64) {
+        if let Some(object) = body.as_object_mut() {
+            object.insert(
+                "expires_at".to_string(),
+                json!(crate::entities::now_ms().saturating_add(ttl)),
+            );
+        }
+    }
+    let request: crate::entities::SpawnRequest = serde_json::from_value(body)
+        .map_err(|err| ApiError::bad_request(format!("bad spawn: {err}")))?;
+
     let ((outcome, rendered), revision) =
         crate::entities::commit(|store| {
-            let outcome = store.spawn(body)?;
+            let outcome = store.spawn(request)?;
             let rendered = store.render_one(&outcome.entity.id);
             Ok((outcome, rendered))
         })

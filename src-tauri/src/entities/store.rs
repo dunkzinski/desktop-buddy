@@ -188,6 +188,13 @@ pub struct Entity {
     /// (plus the user, who outranks every plugin).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// When this entity should disappear, in host epoch ms.
+    ///
+    /// `None` means it stays until something removes it. Debris sets one — a pile
+    /// of rubber ducks is a joke, not furniture — while anything a caller spawns
+    /// on purpose does not, so an unset field can never delete a user's prop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
     /// Generated on demand and cached; never persisted.
     #[serde(skip)]
     pub rig: Option<Value>,
@@ -213,6 +220,8 @@ pub struct SpawnRequest {
     pub attach: Option<Attachment>,
     pub owner: Option<String>,
     pub traits: Option<BTreeMap<String, f64>>,
+    /// Absolute host epoch ms at which this entity should be reaped.
+    pub expires_at: Option<u64>,
 }
 
 /// What `update` may change. `None` means "leave it alone"; `Some(None)` on
@@ -447,6 +456,7 @@ impl EntityStore {
             attach,
             visible: true,
             owner: request.owner.map(|owner| owner.trim().to_string()).filter(|owner| !owner.is_empty()),
+            expires_at: request.expires_at,
             rig: None,
         };
         self.entities.insert(entity.id.clone(), entity.clone());
@@ -604,6 +614,46 @@ fn clip_for_state(def: &defs::PropDef, state: &str) -> Option<&'static str> {
         let entity = entity.clone();
         self.bump();
         Ok(entity)
+    }
+
+    /// Remove every entity whose `expires_at` has come, and report the ids.
+    ///
+    /// `now` is passed in rather than read here so a test can reap the future.
+    /// Entities with no `expires_at` are never touched: only things that asked for
+    /// a lifetime get one.
+    pub fn reap_expired(&mut self, now_ms: u64) -> Vec<String> {
+        let due: Vec<String> = self
+            .entities
+            .values()
+            .filter(|entity| entity.expires_at.is_some_and(|at| at <= now_ms))
+            .map(|entity| entity.id.clone())
+            .collect();
+        for id in &due {
+            // Detach anything that was hanging off it first, so a future reaper
+            // rule cannot leave a dangling parent behind.
+            let children: Vec<String> = self
+                .entities
+                .values()
+                .filter(|entity| {
+                    entity
+                        .attach
+                        .as_ref()
+                        .and_then(Attachment::parent_entity)
+                        .is_some_and(|parent| parent == id)
+                })
+                .map(|entity| entity.id.clone())
+                .collect();
+            for child in children {
+                if let Some(entity) = self.entities.get_mut(&child) {
+                    entity.attach = None;
+                }
+            }
+            if self.entities.remove(id).is_some() {
+                self.revision = self.revision.wrapping_add(1);
+                self.dirty = true;
+            }
+        }
+        due
     }
 
     pub fn remove(&mut self, id: &str, actor: Option<&str>) -> Result<Entity, String> {
@@ -838,6 +888,38 @@ pub fn is_state_file(path: &Path) -> bool {
 /* ------------------------------------------------------------------ *
  * tests
  * ------------------------------------------------------------------ */
+
+
+    #[test]
+    fn the_reaper_takes_only_what_expired() {
+        let mut store = EntityStore::new(None);
+        let mut spawn = |store: &mut EntityStore, id: &str, expires_at: Option<u64>| {
+            store
+                .spawn(SpawnRequest {
+                    def: "rubber_duck".to_string(),
+                    id: Some(id.to_string()),
+                    seed: Some(1),
+                    params: json!({}),
+                    state: None,
+                    attach: None,
+                    owner: None,
+                    traits: None,
+                    expires_at,
+                })
+                .expect("spawn");
+        };
+        spawn(&mut store, "debris:soon", Some(1_000));
+        spawn(&mut store, "debris:later", Some(9_000));
+        spawn(&mut store, "keeper", None);
+
+        assert_eq!(store.reap_expired(999), Vec::<String>::new(), "not yet");
+        assert_eq!(store.reap_expired(1_000), vec!["debris:soon".to_string()]);
+        // No expiry means no expiry: an unset field can never delete a prop.
+        assert!(store.state_of("keeper").is_some());
+        assert!(store.state_of("debris:later").is_some());
+        assert_eq!(store.reap_expired(9_000), vec!["debris:later".to_string()]);
+        assert!(store.state_of("keeper").is_some());
+    }
 
 #[cfg(test)]
 mod tests {

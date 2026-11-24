@@ -172,6 +172,13 @@ fn spawn(store: &mut Store, plugin: &str, request: &Value) -> Result<Reply, Stri
             .and_then(Value::as_str)
             .map(str::to_string),
         attach,
+        // A guest may bring its own lifetime (a dropped coin, a puff of smoke).
+        // Absent means permanent, which is the safe default for a prop a plugin
+        // deliberately created.
+        expires_at: request
+            .get("ttl_ms")
+            .and_then(Value::as_u64)
+            .map(|ttl| crate::entities::now_ms().saturating_add(ttl)),
         // Unconditional: the calling plugin owns what it makes. A guest cannot
         // claim another guest's ownership, and cannot spawn an unowned prop.
         owner: Some(plugin.to_string()),
