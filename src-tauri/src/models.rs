@@ -109,6 +109,13 @@ pub struct LoadedModel {
     pub images: BTreeMap<String, String>,
     pub rig_path: String,
     pub is_override: bool,
+    /// Named attachment points, resolved by `sockets::resolve` at load time.
+    ///
+    /// Resolved here rather than in the page so every consumer (the renderer, a
+    /// plugin, `GET /sockets`, an agent reading `/model`) sees the same table
+    /// and the heuristics live in one testable place.
+    #[serde(default)]
+    pub sockets: Vec<crate::sockets::Socket>,
 }
 
 /* ------------------------------------------------------------------ *
@@ -555,6 +562,11 @@ pub fn load_model(root: &Path, name: &str) -> Result<LoadedModel, String> {
     let (bones, parts) = validate_rig(&rig)?;
     let images = inline_images(&dir, &rig)?;
     let label = rig_label(&rig, name);
+    // Sockets are resolved here, once, so the page, `GET /sockets` and a plugin
+    // all read the same table. A malformed sidecar is a warning, not a failure:
+    // the derived table is a complete answer on its own.
+    let sidecar = crate::sockets::load_sidecar(&dir);
+    let sockets = crate::sockets::resolve(&rig, sidecar.as_ref());
 
     if let Some(object) = rig.as_object_mut() {
         object.insert("name".to_string(), json!(name));
@@ -568,11 +580,13 @@ pub fn load_model(root: &Path, name: &str) -> Result<LoadedModel, String> {
         images,
         rig_path: rig_path.display().to_string(),
         is_override: is_override,
+        sockets,
     })
     .map(|model| {
         log::info!(
-            "loaded model {:?}: {bones} bones, {parts} parts, {} images, override={}",
+            "loaded model {:?}: {bones} bones, {parts} parts, {} sockets, {} images, override={}",
             model.name,
+            model.sockets.len(),
             model.images.len(),
             model.is_override
         );

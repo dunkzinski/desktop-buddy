@@ -180,6 +180,11 @@ export const RT = {
   drag: null,
   history: [],
   dirty: false,
+  // Semantic attachment points ("sockets") for the loaded rig, resolved in Rust
+  // (`src-tauri/src/sockets.rs`) and shipped with the model. Empty for a rig
+  // the resolver could not make sense of — `socketWorld()` then simply answers
+  // null and nothing attaches.
+  sockets: [],
 };
 
 /* ---------- custom keyframe animation runtime ---------- */

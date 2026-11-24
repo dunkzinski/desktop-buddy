@@ -1962,6 +1962,7 @@ unknown routes are **404**.
 | GET | `/models` | model catalogue |
 | GET | `/model` | current model |
 | POST | `/model` | switch model |
+| GET | `/sockets` | semantic attachment points of a rig (`?model=<name>` for a folder that is not loaded) |
 | POST | `/import` | import rig or image |
 | GET | `/parts` | parts + tags + variants + runtime patches |
 | POST | `/part` | patch parts by tag/id |
@@ -2160,6 +2161,35 @@ Image imports in `mode:"part"` return the sprite **staged**, not attached:
 {"kind":"part","model":"demo-blob",
  "staged":{"image":"parts/hat.png","name":"hat.png","size":[64,64],"data_url":"data:image/png;base64,…"}}
 ```
+
+### `/sockets`
+
+Where things hang off a rig: `hand_primary`, `head_helmet`, `back`,
+`stage_ground`, …
+
+```bash
+curl -s localhost:8765/sockets
+curl -s "localhost:8765/sockets?model=xenomorph-7"
+```
+```json
+{"ok":true,"model":"demo-blob","bones":7,"count":9,
+ "sockets":[{"id":"hand_primary","bone":"arm_r","pos":[0,0],"rotation":0,"scale":1,
+             "z":420,"accepts":["rod","tool","bag"],"mirror":"hand_secondary",
+             "label":"Primary hand","kind":"bone","source":"derived"}]}
+```
+
+The table is resolved **at load time** (`sockets::resolve`) and travels with
+`LoadedModel`: the `model-changed` Tauri event carries the whole table to the
+page, and the `model` SSE frame reports its **count**.
+Precedence per id:
+`sockets.json` sidecar → `sockets` in `model.json`/`rig.json` → derivation from
+the bones. Derived entries say so (`"source": "derived"`), which is the honest
+answer for every generated creature, `xenomorph-7` (four tentacles, no arms) and
+every hand-authored rig that predates sockets.
+
+`?model=` is **read-only**: it loads the folder from disk and answers, without
+touching the current selection (`ModelCtx::load` would switch the avatar and
+rewrite `.state.json`, which a GET must never do).
 
 ### `/parts`, `/part`, `/mouth`
 

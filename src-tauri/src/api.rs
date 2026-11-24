@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Query, State},
     http::{header, HeaderName, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{
@@ -375,6 +375,7 @@ fn router(api: ApiCtx) -> Router {
         .route("/hit-regions", post(set_hit_regions))
         .route("/models", get(list_models))
         .route("/model", get(get_model).post(switch_model))
+        .route("/sockets", get(get_sockets))
         .route("/import", post(import_asset))
         .route("/parts", get(get_parts))
         .route("/part", post(patch_part))
@@ -1183,6 +1184,43 @@ async fn get_model(State(api): State<ApiCtx>) -> Result<Json<Value>, ApiError> {
         "dir": model.dir,
         "rig_path": model.rig_path,
         "is_override": model.is_override,
+    })))
+}
+
+/// `GET /sockets` query string.
+#[derive(Debug, Deserialize)]
+struct SocketsQuery {
+    /// Model folder name. Absent means "the rig that is loaded right now".
+    #[serde(default)]
+    model: Option<String>,
+}
+
+/// `GET /sockets` — the semantic attachment table of a rig.
+///
+/// This is the same table `LoadedModel.sockets` carries to the page; it is also
+/// the only way to ask about a model that is *not* loaded. Deliberately
+/// read-only: `ModelCtx::load` would switch the avatar and rewrite the saved
+/// selection, which a GET must never do, so the folder is read straight from
+/// disk instead.
+async fn get_sockets(
+    State(api): State<ApiCtx>,
+    Query(query): Query<SocketsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let model = match query
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => models::load_model(&api.model.root, name).map_err(ApiError::bad_request)?,
+        None => api.model.ensure_loaded().map_err(ApiError::bad_request)?,
+    };
+    Ok(Json(json!({
+        "ok": true,
+        "model": model.name,
+        "bones": model.rig.get("bones").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
+        "count": model.sockets.len(),
+        "sockets": model.sockets,
     })))
 }
 

@@ -150,6 +150,77 @@ left of where the numbers read — the commonest way a hand-written shape rig en
 up looking scrambled. The editor's selection box already accounts for all three
 cases, so a part authored this way still selects where it paints.
 
+### Sockets (attachment points)
+
+A socket is a **named** anchor on the rig: where a tool, bag or helmet hangs.
+Props never hard-code a coordinate, they name a socket, so the same fishing rod
+can live in a paw, in a chest, or on the ground.
+
+```json
+"sockets": [
+  { "id": "hand_primary", "bone": "arm3_r", "pos": [2, 0], "rotation": 0.3,
+    "scale": 1, "z": 420, "accepts": ["rod", "tool", "bag"],
+    "mirror": "hand_secondary", "label": "Right paw" },
+  { "id": "tail_grip", "bone": "tail_3", "pos": [0, -6], "z": 300 }
+]
+```
+
+| field | meaning |
+| --- | --- |
+| `id` | the socket name. The vocabulary the runtime knows: `hand_primary`, `hand_secondary`, `head_helmet`, `neck_collar`, `chest_front`, `chest_back`, `back`, `stage_ground`, `perch_surface`; anything else is a custom socket a prop can still ask for |
+| `bone` | **required** for a bone socket; must exist in `bones`. Omit `bone` for a virtual surface (`stage_ground`, `perch_surface`) |
+| `pos` | local offset from the bone joint, in the bone's rotated frame (default `[0, 0]`) |
+| `rotation` / `scale` | local transform on top of the bone (default `0` / `1`) |
+| `z` | draw-order band. Lower draws behind the body. Conventions: `back` 40, `chest_back` 60, `neck_collar` 120, `chest_front` 340, `head_helmet` 380, hands 420. Default 380 |
+| `accepts` | what may attach, matched against a prop's tags. Empty means anything |
+| `mirror` | the socket on the other side of the body |
+| `label` | human name for the editor / API |
+
+#### Where to put them
+
+1. **`sockets.json`, beside `rig.json`** — the recommended home. It is not the
+   file the rig editor rewrites, so it survives editing; the editor's
+   serialiser only emits `format/name/label/notes/animations/bones` and would
+   drop a `sockets` block out of a saved rig.
+
+   ```json
+   { "sockets": [ { "id": "hand_primary", "bone": "arm3_r" } ] }
+   ```
+
+   A bare array is accepted too. A malformed file is a warning, never a load
+   failure — the derived table below is a complete fallback.
+2. **`sockets` inside `model.json` / `rig.json`** — what the procedural
+   generator writes. Loads today: the validator accepts unknown root keys.
+3. **Nothing at all** — the runtime derives the table from the bones.
+
+Precedence, per socket id: sidecar → manifest → derived. An explicit entry that
+names a missing bone is skipped with a warning rather than failing the load.
+
+#### How derivation decides
+
+The shipped rigs do not share a vocabulary: a generated creature is
+`arm_r → arm2_r → arm3_r` with the paw on the **distal** bone, `demo-blob` has
+`arm_l → arm_l_hand` but a bare `arm_r`, and `xenomorph-7` is four tentacles with
+no arms and no head at all. So the resolver scores candidates:
+
+* an arm/tentacle bone beats a wing tip or a plain leaf;
+* a declared side (`_r`, `_l`, `left…`, `right…`, or a part tag like
+  `leg_left`) beats one inferred from the rest position;
+* deeper in its chain beats shallower — the paw, not the shoulder;
+* the rest position on the expected side beats the other side;
+* the id breaks the final tie, so the result is deterministic.
+
+`head_helmet` wants a `head*` bone (or parts tagged `head`/`eye`/`mouth`/`brow`);
+`neck_collar` a `neck`/`collar` bone; `chest_front`/`chest_back` a
+`torso`/`chest`/`body` bone; `back` the root. A rig without those bones simply
+has no such socket — that is a property of the rig, not an error. Both hands are
+always produced when the rig has anything limb-like, because "the other paw" is a
+more useful answer than "no such thing".
+
+`GET /sockets` returns the resolved table with a `source` of `"sidecar"`,
+`"manifest"` or `"derived"`, so you can always tell what was authored and what
+was inferred.
+
 ### Animation channels (`anim`)
 
 Each channel is an amplitude that the renderer adds to the bone's rotation

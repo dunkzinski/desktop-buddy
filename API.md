@@ -276,6 +276,46 @@ saved one) or are the model currently loaded.
   "rig_path": ".../model.json", "is_override": false }
 ```
 
+#### `GET /sockets`
+
+The semantic attachment points of a rig — where a prop, tool or helmet hangs.
+
+```json
+{ "ok": true, "model": "demo-blob", "bones": 7, "count": 9,
+  "sockets": [
+    { "id": "hand_primary", "bone": "arm_r", "pos": [0, 0], "rotation": 0,
+      "scale": 1, "z": 420, "accepts": ["rod", "tool", "bag"],
+      "mirror": "hand_secondary", "label": "Primary hand",
+      "kind": "bone", "source": "derived" },
+    { "id": "stage_ground", "pos": [0, 0], "rotation": 0, "scale": 1, "z": 200,
+      "accepts": [], "label": "Ground", "kind": "virtual", "source": "derived" }
+  ] }
+```
+
+`?model=<name>` asks about a folder that is **not** loaded; the request is
+read-only and never switches the avatar. Without it the loaded rig answers.
+
+Fields:
+
+| field | meaning |
+|---|---|
+| `id` | the vocabulary: `hand_primary`, `hand_secondary`, `head_helmet`, `neck_collar`, `chest_front`, `chest_back`, `back`, `stage_ground`, `perch_surface`, or a custom id |
+| `bone` | the bone the socket hangs from; **absent** for a virtual surface |
+| `pos` / `rotation` / `scale` | local transform from the bone joint, in the bone's rotated frame |
+| `z` | draw-order band: `back` 40, `chest_back` 60, `head_helmet` 380, hands 420. The page adds the part's own `z` on top |
+| `accepts` | tags a prop definition must match; empty means "anything" |
+| `mirror` | the socket on the other side of the body, if any |
+| `kind` | `bone` or `virtual` |
+| `source` | `sidecar`, `manifest` or `derived` — how the entry came to exist |
+
+A rig may define sockets in a `sockets.json` sidecar next to `rig.json`, or in a
+`sockets` array inside `model.json`/`rig.json`; anything not defined is
+**derived** from the bones (the distal bone of an arm chain is the hand, a
+`head*` bone is the helmet socket, and a rig with no arms — `xenomorph-7` is
+four tentacles — gets the two tentacle tips). A sidecar entry beats the manifest,
+which beats the heuristics. See [MODEL_FORMAT.md](MODEL_FORMAT.md) for the file
+format and the full derivation rules.
+
 #### `POST /model`
 
 ```json

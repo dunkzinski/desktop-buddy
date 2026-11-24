@@ -104,6 +104,9 @@ export function applyModel(model) {
   RT.selected = null;
   RT.drag = null;
   RT.history = [];
+  // Attachment points come resolved from Rust; never derive them here, or the
+  // renderer and `GET /sockets` could disagree about where a paw is.
+  RT.sockets = Array.isArray(model.sockets) ? model.sockets : [];
   // A new rig invalidates the clip that was playing against the old one.
   animation.clip = null;
   animation.offsets = {};
@@ -309,52 +312,75 @@ export function clampRotation(bone, value) {
  * not key it. The clip offsets are written by `animator.js` into
  * `animation.offsets`; reading them here (instead of importing the animator)
  * keeps `rig.js` below the animator in the module DAG.
+ *
+ * `ctx.clips` lets a second rig (a prop entity) carry its own clip state instead
+ * of borrowing the avatar's; absent, the global animator is used.
  */
-export function animationOffset(bone) {
-  if (!bone || !bone.id || !animation) return null;
-  const entry = animation.offsets ? animation.offsets[bone.id] : null;
+export function animationOffset(bone, ctx = RT) {
+  if (!bone || !bone.id) return null;
+  const clips = ctx && ctx.clips ? ctx.clips : (animation ? animation.offsets : null);
+  const entry = clips ? clips[bone.id] : null;
   return entry && typeof entry === "object" ? entry : null;
 }
 
-export function localRotation(bone) {
-  const override = RT.pose[bone.id];
-  const clip = animationOffset(bone);
+export function localRotation(bone, ctx = RT) {
+  const pose = (ctx && ctx.pose) || RT.pose;
+  const override = pose[bone.id];
+  const clip = animationOffset(bone, ctx);
   const base = num(bone.rotation, 0) + animOffset(bone).rot + (clip ? num(clip.rotation, 0) : 0);
   const value = override && Number.isFinite(override.rotation) ? override.rotation : base;
   return clampRotation(bone, value);
 }
 
-export function localScale(bone) {
-  const override = RT.pose[bone.id];
-  const clip = animationOffset(bone);
+export function localScale(bone, ctx = RT) {
+  const pose = (ctx && ctx.pose) || RT.pose;
+  const override = pose[bone.id];
+  const clip = animationOffset(bone, ctx);
   const base = num(bone.scale, 1) * (clip ? num(clip.scale, 1) : 1);
   return override && Number.isFinite(override.scale) ? override.scale : base;
 }
 
-export function computeWorld() {
-  RT.world = {};
-  for (const id of RT.order) {
-    const bone = RT.bones[id];
+/**
+ * Compute world transforms for one rig, rooted at `origin`.
+ *
+ * `ctx` carries the rig (`bones`, `order`, and the `world` map it fills); the
+ * avatar is just `RT` rooted at its own position. This is the seam a prop
+ * entity uses: same maths, different root, no forked copy of the transform
+ * chain. `origin` defaults to the origin of screen space.
+ */
+export function computeWorldInto(ctx, origin) {
+  const root = {
+    x: origin && Number.isFinite(origin.x) ? origin.x : 0,
+    y: origin && Number.isFinite(origin.y) ? origin.y : 0,
+    rot: origin && Number.isFinite(origin.rot) ? origin.rot : 0,
+    scale: origin && Number.isFinite(origin.scale) ? origin.scale : 1,
+  };
+  ctx.world = {};
+  for (const id of ctx.order) {
+    const bone = ctx.bones[id];
     if (!bone) continue;
-    const parent = bone.parent && RT.world[bone.parent]
-      ? RT.world[bone.parent]
-      : { x: avatar.x, y: avatar.y, rot: 0, scale: 1 };
+    const parent = bone.parent && ctx.world[bone.parent] ? ctx.world[bone.parent] : root;
     const cos = Math.cos(parent.rot);
     const sin = Math.sin(parent.rot);
-    const clip = animationOffset(bone);
+    const clip = animationOffset(bone, ctx);
     const ox = bone.pos[0] + (clip ? num(clip.x, 0) : 0);
     const oy = bone.pos[1] + (clip ? num(clip.y, 0) : 0);
     const bob = animOffset(bone).bob;
-    const override = RT.pose[bone.id] || {};
+    const override = ((ctx && ctx.pose) || RT.pose)[bone.id] || {};
     const dx = num(override.x, 0);
     const dy = num(override.y, 0);
-    RT.world[id] = {
+    ctx.world[id] = {
       x: parent.x + (ox * cos - oy * sin) * parent.scale + dx,
       y: parent.y + (ox * sin + oy * cos) * parent.scale + dy + bob,
-      rot: parent.rot + localRotation(bone),
-      scale: parent.scale * localScale(bone),
+      rot: parent.rot + localRotation(bone, ctx),
+      scale: parent.scale * localScale(bone, ctx),
     };
   }
+  return ctx.world;
+}
+
+export function computeWorld() {
+  return computeWorldInto(RT, { x: avatar.x, y: avatar.y, rot: 0, scale: 1 });
 }
 
 /* ---------- part geometry ---------- */
@@ -465,6 +491,42 @@ export function partBox(bone, part) {
     maxY = Math.max(maxY, corner[1]);
   }
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/* ---------- sockets ---------- */
+
+/**
+ * World transform of a socket on the loaded rig, or `null` when it cannot
+ * resolve (unknown bone, virtual surface, no rig yet).
+ *
+ * Deliberately the same arithmetic as `partWorldMatrix`: a socket is a virtual
+ * part on its bone, so `translate(bone) · rotate(bone) · scale(bone × socket)`
+ * places it. Anything that attaches to a socket can therefore use one formula.
+ */
+export function socketWorld(socket) {
+  if (!socket || !socket.bone) return null;
+  const w = RT.world[socket.bone];
+  if (!w) return null;
+  const scale = w.scale * num(socket.scale, 1);
+  const pos = Array.isArray(socket.pos) ? socket.pos : [0, 0];
+  const cos = Math.cos(w.rot);
+  const sin = Math.sin(w.rot);
+  return {
+    x: w.x + (pos[0] * cos - pos[1] * sin) * scale,
+    y: w.y + (pos[0] * sin + pos[1] * cos) * scale,
+    rot: w.rot + num(socket.rotation, 0),
+    scale,
+  };
+}
+
+/** The loaded rig's socket table (empty for a rig that resolved none). */
+export function socketList() {
+  return Array.isArray(RT.sockets) ? RT.sockets : [];
+}
+
+/** One socket by id, or `null`. */
+export function socketById(id) {
+  return socketList().find((socket) => socket && socket.id === id) || null;
 }
 
 /* ---------- hit regions / click-through ---------- */

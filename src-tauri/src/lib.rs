@@ -17,6 +17,7 @@ pub mod models;
 pub mod platform;
 pub mod plugins;
 pub mod settings;
+pub mod sockets;
 pub mod soul;
 pub mod stt;
 pub mod tts;
@@ -852,6 +853,8 @@ pub fn model_event_payload(model: &LoadedModel, reason: &str) -> Value {
         "is_override": model.is_override,
         "bones": bones,
         "images": model.images.len(),
+        // A count only: the table itself arrives with `model-changed` / `/model`.
+        "sockets": model.sockets.len(),
         "reason": reason,
     })
 }
@@ -4087,6 +4090,7 @@ mod tests {
             is_override: true,
             rig: serde_json::json!({ "bones": [{ "id": "root" }, { "id": "head" }] }),
             images: Default::default(),
+            sockets: Vec::new(),
         };
         let payload = model_event_payload(&model, "switch");
         assert_eq!(payload["name"], "demo");
@@ -4095,6 +4099,8 @@ mod tests {
         assert_eq!(payload["is_override"], true);
         assert_eq!(payload["reason"], "switch");
         assert_eq!(payload["rig_path"], "C:/models/demo/rig.json");
+        // A count, not the table: the page gets the table with `model-changed`.
+        assert_eq!(payload["sockets"], 0);
     }
 
     /* ---------- watcher supervision ---------- */

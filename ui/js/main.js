@@ -17,6 +17,7 @@ import {
 
 import {
   applyModel, refreshModelList, wireRegions, saveRig, resetRig, avatarBounds,
+  socketList, socketWorld,
 } from "./rig.js";
 
 import { initRenderer, render, resizeCanvas } from "./renderer.js";
@@ -1433,6 +1434,26 @@ function installDebugSurface() {
     }),
 
     viewport: () => ({ w: viewport.w, h: viewport.h }),
+
+    /**
+     * The rig's attachment points, resolved — the page half of `GET /sockets`.
+     * `world` is where the socket actually is this frame, so a CDP probe can
+     * prove an attachment lands in the right place without reading pixels.
+     */
+    sockets: () => socketList().map((socket) => {
+      const world = socketWorld(socket);
+      return {
+        id: socket.id,
+        bone: socket.bone || null,
+        kind: socket.kind || "bone",
+        source: socket.source || "",
+        z: socket.z,
+        accepts: socket.accepts || [],
+        world: world
+          ? { x: round(world.x, 1), y: round(world.y, 1), rot: round(world.rot, 3) }
+          : null,
+      };
+    }),
 
     /** The scavenging walk, as the page sees it (the guest owns the run). */
     scavenge: () => ({
