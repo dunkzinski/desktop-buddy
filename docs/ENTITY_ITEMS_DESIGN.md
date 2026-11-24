@@ -882,12 +882,20 @@ mid-vanish resolves to "finished, hidden" from the persisted `started_ms`.
 | Live: dismiss | `state: dormant`, `clip: vanish`; `stats.drawables` drops to 0 after the clip |
 | Visual | three distinguishable faceted stones in the well beside the gremlin |
 
-### Still open
+### Closed since (this was the last open slice of Phase 4)
 
-The **chest card** (a panel with the slots, a Take button each, and a click region
-so the pod is clickable) is the remaining slice of the original plan. Everything
-it would call already exists on the page (`chestStatus`, `putInChest`,
-`takeFromChest`, `dismissChest`), so it is UI work, not plumbing.
+* **The chest card shipped** — `ui/js/chest-card.js`: an unbounded contents list
+  (`∞`, not slots) with a `Take` button per item, plus Summon / Open / Fold / Look
+  for… / Tidy. It polls `/chest` at 2 Hz so a plugin's rummage shows up without the
+  card having to be told.
+* **The pod is clickable and draggable** — `main.js` hit-tests `overChest(point)` on
+  the canvas: a press starts a move (`podDrag`, committed on release), a press
+  without movement opens the card. That is the "furniture you can pick up" rule from
+  §12, and it is what makes the click region part of Phase 4 rather than a loose end.
+
+So the phase table above is a plan, and Phase 4 in fact ran on well past it: §12 is
+what the pod became once it worked (no bottom, rummages, tumbles, tools withdrawn,
+gestures, the loot bag, the lid).
 
 ---
 
@@ -1078,3 +1086,35 @@ The general rule this settles: **a prop's state transition must be announced in 
 frame the renderer listens to**, not in a bespoke event. `chest-opened` is still
 emitted for anything that wants the semantic one, but presentation rides on
 `entity-updated`.
+
+---
+
+## 13. Where Phase 4 actually ended
+
+The plan said: the walk, the trinkets, the vanish, the card. What shipped also
+includes everything in §12, all of it driven by watching the thing run:
+
+| Beat | Where |
+|---|---|
+| The pod has no bottom | §12 "Capacity was the wrong idea" |
+| A search overshoots, throwing junk | §12 "The rummage", 12.2 |
+| Every prop tumbles in its own way | 12.3 |
+| Tools are *withdrawn*, not found | 12.4 |
+| Gestures give props hands to come out of | 12.5 |
+| Scavenging carries a bag that fills | 12.6 |
+| The lid opens for a rummage and shuts itself | 12.7 |
+| A rod he already owns is not fished out again | 12.4 |
+
+### What is genuinely left
+
+Not Phase 4 work — Phase 5, as named back in §8's known limits:
+
+* `attach.flip` is stored and validated but **not rendered**, so a prop mirrored for
+  the off hand is drawn unmirrored.
+* **Nested sockets** — a socket on a *prop* rather than on the avatar. The rig
+  supports sockets per bone; the store resolves attachment chains, but nothing yet
+  authors a socket inside an item (a lamp on a rod, a fish on a line).
+* Per-rig prop fitting (§8's note): prop size reads right on a generated gremlin and
+  small on `xenomorph-7`.
+
+Nothing in Phase 4's plan is unshipped. The remaining work is a new arc.
