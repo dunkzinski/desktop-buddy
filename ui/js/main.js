@@ -1791,7 +1791,8 @@ async function init() {
    * beat (`at_ms`), and the page throws it out with an arc.
    */
   let rummageTimer = 0;
-  listen("chest-find", (payload) => {
+  listen("chest-find", (event) => {
+    const payload = event && event.payload ? event.payload : event || {};
     // The pod's contents and the debris both changed: pull the roster now rather
     // than waiting for the 120 ms debounce to be armed by something else.
     markDirty();
@@ -1813,7 +1814,40 @@ async function init() {
     }, span);
   }).catch((err) => console.error("[avatar] chest-find listener failed:", err));
 
-  for (const name of ["entity-spawned", "entity-updated", "entity-removed"]) {
+  /**
+   * A tool comes out of the pod and lands on the stage, and only then does it go
+   * into a hand. The host holds it on the ground for `pickup_ms`, so the walk over
+   * there **is** the pick-up: a rod that snapped straight to his paw read as a
+   * teleport, which is the one thing a prop must never do.
+   */
+  let pickupTimer = 0;
+  listen("chest-withdraw", (event) => {
+    // Tauri hands the listener an *event*, not the payload — the same shape
+    // `chest-summoned` already unpacks. Reading `event.at` was quietly always
+    // undefined, which is why nobody walked anywhere.
+    const payload = event && event.payload ? event.payload : event || {};
+    markDirty();
+    refreshChestCard();
+    const sequence = Array.isArray(payload && payload.sequence) ? payload.sequence : [];
+    const step = sequence.find((entry) => entry && entry.kind === "item");
+    const at = payload && Array.isArray(payload.at) ? payload.at : null;
+    const landAt = Number(step && step.at_ms) || 0;
+    const origin = chestOrigin();
+    if (origin) avatar.lookAt = { x: origin.x, y: origin.y - 40 };
+    window.clearTimeout(pickupTimer);
+    if (!at) return;
+    // It has to be *on the ground* before he moves: land first, then go and get it.
+    pickupTimer = window.setTimeout(() => {
+      const stand = clampAvatarPosition(Number(at[0]) - 26, Number(at[1]) - 8);
+      // A user gesture outranks an activity — and so does this one, which is the
+      // reason he does not stand at the pod's skirt and wait.
+      avatar.manualMoves += 1;
+      endChestWalk();
+      beginWalk(stand.x, stand.y);
+    }, Math.max(240, landAt + 240));
+  }).catch((err) => console.error("[avatar] chest-withdraw listener failed:", err));
+
+    for (const name of ["entity-spawned", "entity-updated", "entity-removed"]) {
     listen(name, () => {
       markDirty();
       // The card is a view of the same store; a pod moved by a plugin or an agent

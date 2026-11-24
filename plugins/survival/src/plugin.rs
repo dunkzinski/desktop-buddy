@@ -248,6 +248,8 @@ pub struct Survival {
     /// The state the rod entity is showing, as last pushed. `None` means "not
     /// synced yet"; `Some("stowed")` means "away and known to be away".
     rod_state: Option<String>,
+    /// When the rod should go into a hand — it is on the stage until then.
+    rod_pickup_ms: u64,
     /// True once the rod entity exists on the host.
     rod_ready: bool,
     /// Epoch ms before which the rod is not worth another ABI attempt (a host
@@ -282,6 +284,7 @@ impl Survival {
             dirty: false,
             last_save_ms: 0,
             rod_state: None,
+            rod_pickup_ms: 0,
             rod_ready: false,
             rod_retry_ms: 0,
         }
@@ -1461,6 +1464,17 @@ impl Survival {
                 return;
             }
             self.rod_ready = true;
+            // It lands on the stage first and he goes and gets it: the host says
+            // how long the beat is, and the page spends that time walking him to
+            // it. Without the wait the rod flies into his paw the instant it
+            // exists, which reads as a teleport rather than a pick-up.
+            self.rod_pickup_ms = now_ms.saturating_add(props::pickup_ms());
+        }
+
+        if now_ms < self.rod_pickup_ms {
+            // Being fetched: not in a hand yet, and not gone either.
+            self.rod_state = Some("fetching".to_string());
+            return;
         }
 
         let applied = if desired == "stowed" {

@@ -2397,11 +2397,16 @@ you ask for, which is the whole point of a bottomless pod.
 It is **idempotent by id** and the tool gets no `expires_at` (it is not debris).
 
 **The pod comes when it is called for.** With no pod on the stage (or a dormant
-one) `withdraw` summons it *beside the gremlin* — `report_state` feeds
+one) — or one more than 220 px away — `withdraw` moves it *beside the gremlin* — `report_state` feeds
 `entities::remember_avatar` at 8 Hz, so the store always knows where he stands —
 then opens it. The entity store owns that one piece of stage geometry for exactly
 this reason: the page is the only thing that knows where the avatar is, and "put it
 next to him" cannot be answered from the prop store alone.
+
+**The tool lands before it is held.** `withdraw` answers `pickup_ms`, and the
+plugin waits that long before it attaches the rod: the rod lies on the stage while
+the page walks the gremlin to it, and the walk *is* the pick-up. Two guests of the
+same idea — the host owns the clock, the page owns the acting.
 
 The survival plugin therefore asks the pod for the rod on every cast and puts it
 **back in the pod** when the session ends — a landed fish, a lapsed bite, a cancel —

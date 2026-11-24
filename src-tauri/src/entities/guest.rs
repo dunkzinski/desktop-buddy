@@ -172,7 +172,29 @@ fn withdraw(
     let socket = request.get("socket").and_then(Value::as_str).map(str::to_string);
     let seed = request.get("seed").and_then(Value::as_u64);
     match chest::withdraw(store, def, id.as_deref(), socket.as_deref(), Some(plugin), seed) {
-        Ok(applied) => Ok(Reply::ok(summary(&applied.body))),
+        // Same shape `spawn` answers with — `ok`, `created`, a summary of the
+        // entity — plus the beat. A reply without `ok` reads as a refusal to every
+        // guest (`props::accepted`), which made the caller take its fallback even
+        // though the pod had done the work.
+        Ok(applied) => {
+            let rendered = applied.body.get("entity").cloned().map(|entity| summary(&entity));
+            let mut reply = Reply::ok(json!({
+                "ok": true,
+                "created": applied.body.get("created").cloned().unwrap_or(json!(false)),
+                "changed": applied.body.get("changed").cloned().unwrap_or(json!(false)),
+                "item": applied.body.get("item").cloned(),
+                "duds": applied.body.get("duds").cloned().unwrap_or(json!([])),
+                "sequence": applied.body.get("sequence").cloned().unwrap_or(json!([])),
+                "narrative": applied.body.get("narrative").cloned(),
+                "entity": rendered,
+                // How long until it belongs in a hand: the pick-up is the page's.
+                "pickup_ms": applied.body.get("pickup_ms").cloned().unwrap_or(json!(0)),
+            }));
+            // The frames the controller raised — the summon, the throws, the pick-up
+            // — belong to the page. A reply that drops them is a silent chest.
+            reply.events = applied.events;
+            Ok(reply)
+        }
         Err(err) => Ok(Reply::refused(STATUS_BAD_REQUEST, err)),
     }
 }
@@ -332,7 +354,19 @@ fn list(store: &mut Store) -> Result<Reply, String> {
 
 fn summary(entity: &Value) -> Value {
     let mut out = json!({});
-    for key in ["id", "def", "state", "attach", "visible", "owner", "traits"] {
+    for key in [
+        "id",
+        "def",
+        "state",
+        "attach",
+        "visible",
+        "owner",
+        "traits",
+        // `withdraw` answers with this: how long the caller should wait before it
+        // puts the tool in a hand, so the pick-up is the page's business, not a
+        // teleport.
+        "pickup_ms",
+    ] {
         if let Some(value) = entity.get(key) {
             if let Some(object) = out.as_object_mut() {
                 object.insert(key.to_string(), value.clone());
@@ -433,6 +467,31 @@ mod tests {
         assert_eq!(reply.body["ok"], json!(true));
         assert_eq!(reply.body["entity"]["state"], json!("cast"));
         assert_eq!(reply.events[0].0, "entity-updated");
+    }
+
+    #[test]
+    fn a_withdraw_reply_says_ok_and_says_when_to_pick_it_up() {
+        let mut store = store();
+        store.set_avatar([400.0, 400.0]);
+        let request = json!({
+            "op": "withdraw",
+            "def": "fishing_rod",
+            "id": "survival:rod",
+            "socket": "stage_ground",
+        });
+        let reply = apply(&mut store, "survival", &request).expect("applies");
+        // `ok` is not decoration: a guest's `accepted()` reads exactly this, and a
+        // reply without it makes the caller fall back after the work is done.
+        assert_eq!(reply.body["ok"], json!(true), "{}", reply.body);
+        assert_eq!(reply.body["created"], json!(true));
+        assert!(
+            reply.body["pickup_ms"].as_u64().unwrap_or(0) > 0,
+            "the caller needs the beat: {}",
+            reply.body
+        );
+        assert_eq!(reply.body["entity"]["def"], json!("fishing_rod"));
+        // The rummage it announced is in the events, so the page can draw it.
+        assert!(reply.events.iter().any(|(event, _)| *event == "chest-summoned"));
     }
 
     #[test]

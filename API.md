@@ -632,8 +632,9 @@ beats, same throws, same `sequence`:
 
 ```json
 { "ok": true, "created": true, "changed": true,
-  "item": { "id": "survival:rod", "def": "fishing_rod",
-            "label": "Fishing rod", "socket": "stage_ground" },
+  "item": { "id": "survival:rod", "def": "fishing_rod", "label": "Fishing rod",
+            "socket": "stage_ground", "at": [1652.7, 710.7] },
+  "pickup_ms": 1720,
   "duds": [{ "id": "chest:junk0", "def": "rubber_duck", "label": "Rubber duck", "at_ms": 0 }],
   "narrative": "Rummaged around — out came Rubber duck — then the Fishing rod." }
 ```
@@ -644,9 +645,15 @@ beats, same throws, same `sequence`:
 * **`socket`**: `stage_ground` (default) lays the tool beside the pod;
   `hand_primary` puts it straight into the paw. Anything else is an avatar socket.
 * **A tool never expires** — it is not debris, so no `expires_at`.
+* **It lands before it is held.** `item.at` is where it landed and `pickup_ms` is
+  how long until it should be in a hand; the page walks the gremlin over in that
+  window. A caller that ignores both still gets the tool — it just appears in the
+  paw instead of being picked up.
 * **It brings the pod with it.** No pod (or a dormant one) and it is summoned
   **beside the gremlin** — 110 px right, 62 px below, the same spot
-  `POST /chest/summon` uses — and opened; a closed pod is simply opened. That is
+  `POST /chest/summon` uses — and opened; a closed pod is simply opened. A pod
+  already on the stage but **more than 220 px away comes over too**, contents and
+  all, announced as `chest-summoned` so the page plays the arrival. That is
   what makes `POST /fishing/cast` work on a bare stage: the pod pops in, unfolds,
   and he rummages. It is announced as `chest-summoned`, so the page walks him over
   and draws it.

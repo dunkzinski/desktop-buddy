@@ -21,6 +21,20 @@ const STAGE_SOCKET: &str = "stage_ground";
 /// How far to one side of the anchor an item is laid down.
 const DROP_OFFSET: f64 = 70.0;
 
+/// Where "beside the gremlin" is: to its right, a little below its feet — where a
+/// helper would put something down within reach. Shared by the summon route and by
+/// `withdraw`, so the two cannot disagree about what "next to him" means.
+const BESIDE: [f64; 2] = [110.0, 62.0];
+
+/// How far the pod may be and still count as beside him. Beyond this, `withdraw`
+/// walks it over rather than letting him fish at a pod across the stage.
+const WITHIN_REACH: f64 = 220.0;
+
+/// How long after the tool lands he should be grasping it. The page walks him to
+/// it in that time, and the plugin waits for this many milliseconds before it
+/// attaches the tool — which is what makes the pick-up visible.
+const PICKUP_BEAT_MS: u64 = 900;
+
 /// One mutation's outcome: the body to return and the events to publish once the
 /// store lock is gone.
 #[derive(Debug)]
@@ -857,14 +871,43 @@ pub fn withdraw(
                     .to_string(),
             );
         };
-        // To its right and a little below its feet, where a helper would put
-        // something down within reach.
-        let summoned = summon(store, seed ^ 0x0C4E_57AB, [ax + 110.0, ay + 62.0])?;
+        let summoned = summon(store, seed ^ 0x0C4E_57AB, [ax + BESIDE[0], ay + BESIDE[1]])?;
         events.extend(summoned.events);
     }
     if chest_state(store, CHEST_ID).as_deref() != Some("open") {
         let opened = open(store)?;
         events.extend(opened.events);
+    }
+    // "Next to him" is the whole gag, and a pod left across the stage would only
+    // make the pup look at it. So if it is not within reach, it comes over — with
+    // everything inside it, because contents hang off the pod.
+    if let Some([ax, ay]) = store.avatar() {
+        let here = anchor_of(store);
+        let want = [ax + BESIDE[0], ay + BESIDE[1]];
+        if (here[0] - want[0]).abs() > WITHIN_REACH || (here[1] - want[1]).abs() > WITHIN_REACH {
+            let mut seat = Attachment::world(round2(want[0]), round2(want[1]));
+            seat.rotation = Some(0.0);
+            store.update(
+                CHEST_ID,
+                UpdatePatch {
+                    attach: Some(seat),
+                    // It arrives rather than sliding: the appear clip is the pop.
+                    clip: Some(Some("appear".to_string())),
+                    ..Default::default()
+                },
+                None,
+            )?;
+            events.push((
+                "chest-summoned",
+                json!({
+                    "id": CHEST_ID,
+                    "x": round2(want[0]),
+                    "y": round2(want[1]),
+                    "created": false,
+                    "seeded": 0,
+                }),
+            ));
+        }
     }
 
     let mut rng = Rng::new(seed ^ 0x7217_0DED_1234_5678);
@@ -886,6 +929,9 @@ pub fn withdraw(
     if seat.rotation.is_none() {
         seat.rotation = def.grip_rotation(&seat.socket);
     }
+    // Where it landed, for the page: it has to walk him to it, and reading it back
+    // out of the roster means racing the reveal.
+    let landed = seat.offset.map(|[x, y]| json!([x, y]));
     let outcome = store.spawn(SpawnRequest {
         def: def.id.to_string(),
         id: Some(id.clone()),
@@ -928,10 +974,20 @@ pub fn withdraw(
         "ok": true,
         "created": outcome.created,
         "changed": true,
-        "item": { "id": id, "def": def.id, "label": def.label, "socket": socket },
+        "item": {
+            "id": id,
+            "def": def.id,
+            "label": def.label,
+            "socket": socket,
+            "at": landed,
+        },
+        // Milliseconds from *now* until he should be grasping it: the tool's
+        // reveal, plus the beat the page needs to walk him over to it.
+        "pickup_ms": FIRST_REVEAL_MS + item_at + PICKUP_BEAT_MS,
         "duds": duds,
         "sequence": sequence,
         "narrative": narrative,
+        "entity": store.render_one(&id),
         "chest": view(store),
     }));
     applied.events.append(&mut events);
@@ -939,6 +995,17 @@ pub fn withdraw(
         "id": CHEST_ID,
         "item": id,
         "def": def.id,
+        "at": applied
+            .body
+            .get("item")
+            .and_then(|item| item.get("at"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "pickup_ms": applied
+            .body
+            .get("pickup_ms")
+            .cloned()
+            .unwrap_or(Value::Null),
         "duds": applied.body.get("duds").cloned().unwrap_or_else(|| json!([])),
         "sequence": applied.body.get("sequence").cloned().unwrap_or_else(|| json!([])),
         "narrative": applied.body.get("narrative").cloned().unwrap_or(Value::Null),
@@ -1349,6 +1416,61 @@ mod tests {
             .expect("withdraw again");
         assert_eq!(again.body["changed"], json!(false));
         assert!(again.body.get("duds").is_none(), "no second rummage");
+    }
+
+    #[test]
+    fn withdraw_walks_a_distant_pod_over_to_him() {
+        // Summoned at [900, 640] by `store_with_chest`, gremlin far away.
+        let mut store = store_with_chest();
+        store.set_avatar([200.0, 300.0]);
+        open(&mut store).expect("open");
+        let rod = defs::find("fishing_rod").expect("rod");
+        let applied = withdraw(&mut store, rod, None, None, None, Some(4)).expect("withdraw");
+
+        let chest = store.render_one(CHEST_ID).expect("pod");
+        let offset = chest["attach"]["offset"].as_array().expect("offset");
+        assert!((offset[0].as_f64().unwrap() - 310.0).abs() < 0.01, "{offset:?}");
+        assert!((offset[1].as_f64().unwrap() - 362.0).abs() < 0.01, "{offset:?}");
+        // It arrives — and it says so, or the page never draws the pop.
+        assert!(
+            applied.events.iter().any(|(event, _)| *event == "chest-summoned"),
+            "a pod that moves must be announced"
+        );
+    }
+
+    #[test]
+    fn withdraw_leaves_a_pod_already_beside_him_alone() {
+        let mut store = store_with_chest();
+        store.set_avatar([830.0, 610.0]); // the pod is at [900, 640], well within reach
+        open(&mut store).expect("open");
+        let rod = defs::find("fishing_rod").expect("rod");
+        let applied = withdraw(&mut store, rod, None, None, None, Some(4)).expect("withdraw");
+        let chest = store.render_one(CHEST_ID).expect("pod");
+        let offset = chest["attach"]["offset"].as_array().expect("offset");
+        assert_eq!(offset[0].as_f64().unwrap(), 900.0, "left where it was");
+        assert!(
+            !applied.events.iter().any(|(event, _)| *event == "chest-summoned"),
+            "no pop for a pod that is already there"
+        );
+    }
+
+    #[test]
+    fn withdraw_says_when_the_tool_reaches_a_hand() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        let rod = defs::find("fishing_rod").expect("rod");
+        let applied = withdraw(&mut store, rod, None, None, None, Some(4)).expect("withdraw");
+        let pickup = applied.body["pickup_ms"].as_u64().expect("pickup_ms");
+        let item = applied.body["sequence"]
+            .as_array()
+            .expect("sequence")
+            .iter()
+            .find(|step| step["kind"] == json!("item"))
+            .cloned()
+            .expect("the tool is in the sequence");
+        let land = item["at_ms"].as_u64().expect("at_ms");
+        // After it lands, never before: the pick-up needs it on the ground first.
+        assert!(pickup > land + FIRST_REVEAL_MS, "pickup {pickup} vs land {land}");
     }
 
     #[test]

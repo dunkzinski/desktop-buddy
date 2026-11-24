@@ -12,10 +12,19 @@
 use serde_json::{json, Value};
 
 use crate::host;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// The rod's entity id. Stable, so the same physical rod survives a restart and
 /// an idempotent respawn is free rather than a second rod.
 pub const ROD_ID: &str = "survival:rod";
+
+/// How long the last `withdraw` said to wait before the rod goes into a hand.
+static PICKUP_MS: AtomicU64 = AtomicU64::new(0);
+
+/// That wait, in milliseconds (0 when the host does not run the beat).
+pub fn pickup_ms() -> u64 {
+    PICKUP_MS.load(Ordering::Relaxed)
+}
 /// Fixed seed: the rod you fish with should not be a different rod every launch.
 /// (Variants belong to the *chest*, which rolls seeds once and remembers them.)
 pub const ROD_SEED: u64 = 0x5EED_0F15_1106;
@@ -48,13 +57,22 @@ fn accepted(reply: Option<Value>) -> bool {
 /// Idempotent either way: the host returns the existing entity rather than a
 /// second rod, so this is safe to call on every sync.
 pub fn ensure_rod() -> bool {
-    if accepted(call(json!({
+    let reply = call(json!({
         "op": "withdraw",
         "def": "fishing_rod",
         "id": ROD_ID,
         "seed": ROD_SEED,
         "socket": "stage_ground",
-    }))) {
+    }));
+    if accepted(reply.clone()) {
+        // The host says when the rod should be in his paw; until then it is lying
+        // on the stage and the page is walking him to it.
+        let wait = reply
+            .as_ref()
+            .and_then(|value| value.get("pickup_ms"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        PICKUP_MS.store(wait, core::sync::atomic::Ordering::Relaxed);
         return true;
     }
     accepted(call(json!({
