@@ -250,6 +250,8 @@ pub struct Survival {
     rod_state: Option<String>,
     /// When the rod should go into a hand — it is on the stage until then.
     rod_pickup_ms: u64,
+    /// When a rod he is still holding should go back in the pod (0 = not lingering).
+    rod_linger_ms: u64,
     /// True once the rod entity exists on the host.
     rod_ready: bool,
     /// Epoch ms before which the rod is not worth another ABI attempt (a host
@@ -285,6 +287,7 @@ impl Survival {
             last_save_ms: 0,
             rod_state: None,
             rod_pickup_ms: 0,
+            rod_linger_ms: 0,
             rod_ready: false,
             rod_retry_ms: 0,
         }
@@ -1478,13 +1481,31 @@ impl Survival {
         }
 
         let applied = if desired == "stowed" {
-            // The session is over, so the rod goes **back in the pod** — which is
-            // what lets the next cast fish it out again. `put_away` is left for a
-            // rod that was made but never raised.
+            // Fishing is over — but the rod hangs about for a moment first: he
+            // keeps it in his paw, the tip drops, the line goes slack, and only
+            // then does it go back in the pod. A rod that vanished on the exact
+            // frame the fish left read as a glitch rather than an ending.
             if self.rod_state.as_deref().is_some_and(|state| state != "stowed") {
+                if self.rod_linger_ms == 0 {
+                    if !props::hold(props::RESTING) {
+                        // The host refused: it is gone, so forget it and try again
+                        // on the next transition rather than lying about the state.
+                        self.rod_ready = false;
+                        self.rod_state = None;
+                        return;
+                    }
+                    self.rod_state = Some(props::RESTING.to_string());
+                    self.rod_linger_ms = now_ms.saturating_add(props::LINGER_MS);
+                    return;
+                }
+                if now_ms < self.rod_linger_ms {
+                    return;
+                }
+                // Linger over: back in the pod, ready to be fished out again.
                 props::discard_rod();
                 self.rod_ready = false;
                 self.rod_state = None;
+                self.rod_linger_ms = 0;
                 return;
             }
             props::put_away()
@@ -1493,6 +1514,8 @@ impl Survival {
         };
         if applied {
             self.rod_state = Some(desired.to_string());
+            // Back in use (or fresh from the pod): any pending linger is void.
+            self.rod_linger_ms = 0;
         } else {
             // The host refused (or vanished): forget what we had and back off, so
             // the next transition tries again instead of lying about the state.
@@ -3603,14 +3626,21 @@ mod tests {
             json!("biting")
         );
 
-        // Let the window lapse: the fish is off, so the rod goes **back in the
-        // pod** — the entity is gone rather than stowed on a shelf, which is what
-        // makes the next cast a rummage again.
+        // Let the window lapse: the fish is off, so the rod **rests** in his paw
+        // first — it does not blink out on the frame the fish leaves.
         advance_clock(5_000);
+        state.tick(0.0).expect("tick");
+        assert_eq!(
+            crate::host::entity_snapshot(props::ROD_ID).expect("the rod hangs about")["state"],
+            json!("resting")
+        );
+        // ...and then it goes back in the pod, which is what makes the next cast a
+        // rummage again.
+        advance_clock(props::LINGER_MS + 1);
         state.tick(0.0).expect("tick");
         assert!(
             crate::host::entity_snapshot(props::ROD_ID).is_none(),
-            "the rod went back in the pod"
+            "after the linger it goes back in the pod"
         );
         // ...and fishing it out again is the next cast's job.
         state.cast().expect("cast");
@@ -3632,14 +3662,21 @@ mod tests {
         );
 
         state.cancel_fishing().expect("cancel");
+        assert_eq!(
+            crate::host::entity_snapshot(props::ROD_ID).expect("the rod hangs about")["state"],
+            json!("resting"),
+            "cancelling rests the rod too"
+        );
+        advance_clock(props::LINGER_MS + 1);
+        state.tick(0.0).expect("tick");
         assert!(
             crate::host::entity_snapshot(props::ROD_ID).is_none(),
-            "cancelling puts the rod back in the pod too"
+            "then back in the pod"
         );
     }
 
     #[test]
-    fn a_landed_fish_puts_the_rod_back_in_the_pod_in_the_same_call() {
+    fn a_landed_fish_rests_the_rod_before_it_goes_back() {
         let mut state = angler();
         state.cast().expect("cast");
         wait_for_the_bite(&mut state);
@@ -3656,9 +3693,16 @@ mod tests {
         let payload = state.reel().expect("reel");
         assert_eq!(payload["caught"], json!(true), "{payload}");
 
+        assert_eq!(
+            crate::host::entity_snapshot(props::ROD_ID).expect("the rod hangs about")["state"],
+            json!("resting"),
+            "the catch rests the rod"
+        );
+        advance_clock(props::LINGER_MS + 1);
+        state.tick(0.0).expect("tick");
         assert!(
             crate::host::entity_snapshot(props::ROD_ID).is_none(),
-            "the catch puts the rod back in the pod"
+            "then it goes back in the pod"
         );
     }
 

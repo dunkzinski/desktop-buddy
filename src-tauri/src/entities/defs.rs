@@ -101,10 +101,13 @@ pub const FISHING_ROD: PropDef = PropDef {
         "waiting",
         "biting",
         "reeling",
+        // Done fishing, still holding it: the beat between the catch and the rod
+        // going back in the pod.
+        "resting",
         "broken",
     ],
     default_state: "stowed",
-    animations: &["cast", "waiting", "biting", "reeling"],
+    animations: &["cast", "waiting", "biting", "reeling", "resting"],
     own_sockets: &["grip_point", "line_end"],
     // Held across the body, tip up and forward. Tuned against a generated
     // creature (rest hand rotation ~0.86 rad); a sidecar socket with its own
@@ -341,6 +344,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_declared_animation_is_a_clip_the_rig_carries() {
+        // A state whose clip does not exist is a prop that silently freezes in the
+        // last pose — the rod would "rest" mid-cast. Pin them together.
+        for def in PROPS {
+            let rig = build_rig(def, 7, &json!({})).expect("build");
+            let clips = rig.get("animations").and_then(Value::as_object);
+            for name in def.animations {
+                assert!(
+                    clips.is_some_and(|map| map.contains_key(*name)),
+                    "{}: `{name}` is declared but the generated rig has no such clip",
+                    def.id
+                );
+            }
+        }
+        // ...and the rod's rest really is one of them, since the plugin holds the
+        // rod in it for a couple of seconds after fishing.
+        assert!(FISHING_ROD.states.contains(&"resting"));
+        assert!(FISHING_ROD.animations.contains(&"resting"));
     }
 
     #[test]

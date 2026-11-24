@@ -2408,8 +2408,10 @@ plugin waits that long before it attaches the rod: the rod lies on the stage whi
 the page walks the gremlin to it, and the walk *is* the pick-up. Two guests of the
 same idea — the host owns the clock, the page owns the acting.
 
-The survival plugin therefore asks the pod for the rod on every cast and puts it
-**back in the pod** when the session ends — a landed fish, a lapsed bite, a cancel —
+The survival plugin therefore asks the pod for the rod on every cast, and when a
+session ends it **rests the rod in his paw for two seconds** (`resting`: tip down,
+line slack) before putting it **back in the pod**. The beat matters — a rod that
+vanishes on the same frame the fish leaves reads as a glitch, not an ending — a landed fish, a lapsed bite, a cancel —
 so the next cast fishes it out again. Nothing is created for a cast that is not
 happening: the rod is fetched when the phase leaves `Idle`, not at boot, or a pod
 would pop in beside a gremlin who is only standing there. The `spawn` fallback

@@ -18,6 +18,13 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// an idempotent respawn is free rather than a second rod.
 pub const ROD_ID: &str = "survival:rod";
 
+/// The state a rod is in when fishing is over but he has not let go of it yet.
+pub const RESTING: &str = "resting";
+
+/// How long it hangs about before it goes back in the pod. Long enough to read as
+/// "he is done", short enough to stay out of the way.
+pub const LINGER_MS: u64 = 2_000;
+
 /// How long the last `withdraw` said to wait before the rod goes into a hand.
 static PICKUP_MS: AtomicU64 = AtomicU64::new(0);
 

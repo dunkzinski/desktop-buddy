@@ -329,6 +329,16 @@ fn fishing_rod(rng: &mut Rng, params: &Value) -> Value {
                 kf(1.0, json!({ "tip": { "rotation": 0.0 }, "line": { "rotation": 0.0 },
                                 "bobber": { "y": 0.0 } })),
             ]),
+            // Done: the tip drops, the line goes slack, and he just holds it for a
+            // moment. A slow breath so it is not a freeze frame.
+            "resting": clip(1600.0, true, vec![
+                kf(0.0, json!({ "root": { "rotation": 0.22 }, "tip": { "rotation": 0.1 },
+                                "line": { "rotation": -0.2 } })),
+                kf(0.5, json!({ "root": { "rotation": 0.28 }, "tip": { "rotation": 0.16 },
+                                "line": { "rotation": -0.26 } })),
+                kf(1.0, json!({ "root": { "rotation": 0.22 }, "tip": { "rotation": 0.1 },
+                                "line": { "rotation": -0.2 } })),
+            ]),
             "reeling": clip(900.0, true, vec![
                 kf(0.0, json!({ "shaft1": { "rotation": 0.0 }, "shaft2": { "rotation": 0.0 },
                                 "line": { "rotation": 0.0 } })),
