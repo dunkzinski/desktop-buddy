@@ -94,6 +94,12 @@
       <button class="control-btn hidden" id="btn-metamorphose" data-plugin="metamorphosis"
               title="Stage, growth and evolution branches — pops out as a card (Esc closes)"
               aria-pressed="false">Metamorphose</button>
+      <button class="control-btn" id="btn-chest"
+              title="The curiosity pod: what is inside it, and the four things you can do to it (Esc closes)"
+              aria-pressed="false">Pod</button>
+      <button class="control-btn" id="btn-behaviour"
+              title="Watcher, AI brain, voice and walk speed — pops out as a card (Esc closes)"
+              aria-pressed="false">Brain &amp; body</button>
       <button class="control-btn" id="btn-settings" title="Settings: paths, AI profiles and survival (Esc closes)"
               aria-pressed="false">Settings ⚙</button>
       <button class="control-btn" id="btn-ask" title="Ask or task the avatar (Enter)">Ask…</button>
@@ -101,58 +107,6 @@
               title="What's on my screen? Captures the focused window and answers with the local vision model">
         What's on screen?
       </button>
-    </div>
-  </div>
-
-  <div class="section">
-    <label>Watcher</label>
-    <div class="watcher-row">
-      <button class="switch" id="watcher-toggle" role="switch" aria-checked="true"
-              title="Start / stop desktop-buddy-watcher.exe (no app restart)">
-        <span class="switch-knob"></span>
-      </button>
-      <span class="watcher-badge off" id="watcher-badge">off</span>
-      <button class="log-btn" id="btn-watcher-logs" title="Open the watcher console">Logs ↗</button>
-    </div>
-  </div>
-
-  <div class="section">
-    <label>AI Brain</label>
-    <div class="ai-row">
-      <select id="ai-profile-select" title="Which model answers the desktop triggers">
-        <option value="">no profiles</option>
-      </select>
-      <span class="ai-health offline" id="ai-health-badge" title="checking…">offline</span>
-    </div>
-  </div>
-
-  <div class="section">
-    <label>Walk speed</label>
-    <div class="slider-row">
-      <input type="range" id="walk-speed" min="50" max="400" step="10" value="150" />
-      <span class="slider-value" id="walk-speed-value">150 px/s</span>
-    </div>
-  </div>
-
-  <div class="section">
-    <label>Voice</label>
-    <div class="watcher-row">
-      <button class="switch" id="tts-toggle" role="switch" aria-checked="true"
-              title="Speak every bubble out loud (local Piper, no network)">
-        <span class="switch-knob"></span>
-      </button>
-      <span class="watcher-badge off" id="tts-badge" title="Piper voice status">off</span>
-    </div>
-  </div>
-
-  <div class="section">
-    <label>Push to talk</label>
-    <div class="watcher-row">
-      <button class="control-btn ptt-btn" id="btn-ptt"
-              title="Hold to talk (or hold Alt+V anywhere). Release to send.">
-        Hold to talk
-      </button>
-      <span class="watcher-badge off" id="stt-badge" title="Microphone status">idle</span>
     </div>
   </div>
 
@@ -559,6 +513,101 @@
     </footer>
   </div>
 </div>
+
+<aside id="chest-card" class="hidden" role="dialog" aria-label="Chest"
+       aria-hidden="true">
+  <header>
+    <h3>Curiosity pod</h3>
+    <span class="chest-state" id="chest-state">away</span>
+    <span class="hd-spacer"></span>
+    <button class="mini-btn" id="btn-chest-close" title="Close (Esc)" aria-label="Close">✕</button>
+  </header>
+  <div class="chest-body">
+    <div class="chest-slots" title="Slots used by what is inside (GET /chest)">
+      <span class="chest-slots-label">Slots</span>
+      <div class="chest-slotbar" role="progressbar" aria-valuemin="0" aria-valuemax="8">
+        <div class="chest-slotfill" id="chest-slotfill"></div>
+      </div>
+      <span class="chest-slots-value" id="chest-slots">—</span>
+    </div>
+    <div class="chest-actions">
+      <button class="control-btn primary" id="btn-chest-summon"
+              title="Put the pod on the stage beside the avatar (POST /chest/summon)">Summon</button>
+      <button class="mini-btn" id="btn-chest-open"
+              title="Splay the petals and show what is inside (POST /chest/open)">Open</button>
+      <button class="mini-btn" id="btn-chest-fold"
+              title="Fold the petals shut (POST /chest/close)">Close</button>
+      <button class="mini-btn" id="btn-chest-dismiss"
+              title="Send it away. Shift-click forces it, dropping anything you put in on the stage (POST /chest/dismiss)">Dismiss</button>
+    </div>
+    <div class="chest-list" id="chest-contents" role="list" aria-label="Chest contents"></div>
+    <div class="chest-note" id="chest-note" aria-live="polite"></div>
+  </div>
+</aside>
+
+<aside id="behaviour-card" class="hidden" role="dialog" aria-label="Brain and body"
+       aria-hidden="true">
+  <header>
+    <h3>Brain &amp; body</h3>
+    <span class="hd-spacer"></span>
+    <button class="mini-btn" id="btn-behaviour-close" title="Close (Esc)" aria-label="Close">✕</button>
+  </header>
+  <div class="behaviour-body">
+    <p class="behaviour-hint">The autonomy brain, the voice and the legs. Everything here
+      also lives in Settings; this card is the quick switch.</p>
+    <div class="section">
+      <label>Watcher</label>
+      <div class="watcher-row">
+        <button class="switch" id="watcher-toggle" role="switch" aria-checked="true"
+                title="Start / stop desktop-buddy-watcher.exe (no app restart)">
+          <span class="switch-knob"></span>
+        </button>
+        <span class="watcher-badge off" id="watcher-badge">off</span>
+        <button class="log-btn" id="btn-watcher-logs" title="Open the watcher console">Logs ↗</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <label>AI Brain</label>
+      <div class="ai-row">
+        <select id="ai-profile-select" title="Which model answers the desktop triggers">
+          <option value="">no profiles</option>
+        </select>
+        <span class="ai-health offline" id="ai-health-badge" title="checking…">offline</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <label>Walk speed</label>
+      <div class="slider-row">
+        <input type="range" id="walk-speed" min="50" max="400" step="10" value="150" />
+        <span class="slider-value" id="walk-speed-value">150 px/s</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <label>Voice</label>
+      <div class="watcher-row">
+        <button class="switch" id="tts-toggle" role="switch" aria-checked="true"
+                title="Speak every bubble out loud (local Piper, no network)">
+          <span class="switch-knob"></span>
+        </button>
+        <span class="watcher-badge off" id="tts-badge" title="Piper voice status">off</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <label>Push to talk</label>
+      <div class="watcher-row">
+        <button class="control-btn ptt-btn" id="btn-ptt"
+                title="Hold to talk (or hold Alt+V anywhere). Release to send.">
+          Hold to talk
+        </button>
+        <span class="watcher-badge off" id="stt-badge" title="Microphone status">idle</span>
+      </div>
+    </div>
+  </div>
+</aside>
 
 <div class="toast" id="toast"></div>
 

@@ -20,7 +20,17 @@ import {
   socketList, socketWorld,
 } from "./rig.js";
 
-import { initEntities, stepEntities, markDirty, entitySnapshot, openChest } from "./entities.js";
+import {
+  chestBounds,
+  entitySnapshot,
+  initEntities,
+  markDirty,
+  openChest,
+  overChest,
+  stepEntities,
+} from "./entities.js";
+import { initChestCard, openChestCard, refreshChestCard } from "./chest-card.js";
+import { initBehaviourCard } from "./behaviour-card.js";
 
 import { initRenderer, render, resizeCanvas } from "./renderer.js";
 
@@ -792,6 +802,15 @@ function attachInteractionDetection(canvas) {
       return;
     }
     const point = canvasPoint(canvas, event);
+    // The pod is furniture: clicking it opens its card rather than starting a
+    // drag. It has its own click region (see `entities.js::chestBounds`), so this
+    // only runs when the press genuinely landed on it.
+    if (overChest(point)) {
+      pressOrigin = null;
+      grab = null;
+      openChestCard();
+      return;
+    }
     pressOrigin = overAvatar(point) ? point : null;
     // The anchor offset is captured at press time, so the avatar keeps its grip
     // under the cursor instead of snapping its centre to the pointer.
@@ -1354,6 +1373,8 @@ function setupUI() {
 function installDebugSurface() {
   window.__avatarDebug = {
     ready: false,
+    /** Screen box of the pod, the same one the click map publishes (null when absent). */
+    chestBounds: () => chestBounds(),
     setExpression: setExpression,
     /** A program/event reaction: the face is held, then reverts to neutral. */
     reactExpression: reactExpression,
@@ -1648,6 +1669,8 @@ async function init() {
   // that owns them. Not gated on any plugin — with nothing spawned the roster is
   // empty and a reconcile every 2 s costs one tiny request.
   initEntities();
+  initChestCard();
+  initBehaviourCard();
   updateTimeline();
   const info = await call("get_runtime_info");
   if (info) applyApiStatus(info);
@@ -1703,8 +1726,12 @@ async function init() {
   // Props. The payload only says *which* entity moved; the roster refetch is
   // coalesced inside `entities.js`, so a spawn+attach+state burst is one request.
   for (const name of ["entity-spawned", "entity-updated", "entity-removed"]) {
-    listen(name, () => markDirty())
-      .catch((err) => console.error(`[avatar] ${name} listener failed:`, err));
+    listen(name, () => {
+      markDirty();
+      // The card is a view of the same store; a pod moved by a plugin or an agent
+      // should show up there without waiting for the two-second poll.
+      refreshChestCard();
+    }).catch((err) => console.error(`[avatar] ${name} listener failed:`, err));
   }
   setInterval(() => {
     reconcileScavenge().catch((err) =>

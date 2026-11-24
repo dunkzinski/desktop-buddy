@@ -58,6 +58,8 @@ const PANELS = [
   { id: "watcher-drawer", handle: "#watcher-drawer header" },
   { id: "history-drawer", handle: "#history-drawer header" },
   { id: "survival-card", handle: "#survival-card header" },
+  { id: "chest-card", handle: "#chest-card header" },
+  { id: "behaviour-card", handle: "#behaviour-card header" },
   { id: "metamorphose-card", handle: "#metamorphose-card header" },
   // A modal-ish chooser: keep its own high layer instead of joining the stack.
   { id: "import-chooser", handle: "#import-chooser h3", stack: false },

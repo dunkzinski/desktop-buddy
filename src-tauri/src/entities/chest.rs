@@ -131,6 +131,9 @@ pub fn view(store: &mut EntityStore) -> Value {
                 "def": entity.def,
                 "state": entity.state,
                 "visible": entity.visible,
+                "owner": entity.owner,
+                // The pod's own trinkets leave with it; yours block a dismiss.
+                "pod_property": entity.owner.as_deref() == Some("chest"),
             })
         })
         .collect();

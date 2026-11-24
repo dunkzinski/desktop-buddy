@@ -23,8 +23,10 @@
 import { avatar, RT, num, round } from "./state.js";
 import { call } from "./ipc.js";
 import {
+  addRegionSource,
   computeWorldInto,
   makeRigContext,
+  partLocalRect,
   partWorldMatrixIn,
   socketTransformIn,
 } from "./rig.js";
@@ -121,6 +123,73 @@ export async function chestStatus() {
   return body.chest || null;
 }
 
+/**
+ * Screen bounds of the pod, or `null` when there is none (or it is dormant).
+ *
+ * Used for two things: the click-through region the host needs so a click on the
+ * pod reaches the page at all, and the hit test that opens its card. Computed
+ * from the same part matrices the renderer uses — a second, hand-rolled box for
+ * a procedurally generated shape would drift the moment the generator changed.
+ */
+export function chestBounds() {
+  const slots = slotMap();
+  let hit = null;
+  for (const [id, slot] of slots) {
+    if (slot.entry.entity.def === "chest") {
+      hit = [id, slot];
+      break;
+    }
+  }
+  if (!hit) return null;
+  const [id, slot] = hit;
+  // `dormant` is off the stage: nothing to click.
+  if (slot.entry.entity.state === "dormant") return null;
+  const root = resolveRoot(id, slots);
+  if (!root) return null;
+
+  const ctx = slot.entry.ctx;
+  computeWorldInto(ctx, root);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const bone of ctx.boneList) {
+    if (!ctx.world[bone.id]) continue;
+    for (const part of bone.parts) {
+      if (part.visible === false) continue;
+      const matrix = partWorldMatrixIn(ctx.world, bone, part);
+      if (!matrix) continue;
+      const rect = partLocalRect(part);
+      const cos = Math.cos(matrix.rot);
+      const sin = Math.sin(matrix.rot);
+      const corners = [
+        [rect.x, rect.y],
+        [rect.x + rect.w, rect.y],
+        [rect.x + rect.w, rect.y + rect.h],
+        [rect.x, rect.y + rect.h],
+      ];
+      for (const [cx, cy] of corners) {
+        const x = matrix.x + (cx * cos - cy * sin) * matrix.scale;
+        const y = matrix.y + (cx * sin + cy * cos) * matrix.scale;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (!Number.isFinite(minX) || maxX <= minX) return null;
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/** Is this screen point on the pod? */
+export function overChest(point) {
+  const box = chestBounds();
+  if (!box) return false;
+  return point.x >= box.x && point.x <= box.x + box.w &&
+    point.y >= box.y && point.y <= box.y + box.h;
+}
+
 /** Something changed; refetch as soon as the debounce allows. */
 export function markDirty() {
   dirty = true;
@@ -175,7 +244,14 @@ export async function refresh() {
 }
 
 /** Load once at startup (the page may boot before anything exists). */
+let regionSourceAdded = false;
+
 export function initEntities() {
+  if (!regionSourceAdded) {
+    // Tell the click map about the pod; `rig.js` publishes it while it exists.
+    addRegionSource(chestBounds);
+    regionSourceAdded = true;
+  }
   refresh();
 }
 

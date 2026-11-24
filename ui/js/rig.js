@@ -656,6 +656,18 @@ export function avatarBounds() {
  * Tell the Rust side which screen rectangles should accept mouse input. Called
  * on every UI change, on resize, and on a 200 ms timer (the avatar walks).
  */
+/**
+ * Extra clickable boxes supplied by other modules (a prop's own bounds, say).
+ *
+ * A hook rather than an import: `entities.js` already imports this file, and a
+ * cycle for one rectangle is not worth the fragility.
+ */
+const regionSources = [];
+
+export function addRegionSource(source) {
+  if (typeof source === "function" && !regionSources.includes(source)) regionSources.push(source);
+}
+
 export function wireRegions() {
   const regions = [];
   const push = (el) => {
@@ -713,9 +725,20 @@ export function wireRegions() {
   // accept clicks over the click-through desktop, so each box goes in only
   // while that card is open. Forgetting this makes the card *look* live while
   // every click falls through to whatever is behind it.
-  for (const id of ["survival-card", "metamorphose-card"]) {
+  for (const id of ["survival-card", "metamorphose-card", "chest-card", "behaviour-card"]) {
     const card = document.getElementById(id);
     if (card && !card.classList.contains("hidden")) push(card);
+  }
+  // Props that carry their own region (the chest): published while they exist, so
+  // clicking the pod on a click-through desktop actually reaches the page.
+  for (const source of regionSources) {
+    try {
+      const box = source();
+      if (box && box.w > 1 && box.h > 1) regions.push(box);
+    } catch (err) {
+      // A region source must never break the click map.
+      console.warn("[avatar] region source failed:", err);
+    }
   }
   // The speech bubble hosts the quick-reply box: while it is on screen its box
   // must accept clicks, or the user could see the input but not type in it.

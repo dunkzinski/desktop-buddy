@@ -80,6 +80,9 @@ ui/
     ├── speech.js       # Speech bubble lifecycle (`speak`, `updateSpeech`, `positionBubble`, `hideSpeech`), text-driven lip sync (`mouthPoseFor`, `setMouthFrom`, `stepMouth`), the "Thinking…" card and the command bar's anchor (`positionCommandBar`)
     ├── bridge.js       # Tauri IPC commands, event listeners (`avatar-state-changed`, `emote`, `speak`, `avatar-animate`, etc.), hit-region publishing (`wireRegions`, `setClickThrough`), state sync (`reportState`, `applyRemoteState`, `applyPartPatch`)
     ├── drag.js         # Floating-panel drag + layout: header-only pointer drag, viewport clamping (multi-monitor overlay), sibling z-order, `localStorage` persistence (`desktop-buddy.panel-layout.v1`), `setupPanelDrag` / `resetPanelLayout`; a drag sets `body.panel-dragging` so `rig.js` publishes a full-viewport region for the gesture
+    ├── entities.js     # Prop entities on the canvas: `fetchEntities` / `markDirty` (2 s reconcile + event-driven refetch), `entityDrawables` (z-sorted, per-socket parents, `world` parent for stage-anchored props), `stepEntities`, `clip_for_state` mirroring, the chatty chest API (`chestStatus`, `summonChest`, `openChest`, `closeChest`, `putInChest`, `takeFromChest`, `dismissChest` — refusals thrown with the host's own words), and `chestBounds` / `overChest` for the pod's click region
+    ├── chest-card.js   # The **Curiosity pod** card: `render` (state pill, slot bar, one row per item with a Take button), `openChestCard` / `closeChestCard` / `toggleChestCard`, `refreshChestCard` (called by the entity-event listeners, so the card tracks pods moved by plugins or agents); a 2 s poll only while it is open
+    ├── behaviour-card.js # The **Brain & body** card: watcher, AI brain, voice, push-to-talk and walk speed. It owns the card only — every control kept its element id when it moved out of the control panel, so the code that drives each behaviour did not move
     ├── survival.js     # The **Survival** pop-out card and its four tabs: `setupSurvival` (hydrate from `GET /survival` + `GET /foods` + `GET /inventory` + `GET /store`, follow the `survival` / `survival-meal` / `survival-threshold` / `survival-craft` / `survival-craving` / `inventory-changed` / `store-transaction` / `fishing-*` events, 15 s survival poll floor), `renderSurvival` (tier badge, the two bars and the craving row, from any of the payload shapes), `feed` (the real `POST /survival/feed`), `setCraving` / `clearCraving`, `craft` + `syncCraftButton` (the recipe picker's `can_cook`/`missing`, so a cook the bag cannot pay for is not clickable), `showSurvivalTab` (status / bag / fishing / store), `renderInventory` + `addItem` + `useItem` + `sellPickedItem` (`GET /inventory`, `POST /inventory/add`, `POST /inventory/use`, plus a one-unit `POST /store/sell` straight from the bag at the slot's `sell_price`), `syncInventoryButtons` (Use for edibles, Sell for anything the counter prices), the shop (`renderStore` + `renderWallet` + `pickStoreItem` + `syncStoreButtons` + `trade` over `GET /store`, `POST /store/buy`, `POST /store/sell`), the fishing mini-game (`castLine` / `hookFish` / `reelFish` / `cancelFishing`, a 120 ms `GET /fishing` poll, `startMarker` animating off the plugin's sweep), `toggleSurvivalCard` / `survivalCardOpen`
     ├── metamorphose.js    # The **Metamorphosis** pop-out card: `setupMetamorphose` (hydrate from
     │                  # `GET /creature/status`, follow the `creature` event, 10 s poll), `renderCreature`
@@ -102,6 +105,29 @@ ui/
 > The app is **only** `src-tauri` + `ui` + `models` (+ `docs`/`tools` for
 > development). The legacy prototype trees are gone — see the repository map
 > above.
+
+### Pop-out cards, and who owns a click
+
+Four cards float over the canvas: **survival** (top left), **metamorphosis**
+(beside it), **curiosity pod** and **brain & body** (the right-hand shelf, below
+the titlebar — it is opaque there and z-indexed above the cards, so a card at
+`top: 14px` on the right loses its header and its close button).
+
+Three rules hold them together:
+
+* **A card is inert to clicks unless it is in the region list.** `wireRegions`
+  publishes `[cards…, bubble, avatar, extra sources]`, and `wireRegions` runs
+  again on every open/close and on every drag — a card that forgets the call is
+  visible but unclickable on a click-through desktop, which reads as a freeze.
+* **Moving a control keeps its id.** The behaviour card is the watcher, AI,
+  voice, push-to-talk and walk-speed sections lifted straight out of the control
+  panel with their markup unchanged; `main.js`, `settings.js` and `plugins.js`
+  kept working because they bind by id and never by position.
+* **A prop can publish its own region.** `addRegionSource(fn)` (in `rig.js`)
+  lets `entities.js` contribute the pod's box without `rig.js` importing it —
+  the dependency stays one-way. `main.js` then hit-tests the same box before it
+  starts an avatar drag, so clicking the pod opens its card and clicking the
+  gremlin still drags it.
 
 ---
 

@@ -775,7 +775,9 @@ input[type="range"]::-webkit-slider-thumb {
 /* ---------- survival card (pop-out, not in the sidebar) ---------- */
 
 #survival-card,
-#metamorphose-card {
+#metamorphose-card,
+#chest-card,
+#behaviour-card {
   position: fixed; top: 14px; left: 18px; width: 272px;
   background: rgba(12, 12, 18, 0.94);
   backdrop-filter: blur(20px);
@@ -789,19 +791,37 @@ input[type="range"]::-webkit-slider-thumb {
 #metamorphose-card {
   left: 300px; width: 292px; z-index: 941;
 }
+/* Top-right rather than a third column: the other two grow downwards. It starts
+   below the titlebar (y 10..50, z-index 1000) — at the top-right the titlebar is
+   opaque, and a card there would lose its header and its close button. */
+#chest-card {
+  left: auto; right: 18px; top: 56px; width: 258px; z-index: 942;
+}
+/* Beside the pod card, on the same right-hand shelf: these two are the panels you
+   flick on and off during a session, where survival and metamorphosis are places
+   you go and stay. */
+#behaviour-card {
+  left: auto; right: 288px; top: 56px; width: 262px; z-index: 943;
+}
 
 #survival-card header,
-#metamorphose-card header {
+#metamorphose-card header,
+#chest-card header,
+#behaviour-card header {
   display: flex; align-items: center; gap: 8px;
   padding: 9px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 #survival-card h3,
-#metamorphose-card h3 {
+#metamorphose-card h3,
+#chest-card h3,
+#behaviour-card h3 {
   font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
   text-transform: uppercase; color: #b9b9cc;
 }
 #survival-card .mini-btn,
-#metamorphose-card .mini-btn { font-size: 10.5px; padding: 4px 8px; }
+#metamorphose-card .mini-btn,
+#chest-card .mini-btn,
+#behaviour-card .mini-btn { font-size: 10.5px; padding: 4px 8px; }
 .survival-body { padding: 10px 12px 12px; }
 .survival-tier {
   flex: 0 0 auto;
@@ -1499,3 +1519,51 @@ input[type="range"]::-webkit-slider-thumb {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 9.5px; color: #6e6e85;
 }
+
+/* ---------- chest card: slots, contents, the two verbs ---------- */
+
+.chest-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 9px; }
+.chest-state {
+  font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: #8ec4f5; background: rgba(74, 144, 217, 0.16);
+  border: 1px solid rgba(122, 182, 240, 0.28); border-radius: 999px;
+  padding: 2px 7px;
+}
+.chest-state[data-state="open"] { color: #a8e6a0; background: rgba(94, 196, 90, 0.16); border-color: rgba(130, 220, 120, 0.3); }
+.chest-state[data-state="dormant"], .chest-state[data-state="away"] { color: #9aa0b4; background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12); }
+
+.chest-slots { display: flex; align-items: center; gap: 8px; }
+.chest-slots-label { font-size: 10px; color: #9aa0b4; }
+.chest-slotbar { flex: 1; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.09); overflow: hidden; }
+.chest-slotfill { height: 100%; width: 0%; border-radius: 999px;
+  background: linear-gradient(90deg, #6fbf73, #d9c26a); transition: width 180ms ease; }
+.chest-slots-value { font-size: 10px; color: #c9cede; font-variant-numeric: tabular-nums; }
+
+.chest-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.chest-actions .control-btn { flex: 1 1 100%; }
+
+.chest-list { display: flex; flex-direction: column; gap: 4px; max-height: 168px; overflow-y: auto; }
+.chest-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 7px; border-radius: 9px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 10.5px; color: #c9cede;
+}
+.chest-row .chest-row-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.chest-row .chest-row-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chest-row .chest-row-tag { font-size: 9px; color: #8a90a4; text-transform: uppercase; letter-spacing: 0.04em; }
+.chest-empty { font-size: 10.5px; color: #8a90a4; padding: 6px 2px; }
+.chest-note { font-size: 10px; color: #e0a0a0; min-height: 12px; }
+
+/* ---------- brain & body card: the systems you flick on and off ---------- */
+
+.behaviour-body { padding: 10px 12px 12px; }
+.behaviour-hint {
+  margin: 0 0 10px; font-size: 10px; line-height: 1.45; color: #8a90a4;
+}
+/* The panel's own sections were spaced for a tall column; here they are a list. */
+#behaviour-card .section { margin-bottom: 11px; }
+#behaviour-card .section > label { margin-bottom: 5px; }
+#behaviour-card .slider-row { gap: 8px; }
+#behaviour-card .slider-value { font-size: 10px; }
