@@ -1782,6 +1782,34 @@ async function init() {
 
   // Props. The payload only says *which* entity moved; the roster refetch is
   // coalesced inside `entities.js`, so a spawn+attach+state burst is one request.
+  /**
+   * The gremlin digs while a rummage plays.
+   *
+   * Driven by the `chest-find` frame rather than by the button, so a rummage
+   * started by an agent or a plugin gets the same performance. The arms keep
+   * moving for as long as the host's sequence lasts — each dud leaves the pod on a
+   * beat (`at_ms`), and the page throws it out with an arc.
+   */
+  let rummageTimer = 0;
+  listen("chest-find", (payload) => {
+    const sequence = Array.isArray(payload && payload.sequence) ? payload.sequence : [];
+    const span = sequence.reduce(
+      (longest, step) => Math.max(longest, Number(step && step.at_ms) || 0),
+      0,
+    ) + 800;
+    const origin = chestOrigin();
+    if (origin) avatar.lookAt = { x: origin.x, y: origin.y - 40 };
+    if (avatar.mode === "idle") {
+      avatar.mode = "waving";
+      avatar.wavePhase = 0;
+    }
+    avatar.idleTimer = 0;
+    window.clearTimeout(rummageTimer);
+    rummageTimer = window.setTimeout(() => {
+      if (avatar.mode === "waving") avatar.mode = "idle";
+    }, span);
+  }).catch((err) => console.error("[avatar] chest-find listener failed:", err));
+
   for (const name of ["entity-spawned", "entity-updated", "entity-removed"]) {
     listen(name, () => {
       markDirty();

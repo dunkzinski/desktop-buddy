@@ -126,7 +126,9 @@ fn seed_loot(store: &mut EntityStore, chest_seed: u64) -> Result<usize, String> 
             attach: Some(seat),
             owner: Some("chest".to_string()),
             traits: None,
-            // Trinkets are the pod's furniture: they leave with it, not on a timer.
+            // Trinkets are the pod's furniture: they leave with it, not on a timer,
+            // and they are in place the moment the pod opens.
+            reveal_at: None,
             expires_at: None,
         })?;
         // Inside a closed pod: not drawn until it opens.
@@ -208,6 +210,7 @@ pub fn summon(store: &mut EntityStore, seed: u64, anchor: [f64; 2]) -> Result<Ap
             attach: Some(attachment),
             owner: None,
             traits: None,
+            reveal_at: None,
             expires_at: None,
         })?;
         // The spawn auto-clips the state name, so `appear` has to be asked for.
@@ -534,6 +537,14 @@ const MAX_DUDS: u32 = 3;
 /// carpet the desktop. `POST /chest/tidy` is the impatient version.
 pub const JUNK_TTL_MS: u64 = 15_000;
 
+/// The beat between one thing coming out and the next.
+///
+/// This is the difference between "a pile appeared" and "the gremlin is digging":
+/// the host holds each dud back with `reveal_at`, and the page throws it out on an
+/// arc when its moment comes (`entities.js`), so the gremlin's wave and the objects
+/// move together.
+pub const REVEAL_STAGGER_MS: u64 = 300;
+
 fn now_ms() -> u64 {
     super::now_ms()
 }
@@ -606,7 +617,12 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
     }
 
     let mut duds: Vec<Value> = Vec::new();
+    let started = now_ms();
+    let mut last_reveal = started;
     for (index, def) in picked.into_iter().enumerate() {
+        let at_ms = index as u64 * REVEAL_STAGGER_MS;
+        let reveal_at = started + at_ms;
+        last_reveal = reveal_at;
         let id = next_free_id(store, "chest:junk");
         // A fan across the pod's front, clear of its ~150 px silhouette.
         let turn = (already % 4) as f64 * 0.26;
@@ -626,11 +642,17 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
             attach: Some(seat),
             owner: Some("chest".to_string()),
             traits: None,
-            // Debris, not furniture: it expires on its own, and `tidy` only
-            // shortcuts the wait.
-            expires_at: Some(now_ms() + JUNK_TTL_MS),
+            // Held back a beat so they come out one at a time, and debris rather
+            // than furniture: each expires on its own, `tidy` only shortcuts it.
+            reveal_at: Some(reveal_at),
+            expires_at: Some(reveal_at + JUNK_TTL_MS),
         })?;
-        duds.push(json!({ "id": id, "def": def.id, "label": def.label }));
+        duds.push(json!({
+            "id": id,
+            "def": def.id,
+            "label": def.label,
+            "at_ms": at_ms,
+        }));
     }
 
     // What was actually asked for. Matched loosely — by id, def or label — because
@@ -656,6 +678,17 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
         Some((id, def)) => {
             // `take` lays it beside the pod and reports the chest after it left.
             let taken = take(store, id)?;
+            // ...but it is the *last* thing out: everything else gets thrown
+            // first, which is the whole gag.
+            let item_at = last_reveal + REVEAL_STAGGER_MS - started;
+            store.update(
+                id,
+                UpdatePatch {
+                    reveal_at: Some(started + item_at),
+                    ..Default::default()
+                },
+                None,
+            )?;
             let narrative = format!(
                 "Rummaged around — out came {} — then the {}.",
                 join_names(&dud_names),
@@ -689,11 +722,40 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
         })),
     };
 
+    // One ordered script for whoever is animating: duds first, then the find.
+    let mut sequence: Vec<Value> = applied.body["duds"]
+        .as_array()
+        .map(|duds| {
+            duds.iter()
+                .map(|dud| {
+                    json!({
+                        "kind": "dud",
+                        "id": dud["id"],
+                        "def": dud["def"],
+                        "at_ms": dud["at_ms"],
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(item) = applied.body.get("item").filter(|item| !item.is_null()) {
+        sequence.push(json!({
+            "kind": "item",
+            "id": item["id"],
+            "def": item["def"],
+            "at_ms": last_reveal + REVEAL_STAGGER_MS - started,
+        }));
+    }
+    if let Some(object) = applied.body.as_object_mut() {
+        object.insert("sequence".to_string(), json!(sequence));
+    }
+
     let payload = json!({
         "id": CHEST_ID,
         "query": want,
         "found": target.is_some(),
         "duds": applied.body.get("duds").cloned().unwrap_or_else(|| json!([])),
+        "sequence": sequence,
         "narrative": applied.body.get("narrative").cloned().unwrap_or(Value::Null),
     });
     applied = applied.with("chest-find", payload);
@@ -755,6 +817,7 @@ mod tests {
                 attach: None,
                 owner: None,
                 traits: None,
+                reveal_at: None,
                 expires_at: None,
             })
             .expect("item");
@@ -948,19 +1011,21 @@ mod tests {
         let before = view(&mut store)["count"].as_u64().expect("count");
 
         // Reap against the duds' *own* deadlines: several milliseconds pass while
-        // the test runs, so `now + TTL` is not the moment they were stamped with.
-        let due = duds
+        // the test runs, and each dud is revealed — and so expires — a beat after
+        // the last, so there is a first deadline and a last one.
+        let deadlines: Vec<u64> = duds
             .iter()
             .filter_map(|id| store.render_one(id))
             .filter_map(|entity| entity["expires_at"].as_u64())
-            .min()
-            .expect("a deadline");
+            .collect();
+        let first = *deadlines.iter().min().expect("a deadline");
+        let last = *deadlines.iter().max().expect("a deadline");
 
         // One millisecond early: everything is still there.
-        let early = store.reap_expired(due - 1);
+        let early = store.reap_expired(first - 1);
         assert!(early.is_empty(), "reaped too soon: {early:?}");
 
-        let gone = store.reap_expired(due);
+        let gone = store.reap_expired(last);
         assert_eq!(gone.len(), duds.len(), "every dud, and only duds: {gone:?}");
         for id in &duds {
             assert!(store.state_of(id).is_none(), "{id} survived its lifetime");
@@ -969,6 +1034,47 @@ mod tests {
         assert_eq!(store.state_of(CHEST_ID), Some("open"));
         assert_eq!(view(&mut store)["count"].as_u64().expect("count"), before);
         assert!(store.render_one("demo:bag").is_some(), "never reap loot");
+    }
+
+    #[test]
+    fn a_rummage_holds_each_dud_back_a_beat_and_the_find_comes_last() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        an_item(&mut store, "demo:bag");
+        put(&mut store, "demo:bag").expect("put");
+        let applied = find(&mut store, "bag", Some(4)).expect("find");
+        let duds = applied.body["duds"].as_array().expect("duds").clone();
+        assert!(duds.len() >= 2, "need a sequence to test a sequence");
+
+        // Each dud is revealed one stagger after the one before it: that beat is
+        // what makes the gremlin look like it is pulling them out one at a time.
+        let reveals: Vec<u64> = duds
+            .iter()
+            .map(|dud| {
+                let id = dud["id"].as_str().expect("id");
+                store.render_one(id).expect("dud")["reveal_at"]
+                    .as_u64()
+                    .expect("a reveal time")
+            })
+            .collect();
+        for pair in reveals.windows(2) {
+            assert_eq!(pair[1] - pair[0], REVEAL_STAGGER_MS, "the beat: {reveals:?}");
+        }
+
+        // The thing asked for comes out *after* the last dud, never before.
+        let item_reveal = store.render_one("demo:bag").expect("bag")["reveal_at"]
+            .as_u64()
+            .expect("a reveal time");
+        assert!(
+            item_reveal > *reveals.last().expect("a last dud"),
+            "the find is the punchline: {item_reveal} vs {reveals:?}"
+        );
+
+        // And the script handed to the page agrees, in order.
+        let sequence = applied.body["sequence"].as_array().expect("sequence");
+        assert_eq!(sequence.len(), duds.len() + 1);
+        assert_eq!(sequence.last().expect("last")["kind"], json!("item"));
+        assert_eq!(sequence.first().expect("first")["kind"], json!("dud"));
     }
 
     #[test]

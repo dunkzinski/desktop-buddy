@@ -2343,6 +2343,19 @@ asked for. Three rules make it work:
 
 A rummage that finds nothing still spills its duds. That is the point.
 
+**The beat.** Everything is spawned at once, but each dud carries `reveal_at` 300 ms
+after the one before, and the find is revealed after the last. The host owns that
+timing (it is the thing that knows the order); the page owns the *motion*: an
+entity is not drawn before its `reveal_at`, and the first frame after it arms a
+throw — a `sin(πt)` arc from the pod's mouth to the dud's own landing spot, with a
+spin that settles as it lands (`entities.js::tossOffset`, 460 ms). Nothing is
+animated by the host, so a rummage works even if the page is mid-refetch: the
+worst case is a dud that lands without a flight.
+
+`chest-find` also tells the gremlin, and that listener is what makes the
+performance script-agnostic — a rummage started by `curl` or a plugin makes the
+gremlin look at the pod and dig just as well as one started from its card.
+
 ### Debris has a lifetime
 
 An entity may carry `expires_at` (absolute host epoch ms); `None` means it stays

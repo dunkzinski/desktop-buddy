@@ -300,6 +300,8 @@ export async function refresh() {
     }
     cache.clear();
     for (const [id, entry] of next) cache.set(id, entry);
+    // A throw whose entity is gone must not keep a slot in the flight map.
+    pruneThrows(new Set(next.keys()));
     revision = Number(data.revision || 0);
     lastError = null;
     stats.fetches += 1;
@@ -480,6 +482,65 @@ function resolveRoot(id, slots, depth = 0) {
  * draws in front of the torso and one hung on the back draws behind it — the same
  * ordering rules as the creature itself.
  */
+/** Throws in flight: `id@reveal_at` -> where they started. */
+const throws = new Map();
+/** How long a dud takes to leave the pod and land. */
+const TOSS_MS = 460;
+
+/**
+ * Where an entity is on its way out of the pod — or `null` if it is still inside.
+ *
+ * The host holds each rummage dud back with `reveal_at` and the page does the
+ * flying: the first frame after the reveal arms an arc from the pod's mouth to the
+ * dud's own landing spot (its `world` offset), and the arc is spent in `TOSS_MS`.
+ * Keyed by `id@reveal` because `chest:junk0` is a *recycled* id — it comes back on
+ * the next rummage once the debris expires.
+ */
+function tossOffset(entity, id) {
+  const reveal = Number(entity.reveal_at);
+  if (!Number.isFinite(reveal) || reveal <= 0) return { dx: 0, dy: 0, spin: 0 };
+  const now = Date.now();
+  if (now < reveal) return null;
+
+  const key = `${id}@${reveal}`;
+  let flight = throws.get(key);
+  if (!flight) {
+    const pod = chestOrigin();
+    const to = Array.isArray(entity.attach && entity.attach.offset)
+      ? entity.attach.offset
+      : [0, 0];
+    if (!pod) return { dx: 0, dy: 0, spin: 0 };
+    // Out of the pod's mouth, not its anchor: the well sits above the base.
+    flight = { start: reveal, fromX: pod.x, fromY: pod.y - 34, toX: num(to[0]), toY: num(to[1]) };
+    throws.set(key, flight);
+  }
+
+  const t = Math.min(1, (now - flight.start) / TOSS_MS);
+  if (t >= 1) {
+    throws.delete(key);
+    return { dx: 0, dy: 0, spin: 0 };
+  }
+  const x = flight.fromX + (flight.toX - flight.fromX) * t;
+  // A parabola: off the mouth, up, and down onto the spot. `sin(pi t)` is zero at
+  // both ends, so it leaves and lands exactly where it should.
+  const lift = Math.sin(Math.PI * t) * 70;
+  const y = flight.fromY + (flight.toY - flight.fromY) * t - lift;
+  const direction = id.length % 2 === 0 ? 1 : -1;
+  return {
+    dx: x - flight.toX,
+    dy: y - flight.toY,
+    // Spinning in flight, settling as it lands.
+    spin: (1 - t) * 0.9 * direction,
+  };
+}
+
+/** Drop any throws whose entity is gone (expired mid-air, tidied, removed). */
+function pruneThrows(liveIds) {
+  for (const key of throws.keys()) {
+    if (!liveIds.has(key.split("@")[0])) throws.delete(key);
+  }
+}
+
 export function entityDrawables() {
   const slots = slotMap();
   const out = [];
@@ -492,6 +553,10 @@ export function entityDrawables() {
     // `dormant` means "not on the stage": the pod is gone, but a vanish that is
     // still running gets to finish rather than blinking out.
     if (entry.entity.state === "dormant" && !(entry.clip && entry.clipT < 1)) continue;
+    // Held back by the host, or mid-throw out of the pod.
+    const toss = tossOffset(entry.entity, id);
+    if (!toss) continue;
+    const flying = toss.dx !== 0 || toss.dy !== 0 || toss.spin !== 0;
     const ctx = entry.ctx;
     computeWorldInto(ctx, root);
     const baseZ = num(root.z, 0);
@@ -505,7 +570,14 @@ export function entityDrawables() {
           z: baseZ + num(bone.z, 0) + num(part.z, 0),
           bone,
           part,
-          matrix,
+          matrix: flying
+            ? {
+                ...matrix,
+                x: matrix.x + toss.dx,
+                y: matrix.y + toss.dy,
+                rot: matrix.rot + toss.spin,
+              }
+            : matrix,
         });
       }
     }

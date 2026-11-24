@@ -593,7 +593,22 @@ loose: an entity id, a def, or a label containing the query.
 unchanged. A rummage that finds nothing still spills its duds (the joke needs the
 mess), and two duds in one rummage are always different props.
 
-**Duds expire.** Each one is spawned with `expires_at = now + 15000` and the host
+**They come out one at a time.** Each dud carries `reveal_at` — 0, 300, 600 ms
+after the rummage — and the find itself is revealed *after* the last one. The page
+does not draw an entity before its `reveal_at`, and on its first visible frame it
+throws it from the pod's mouth to its landing spot on an arc. `sequence` is the
+script:
+
+```json
+"sequence": [
+  { "kind": "dud",  "id": "chest:junk0", "def": "anvil",             "at_ms": 0 },
+  { "kind": "dud",  "id": "chest:junk1", "def": "magnifying_glass",  "at_ms": 300 },
+  { "kind": "dud",  "id": "chest:junk2", "def": "rubber_duck",       "at_ms": 600 },
+  { "kind": "item", "id": "demo:axe",    "def": "loot_bag",          "at_ms": 900 }
+]
+```
+
+**Duds expire.** Each one is spawned with `expires_at = reveal_at + 15000` and the host
 sweeps expired entities every second (emitting `entity-removed` with
 `"reason": "expired"`). Fifteen seconds is long enough to read and laugh at, short
 enough that a few searches do not carpet the desktop. The thing you asked for is

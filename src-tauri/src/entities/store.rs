@@ -188,6 +188,14 @@ pub struct Entity {
     /// (plus the user, who outranks every plugin).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// When this entity should *appear*, in host epoch ms.
+    ///
+    /// `None` means "as soon as it exists". A rummage uses it to hold each dud
+    /// back a beat, so the gremlin pulls things out one at a time instead of the
+    /// whole pile arriving on one frame. Like `expires_at` it is presentation
+    /// timing, and the page is what enforces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal_at: Option<u64>,
     /// When this entity should disappear, in host epoch ms.
     ///
     /// `None` means it stays until something removes it. Debris sets one — a pile
@@ -222,6 +230,8 @@ pub struct SpawnRequest {
     pub traits: Option<BTreeMap<String, f64>>,
     /// Absolute host epoch ms at which this entity should be reaped.
     pub expires_at: Option<u64>,
+    /// Absolute host epoch ms at which it should first be drawn.
+    pub reveal_at: Option<u64>,
 }
 
 /// What `update` may change. `None` means "leave it alone"; `Some(None)` on
@@ -237,6 +247,8 @@ pub struct UpdatePatch {
     pub params: Option<Value>,
     pub visible: Option<bool>,
     pub traits: Option<BTreeMap<String, f64>>,
+    /// Move the moment it is revealed (`None` inside the patch leaves it alone).
+    pub reveal_at: Option<u64>,
 }
 
 /// What a mutation reports back.
@@ -456,6 +468,7 @@ impl EntityStore {
             attach,
             visible: true,
             owner: request.owner.map(|owner| owner.trim().to_string()).filter(|owner| !owner.is_empty()),
+            reveal_at: request.reveal_at,
             expires_at: request.expires_at,
             rig: None,
         };
@@ -609,6 +622,9 @@ fn clip_for_state(def: &defs::PropDef, state: &str) -> Option<&'static str> {
         }
         if let Some(traits) = patch.traits {
             entity.traits = traits;
+        }
+        if let Some(reveal_at) = patch.reveal_at {
+            entity.reveal_at = Some(reveal_at);
         }
 
         let entity = entity.clone();
@@ -904,6 +920,7 @@ pub fn is_state_file(path: &Path) -> bool {
                     attach: None,
                     owner: None,
                     traits: None,
+                    reveal_at: None,
                     expires_at,
                 })
                 .expect("spawn");

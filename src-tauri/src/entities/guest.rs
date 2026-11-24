@@ -179,6 +179,11 @@ fn spawn(store: &mut Store, plugin: &str, request: &Value) -> Result<Reply, Stri
             .get("ttl_ms")
             .and_then(Value::as_u64)
             .map(|ttl| crate::entities::now_ms().saturating_add(ttl)),
+        // `reveal_in_ms` delays the first draw — the guest's own beat.
+        reveal_at: request
+            .get("reveal_in_ms")
+            .and_then(Value::as_u64)
+            .map(|delay| crate::entities::now_ms().saturating_add(delay)),
         // Unconditional: the calling plugin owns what it makes. A guest cannot
         // claim another guest's ownership, and cannot spawn an unowned prop.
         owner: Some(plugin.to_string()),

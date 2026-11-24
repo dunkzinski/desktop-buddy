@@ -940,3 +940,22 @@ change to a spawn path silently starts eating a user's props.
 
 `tidy` and the reaper share the same definition of debris (`owner: "chest"` plus a
 `world` attachment), differing only in patience.
+
+### 12.2 The pull, one at a time
+
+The first rummage arrived as a pile on one frame, which is not a rummage — it is a
+spawn. Three changes turned it into a bit:
+
+| Piece | Where |
+|---|---|
+| `reveal_at` per dud, 300 ms apart, the find after the last | `chest.rs::find` |
+| "do not draw before reveal; on reveal, throw it" | `entities.js::tossOffset` |
+| the gremlin looks at the pod and digs for the length of the sequence | `main.js` on `chest-find` |
+
+The throw is page-side and purely cosmetic: the host never knows an item was in
+the air. That keeps the store honest (a dud's position is its landing spot from the
+moment it exists) and means a missed frame costs a flight, never a lost item.
+
+The arc is `sin(πt)`: zero at the mouth, zero at the landing spot, peak in
+between — an object leaves the pod, rises, and lands where the host said. Spin is
+`(1 - t)` in a direction taken from the id, so no two duds tumble identically.
