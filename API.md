@@ -484,7 +484,14 @@ prop-agnostic: `{"state": "cast"}` is all a caller needs to animate a rod.
 * `traits` and `seed` default from the id; `params` are merged into the
   generator and change the look (a param change regenerates the rig).
 * Refused with a 400: unknown def, unknown state, bad attachment shape, more than
-  64 entities, `params` over 4 KiB.
+  64 entities, `params` over 4 KiB. A missing *socket* on a parent that does exist is
+  **not** an error — the child simply draws nothing (verified: 200, and the roster
+  keeps the child).
+* A missing **parent entity** is tolerated by `spawn` and refused by `update`: spawn
+  creates the child with a dangling parent (it stays invisible until the parent
+  exists) and answers 200, while `update` walks the chain and answers `attachment
+  parent "x" does not exist`. Both are pinned in §14.2 of the design doc as an
+  inconsistency, not a design.
 
 Nesting is a normal attachment, not a special case — a socket on a **prop**:
 
@@ -522,6 +529,13 @@ rather than leaving them pointing at a missing id.
 
 The catalogue: id, label, category, tags, states, default state, clips, own
 sockets and `summary`, for UIs and for agents deciding what to spawn.
+
+`category` is one of `tool`, `container`, `apparel`, `furniture`, `catch` (a catch
+is a prop that exists as the *result* of something — the fish on the line — rather
+than as gear). `own_sockets` is the discoverable half of nesting: those are the
+sockets another entity may hang from, so `fishing_rod` listing `line_end` is what
+tells a caller it can put something on the line, and `fish` listing `mouth` is what
+tells the next caller it can hang something from the catch.
 
 ## The chest (a pod that blooms)
 

@@ -108,6 +108,8 @@ fit).
 
 ```json
 {"op":"spawn",  "def":"fishing_rod", "id":"survival:rod", "seed":739311, "state":"stowed"}
+{"op":"spawn",  "def":"fish", "id":"survival:catch", "params":{"species":"river_perch"},
+                "attach":{"parent":"entity:survival:rod","socket":"line_end"}}
 {"op":"update", "id":"survival:rod", "state":"cast", "visible":true,
                 "attach":{"parent":"avatar","socket":"hand_primary"}}
 {"op":"update", "id":"survival:rod", "detach":true, "visible":false}
@@ -117,6 +119,19 @@ fit).
 {"op":"withdraw", "def":"fishing_rod", "id":"survival:rod", "socket":"stage_ground"}
 ```
 
+* **`attach.parent` may name another entity** (`entity:<id>`) — that is how a prop
+  hangs from a prop. The socket is looked up on the **parent's own generated rig**
+  (the rod declares `line_end` on its bobber), the child inherits the parent's
+  `flip` parity and fitted scale, and a socket the parent does not have simply draws
+  nothing — the spawn still succeeds. A **missing parent** is not checked on `spawn`
+  (the child exists, invisible, until the parent does) but is refused by `update`
+  (`attachment parent "x" does not exist`); that asymmetry is verified, not intended
+  — see design doc §14.2. Depth is capped at 4 and a cycle resolves to invisible.
+  `attach.flip` and `attach.scale` are ordinary fields on the same object.
+* **Never name a state the def does not declare.** The host refuses it (400 on HTTP,
+  `ok:false` to a guest) and the prop does not appear at all — which reads, from the
+  guest's side, exactly like a bug in the host. Omit `state` and the def's
+  `default_state` decides; `GET /props` lists the valid ones.
 * **Ownership is stamped by the host**, never sent: a guest spawns as itself and
   can only update or remove what it owns. Another plugin's prop answers
   `{"ok":false,"error":"entity … is owned by …"}`.

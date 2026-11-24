@@ -113,7 +113,7 @@ feature.
 pub struct PropDef {
     pub id: &'static str,              // "fishing_rod", "loot_bag", "chest", "lantern"
     pub label: &'static str,
-    pub category: PropCategory,        // Tool | Container | Apparel | Furniture
+    pub category: PropCategory,        // Tool | Container | Apparel | Furniture | Catch (Phase 5)
     pub builder: BuilderId,            // which generator function
     pub tags: &'static [&'static str], // matched against a socket's `accepts`
     pub states: &'static [&'static str],
@@ -139,7 +139,7 @@ pub struct Entity {
     pub state: String,
     pub state_since_ms: u64,
     pub anim: Option<EntityAnim>,      // { clip, started_ms, speed }
-    pub attach: Option<Attachment>,    // { parent, socket, flip }
+    pub attach: Option<Attachment>,    // { parent, socket, flip, rotation, offset, scale }
     pub visible: bool,
     pub owner: Option<String>,         // plugin id, for ownership + cleanup
 }
@@ -1189,7 +1189,7 @@ first prop that exists only as another prop's child.
 | spawn at `entity:survival:rod` / `line_end` when a catch is stored | `props::fish_on_line`, called from `plugin::land` |
 | gone when the rod's linger ends | `props::release_fish` in `sync_rod`, `discard_rod`, `plugin_init` |
 
-Three discoveries worth keeping:
+Four discoveries worth keeping:
 
 1. **A catch prop must not be given a state it does not declare.** The first
    version sent `state: "flopping"` for fish *and* boot; `boot` has no such state,
@@ -1203,6 +1203,17 @@ Three discoveries worth keeping:
 3. **A parent's removal detaches its children.** Every path that drops the rod now
    releases the catch too, or a dead session leaves a fish floating where the rod
    used to be.
+4. **`spawn` and `update` disagree about a missing parent** — found while this
+   documentation pass checked its own claims against the running app. `POST
+   /entities/spawn` with `attach.parent: "entity:doc:absent"` answers **200** and the
+   roster keeps the child (which draws nothing until the parent exists), while the
+   same attachment through `POST /entities/update` answers **400**, `attachment parent
+   "doc:absent2" does not exist`. Neither is obviously wrong — one order tolerates a
+   caller that creates the child first, the other refuses a typo in an update — but a
+   prop whose validity depends on which route created it is a trap. Recorded in
+   `API.md` and `PLUGINS.md` as the current behaviour; unifying the two is a decision
+   (refuse on spawn, or tolerate on update), so it is left open rather than settled
+   inside a docs pass.
 
 The two socket vocabularies are pinned against drifting: `every_animation_is_a_clip_
 the_generator_emits` already required every `own_sockets` id to exist in the

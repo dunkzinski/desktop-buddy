@@ -347,13 +347,17 @@ Before you open a PR, run the same gates CI runs:
 
 ```bash
 cd src-tauri
-cargo test --lib --bins                       # 190 + 12 + 137 tests at 0.2.0
+cargo test --lib --bins                       # 270 + 12 + 138 tests
 cd ../plugins/survival  && cargo test --lib   # each guest is its own workspace
 cd ../metamorphosis     && cargo test --lib
-cd ../..                && python tools/verify_docs.py
+cd ../..                                      # back to the repo root
+node --test tools/entity-transform.test.mjs   # ui/js geometry
+python tools/verify_docs.py
 ```
 
 `verify_docs.py` is the one to respect: it parses the Rust source for routes, events, watcher flags and MCP tool names, then fails if `README.md`, `API.md`, `ARCHITECTURE.md` or `CONFIGURATION.md` disagree with it. Touch a route, a flag, or an `AVATAR_EXPRESSIONS` entry, and the documentation becomes part of your change. That's the point.
+
+`tools/entity-transform.test.mjs` is the same idea pointed at the frontend: `cargo` cannot see `ui/js`, so the prop transforms (attachment resolution, the `attach.flip` mirror, per-rig fitting) are tested in node against the real ES modules.
 
 Things someone could build tomorrow with what's already here: a gremlin that reacts to CI failures via `POST /alert`; a plugin owning an IRC or chat bridge; a rig pack of punctuation-only blob creatures; a `Code.exe` rule that answers a compile error with one very specific animation you authored at 3 a.m.
 
@@ -392,8 +396,8 @@ src-tauri/
 plugins/                 Guest Wasm crates (survival, metamorphosis) + built .wasm files
 ui/                      Zero-build-step ES module frontend (canvas renderer, rig editor, speech UI)
 models/                  Skeletal rigs, sprites, and persisted selection state
-tools/                   verify_docs.py (source↔docs drift check), cdp-eval.mjs, mcp_smoke_test.py
-.github/workflows/       check.yml — CI: cargo test --lib --bins, both plugin crates, verify_docs.py
+tools/                   verify_docs.py (source↔docs drift check), cdp-eval.mjs, entity-transform.test.mjs, mcp_smoke_test.py
+.github/workflows/       check.yml — CI: cargo test --lib --bins, both plugin crates, the page transform tests, verify_docs.py
 ```
 
 ---

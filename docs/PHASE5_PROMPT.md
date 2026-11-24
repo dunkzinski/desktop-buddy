@@ -1,5 +1,12 @@
 # Phase 5 — kickoff prompt (paste into a fresh context)
 
+> **Status: shipped.** All three items landed in `c78d857` (flip), `3b32688` (the
+> catch on a nested socket) and `27ecca5` (per-rig fitting); `5b111ca` closed the
+> design doc's open list. What shipped, and the numbers it was judged by, is in
+> `docs/ENTITY_ITEMS_DESIGN.md` §14.1–14.3. This prompt is kept **verbatim** as the
+> record of the brief — it is not a work plan any more, and re-running it would
+> rebuild what exists.
+
 You're picking up **Phase 5** of the procedural-props work in `C:\hermes\desktop-buddy` — a Tauri desktop avatar (gremlin) with a Wasm plugin host, Rust backend + vanilla-JS canvas frontend, no frameworks.
 
 ## Read first, in this order
