@@ -567,45 +567,17 @@ fn next_free_id(store: &EntityStore, prefix: &str) -> String {
     prefix.to_string()
 }
 
-/// Rummage for `want` — the comedy path.
+/// Spill one to three duds in front of the pod, on their beats.
 ///
-/// A search is not a lookup. One to three **wrong things** come out first (a
-/// rubber duck, an anvil, a magnifying glass, a boot) and land on the stage in
-/// front of the pod; only then the thing you asked for, if it is in there and the
-/// pod is open. The duds stay where they fell — that is the mess the joke makes,
-/// and [`tidy`] is what sweeps it up.
-///
-/// A rummage that finds nothing still spills its duds: "it is not in there" is
-/// funnier with a rubber duck on the floor.
-pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Applied, String> {
-    use super::rng::Rng;
-
-    let want = want.trim();
-    if want.is_empty() {
-        return Err("say what to look for".to_string());
-    }
-    if store.state_of(CHEST_ID).is_none() {
-        return Err("no chest on the stage".to_string());
-    }
-    match chest_state(store, CHEST_ID).as_deref() {
-        Some("open") => {}
-        Some(state) => {
-            return Err(format!(
-                "the chest is {state} — open it before rummaging in it"
-            ))
-        }
-        None => return Err("no chest on the stage".to_string()),
-    }
-
-    let seed = seed.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos() as u64)
-            .unwrap_or(0x5EED_D00D)
-    });
-    let mut rng = Rng::new(seed ^ 0xD00D_5EED_1234_ABCD);
-
-    let anchor = anchor_of(store);
+/// Shared by `find` (you asked for something inside) and `withdraw` (you asked the
+/// pod to produce something): the mess is the same joke either way, and two copies
+/// of this would drift.
+fn spill_duds(
+    store: &mut EntityStore,
+    rng: &mut super::rng::Rng,
+    anchor: [f64; 2],
+    started: u64,
+) -> Result<(Vec<Value>, Vec<(&'static str, Value)>, u64), String> {
     // Where this rummage's debris starts in the fan. Successive rummages rotate
     // the fan and step outwards, so a second search does not drop its duck on the
     // first one's anvil.
@@ -625,7 +597,6 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
 
     let mut duds: Vec<Value> = Vec::new();
     let mut spawned: Vec<(&'static str, Value)> = Vec::new();
-    let started = now_ms() + FIRST_REVEAL_MS;
     let mut last_reveal = started;
     for (index, def) in picked.into_iter().enumerate() {
         let at_ms = index as u64 * REVEAL_STAGGER_MS;
@@ -673,6 +644,50 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
         // by which time the throw has already landed.
         spawned.push(("entity-spawned", json!({ "id": id, "def": def.id })));
     }
+    Ok((duds, spawned, last_reveal))
+}
+
+/// Rummage for `want` — the comedy path.
+///
+/// A search is not a lookup. One to three **wrong things** come out first (a
+/// rubber duck, an anvil, a magnifying glass, a boot) and land on the stage in
+/// front of the pod; only then the thing you asked for, if it is in there and the
+/// pod is open. The duds stay where they fell — that is the mess the joke makes,
+/// and [`tidy`] is what sweeps it up.
+///
+/// A rummage that finds nothing still spills its duds: "it is not in there" is
+/// funnier with a rubber duck on the floor.
+pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Applied, String> {
+    use super::rng::Rng;
+
+    let want = want.trim();
+    if want.is_empty() {
+        return Err("say what to look for".to_string());
+    }
+    if store.state_of(CHEST_ID).is_none() {
+        return Err("no chest on the stage".to_string());
+    }
+    match chest_state(store, CHEST_ID).as_deref() {
+        Some("open") => {}
+        Some(state) => {
+            return Err(format!(
+                "the chest is {state} — open it before rummaging in it"
+            ))
+        }
+        None => return Err("no chest on the stage".to_string()),
+    }
+
+    let seed = seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos() as u64)
+            .unwrap_or(0x5EED_D00D)
+    });
+    let mut rng = Rng::new(seed ^ 0xD00D_5EED_1234_ABCD);
+
+    let anchor = anchor_of(store);
+    let started = now_ms() + FIRST_REVEAL_MS;
+    let (duds, spawned, last_reveal) = spill_duds(store, &mut rng, anchor, started)?;
 
     // What was actually asked for. Matched loosely — by id, def or label — because
     // the caller is usually an agent saying "the axe" rather than an entity id.
@@ -782,6 +797,141 @@ pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Ap
     }
     applied = applied.with("chest-find", payload);
     Ok(applied)
+}
+
+/// Ask the pod to **produce** a tool: the bottomless-supply path.
+///
+/// `find` searches what is inside the pod; `withdraw` supplies what you ask for.
+/// That difference is the whole point of a bottomless pod: you rummage, junk comes
+/// out, and then the thing you needed is in your paw — whether or not it was ever
+/// in there.
+///
+/// * a tool already exists with this id → `changed: false`, no rummage (one gag
+///   per session, not one per cast)
+/// * the pod is absent or closed → an error, so a caller can fall back to making
+///   the tool itself; the furniture must never be load-bearing
+/// * `socket` selects where it lands: `stage_ground` (default) lays it out beside
+///   the pod, `hand_primary` puts it straight into the paw
+pub fn withdraw(
+    store: &mut EntityStore,
+    def: &defs::PropDef,
+    id: Option<&str>,
+    socket: Option<&str>,
+    owner: Option<&str>,
+    seed: Option<u64>,
+) -> Result<Applied, String> {
+    use super::rng::Rng;
+
+    if def.id == defs::CHEST.id {
+        return Err("the chest cannot produce a chest".to_string());
+    }
+    if store.state_of(CHEST_ID).is_none() {
+        return Err("no chest on the stage — summon it before withdrawing a tool".to_string());
+    }
+    match chest_state(store, CHEST_ID).as_deref() {
+        Some("open") => {}
+        Some(state) => {
+            return Err(format!(
+                "the chest is {state} — open it before withdrawing a tool"
+            ))
+        }
+        None => return Err("no chest on the stage".to_string()),
+    }
+    let id = id.unwrap_or(def.id).to_string();
+    // Idempotent: the second ask for a rod returns the rod.
+    if let Some(existing) = store.render_one(&id) {
+        return Ok(Applied::new(json!({
+            "ok": true,
+            "created": false,
+            "changed": false,
+            "item": { "id": id, "def": def.id, "label": def.label },
+            "entity": existing,
+            "chest": view(store),
+        })));
+    }
+
+    let seed = seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos() as u64)
+            .unwrap_or(0x7EED_5EED)
+    });
+    let mut rng = Rng::new(seed ^ 0x7217_0DED_1234_5678);
+
+    let started = now_ms() + FIRST_REVEAL_MS;
+    let anchor = anchor_of(store);
+    let (duds, mut events, last_reveal) = spill_duds(store, &mut rng, anchor, started)?;
+    let item_at = last_reveal + REVEAL_STAGGER_MS - started;
+
+    let socket = socket.unwrap_or(STAGE_SOCKET);
+    let mut seat = if socket == STAGE_SOCKET || socket == "world" {
+        let mut seat = Attachment::world(anchor[0] + DROP_OFFSET, anchor[1]);
+        seat.socket = STAGE_SOCKET.to_string();
+        seat
+    } else {
+        Attachment::avatar(socket)
+    };
+    if seat.rotation.is_none() {
+        seat.rotation = def.grip_rotation(&seat.socket);
+    }
+    let outcome = store.spawn(SpawnRequest {
+        def: def.id.to_string(),
+        id: Some(id.clone()),
+        seed: Some(rng.next_u64()),
+        params: json!({}),
+        state: Some(def.default_state.to_string()),
+        attach: Some(seat),
+        owner: owner.map(str::to_string),
+        traits: None,
+        // It comes out of the pod last, after everything else it threw.
+        reveal_at: Some(started + item_at),
+        expires_at: None,
+    })?;
+    events.push(("entity-spawned", json!({ "id": id, "def": def.id })));
+
+    let narrative = format!(
+        "Rummaged around — out came {} — then the {}.",
+        join_names(
+            &duds
+                .iter()
+                .filter_map(|dud| dud.get("label").and_then(Value::as_str).map(str::to_string))
+                .collect::<Vec<_>>()
+        ),
+        def.label
+    );
+    let sequence: Vec<Value> = duds
+        .iter()
+        .map(|dud| {
+            json!({ "kind": "dud", "id": dud["id"], "def": dud["def"], "at_ms": dud["at_ms"] })
+        })
+        .chain(std::iter::once(json!({
+            "kind": "item",
+            "id": id,
+            "def": def.id,
+            "at_ms": item_at,
+        })))
+        .collect();
+
+    let mut applied = Applied::new(json!({
+        "ok": true,
+        "created": outcome.created,
+        "changed": true,
+        "item": { "id": id, "def": def.id, "label": def.label, "socket": socket },
+        "duds": duds,
+        "sequence": sequence,
+        "narrative": narrative,
+        "chest": view(store),
+    }));
+    applied.events.append(&mut events);
+    let event = json!({
+        "id": CHEST_ID,
+        "item": id,
+        "def": def.id,
+        "duds": applied.body.get("duds").cloned().unwrap_or_else(|| json!([])),
+        "sequence": applied.body.get("sequence").cloned().unwrap_or_else(|| json!([])),
+        "narrative": applied.body.get("narrative").cloned().unwrap_or(Value::Null),
+    });
+    Ok(applied.with("chest-withdraw", event))
 }
 
 /// Sweep the debris a rummage leaves behind.
@@ -1152,6 +1302,72 @@ mod tests {
         let mut store = store_with_chest();
         let err = find(&mut store, "axe", Some(1)).expect_err("closed");
         assert!(err.contains("open"), "{err}");
+    }
+
+    #[test]
+    fn withdraw_supplies_a_tool_with_the_rummage_first() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        let rod = defs::find("fishing_rod").expect("rod");
+        let applied = withdraw(&mut store, rod, Some("survival:rod"), None, Some("survival"), Some(2))
+            .expect("withdraw");
+
+        assert_eq!(applied.body["created"], json!(true));
+        assert_eq!(applied.body["item"]["def"], json!("fishing_rod"));
+        let duds = applied.body["duds"].as_array().expect("duds");
+        assert!(!duds.is_empty(), "a tool from a bottomless pod comes with luggage");
+
+        // It lands beside the pod, and it comes out *last*.
+        let entity = store.render_one("survival:rod").expect("rod");
+        assert_eq!(entity["attach"]["parent"], json!("world"));
+        assert_eq!(entity["owner"], json!("survival"));
+        let tool_reveal = entity["reveal_at"].as_u64().expect("a reveal");
+        for dud in duds {
+            let id = dud["id"].as_str().expect("id");
+            let reveal = store.render_one(id).expect("dud")["reveal_at"]
+                .as_u64()
+                .expect("reveal");
+            assert!(tool_reveal > reveal, "the tool must be the punchline");
+        }
+        // ...and it does *not* expire: a tool is not debris.
+        assert!(entity.get("expires_at").is_none(), "a tool is not debris");
+
+        // Asking twice returns the same rod and does not spill a second pile.
+        let again = withdraw(&mut store, rod, Some("survival:rod"), None, Some("survival"), Some(2))
+            .expect("withdraw again");
+        assert_eq!(again.body["changed"], json!(false));
+        assert!(again.body.get("duds").is_none(), "no second rummage");
+    }
+
+    #[test]
+    fn withdraw_can_put_the_tool_straight_into_a_paw() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        let rod = defs::find("fishing_rod").expect("rod");
+        withdraw(
+            &mut store,
+            rod,
+            Some("survival:rod"),
+            Some("hand_primary"),
+            Some("survival"),
+            Some(9),
+        )
+        .expect("withdraw");
+        let entity = store.render_one("survival:rod").expect("rod");
+        assert_eq!(entity["attach"]["parent"], json!("avatar"));
+        assert_eq!(entity["attach"]["socket"], json!("hand_primary"));
+    }
+
+    #[test]
+    fn withdraw_needs_an_open_pod() {
+        let mut store = store_with_chest();
+        let rod = defs::find("fishing_rod").expect("rod");
+        let err = withdraw(&mut store, rod, None, None, None, Some(1)).expect_err("closed");
+        assert!(err.contains("open"), "{err}");
+
+        dismiss(&mut store, true).expect("dismiss");
+        let err = withdraw(&mut store, rod, None, None, None, Some(1)).expect_err("dormant");
+        assert!(err.contains("open") || err.contains("summon"), "{err}");
     }
 
     #[test]

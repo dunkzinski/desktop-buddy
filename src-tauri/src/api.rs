@@ -397,6 +397,7 @@ fn router(api: ApiCtx) -> Router {
         .route("/chest/put", post(chest_put))
         .route("/chest/take", post(chest_take))
         .route("/chest/find", post(chest_find))
+        .route("/chest/withdraw", post(chest_withdraw))
         .route("/chest/tidy", post(chest_tidy))
         .route("/props", get(list_props))
         .route("/import", post(import_asset))
@@ -1544,6 +1545,39 @@ async fn chest_find(
     let seed = body.get("seed").and_then(Value::as_u64);
     apply_chest(&api, move |store| {
         crate::entities::chest::find(store, &want, seed)
+    })
+}
+
+/// `POST /chest/withdraw` — ask the pod to **produce** a tool.
+///
+/// The bottomless-supply path, and the one activities use: a rummage (junk first),
+/// then the tool — laid on the stage, or straight into the paw with `socket`.
+async fn chest_withdraw(
+    State(api): State<ApiCtx>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let def_id = body
+        .get("def")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ApiError::bad_request("`def` is required (a prop id from GET /props)"))?;
+    let def = crate::entities::defs::find(&def_id)
+        .ok_or_else(|| ApiError::bad_request(format!("unknown prop {def_id:?}")))?;
+    let id = body.get("id").and_then(Value::as_str).map(str::to_string);
+    let socket = body.get("socket").and_then(Value::as_str).map(str::to_string);
+    let owner = body.get("owner").and_then(Value::as_str).map(str::to_string);
+    let seed = body.get("seed").and_then(Value::as_u64);
+    apply_chest(&api, move |store| {
+        crate::entities::chest::withdraw(
+            store,
+            def,
+            id.as_deref(),
+            socket.as_deref(),
+            owner.as_deref(),
+            seed,
+        )
     })
 }
 

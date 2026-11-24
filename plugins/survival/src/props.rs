@@ -37,9 +37,26 @@ fn accepted(reply: Option<Value>) -> bool {
         .unwrap_or(false)
 }
 
-/// Make sure the rod exists. Idempotent: the host returns the existing entity
-/// (`created: false`) the second time, so this is safe to call on every sync.
+/// Make sure the rod exists.
+///
+/// It comes **out of the curiosity pod** when there is one: `withdraw` makes the
+/// host rummage (junk first, then the rod) and lay it on the stage, and `hold`
+/// picks it up a moment later. With no pod — dismissed, or an older host without
+/// the op — it falls back to simply spawning the rod, because fishing must never
+/// depend on the furniture.
+///
+/// Idempotent either way: the host returns the existing entity rather than a
+/// second rod, so this is safe to call on every sync.
 pub fn ensure_rod() -> bool {
+    if accepted(call(json!({
+        "op": "withdraw",
+        "def": "fishing_rod",
+        "id": ROD_ID,
+        "seed": ROD_SEED,
+        "socket": "stage_ground",
+    }))) {
+        return true;
+    }
     accepted(call(json!({
         "op": "spawn",
         "def": "fishing_rod",
@@ -113,11 +130,21 @@ mod tests {
         assert_eq!(rod["def"], json!("fishing_rod"));
         assert_eq!(rod["owner"], json!("survival"));
         assert_eq!(rod["state"], json!("stowed"));
-        let spawns = entity_requests()
+        // One creation request per call, and the second is a no-op because the id
+        // is stable — the host answers `created: false`.
+        let creates = entity_requests()
             .iter()
-            .filter(|request| request["op"] == json!("spawn"))
+            .filter(|request| {
+                matches!(request["op"].as_str(), Some("spawn") | Some("withdraw"))
+            })
             .count();
-        assert_eq!(spawns, 2, "ensuring twice must not create a second rod");
+        assert_eq!(creates, 2, "ensuring twice must not create a second rod");
+        // And it asks the *pod* first: the rod is supposed to come out of it.
+        assert_eq!(
+            entity_requests()[0]["op"],
+            json!("withdraw"),
+            "the first move is a rummage, not a spawn"
+        );
     }
 
     #[test]

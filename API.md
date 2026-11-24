@@ -620,6 +620,34 @@ enough that a few searches do not carpet the desktop. The thing you asked for is
 *taken out*, never spawned, so it has no lifetime — nothing the user owns ever
 expires on a timer.
 
+#### `POST /chest/withdraw`
+
+Body: `{ "def": "fishing_rod", "id": "survival:rod", "socket": "stage_ground",
+"owner": "survival", "seed": 5 }` — only `def` is required. The pod must be
+**open**.
+
+`find` searches what is *inside* the pod; `withdraw` asks the pod to **produce**
+something. That is the difference a bottomless pod makes: you rummage, junk comes
+out, and then the tool you asked for — whether or not it was ever in there. Same
+beats, same throws, same `sequence`:
+
+```json
+{ "ok": true, "created": true, "changed": true,
+  "item": { "id": "survival:rod", "def": "fishing_rod",
+            "label": "Fishing rod", "socket": "stage_ground" },
+  "duds": [{ "id": "chest:junk0", "def": "rubber_duck", "label": "Rubber duck", "at_ms": 0 }],
+  "narrative": "Rummaged around — out came Rubber duck — then the Fishing rod." }
+```
+
+* **Idempotent by id**: a second withdraw for the same id returns the entity with
+  `changed: false` and **no second rummage** — one gag per session, not one per
+  cast.
+* **`socket`**: `stage_ground` (default) lays the tool beside the pod;
+  `hand_primary` puts it straight into the paw. Anything else is an avatar socket.
+* **A tool never expires** — it is not debris, so no `expires_at`.
+* **No pod, or a closed one, is an error**, deliberately: callers fall back to
+  `POST /entities/spawn` and nothing about their feature depends on furniture.
+
 #### `POST /chest/tidy`
 
 Body: none. Sweeps up what a rummage left on the stage: every entity the pod owns

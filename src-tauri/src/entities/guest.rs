@@ -15,6 +15,7 @@
 //! {"op":"remove", "id":"survival:rod"}
 //! {"op":"get",    "id":"survival:rod"}
 //! {"op":"list"}
+//! {"op":"withdraw", "def":"fishing_rod", "id":"survival:rod", "socket":"hand_primary"}
 //! ```
 //!
 //! Ownership is **not** a request field: it is the calling plugin's id, stamped
@@ -23,6 +24,8 @@
 
 use serde_json::{json, Value};
 
+use super::chest;
+use super::defs;
 use super::store::{EntityStore as Store, SpawnRequest, UpdatePatch};
 
 /// The largest request a guest may send. A spawn is a few hundred bytes; 8 KiB
@@ -134,10 +137,43 @@ pub fn apply(store: &mut Store, plugin: &str, request: &Value) -> Result<Reply, 
         "remove" => remove(store, plugin, request),
         "get" => get(store, request),
         "list" => list(store),
+        "withdraw" => withdraw(store, plugin, request),
         other => Ok(Reply::refused(
             STATUS_BAD_REQUEST,
-            format!("unknown op {other:?}; expected spawn, update, remove, get or list"),
+            format!(
+                "unknown op {other:?}; expected spawn, update, remove, get, list or withdraw"
+            ),
         )),
+    }
+}
+
+/// `withdraw` — ask the pod to produce a tool, rummage and all.
+///
+/// The plugin supplies `def` (required), and optionally `id`, `socket`, `seed`.
+/// Ownership is the caller's, exactly like `spawn`, so the plugin can still mutate
+/// what it gets back. A host without a pod refuses; the plugin falls back to
+/// `spawn` and fishing works as it did before.
+fn withdraw(
+    store: &mut Store,
+    plugin: &str,
+    request: &Value,
+) -> Result<Reply, String> {
+    let def_id = match request.get("def").and_then(Value::as_str) {
+        Some(def) => def,
+        None => return Ok(Reply::refused(STATUS_BAD_REQUEST, "`def` is required")),
+    };
+    let Some(def) = defs::find(def_id) else {
+        return Ok(Reply::refused(
+            STATUS_BAD_REQUEST,
+            format!("unknown prop {def_id:?}; try GET /props"),
+        ));
+    };
+    let id = request.get("id").and_then(Value::as_str).map(str::to_string);
+    let socket = request.get("socket").and_then(Value::as_str).map(str::to_string);
+    let seed = request.get("seed").and_then(Value::as_u64);
+    match chest::withdraw(store, def, id.as_deref(), socket.as_deref(), Some(plugin), seed) {
+        Ok(applied) => Ok(Reply::ok(summary(&applied.body))),
+        Err(err) => Ok(Reply::refused(STATUS_BAD_REQUEST, err)),
     }
 }
 

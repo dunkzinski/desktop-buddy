@@ -978,3 +978,26 @@ work it was built for, and it means the rummage code never mentions a prop.
 The scatter also widened: a fan of ~24° per dud out to 120–250 px, stepped by how
 much debris is already on the stage, so a second rummage lands beside the first
 instead of on it.
+
+### 12.4 Tools come out of the pod
+
+The roadmap promised a fishing pole that appears when the gremlin fishes and a
+lantern/pickaxe/helmet for mining later. What was missing was **where they come
+from**: a prop that materialises in a paw is a costume change, not an object.
+
+`POST /chest/withdraw` (and the `withdraw` guest op) makes the pod the supply
+point: rummage first — junk, thrown, one at a time — then the tool. The survival
+plugin now asks for its rod instead of spawning it, so the first cast of a session
+starts with the gremlin digging in its pod.
+
+Two rules keep it from becoming a dependency:
+
+1. **Refuse when there is no pod.** A dismissed or closed pod returns an error, and
+   the plugin falls back to `spawn`. Fishing must never break because a piece of
+   furniture is elsewhere.
+2. **Idempotent by id.** The tool is created once; every later withdraw returns it.
+   One rummage per session, not one per cast.
+
+The same shape serves mining later: `withdraw {def:"lantern", socket:"head_lamp"}`,
+`withdraw {def:"pickaxe", socket:"hand_primary"}` — no new host code, and the gag
+happens automatically.

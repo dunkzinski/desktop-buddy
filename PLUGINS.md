@@ -114,6 +114,7 @@ fit).
 {"op":"remove", "id":"survival:rod"}
 {"op":"get",    "id":"survival:rod", "rig":true}
 {"op":"list"}
+{"op":"withdraw", "def":"fishing_rod", "id":"survival:rod", "socket":"stage_ground"}
 ```
 
 * **Ownership is stamped by the host**, never sent: a guest spawns as itself and
@@ -132,8 +133,14 @@ fit).
 * **A state whose name is a clip plays that clip.** `{"state":"biting"}` is all a
   guest needs; the page looks the name up in the entity's own animations, so no
   guest ever ships animation data.
+* **`withdraw` asks the curiosity pod to *produce* a tool**: a rummage first (one
+  to three junk props thrown onto the stage), then the tool, on the stage or
+  straight into a `socket`. It is idempotent by id, and it **refuses when the pod
+  is absent or closed** — so a guest must keep its `spawn` fallback. `find` (search
+  the contents) lives on HTTP only; a guest that needs a tool wants `withdraw`.
 * The `survival` plugin uses this for the fishing rod: `plugins/survival/src/props.rs`
-  spawns it once, attaches it to `hand_primary` on a cast, walks it through
+  first asks the pod (`withdraw`), then falls back to `spawn` if there is no pod;
+  it attaches the rod to `hand_primary` on a cast, walks it through
   `waiting → biting → reeling`, and detaches it when the cast ends. With no entity
   ABI the calls fail and fishing is unchanged — the prop is presentation, never a
   rule.

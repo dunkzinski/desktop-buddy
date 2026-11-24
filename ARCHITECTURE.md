@@ -2387,6 +2387,19 @@ page: the store can drop a row, but only the API knows how to emit
 /entities/spawn` accepts `ttl_ms` so an HTTP caller can make its own debris
 without knowing the host clock.
 
+### Tools come out of the pod
+
+`POST /chest/withdraw` (and the `withdraw` guest op) asks the pod to **produce** a
+tool: the same rummage and the same throws as `find`, then the tool — on the stage
+or straight into a socket. `find` searches the contents; `withdraw` supplies what
+you ask for, which is the whole point of a bottomless pod.
+
+It is **idempotent by id** (one gag per session, not one per cast), the tool gets
+no `expires_at` (it is not debris), and it **fails when the pod is absent or
+closed** — on purpose. The survival plugin asks the pod first and falls back to a
+plain `spawn`, so fishing never depends on furniture. That ordering is the design
+rule for every tool that comes next: the pod is the nice way, not the only way.
+
 ### Picking the pod up
 
 The pod is draggable (`main.js`): a press inside `chestBounds` starts `podDrag`,

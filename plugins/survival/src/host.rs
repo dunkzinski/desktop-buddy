@@ -265,7 +265,9 @@ mod tests {
         use serde_json::json;
         let field = |key: &str| request.get(key).cloned().unwrap_or(serde_json::Value::Null);
         match request.get("op").and_then(|v| v.as_str()).unwrap_or("") {
-            "spawn" => {
+            // A withdraw is a spawn that the real host performs with a rummage; for
+            // the plugin's own tests the world it produces is the same.
+            "spawn" | "withdraw" => {
                 let def = field("def");
                 let id = match request.get("id").and_then(|v| v.as_str()) {
                     Some(id) => id.to_string(),
