@@ -995,14 +995,18 @@ Three rules make it a beat rather than a dependency:
 1. **The pod comes when it is called for.** Absent or dormant, `withdraw` summons it
    beside the gremlin (110 px right, 62 px below) and opens it. The store learns
    where he stands from `report_state` — the page is the only thing that knows.
-2. **The rod goes back in the pod — after a beat.** At the end of a session — landed
-   fish, lapsed bite, cancel — the rod first **rests** in his paw for two seconds
-   (`resting`: tip down, line slack, a slow breath), and only then is the entity
-   removed so the next cast fishes it out again. Not "stowed on a shelf": back in
-   the pod. The linger is what makes an ending legible; without it the rod blinked
-   out on the frame the fish left.
-3. **Nothing is fetched for a cast that is not happening.** The rod is made when the
-   phase leaves `Idle`, never at boot, or a pod would pop in beside a gremlin who is
+2. **The rod stows — after a beat.** At the end of a session — landed fish, lapsed
+   bite, cancel — the rod first **rests** in his paw for two seconds (`resting`: tip
+   down, line slack, a slow breath), and is then **stowed**: the entity survives,
+   invisible, and the next cast just raises it.
+
+   It used to go back in the pod, which made every cast a rummage — and back-to-back
+   fishing then played the whole pod-appears-rod-is-fished-out ritual on every cast.
+   The pod sequence belongs to the **first** rod of a session, when there is no rod
+   to raise. The linger still makes the ending legible; the stow is what makes the
+   next beginning quick.
+3. **Nothing is fetched for a cast that is not happening, and nothing is fetched
+   twice.** The rod is made when the phase leaves `Idle`, never at boot, or a pod would pop in beside a gremlin who is
    only standing there.
 
 And one for old hosts: if the op is refused outright, `spawn` still works, so

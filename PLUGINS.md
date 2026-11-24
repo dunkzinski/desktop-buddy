@@ -149,8 +149,8 @@ fit).
   asks the pod (`withdraw`) on every cast and falls back to `spawn` if the host
   refuses; it attaches the rod to `hand_primary`, walks it through
   `waiting → biting → reeling`, holds it on the stage for `pickup_ms` first, rests it
-  in paw (`resting`) for a couple of seconds when the session ends, and **then
-  removes it** — the rod
+  in paw (`resting`) for a couple of seconds when the session ends, and **then stows
+  it** — the entity survives, so a back-to-back cast never re-rummages — the rod
   goes back in the pod, so the next cast is a rummage again. Nothing is fetched for
   a cast that is not happening. With no entity
   ABI the calls fail and fishing is unchanged — the prop is presentation, never a

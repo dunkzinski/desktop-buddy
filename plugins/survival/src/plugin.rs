@@ -1496,8 +1496,8 @@ impl Survival {
         let applied = if desired == "stowed" {
             // Fishing is over — but the rod hangs about for a moment first: he
             // keeps it in his paw, the tip drops, the line goes slack, and only
-            // then does it go back in the pod. A rod that vanished on the exact
-            // frame the fish left read as a glitch rather than an ending.
+            // then does he put it away. A rod that vanished on the exact frame the
+            // fish left read as a glitch rather than an ending.
             if self.rod_state.as_deref().is_some_and(|state| state != "stowed") {
                 if self.rod_linger_ms == 0 {
                     if !props::hold(props::RESTING) {
@@ -1514,10 +1514,17 @@ impl Survival {
                 if now_ms < self.rod_linger_ms {
                     return;
                 }
-                // Linger over: back in the pod, ready to be fished out again.
-                props::discard_rod();
-                self.rod_ready = false;
-                self.rod_state = None;
+                // Linger over: **stow it**, do not send it back to the pod. The rod
+                // is already his; a back-to-back cast should start with him raising
+                // it, not with the pod arriving and a fresh rummage. The pod
+                // sequence belongs to the *first* rod of a session, when there is
+                // no rod to raise.
+                if props::put_away() {
+                    self.rod_state = Some("stowed".to_string());
+                } else {
+                    self.rod_ready = false;
+                    self.rod_state = None;
+                }
                 self.rod_linger_ms = 0;
                 return;
             }
@@ -3378,6 +3385,50 @@ mod tests {
     }
 
     #[test]
+    fn a_back_to_back_cast_reuses_the_rod_instead_of_summoning_one() {
+        fn withdraws_of_rod(calls: &[serde_json::Value]) -> usize {
+            calls
+                .iter()
+                .filter(|r| r["op"] == json!("withdraw") && r["def"] == json!("fishing_rod"))
+                .count()
+        }
+
+        let mut state = angler();
+        // First cast of the session: the pod has to produce the rod.
+        let before_first = crate::host::entity_requests().len();
+        state.cast().expect("cast");
+        let first = crate::host::entity_requests();
+        assert!(
+            withdraws_of_rod(&first[before_first..]) >= 1,
+            "the first rod comes out of the pod"
+        );
+
+        // End the session and let him put it away.
+        state.cancel_fishing().expect("cancel");
+        advance_clock(props::LINGER_MS + 1);
+        state.tick(0.0).expect("tick");
+        assert_eq!(
+            crate::host::entity_snapshot(props::ROD_ID).expect("still his")["state"],
+            json!("stowed")
+        );
+
+        // Second cast: he already has a rod, so nothing may be summoned.
+        let before_second = crate::host::entity_requests().len();
+        state.cast().expect("cast again");
+        let second = crate::host::entity_requests();
+        assert_eq!(
+            withdraws_of_rod(&second[before_second..]),
+            0,
+            "a rod he already owns must not be fished out again"
+        );
+        assert_eq!(
+            crate::host::entity_snapshot(props::ROD_ID).expect("the rod")["attach"]["socket"],
+            json!("hand_primary"),
+            "it just goes back into his paw"
+        );
+    }
+
+    #[test]
     fn a_scavenge_run_pulls_the_bag_out_of_the_pod() {
         let mut state = angler();
         take_recorded();
@@ -3823,14 +3874,13 @@ mod tests {
             crate::host::entity_snapshot(props::ROD_ID).expect("the rod hangs about")["state"],
             json!("resting")
         );
-        // ...and then it goes back in the pod, which is what makes the next cast a
-        // rummage again.
+        // ...and then it is put away — **not** sent back to the pod: the rod is
+        // already his, so a back-to-back cast should not rummage for it again.
         advance_clock(props::LINGER_MS + 1);
         state.tick(0.0).expect("tick");
-        assert!(
-            crate::host::entity_snapshot(props::ROD_ID).is_none(),
-            "after the linger it goes back in the pod"
-        );
+        let stowed = crate::host::entity_snapshot(props::ROD_ID).expect("the rod is still his");
+        assert_eq!(stowed["state"], json!("stowed"));
+        assert_eq!(stowed["visible"], json!(false));
         // ...and fishing it out again is the next cast's job.
         state.cast().expect("cast");
         let rod = crate::host::entity_snapshot(props::ROD_ID).expect("rod");
@@ -3858,14 +3908,15 @@ mod tests {
         );
         advance_clock(props::LINGER_MS + 1);
         state.tick(0.0).expect("tick");
-        assert!(
-            crate::host::entity_snapshot(props::ROD_ID).is_none(),
-            "then back in the pod"
+        assert_eq!(
+            crate::host::entity_snapshot(props::ROD_ID).expect("still his")["state"],
+            json!("stowed"),
+            "then it is stowed, not thrown away"
         );
     }
 
     #[test]
-    fn a_landed_fish_rests_the_rod_before_it_goes_back() {
+    fn a_landed_fish_rests_the_rod_before_he_puts_it_away() {
         let mut state = angler();
         state.cast().expect("cast");
         wait_for_the_bite(&mut state);
@@ -3889,9 +3940,10 @@ mod tests {
         );
         advance_clock(props::LINGER_MS + 1);
         state.tick(0.0).expect("tick");
-        assert!(
-            crate::host::entity_snapshot(props::ROD_ID).is_none(),
-            "then it goes back in the pod"
+        assert_eq!(
+            crate::host::entity_snapshot(props::ROD_ID).expect("still his")["state"],
+            json!("stowed"),
+            "then it is stowed"
         );
     }
 
