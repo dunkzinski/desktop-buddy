@@ -1160,7 +1160,7 @@ the editor and every existing prop kept their numbers.
 
 **Proof**
 
-* `tools/entity-transform.test.mjs` — 9 tests, run by CI as *Page transform tests*
+* `tools/entity-transform.test.mjs` — 13 tests, run by CI as *Page transform tests*
   (`node --test`). They pin the unmirrored numbers as well as the mirror chain, so
   "nothing reads this flag" cannot come back quietly; `cargo` cannot see `ui/js` at
   all, which is why this harness exists.

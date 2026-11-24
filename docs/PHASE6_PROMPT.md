@@ -1,5 +1,19 @@
 # Phase 6 — closeout prompt (paste into a fresh context)
 
+> **Status: shipped.** All six charter items are closed: `65070af` (one attach rule for
+> spawn and update), `f57a5d7` (`accepts` declared advisory), `2f7fd3c` (the pod's idle
+> auto-dismiss), `ad5fd93` (the generator writes no sockets, on purpose), `107bfd0` (no
+> MCP entity tools) and `b4841e2` (the 3-deep chain measured at 0.033 ms). What shipped,
+> what was decided and the evidence for each are in
+> `docs/ENTITY_ITEMS_DESIGN.md` §14.5.1–14.5.6. Kept **verbatim** as the record of the
+> brief — it is not a work plan any more, and re-running it would re-open decisions that
+> section settles.
+>
+> Two corrections for anyone reading this as history: the tree was **not** clean when it
+> was pasted (items 1 and 2 were already half-done and uncommitted, and the two prompt
+> files had been deleted in the index), and the "~1 ms" figure was pessimistic by about
+> 30×.
+
 You're picking up the **closeout of §4's Phases 5–6** in `C:\hermes\desktop-buddy` — a
 Tauri 2 desktop avatar (the gremlin) with an axum API and Wasm guest plugins, Rust
 backend + vanilla-JS canvas frontend, no frameworks.

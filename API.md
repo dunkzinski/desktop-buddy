@@ -582,8 +582,8 @@ linger and lie.
 #### `POST /chest/summon`
 
 Body: `{ "seed": 2024, "at": [x, y] }`, both optional. Without `at` it lands
-beside the avatar (`+110, +62`); the seed decides the look and the slot count
-(5–8), and is remembered, so the same pod comes back.
+beside the avatar (`+110, +62`); the seed decides the look and how many trinkets
+it arrives with, and is remembered, so the same pod comes back.
 
 A **new** pod arrives with three to five seeded trinkets inside
 (`chest:loot0…`, `def: "trinket"`). `seeded` reports how many were rolled
