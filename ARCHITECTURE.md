@@ -2314,9 +2314,45 @@ the avatar mid-walk, if a scavenging run starts, or after 14 s; a pod left close
 is still a pod you can open from the card.
 
 A new pod seeds its own **trinkets** (`gen.rs::trinket`, owned by `chest`), which
-is what makes a summon worth looking at: 3–5 of them, scattered in the well, two
-slots always left free. `dismiss` treats those as furniture (they leave with the
-pod) and only your own items block it.
+is what makes a summon worth looking at: 3–5 of them, scattered in the well.
+`dismiss` treats those as furniture (they leave with the pod) and only your own
+items block it.
+
+**The pod has no bottom.** `put` has no capacity check, `GET /chest` reports a
+`count` and `"unbounded": true`, and the card shows `∞` instead of a bar — a
+progress bar would be a lie about how full something bottomless is. This is a
+deliberate choice, not an unfinished limit: the ceiling is a joke, and a joke with
+a slot count stops being funny at a predictable moment.
+
+### Rummaging (`POST /chest/find`)
+
+A search is not a lookup. `chest::find` draws one to three **wrong** things from
+`defs::JUNK` — rubber duck, anvil, magnifying glass, boot — spawns them as
+ordinary stage entities in front of the pod, and only then takes out the thing
+asked for. Three rules make it work:
+
+* **Distinct duds.** They are drawn from a *shrinking pool* (`Vec::remove`), not
+  by index: `Rng::below` will happily return the same value twice, and two
+  identical ducks is a weaker joke than a duck and an anvil.
+* **The mess stays.** Duds are `owner: "chest"` with a `world` attachment, which
+  is exactly the predicate `POST /chest/tidy` sweeps on — so the rule needs no
+  bookkeeping, and no item is ever deleted by a search.
+* **The host writes the sentence.** `narrative` comes back ready to speak
+  ("Rummaged around — out came Boot — then the Trinket"), so neither the page nor
+  the model has to reconstruct what happened from the JSON.
+
+A rummage that finds nothing still spills its duds. That is the point.
+
+### Picking the pod up
+
+The pod is draggable (`main.js`): a press inside `chestBounds` starts `podDrag`,
+a move past `DRAG_START_PX` moves the entity locally (`moveChestLocal`) and the
+write goes out **once**, on release (`POST /entities/update`). Letting go without
+moving opens the card — so click and drag are the same gesture, distinguished by
+distance, the same rule the avatar drag uses. During the gesture `body` carries
+`pod-dragging`, which `wireRegions` honours by publishing a full-viewport region:
+without it the 35 ms cursor tracker can flip the overlay click-through mid-drag
+and drop the pod.
 
 `dormant` means *not on the stage*, and the page enforces it: `entityDrawables`
 skips a dormant entity unless its clip is still running, which is what lets

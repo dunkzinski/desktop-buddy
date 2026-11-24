@@ -115,6 +115,77 @@ export function takeFromChest(id) {
   return chestPost("take", { id });
 }
 
+/**
+ * Rummage. One to three *wrong* things come out first, then the thing asked for.
+ *
+ * Not a lookup: the host deliberately overshoots, and `narrative` is the sentence
+ * a caller can hand straight to the gremlin's mouth.
+ */
+export function findInChest(query, seed) {
+  return chestPost("find", seed === undefined ? { query } : { query, seed });
+}
+
+/** Sweep up what a rummage spat onto the stage. The pod's contents are untouched. */
+export function tidyChest() {
+  return chestPost("tidy");
+}
+
+/** The pod's anchor in stage coordinates, or `null` when there is none. */
+export function chestOrigin() {
+  for (const [, entry] of cache) {
+    const entity = entry && entry.entity;
+    if (entity && entity.def === "chest" && entity.attach) {
+      const offset = entity.attach.offset;
+      if (Array.isArray(offset) && offset.length === 2) {
+        return { x: num(offset[0]), y: num(offset[1]) };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Move the pod on screen *before* the host knows: drag feedback.
+ *
+ * The write goes out once, on release — a `POST` per mousemove would be a stack of
+ * writes for a gesture the host does not need to arbitrate.
+ */
+export function moveChestLocal(x, y) {
+  for (const [, entry] of cache) {
+    const entity = entry && entry.entity;
+    if (entity && entity.def === "chest" && entity.attach) {
+      entity.attach.parent = "world";
+      entity.attach.socket = "world";
+      entity.attach.offset = [Math.round(x), Math.round(y)];
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Tell the host where the pod was put. */
+export async function commitChestMove(x, y) {
+  const base = await apiBase();
+  const res = await fetch(`${base}/entities/update`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      id: "chest",
+      attach: {
+        parent: "world",
+        socket: "world",
+        offset: [Math.round(x), Math.round(y)],
+      },
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || body.ok === false) {
+    throw new Error(body.error || `could not move the pod (${res.status})`);
+  }
+  markDirty();
+  return body;
+}
+
 /** The host's view: state, capacity, contents. */
 export async function chestStatus() {
   const base = await apiBase();

@@ -1532,12 +1532,22 @@ input[type="range"]::-webkit-slider-thumb {
 .chest-state[data-state="open"] { color: #a8e6a0; background: rgba(94, 196, 90, 0.16); border-color: rgba(130, 220, 120, 0.3); }
 .chest-state[data-state="dormant"], .chest-state[data-state="away"] { color: #9aa0b4; background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12); }
 
-.chest-slots { display: flex; align-items: center; gap: 8px; }
+.chest-slots { display: flex; align-items: baseline; gap: 8px; }
 .chest-slots-label { font-size: 10px; color: #9aa0b4; }
-.chest-slotbar { flex: 1; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.09); overflow: hidden; }
-.chest-slotfill { height: 100%; width: 0%; border-radius: 999px;
-  background: linear-gradient(90deg, #6fbf73, #d9c26a); transition: width 180ms ease; }
-.chest-slots-value { font-size: 10px; color: #c9cede; font-variant-numeric: tabular-nums; }
+.chest-slots-value { flex: 1; font-size: 11px; color: #c9cede; font-variant-numeric: tabular-nums; }
+/* The pod has no bottom, and the card says so rather than drawing a bar that
+   could only ever be a lie about how full it is. */
+.chest-depth { font-size: 15px; line-height: 1; color: #d9c26a; opacity: 0.85; }
+
+.chest-search { display: flex; gap: 6px; }
+.chest-search input {
+  flex: 1; min-width: 0; font: inherit; font-size: 10.5px;
+  color: #dfe3ee; background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 9px;
+  padding: 5px 8px;
+}
+.chest-search input::placeholder { color: #7c8296; }
+.chest-search input:focus { outline: none; border-color: rgba(122, 182, 240, 0.55); }
 
 .chest-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .chest-actions .control-btn { flex: 1 1 100%; }

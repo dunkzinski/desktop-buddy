@@ -888,3 +888,42 @@ The **chest card** (a panel with the slots, a Take button each, and a click regi
 so the pod is clickable) is the remaining slice of the original plan. Everything
 it would call already exists on the page (`chestStatus`, `putInChest`,
 `takeFromChest`, `dismissChest`), so it is UI work, not plumbing.
+
+---
+
+## 12. The pod has no bottom, and it can be picked up
+
+Two corrections to the design above, both from watching it work.
+
+### Capacity was the wrong idea
+
+The pod shipped with 5–8 slots. That made it a *container* — and a container is a
+place you manage, which is not what a gremlin's curiosity pod is for. Its job is
+to be **absurdly bigger inside than out**, so the ceiling came out: `put` has no
+check, `GET /chest` reports `count` and `"unbounded": true`, and the card shows
+`∞`.
+
+### The rummage
+
+`POST /chest/find` is a search that overshoots. Ask for an axe and one to three
+wrong things come out first — a rubber duck, an anvil, a magnifying glass, a boot
+(`defs::JUNK`) — each a real entity with a real mini-rig, dropped on the stage in
+front of the pod. Then, if it is in there, the axe.
+
+Three details that make the gag land:
+
+| Detail | Why |
+|---|---|
+| **Distinct duds** | drawn from a shrinking pool, not by index |
+| **The mess stays** | `owner: "chest"` + `world` attach = exactly what `tidy` sweeps |
+| **The host writes the sentence** | `narrative` is ready to speak; neither page nor model reconstructs it |
+
+Junk is generated like everything else — `gen.rs::{rubber_duck, anvil,
+magnifying_glass, boot}` — so the gag needs no special-case artwork, and a future
+mining plugin can add a pickaxe to the pool with one entry.
+
+### Movable furniture
+
+The pod drags: press, move, release (one write). A press that does not move opens
+the card. Same threshold rule as the avatar drag, and `body.pod-dragging` keeps
+the window interactive for the gesture so the cursor tracker cannot drop it.

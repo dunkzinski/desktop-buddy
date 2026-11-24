@@ -516,9 +516,10 @@ Grab a pod and see it: `POST /chest/summon` → `POST /chest/open` → `POST
 ```json
 { "ok": true,
   "chest": { "id": "chest", "exists": true, "state": "open",
-             "capacity": 7, "occupied": 1, "free": 6,
+             "count": 1, "unbounded": true,
              "contents": [{ "id": "survival:rod", "def": "fishing_rod",
-                            "state": "stowed", "visible": true }],
+                            "state": "stowed", "visible": true,
+                            "owner": null, "pod_property": false }],
              "entity": { … the entity, rig included … } } }
 ```
 
@@ -534,8 +535,7 @@ beside the avatar (`+110, +62`); the seed decides the look and the slot count
 (5–8), and is remembered, so the same pod comes back.
 
 A **new** pod arrives with three to five seeded trinkets inside
-(`chest:loot0…`, `def: "trinket"`), always leaving two slots free — a chest you
-cannot put anything into is a display case. `seeded` reports how many were rolled
+(`chest:loot0…`, `def: "trinket"`). `seeded` reports how many were rolled
 (`0` when an existing pod is just moved). The page hears `chest-summoned`, walks
 the gremlin to the anchor and opens the pod on arrival; a manual move stands that
 walk down rather than dragging the avatar back.
@@ -566,11 +566,38 @@ brings the same one back.
 
 #### `POST /chest/put` / `POST /chest/take`
 
-Body: `{ "id": "<entity>" }`. `put` requires an **open** pod and a free slot, and
-refuses with the count when full (`the chest is full (7 of 7 slots)`). The item is
+Body: `{ "id": "<entity>" }`. `put` requires an **open** pod. It used to refuse
+when full; the pod has **no bottom** now, so there is no full — `count` is the only
+number `GET /chest` reports. The item is
 attached to `entity:chest` at `chest_interior`, fitted to 45% of its own scale so
 a rod sits *in* the pod rather than through it. `take` detaches it to `world`
 beside the pod, visible again.
+
+#### `POST /chest/find`
+
+Body: `{ "query": "axe", "seed": 11 }` — `seed` optional. The pod must be **open**.
+
+A **rummage, not a lookup**. One to three **wrong things** come out first — a
+`rubber_duck`, an `anvil`, a `magnifying_glass` or a `boot` — landing on the stage
+in front of the pod; only then the thing asked for, if the pod has it. Matching is
+loose: an entity id, a def, or a label containing the query.
+
+```json
+{ "ok": true, "query": "axe", "found": false, "item": null,
+  "duds": [{ "id": "chest:junk0", "def": "anvil", "label": "Anvil" }],
+  "narrative": "Rummaged around — out came Anvil — and nothing else. There is no axe in there.",
+  "chest": { "count": 4, "unbounded": true, "…": "…" } }
+```
+
+`narrative` is written to be **spoken** — hand it to the page or the model
+unchanged. A rummage that finds nothing still spills its duds (the joke needs the
+mess), and two duds in one rummage are always different props.
+
+#### `POST /chest/tidy`
+
+Body: none. Sweeps up what a rummage left on the stage: every entity the pod owns
+that is **not inside it**. Contents are never touched.
+→ `{ "ok": true, "removed": 3, "ids": ["chest:junk0", "…"] }`.
 
 ### Posing individual joints
 

@@ -685,7 +685,10 @@ export function wireRegions() {
   // for the gesture so the 35 ms cursor tracker cannot flip the overlay
   // click-through mid-drag and steal the header the user is holding. The flag
   // is set by drag.js; the final geometry is republished on release.
-  if (document.body.classList.contains("panel-dragging")) {
+  if (
+    document.body.classList.contains("panel-dragging") ||
+    document.body.classList.contains("pod-dragging")
+  ) {
     regions.push({ x: 0, y: 0, w: viewport.w, h: viewport.h });
   }
 

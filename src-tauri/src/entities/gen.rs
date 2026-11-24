@@ -40,6 +40,10 @@ pub fn build(def: &PropDef, seed: u64, params: &Value) -> Result<Value, String> 
         "loot_bag" => Ok(loot_bag(&mut rng, params)),
         "chest" => Ok(chest(&mut rng, params)),
         "trinket" => Ok(trinket(&mut rng, params)),
+        "rubber_duck" => Ok(rubber_duck(&mut rng, params)),
+        "anvil" => Ok(anvil(&mut rng, params)),
+        "magnifying_glass" => Ok(magnifying_glass(&mut rng, params)),
+        "boot" => Ok(boot(&mut rng, params)),
         other => Err(format!("no generator for prop {other:?}")),
     }
 }
@@ -70,6 +74,22 @@ pub fn traits(def: &PropDef, seed: u64) -> BTreeMap<String, f64> {
             out.insert("whimsy".to_string(), round2(rng.range(0.4, 1.0)));
             out.insert("sturdiness".to_string(), round2(rng.range(0.7, 1.2)));
             out.insert("creak".to_string(), round2(rng.range(0.0, 1.0)));
+        }
+        "rubber_duck" => {
+            out.insert("squeak".to_string(), round2(rng.range(0.3, 1.0)));
+            out.insert("buoyancy".to_string(), round2(rng.range(0.6, 1.0)));
+        }
+        "anvil" => {
+            out.insert("weight".to_string(), rng.int(80, 140) as f64);
+            out.insert("comedy".to_string(), round2(rng.range(0.7, 1.0)));
+        }
+        "magnifying_glass" => {
+            out.insert("magnification".to_string(), round2(rng.range(1.2, 2.5)));
+            out.insert("clarity".to_string(), round2(rng.range(0.4, 1.0)));
+        }
+        "boot" => {
+            out.insert("luck".to_string(), round2(rng.range(0.0, 0.2)));
+            out.insert("smell".to_string(), round2(rng.range(0.5, 1.0)));
         }
         _ => {}
     }
@@ -578,6 +598,246 @@ fn trinket(rng: &mut Rng, params: &Value) -> Value {
             { "id": "sparkle", "bone": "root", "pos": [0.0, round2(-radius * 0.4)], "z": 16, "label": "Sparkle" },
         ],
     })
+}
+
+/* ------------------------------------------------------------------ *
+ * The comedy props: a duck, an anvil, a magnifier, a boot
+ * ------------------------------------------------------------------ */
+
+/// The shared skeleton of a hand-sized prop.
+///
+/// Three bones minimum because the loader refuses anything smaller, and three is
+/// what these shapes want anyway: a body that sits on the ground, a part that
+/// moves (a duck's head, a magnifier's handle, an anvil's horn), and an empty
+/// anchor the clip and a future charm can grab.
+fn junk_rig(
+    name: &str,
+    label: &str,
+    size: f64,
+    bones: Vec<Value>,
+    sockets: Vec<Value>,
+    animation: Option<(&str, Value)>,
+) -> Value {
+    let mut animations = serde_json::Map::new();
+    if let Some((clip_name, value)) = animation {
+        animations.insert(clip_name.to_string(), value);
+    }
+    json!({
+        "format": 1,
+        "name": name,
+        "label": label,
+        "structure": { "size": round2(size) },
+        "bones": bones,
+        "animations": Value::Object(animations),
+        "sockets": sockets,
+    })
+}
+
+fn socket(id: &str, bone_id: &str, pos: [f64; 2], label: &str) -> Value {
+    json!({ "id": id, "bone": bone_id, "pos": [round2(pos[0]), round2(pos[1])], "z": 16, "label": label })
+}
+
+fn rubber_duck(rng: &mut Rng, params: &Value) -> Value {
+    // Yellow, or the rare "marbled" duck a seed occasionally produces.
+    let marbled = bool_param(params, "marbled").unwrap_or_else(|| rng.below(10) == 0);
+    let body_color = if marbled { "#e8d98f" } else { "#f2c53d" };
+    let shade = "#c9a02c";
+    let size = rng.range(34.0, 42.0);
+
+    let body_parts = vec![
+        // Tail behind, body in front: the renderer paints in `z` order, and a duck
+        // is mostly overlapping blobs.
+        ellipse("tail", size * 0.5, size * 0.42, [-size * 0.62, -size * 0.1], shade, 8),
+        ellipse("body", size * 1.15, size * 0.86, [0.0, 0.05 * size], body_color, 10),
+    ];
+    let head_parts = vec![
+        ellipse("head", size * 0.62, size * 0.6, [0.0, 0.0], body_color, 12),
+        ellipse("eye", size * 0.12, size * 0.12, [size * 0.19, -size * 0.08], "#2b2b33", 14),
+        // The beak is the whole joke, so it is a triangle rather than an ellipse.
+        polygon(
+            "beak",
+            &[[size * 0.27, 0.08 * size], [size * 0.57, 0.14 * size], [size * 0.27, 0.24 * size]],
+            [0.0, 0.0],
+            "#e88a2c",
+            15,
+        ),
+    ];
+
+    let tilt = rng.range(-0.12, 0.12);
+    let bones = vec![
+        bone("root", None, [0.0, 0.0], tilt, 10, body_parts),
+        bone("head", Some("root"), [size * 0.55, -size * 0.52], 0.0, 12, head_parts),
+        bone("squeak", Some("root"), [0.0, 0.0], 0.0, 20, vec![]),
+    ];
+    let squeaking = clip(
+        1400.0,
+        false,
+        vec![
+            kf(0.0, json!({ "root": { "scale": 1.0 }, "head": { "rotation": 0.0 } })),
+            kf(0.35, json!({ "root": { "scale": 1.12 }, "head": { "rotation": -0.22 } })),
+            kf(0.7, json!({ "root": { "scale": 0.96 }, "head": { "rotation": 0.14 } })),
+            kf(1.0, json!({ "root": { "scale": 1.0 }, "head": { "rotation": 0.0 } })),
+        ],
+    );
+    junk_rig("rubber_duck", "Rubber duck", size, bones, vec![], Some(("squeaking", squeaking)))
+}
+
+fn anvil(rng: &mut Rng, params: &Value) -> Value {
+    let size = number_param(params, "size").unwrap_or_else(|| rng.range(38.0, 48.0));
+    let iron = "#4a4f5c";
+    let highlight = "#6d7484";
+    let shadow = "#33363f";
+
+    let body_parts = vec![
+        polygon(
+            "waist",
+            &[
+                [-size * 0.34, -size * 0.1],
+                [size * 0.34, -size * 0.1],
+                [size * 0.46, size * 0.34],
+                [-size * 0.46, size * 0.34],
+            ],
+            [0.0, 0.0],
+            iron,
+            10,
+        ),
+        capsule("stem", size * 0.36, size * 0.34, [0.0, size * 0.28], shadow, 11),
+        polygon(
+            "face",
+            &[
+                [-size * 0.96, -size * 0.42],
+                [size * 0.96, -size * 0.42],
+                [size * 0.78, -size * 0.1],
+                [-size * 0.78, -size * 0.1],
+            ],
+            [0.0, 0.0],
+            highlight,
+            12,
+        ),
+        capsule("base", size * 1.5, size * 0.3, [0.0, size * 0.46], iron, 12),
+    ];
+    let horn_parts = vec![polygon(
+        "horn",
+        &[
+            [-size * 0.92, -size * 0.34],
+            [-size * 1.22, -size * 0.16],
+            [-size * 0.92, -size * 0.02],
+        ],
+        [0.0, 0.0],
+        shadow,
+        8,
+    )];
+
+    let bones = vec![
+        bone("root", None, [0.0, 0.0], 0.0, 10, body_parts),
+        bone("horn", Some("root"), [0.0, 0.0], 0.0, 9, horn_parts),
+        bone("clang", Some("root"), [0.0, -size * 0.42], 0.0, 20, vec![]),
+    ];
+    let dropping = clip(
+        900.0,
+        false,
+        vec![
+            kf(0.0, json!({ "root": { "y": -size * 0.9, "scale": 1.05 }, "horn": { "rotation": -0.08 } })),
+            kf(0.55, json!({ "root": { "y": 0.0, "scale": 0.9 }, "horn": { "rotation": 0.12 } })),
+            kf(0.75, json!({ "root": { "y": -size * 0.06, "scale": 1.02 }, "horn": { "rotation": -0.04 } })),
+            kf(1.0, json!({ "root": { "y": 0.0, "scale": 1.0 }, "horn": { "rotation": 0.0 } })),
+        ],
+    );
+    junk_rig(
+        "anvil",
+        "Anvil",
+        size,
+        bones,
+        vec![socket("anvil_horn", "horn", [-size * 1.05, -size * 0.18], "Horn")],
+        Some(("dropping", dropping)),
+    )
+}
+
+fn magnifying_glass(rng: &mut Rng, _params: &Value) -> Value {
+    let size = rng.range(36.0, 44.0);
+    let brass = "#b8913f";
+    let glass = "#bfe6f2";
+    let rim = "#8a6a2a";
+
+    let lens_parts = vec![
+        ellipse("glass", size * 0.92, size * 0.92, [0.0, 0.0], glass, 8),
+        ellipse("rim", size * 1.06, size * 1.06, [0.0, 0.0], rim, 9),
+        ellipse("lens", size * 0.86, size * 0.86, [0.0, 0.0], glass, 10),
+        ellipse("glint", size * 0.22, size * 0.34, [-size * 0.2, -size * 0.2], "#ffffff", 12),
+    ];
+    let handle_parts = vec![capsule(
+        "handle",
+        size * 0.26,
+        size * 0.95,
+        [0.0, size * 0.42],
+        brass,
+        6,
+    )];
+
+    let bones = vec![
+        bone("root", None, [0.0, 0.0], rng.range(-0.3, 0.3), 10, lens_parts),
+        bone("handle", Some("root"), [size * 0.62, size * 0.6], -0.7, 8, handle_parts),
+        bone("focus", Some("root"), [0.0, 0.0], 0.0, 20, vec![]),
+    ];
+    let peering = clip(
+        1600.0,
+        true,
+        vec![
+            kf(0.0, json!({ "root": { "rotation": -0.1 }, "handle": { "rotation": -0.7 } })),
+            kf(0.5, json!({ "root": { "rotation": 0.12 }, "handle": { "rotation": -0.55 } })),
+            kf(1.0, json!({ "root": { "rotation": -0.1 }, "handle": { "rotation": -0.7 } })),
+        ],
+    );
+    junk_rig(
+        "magnifying_glass",
+        "Magnifying glass",
+        size,
+        bones,
+        vec![socket("lens", "root", [0.0, 0.0], "Lens")],
+        Some(("peering", peering)),
+    )
+}
+
+fn boot(rng: &mut Rng, _params: &Value) -> Value {
+    let size = rng.range(34.0, 42.0);
+    let leather = if rng.below(2) == 0 { "#6b4a2f" } else { "#4f3a28" };
+    let sole = "#2b2118";
+    let parts = vec![
+        // Shaft, toe, sole, cuff: a boot in profile is four blocks.
+        polygon(
+            "shaft",
+            &[
+                [-size * 0.2, -size * 0.9],
+                [size * 0.28, -size * 0.9],
+                [size * 0.32, size * 0.1],
+                [-size * 0.24, size * 0.1],
+            ],
+            [0.0, 0.0],
+            leather,
+            10,
+        ),
+        polygon(
+            "toe",
+            &[
+                [-size * 0.24, 0.0],
+                [size * 0.3, 0.0],
+                [size * 0.86, size * 0.34],
+                [size * 0.9, size * 0.5],
+                [-size * 0.3, size * 0.5],
+            ],
+            [0.0, 0.0],
+            leather,
+            10,
+        ),
+        capsule("sole", size * 1.3, size * 0.2, [size * 0.28, size * 0.58], sole, 12),
+        capsule("cuff", size * 0.6, size * 0.18, [size * 0.02, -size * 0.86], sole, 12),
+    ];
+    let bones = vec![
+        bone("root", None, [0.0, 0.0], rng.range(-0.2, 0.2), 10, parts),
+        bone("lace", Some("root"), [size * 0.04, -size * 0.4], 0.0, 20, vec![]),
+        bone("heel", Some("root"), [-size * 0.1, size * 0.5], 0.0, 20, vec![]),
+    ];
+    junk_rig("boot", "Boot", size, bones, vec![], None)
 }
 
 /* ------------------------------------------------------------------ *

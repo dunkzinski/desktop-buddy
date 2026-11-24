@@ -523,12 +523,10 @@
     <button class="mini-btn" id="btn-chest-close" title="Close (Esc)" aria-label="Close">✕</button>
   </header>
   <div class="chest-body">
-    <div class="chest-slots" title="Slots used by what is inside (GET /chest)">
-      <span class="chest-slots-label">Slots</span>
-      <div class="chest-slotbar" role="progressbar" aria-valuemin="0" aria-valuemax="8">
-        <div class="chest-slotfill" id="chest-slotfill"></div>
-      </div>
+    <div class="chest-slots" title="How many things are in it. There is no limit (GET /chest)">
+      <span class="chest-slots-label">Inside</span>
       <span class="chest-slots-value" id="chest-slots">—</span>
+      <span class="chest-depth" title="No bottom to this thing">∞</span>
     </div>
     <div class="chest-actions">
       <button class="control-btn primary" id="btn-chest-summon"
@@ -539,6 +537,14 @@
               title="Fold the petals shut (POST /chest/close)">Close</button>
       <button class="mini-btn" id="btn-chest-dismiss"
               title="Send it away. Shift-click forces it, dropping anything you put in on the stage (POST /chest/dismiss)">Dismiss</button>
+      <button class="mini-btn" id="btn-chest-tidy"
+              title="Sweep up what a rummage spat onto the stage (POST /chest/tidy)">Tidy up</button>
+    </div>
+    <div class="chest-search">
+      <input id="chest-query" type="text" placeholder="Look for…" autocomplete="off"
+             aria-label="What to rummage for" />
+      <button class="mini-btn" id="btn-chest-find"
+              title="Rummage: one to three wrong things come out first (POST /chest/find)">Look</button>
     </div>
     <div class="chest-list" id="chest-contents" role="list" aria-label="Chest contents"></div>
     <div class="chest-note" id="chest-note" aria-live="polite"></div>

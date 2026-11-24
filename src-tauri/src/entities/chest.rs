@@ -43,16 +43,47 @@ impl Applied {
     }
 }
 
-fn capacity(store: &EntityStore) -> usize {
-    store.capacity_of(CHEST_ID)
-}
-
 fn occupied(store: &EntityStore) -> usize {
     store.contents_of(CHEST_ID).len()
 }
 
 fn chest_state(store: &EntityStore, id: &str) -> Option<String> {
     store.state_of(id).map(str::to_string)
+}
+
+/// Where the pod is standing, in absolute stage coordinates.
+///
+/// Three operations need it (dismiss, take, find) and the first two had the same
+/// five-line unwrap pasted into them.
+fn anchor_of(store: &mut EntityStore) -> [f64; 2] {
+    store
+        .render_one(CHEST_ID)
+        .and_then(|entity| entity.get("attach").cloned())
+        .and_then(|attach| attach.get("offset").cloned())
+        .and_then(|offset| offset.as_array().cloned())
+        .map(|pair| {
+            [
+                pair.first().and_then(Value::as_f64).unwrap_or(0.0),
+                pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+            ]
+        })
+        .unwrap_or([0.0, 0.0])
+}
+
+/// A prop's human name, for narrating a rummage.
+fn label_of(def_id: &str) -> String {
+    defs::find(def_id)
+        .map(|def| def.label.to_string())
+        .unwrap_or_else(|| def_id.to_string())
+}
+
+/// `a, b and c`
+fn join_names(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => only.clone(),
+        [head @ .., last] => format!("{} and {}", head.join(", "), last),
+    }
 }
 
 
@@ -62,13 +93,13 @@ fn chest_state(store: &EntityStore, id: &str) -> Option<String> {
 /// with three to five seeded finds. They are owned by the pod (`owner: "chest"`),
 /// which is what lets `dismiss` tell "the pod's own things" (they go with it) from
 /// "your things" (they block it).
-fn seed_loot(store: &mut EntityStore, chest_seed: u64, capacity: usize) -> Result<usize, String> {
+fn seed_loot(store: &mut EntityStore, chest_seed: u64) -> Result<usize, String> {
     use super::rng::Rng;
 
     let mut rng = Rng::new(chest_seed ^ 0xC0FF_EE00_1234_5678);
-    // Always leave two slots: a pod you cannot put anything into is a display case.
-    let room = capacity.saturating_sub(2).max(1);
-    let wanted = (3 + rng.below(3) as usize).min(room);
+    // The pod has no bottom, so there is nothing to leave room for — it just
+    // arrives with a few things in it.
+    let wanted = 3 + rng.below(3) as usize;
     let mut made = 0;
     for index in 0..wanted {
         let id = format!("chest:loot{index}");
@@ -121,7 +152,6 @@ fn round2(value: f64) -> f64 {
 
 /// The `GET /chest` body: state, slots, and what is inside.
 pub fn view(store: &mut EntityStore) -> Value {
-    let capacity = capacity(store);
     let contents: Vec<Value> = store
         .contents_of(CHEST_ID)
         .iter()
@@ -147,9 +177,10 @@ pub fn view(store: &mut EntityStore) -> Value {
         "id": CHEST_ID,
         "exists": entity.is_some(),
         "state": state,
-        "capacity": capacity,
-        "occupied": contents.len(),
-        "free": capacity.saturating_sub(contents.len()),
+        // No capacity and no `free`: the pod has no bottom. `count` is the only
+        // number a caller needs, and there is nothing to be within.
+        "count": contents.len(),
+        "unbounded": true,
         "contents": contents,
         "entity": entity,
     })
@@ -185,7 +216,7 @@ pub fn summon(store: &mut EntityStore, seed: u64, anchor: [f64; 2]) -> Result<Ap
             },
             None,
         )?;
-        let seeded = seed_loot(store, seed, store.capacity_of(CHEST_ID))?;
+        let seeded = seed_loot(store, seed)?;
         return Ok(Applied::new(json!({
             "ok": true,
             "created": outcome.created,
@@ -364,18 +395,7 @@ pub fn dismiss(store: &mut EntityStore, force: bool) -> Result<Applied, String> 
 
     // Park everything on the stage, in a line to the right of the pod, so a forced
     // dismiss never deletes a thing.
-    let anchor = store
-        .render_one(CHEST_ID)
-        .and_then(|entity| entity.get("attach").cloned())
-        .and_then(|attach| attach.get("offset").cloned())
-        .and_then(|offset| offset.as_array().cloned())
-        .map(|pair| {
-            [
-                pair.first().and_then(Value::as_f64).unwrap_or(0.0),
-                pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
-            ]
-        })
-        .unwrap_or([0.0, 0.0]);
+    let anchor = anchor_of(store);
     for (index, id) in yours.iter().enumerate() {
         let x = anchor[0] + DROP_OFFSET + (index as f64) * 44.0;
         let mut drop = Attachment::world(x, anchor[1]);
@@ -442,14 +462,6 @@ pub fn put(store: &mut EntityStore, item: &str) -> Result<Applied, String> {
         }
         None => return Err("no chest on the stage".to_string()),
     }
-    if occupied(store) >= capacity(store) {
-        return Err(format!(
-            "the chest is full ({} of {} slots)",
-            occupied(store),
-            capacity(store)
-        ));
-    }
-
     let seat = Attachment {
         parent: format!("entity:{CHEST_ID}"),
         socket: "chest_interior".to_string(),
@@ -490,18 +502,7 @@ pub fn take(store: &mut EntityStore, item: &str) -> Result<Applied, String> {
     if !inside {
         return Err(format!("{item:?} is not in the chest"));
     }
-    let anchor = store
-        .render_one(CHEST_ID)
-        .and_then(|entity| entity.get("attach").cloned())
-        .and_then(|attach| attach.get("offset").cloned())
-        .and_then(|offset| offset.as_array().cloned())
-        .map(|pair| {
-            [
-                pair.first().and_then(Value::as_f64).unwrap_or(0.0),
-                pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
-            ]
-        })
-        .unwrap_or([0.0, 0.0]);
+    let anchor = anchor_of(store);
     let mut drop = Attachment::world(anchor[0] + DROP_OFFSET, anchor[1]);
     drop.socket = STAGE_SOCKET.to_string();
     store.update(
@@ -519,6 +520,202 @@ pub fn take(store: &mut EntityStore, item: &str) -> Result<Applied, String> {
         "chest": view(store),
     }))
     .with("chest-took", json!({ "id": CHEST_ID, "item": item })))
+}
+
+/// How many duds one rummage can produce, at most.
+const MAX_DUDS: u32 = 3;
+
+/// An id like `chest:junk3` that nothing is using.
+fn next_free_id(store: &EntityStore, prefix: &str) -> String {
+    for index in 0..10_000u32 {
+        let id = format!("{prefix}{index}");
+        if store.state_of(&id).is_none() {
+            return id;
+        }
+    }
+    prefix.to_string()
+}
+
+/// Rummage for `want` — the comedy path.
+///
+/// A search is not a lookup. One to three **wrong things** come out first (a
+/// rubber duck, an anvil, a magnifying glass, a boot) and land on the stage in
+/// front of the pod; only then the thing you asked for, if it is in there and the
+/// pod is open. The duds stay where they fell — that is the mess the joke makes,
+/// and [`tidy`] is what sweeps it up.
+///
+/// A rummage that finds nothing still spills its duds: "it is not in there" is
+/// funnier with a rubber duck on the floor.
+pub fn find(store: &mut EntityStore, want: &str, seed: Option<u64>) -> Result<Applied, String> {
+    use super::rng::Rng;
+
+    let want = want.trim();
+    if want.is_empty() {
+        return Err("say what to look for".to_string());
+    }
+    if store.state_of(CHEST_ID).is_none() {
+        return Err("no chest on the stage".to_string());
+    }
+    match chest_state(store, CHEST_ID).as_deref() {
+        Some("open") => {}
+        Some(state) => {
+            return Err(format!(
+                "the chest is {state} — open it before rummaging in it"
+            ))
+        }
+        None => return Err("no chest on the stage".to_string()),
+    }
+
+    let seed = seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos() as u64)
+            .unwrap_or(0x5EED_D00D)
+    });
+    let mut rng = Rng::new(seed ^ 0xD00D_5EED_1234_ABCD);
+
+    let anchor = anchor_of(store);
+    // Where this rummage's debris starts in the fan. Successive rummages rotate
+    // the fan and step outwards, so a second search does not drop its duck on the
+    // first one's anvil.
+    let already = store
+        .list()
+        .filter(|entity| entity.id.starts_with("chest:junk"))
+        .count();
+    let wanted_duds = 1 + rng.below(MAX_DUDS) as usize;
+    // Draw from a shrinking pool: two identical ducks in one rummage is a weaker
+    // joke than a duck and an anvil, and `below` alone will happily repeat itself.
+    let mut pool: Vec<&'static defs::PropDef> = defs::JUNK.to_vec();
+    let mut picked: Vec<&'static defs::PropDef> = Vec::new();
+    for _ in 0..wanted_duds.min(pool.len()) {
+        let index = rng.below(pool.len() as u32) as usize;
+        picked.push(pool.remove(index));
+    }
+
+    let mut duds: Vec<Value> = Vec::new();
+    for (index, def) in picked.into_iter().enumerate() {
+        let id = next_free_id(store, "chest:junk");
+        // A fan across the pod's front, clear of its ~150 px silhouette.
+        let turn = (already % 4) as f64 * 0.26;
+        let spread = -0.18 + turn + index as f64 * 0.30 + rng.range(-0.05, 0.05);
+        let reach = 108.0 + (already % 3) as f64 * 30.0 + index as f64 * 12.0;
+        let x = anchor[0] + spread.cos() * reach;
+        // Squashed vertically: the stage is a side view, not a floor plan.
+        let y = anchor[1] + 30.0 + spread.sin() * reach * 0.5;
+        let mut seat = Attachment::world(round2(x), round2(y));
+        seat.socket = STAGE_SOCKET.to_string();
+        store.spawn(SpawnRequest {
+            def: def.id.to_string(),
+            id: Some(id.clone()),
+            seed: Some(rng.next_u64()),
+            params: json!({}),
+            state: Some(def.default_state.to_string()),
+            attach: Some(seat),
+            owner: Some("chest".to_string()),
+            traits: None,
+        })?;
+        duds.push(json!({ "id": id, "def": def.id, "label": def.label }));
+    }
+
+    // What was actually asked for. Matched loosely — by id, def or label — because
+    // the caller is usually an agent saying "the axe" rather than an entity id.
+    let needle = want.to_ascii_lowercase();
+    let target = store
+        .contents_of(CHEST_ID)
+        .iter()
+        .find(|entity| {
+            let def = entity.def.to_ascii_lowercase();
+            entity.id.to_ascii_lowercase().contains(&needle)
+                || def.contains(&needle)
+                || label_of(&entity.def).to_ascii_lowercase().contains(&needle)
+        })
+        .map(|entity| (entity.id.clone(), entity.def.clone()));
+
+    let dud_names: Vec<String> = duds
+        .iter()
+        .filter_map(|dud| dud.get("label").and_then(Value::as_str).map(str::to_string))
+        .collect();
+
+    let mut applied = match &target {
+        Some((id, def)) => {
+            // `take` lays it beside the pod and reports the chest after it left.
+            let taken = take(store, id)?;
+            let narrative = format!(
+                "Rummaged around — out came {} — then the {}.",
+                join_names(&dud_names),
+                label_of(def)
+            );
+            let mut applied = Applied::new(json!({
+                "ok": true,
+                "query": want,
+                "found": true,
+                "item": { "id": id, "def": def, "label": label_of(def) },
+                "duds": duds,
+                "narrative": narrative,
+                "chest": taken.body.get("chest").cloned().unwrap_or_else(|| view(store)),
+            }));
+            // `chest-took` is what the page uses to animate the item leaving.
+            applied.events.extend(taken.events);
+            applied
+        }
+        None => Applied::new(json!({
+            "ok": true,
+            "query": want,
+            "found": false,
+            "item": Value::Null,
+            "duds": duds,
+            "narrative": format!(
+                "Rummaged around — out came {} — and nothing else. There is no {} in there.",
+                join_names(&dud_names),
+                want
+            ),
+            "chest": view(store),
+        })),
+    };
+
+    let payload = json!({
+        "id": CHEST_ID,
+        "query": want,
+        "found": target.is_some(),
+        "duds": applied.body.get("duds").cloned().unwrap_or_else(|| json!([])),
+        "narrative": applied.body.get("narrative").cloned().unwrap_or(Value::Null),
+    });
+    applied = applied.with("chest-find", payload);
+    Ok(applied)
+}
+
+/// Sweep the debris a rummage leaves behind.
+///
+/// Anything the pod *owns* that is not inside it is something it spat out, so the
+/// rule needs no separate bookkeeping: `owner: "chest"` plus a world attachment
+/// is exactly "pod's junk, on the stage".
+pub fn tidy(store: &mut EntityStore) -> Result<Applied, String> {
+    let spilled: Vec<String> = store
+        .list()
+        .filter(|entity| {
+            entity.owner.as_deref() == Some("chest")
+                && entity
+                    .attach
+                    .as_ref()
+                    .and_then(Attachment::parent_entity)
+                    .is_none()
+        })
+        .map(|entity| entity.id.clone())
+        .collect();
+    let mut removed: Vec<String> = Vec::new();
+    for id in spilled {
+        if store.remove(&id, None).is_ok() {
+            removed.push(id);
+        }
+    }
+    let count = removed.len();
+    Ok(Applied::new(json!({
+        "ok": true,
+        "removed": count,
+        "ids": removed,
+        "chest": view(store),
+    }))
+    .with("chest-tidied", json!({ "id": CHEST_ID, "removed": count })))
 }
 
 #[cfg(test)]
@@ -569,10 +766,8 @@ mod tests {
             assert!(is_pod_property(&store, &id));
             assert_eq!(store.render_one(&id).expect("loot")["visible"], json!(false));
         }
-        assert!(
-            occupied(&store) < capacity(&store),
-            "a pod you cannot put anything into is a display case"
-        );
+        // No bottom: the only thing the count can tell you is how many.
+        assert_eq!(view(&mut store)["count"], json!(seeded));
     }
 
     #[test]
@@ -649,24 +844,96 @@ mod tests {
     }
 
     #[test]
-    fn capacity_is_a_refusal_not_a_silent_drop() {
+    fn the_pod_has_no_bottom() {
         let mut store = store_with_chest();
         open(&mut store).expect("open");
-        let capacity = capacity(&store);
-        let mut placed = 0;
-        for index in 0..capacity {
+        // Far more than the seeded slot count used to allow.
+        for index in 0..40 {
             let id = format!("demo:item{index}");
             an_item(&mut store, &id);
-            match put(&mut store, &id) {
-                Ok(_) => placed += 1,
-                Err(_) => break,
-            }
+            put(&mut store, &id).unwrap_or_else(|err| panic!("put {id}: {err}"));
         }
-        assert_eq!(placed, capacity - chest_loot(&store).len(), "the free slots");
-        an_item(&mut store, "demo:extra");
-        let err = put(&mut store, "demo:extra").expect_err("full");
-        assert!(err.contains("full"), "{err}");
-        assert_eq!(occupied(&store), capacity);
+        let view = view(&mut store);
+        assert_eq!(view["count"], json!(40 + chest_loot(&store).len()));
+        assert_eq!(view["unbounded"], json!(true));
+        assert!(
+            view.get("capacity").is_none(),
+            "a number there would be a lie: {view}"
+        );
+        assert!(view.get("free").is_none());
+    }
+
+    #[test]
+    fn a_rummage_produces_junk_before_the_item() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        // Something specific to ask for, alongside the pod's own trinkets.
+        an_item(&mut store, "demo:bag");
+        put(&mut store, "demo:bag").expect("put");
+
+        let applied = find(&mut store, "bag", Some(11)).expect("find");
+        assert_eq!(applied.body["found"], json!(true));
+        assert_eq!(applied.body["item"]["id"], json!("demo:bag"));
+        let duds = applied.body["duds"].as_array().expect("duds");
+        assert!(
+            (1..=MAX_DUDS as usize).contains(&duds.len()),
+            "one to three duds, got {}",
+            duds.len()
+        );
+        // Every dud is a real entity on the stage, in front of the pod, owned by
+        // the pod — and none of them is the thing that was asked for.
+        for dud in duds {
+            let id = dud["id"].as_str().expect("id");
+            let entity = store.render_one(id).expect("the dud exists");
+            assert_eq!(entity["attach"]["parent"], json!("world"));
+            assert_ne!(entity["def"], json!("axe"));
+        }
+        // The thing asked for left the pod and landed beside it.
+        assert_eq!(
+            store.render_one("demo:bag").expect("bag")["attach"]["parent"],
+            json!("world")
+        );
+        let narrative = applied.body["narrative"].as_str().expect("narrative");
+        assert!(narrative.contains("Loot bag"), "{narrative}");
+        assert!(narrative.contains("then the"), "the gag has a beat: {narrative}");
+        assert!(applied.events.iter().any(|(name, _)| *name == "chest-find"));
+    }
+
+    #[test]
+    fn a_rummage_that_finds_nothing_still_spills_its_duds() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        let applied = find(&mut store, "banana", Some(5)).expect("find");
+        assert_eq!(applied.body["found"], json!(false));
+        assert_eq!(applied.body["item"], Value::Null);
+        assert!(!applied.body["duds"].as_array().expect("duds").is_empty());
+        let narrative = applied.body["narrative"].as_str().expect("narrative");
+        assert!(narrative.contains("banana"), "{narrative}");
+    }
+
+    #[test]
+    fn a_closed_pod_refuses_a_rummage() {
+        let mut store = store_with_chest();
+        let err = find(&mut store, "axe", Some(1)).expect_err("closed");
+        assert!(err.contains("open"), "{err}");
+    }
+
+    #[test]
+    fn tidy_sweeps_the_debris_and_leaves_the_contents() {
+        let mut store = store_with_chest();
+        open(&mut store).expect("open");
+        an_item(&mut store, "demo:bag");
+        put(&mut store, "demo:bag").expect("put");
+        let spilled = find(&mut store, "hammer", Some(9)).expect("find");
+        let dud_count = spilled.body["duds"].as_array().expect("duds").len();
+        assert!(dud_count > 0);
+
+        let before = view(&mut store)["count"].as_u64().expect("count");
+        let cleaned = tidy(&mut store).expect("tidy");
+        assert_eq!(cleaned.body["removed"], json!(dud_count));
+        // The pod is untouched: its own trinkets and your axe are still inside.
+        assert_eq!(view(&mut store)["count"].as_u64().expect("count"), before);
+        assert!(store.render_one("demo:bag").is_some(), "never delete loot");
     }
 
     #[test]

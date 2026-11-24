@@ -22,7 +22,10 @@ import {
 
 import {
   chestBounds,
+  chestOrigin,
+  commitChestMove,
   entitySnapshot,
+  moveChestLocal,
   initEntities,
   markDirty,
   openChest,
@@ -787,6 +790,14 @@ function attachInteractionDetection(canvas) {
   let grab = null;
   let lastClick = { t: 0, x: 0, y: 0 };
 
+  /**
+   * A press on the pod: drag to move it, or let go without moving to open its card.
+   *
+   * `null` when no pod press is in flight. `moved` is the threshold latch, so a
+   * shaky hand still opens the card instead of nudging the pod two pixels.
+   */
+  let podDrag = null;
+
   const overAvatar = (point) => {
     // RT.world is refreshed by the render loop, so the bounds are current.
     if (RT.rigMode || !RT.model) return false;
@@ -802,13 +813,17 @@ function attachInteractionDetection(canvas) {
       return;
     }
     const point = canvasPoint(canvas, event);
-    // The pod is furniture: clicking it opens its card rather than starting a
-    // drag. It has its own click region (see `entities.js::chestBounds`), so this
-    // only runs when the press genuinely landed on it.
+    // The pod is furniture you can pick up: a press starts a move, and letting go
+    // without moving opens its card. It has its own click region (see
+    // `entities.js::chestBounds`), so this only runs when the press landed on it.
     if (overChest(point)) {
       pressOrigin = null;
       grab = null;
-      openChestCard();
+      const origin = chestOrigin();
+      podDrag = origin
+        ? { startX: point.x, startY: point.y, originX: origin.x, originY: origin.y, moved: false }
+        : null;
+      if (!podDrag) openChestCard();
       return;
     }
     pressOrigin = overAvatar(point) ? point : null;
@@ -820,6 +835,23 @@ function attachInteractionDetection(canvas) {
   });
 
   window.addEventListener("mousemove", (event) => {
+    if (podDrag) {
+      const point = canvasPoint(canvas, event);
+      if (!podDrag.moved) {
+        if (Math.hypot(point.x - podDrag.startX, point.y - podDrag.startY) <= DRAG_START_PX) return;
+        podDrag.moved = true;
+        // Full-viewport hit region for the rest of the gesture, or the 35 ms
+        // cursor tracker could flip the overlay click-through mid-drag and drop
+        // the pod on the floor.
+        document.body.classList.add("pod-dragging");
+        wireRegions();
+      }
+      moveChestLocal(
+        podDrag.originX + (point.x - podDrag.startX),
+        podDrag.originY + (point.y - podDrag.startY),
+      );
+      return;
+    }
     if (!grab || !pressOrigin || RT.rigMode) return;
     const point = canvasPoint(canvas, event);
 
@@ -869,9 +901,34 @@ function attachInteractionDetection(canvas) {
     }
     pressOrigin = null;
     grab = null;
+    if (podDrag) {
+      // The pod keeps whatever position the last frame gave it; the write goes out
+      // on the next release, and `refresh` reconciles from the host regardless.
+      podDrag = null;
+      document.body.classList.remove("pod-dragging");
+      wireRegions();
+    }
   });
 
   window.addEventListener("mouseup", (event) => {
+    if (podDrag) {
+      const drag = podDrag;
+      podDrag = null;
+      document.body.classList.remove("pod-dragging");
+      if (drag.moved) {
+        const settled = chestOrigin();
+        if (settled) {
+          commitChestMove(settled.x, settled.y).catch((err) => {
+            console.warn("[avatar] could not move the pod:", err);
+          });
+        }
+      } else {
+        // A press that never moved is a click: show what is inside.
+        openChestCard();
+      }
+      wireRegions();
+      return;
+    }
     const origin = pressOrigin;
     const drag = grab;
     pressOrigin = null;

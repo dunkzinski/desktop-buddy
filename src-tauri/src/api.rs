@@ -387,6 +387,8 @@ fn router(api: ApiCtx) -> Router {
         .route("/chest/dismiss", post(chest_dismiss))
         .route("/chest/put", post(chest_put))
         .route("/chest/take", post(chest_take))
+        .route("/chest/find", post(chest_find))
+        .route("/chest/tidy", post(chest_tidy))
         .route("/props", get(list_props))
         .route("/import", post(import_asset))
         .route("/parts", get(get_parts))
@@ -1474,6 +1476,33 @@ async fn chest_take(
         .map(str::to_string)
         .ok_or_else(|| ApiError::bad_request("`id` is required"))?;
     apply_chest(&api, move |store| crate::entities::chest::take(store, &id))
+}
+
+/// `POST /chest/find` — rummage. One to three wrong things come out first, then
+/// the thing asked for (if the pod has it). This is deliberately *not* a lookup:
+/// the duds are the point, and they stay on the stage until `POST /chest/tidy`.
+async fn chest_find(
+    State(api): State<ApiCtx>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let want = body
+        .get("query")
+        .or_else(|| body.get("want"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ApiError::bad_request("`query` is required (what to look for)"))?;
+    let seed = body.get("seed").and_then(Value::as_u64);
+    apply_chest(&api, move |store| {
+        crate::entities::chest::find(store, &want, seed)
+    })
+}
+
+/// `POST /chest/tidy` — sweep up the junk a rummage spat onto the stage. The
+/// pod's *contents* are never touched.
+async fn chest_tidy(State(api): State<ApiCtx>) -> Result<Json<Value>, ApiError> {
+    apply_chest(&api, crate::entities::chest::tidy)
 }
 
 async fn switch_model(

@@ -182,8 +182,83 @@ pub const LOOT_BAG: PropDef = PropDef {
     summary: "A sack with a strap, a flap and patches. Bulges when full.",
 };
 
+/* ------------------------------------------------------------------ *
+ * The comedy props
+ * ------------------------------------------------------------------ */
+
+/// What comes out of a pod when you are looking for something else.
+///
+/// These exist for one joke: a gremlin rummages for an axe and produces a rubber
+/// duck, an anvil and a magnifying glass first. They are ordinary props — same
+/// generators, same states, same sockets — because the joke only works if the
+/// pod really does hold them.
+
+pub const RUBBER_DUCK: PropDef = PropDef {
+    id: "rubber_duck",
+    label: "Rubber duck",
+    category: PropCategory::Tool,
+    tags: &["junk", "toy", "bath"],
+    states: &["idle", "squeaking"],
+    default_state: "idle",
+    animations: &["squeaking"],
+    own_sockets: &[],
+    grips: &[("hand_primary", 0.0), ("stage_ground", 0.0)],
+    summary: "A bath toy with an expression of mild existential doubt.",
+};
+
+pub const ANVIL: PropDef = PropDef {
+    id: "anvil",
+    label: "Anvil",
+    category: PropCategory::Tool,
+    tags: &["junk", "heavy", "iron"],
+    states: &["idle", "dropping"],
+    default_state: "idle",
+    animations: &["dropping"],
+    own_sockets: &["anvil_horn"],
+    grips: &[("hand_primary", 0.0), ("stage_ground", 0.0)],
+    summary: "Ninety kilos of wrong answer.",
+};
+
+pub const MAGNIFYING_GLASS: PropDef = PropDef {
+    id: "magnifying_glass",
+    label: "Magnifying glass",
+    category: PropCategory::Tool,
+    tags: &["junk", "optics", "detective"],
+    states: &["idle", "peering"],
+    default_state: "idle",
+    animations: &["peering"],
+    own_sockets: &["lens"],
+    grips: &[("hand_primary", -0.3), ("stage_ground", 0.0)],
+    summary: "For finding things, in principle.",
+};
+
+pub const BOOT: PropDef = PropDef {
+    id: "boot",
+    label: "Boot",
+    category: PropCategory::Apparel,
+    tags: &["junk", "footwear"],
+    states: &["idle"],
+    default_state: "idle",
+    animations: &[],
+    own_sockets: &[],
+    grips: &[("hand_primary", 0.4), ("stage_ground", 0.0)],
+    summary: "One boot. No explanation offered.",
+};
+
+/// The rummage pool, in the order `chest::find` picks from.
+pub const JUNK: &[&PropDef] = &[&RUBBER_DUCK, &ANVIL, &MAGNIFYING_GLASS, &BOOT];
+
 /// Every prop this build knows.
-pub const PROPS: &[PropDef] = &[FISHING_ROD, LOOT_BAG, CHEST, TRINKET];
+pub const PROPS: &[PropDef] = &[
+    FISHING_ROD,
+    LOOT_BAG,
+    CHEST,
+    TRINKET,
+    RUBBER_DUCK,
+    ANVIL,
+    MAGNIFYING_GLASS,
+    BOOT,
+];
 
 pub fn find(id: &str) -> Option<&'static PropDef> {
     PROPS.iter().find(|def| def.id == id)

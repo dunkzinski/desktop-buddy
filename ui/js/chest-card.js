@@ -5,7 +5,16 @@
 //! rather than guessing what the mutation did, which is why a refused dismiss
 //! (the pod still holds *your* things) can show the host's own words.
 
-import { chestStatus, summonChest, openChest, closeChest, dismissChest, takeFromChest } from "./entities.js";
+import {
+  chestStatus,
+  closeChest,
+  dismissChest,
+  findInChest,
+  openChest,
+  summonChest,
+  takeFromChest,
+  tidyChest,
+} from "./entities.js";
 import { wireRegions } from "./rig.js";
 
 let card = null;
@@ -15,6 +24,8 @@ let poll = 0;
 let busy = false;
 /** The last host refusal, kept so a re-render does not blink it away. */
 let note = "";
+/** How many times `say` has been called, so `act` knows if it was spoken for. */
+let said = 0;
 
 const PRETTY_DEF = {
   chest: "Pod",
@@ -36,6 +47,7 @@ function nameOf(item) {
 }
 
 function say(message, tone = "error") {
+  said += 1;
   note = message || "";
   if (!els || !els.note) return;
   els.note.textContent = note;
@@ -46,10 +58,16 @@ function say(message, tone = "error") {
 async function act(runController) {
   if (busy) return;
   busy = true;
+  const spoken = said;
   if (els) els.buttons.forEach((button) => (button.disabled = true));
   try {
     const result = await runController();
-    say(result && result.changed === false ? "nothing to change" : "", "ok");
+    // Only speak if the controller itself said nothing: a rummage writes a whole
+    // sentence ("out came a boot — then the Trinket"), and a generic "nothing to
+    // change" used to overwrite it a millisecond later.
+    if (said === spoken) {
+      say(result && result.changed === false ? "nothing to change" : "", "ok");
+    }
   } catch (err) {
     say(String(err && err.message ? err.message : err));
   } finally {
@@ -102,23 +120,23 @@ export async function render() {
     els.state.textContent = "away";
     els.state.dataset.state = "away";
     els.slots.textContent = "—";
-    els.slotfill.style.width = "0%";
     els.contents.replaceChildren();
     const empty = document.createElement("div");
     empty.className = "chest-empty";
     empty.textContent = "No pod on the stage. Summon one.";
     els.contents.append(empty);
     setVerbEnabled({ summon: true, open: false, fold: false, dismiss: false });
+    els.look.disabled = true;
     return;
   }
 
   const state = view.state || "closed";
   els.state.textContent = state === "dormant" ? "away" : state;
   els.state.dataset.state = state;
-  const capacity = Number(view.capacity) || 0;
-  const used = Number(view.occupied) || 0;
-  els.slots.textContent = `${used} / ${capacity}`;
-  els.slotfill.style.width = capacity ? `${Math.min(100, (used / capacity) * 100)}%` : "0%";
+  // No capacity to compare against: the pod has no bottom, so the only honest
+  // readout is a count.
+  const count = Number(view.count) || 0;
+  els.slots.textContent = `${count} ${count === 1 ? "thing" : "things"}`;
 
   els.contents.replaceChildren();
   if (!view.contents || !view.contents.length) {
@@ -139,6 +157,9 @@ export async function render() {
     fold: state === "open",
     dismiss: !away,
   });
+  // Rummaging needs the lid open; the host refuses it anyway, but a disabled
+  // button says so before the click.
+  els.look.disabled = away || state !== "open";
 }
 
 function setVerbEnabled({ summon, open, fold, dismiss }) {
@@ -200,18 +221,55 @@ export function initChestCard() {
   els = {
     state: document.getElementById("chest-state"),
     slots: document.getElementById("chest-slots"),
-    slotfill: document.getElementById("chest-slotfill"),
     contents: document.getElementById("chest-contents"),
     note: document.getElementById("chest-note"),
     summon: document.getElementById("btn-chest-summon"),
     open: document.getElementById("btn-chest-open"),
     fold: document.getElementById("btn-chest-fold"),
     dismiss: document.getElementById("btn-chest-dismiss"),
+    tidy: document.getElementById("btn-chest-tidy"),
+    look: document.getElementById("btn-chest-find"),
     buttons: [],
   };
-  els.buttons = [els.summon, els.open, els.fold, els.dismiss];
+  // Built from the literal above, so a button added in one place cannot be
+  // missing here — a `undefined` in this list makes every action throw.
+  els.buttons = [els.summon, els.open, els.fold, els.dismiss, els.tidy].filter(Boolean);
 
   document.getElementById("btn-chest-close").addEventListener("click", closeChestCard);
+
+  const query = document.getElementById("chest-query");
+  const look = () => {
+    const want = (query.value || "").trim();
+    if (!want) {
+      query.focus();
+      say("say what to look for");
+      return;
+    }
+    act(async () => {
+      const body = await findInChest(want);
+      // The host writes the sentence — it knows what came out and in what order.
+      say(body.narrative || (body.found ? "found it" : "not in there"), "ok");
+      query.value = "";
+      return body;
+    });
+  };
+  document.getElementById("btn-chest-find").addEventListener("click", look);
+  query.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      look();
+    }
+    // Space must type a space, not reach the global emote shortcuts.
+    event.stopPropagation();
+  });
+  els.tidy.addEventListener("click", () => {
+    act(async () => {
+      const body = await tidyChest();
+      const removed = Number(body.removed) || 0;
+      say(removed ? `swept up ${removed} thing${removed === 1 ? "" : "s"}` : "nothing to sweep", "ok");
+      return body;
+    });
+  });
   // The panel button that reveals the card (the pod itself is the other way in).
   const toggle = document.getElementById("btn-chest");
   toggle?.addEventListener("click", () => toggleChestCard());
