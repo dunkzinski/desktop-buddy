@@ -1477,12 +1477,49 @@ That function rebuilds the slot map on every call, so each iteration re-resolves
 chain rather than reading the memo — the path the frame loop actually takes on a
 reconcile.
 
-Measured on this machine: **0.033 ms per 3-deep chain** (100 runs, 3.3 ms total). The
-assertion is 50 ms for the hundred, ~15× the measured total and still less than three
-frames, so only an algorithmic regression — a chain rebuilt quadratically, a resolution
-that starts allocating per bone — can trip it, while the number it prints is the real
-result rather than a hope.
+Measured on this machine: **0.033 ms per 3-deep chain** (100 runs, 3.3 ms total), and
+the first cut asserted 50 ms for the hundred, ~15× the measured total. It printed the
+real result rather than a hope — but 50 ms was still an absolute number, and §14.5.7 is
+the push where CI collected on the argument above: the same code took 80 ms on a cold
+`windows-latest` runner. The guard now compares the work against itself.
 
 The live geometry stays on record from §14.2, because the cost test proves nothing
 about correctness: trinket `1944.5, 530.5` → fish `1956.7, 546.3` → rod
 `1827.6, 635.3`, all at scale 0.562.
+
+#### 14.5.7 The 50 ms bound was still a wall clock — CI collected on §14.5.6
+
+Push #12 (`docs(mcp): nineteen tools…`, run 45547492120) failed the *Page transform
+tests* step on the one assertion §14.5.6 had argued was safe:
+`a 3-deep chain resolves far inside the frame budget` measured **80.0 ms for 100 chains
+on `windows-latest`** against 3.3 ms here — 24× on identical code, so the "generous"
+50 ms bound was twenty-four times too tight for a machine it had never met. The lesson is
+not to raise the number: any constant is one slow runner away from the same failure. The
+guard has to compare the work against itself.
+
+The test is now two-sided, and still prints the real number:
+
+| measurement (dev box) | value |
+| --- | --- |
+| 6-deep chain | 0.0047 ms per snapshot (best of 2×5×200, warmed) |
+| 24-deep chain | 0.0152 ms per snapshot |
+| ratio at 4× the depth | **3.2×** — linear, with the fixed per-snapshot cost taking the edge off |
+
+* **Ratio first, because it is machine-relative**: 4× the links must not cost more than
+  10× the time, so a resolver that walked the chain per link (quadratic, 16×) or walked
+  the roster per socket cannot hide behind a slower CPU.
+* **Absolute ceiling second**: half a frame (8.3 ms) for one 24-deep reconcile. At the
+  CI runner's measured 25× penalty that is still ≈0.4 ms — twenty times inside the gate —
+  so it reacts to an order-of-magnitude regression, which is all an absolute number can
+  honestly promise across machines.
+* **Warm up, then best-of-batches**: the first iterations compile the resolver, and a
+  cold batch is enough to make a 6-deep chain measure *slower* than a 24-deep one. Noise
+  only ever adds time, so the minimum of several batches is the stable estimator.
+* **Re-roster per shape**: `refresh()` swaps the module's roster, so two shapes measured
+  in one pass silently time the same roster twice. The first draft of this fix did
+  exactly that — it reported 6-deep at 0.0215 ms against 24-deep at 0.0151 ms, i.e. the
+  deeper chain apparently *faster*, which is what gave the mistake away.
+
+Eight concurrent runs of the whole file, all passing, kept the 24-deep number inside
+0.0148–0.0163 ms (±5%): the margin the ratio gate is built on. The 13-test count is
+unchanged — one test, rebuilt.

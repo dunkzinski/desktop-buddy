@@ -249,32 +249,110 @@ test("a dangling socket still resolves to nothing, flipped or not", async () => 
 
 /* ---------- cost: the chain is cheap, and here is the number ---------- */
 
-test("a 3-deep chain resolves far inside the frame budget", async () => {
-  // The design doc's Phase 5 claimed "~1 ms for a 3-deep chain" and nothing ever
-  // measured it. `entitySnapshot()` rebuilds the slot map on every call, so each
-  // iteration re-resolves the whole chain rather than reading the memo — this is
-  // the real path the frame loop takes once per reconcile.
-  const mod = await roster([
-    { id: "rod", def: "fishing_rod", state: "idle", rig: FIXTURE_RIG, attach: worldAttach([400, 300]) },
-    { id: "fish", def: "fish", state: "idle", rig: FIXTURE_RIG, attach: { parent: "entity:rod", socket: "line_end" } },
-    { id: "trinket", def: "trinket", state: "idle", rig: FIXTURE_RIG, attach: { parent: "entity:fish", socket: "line_end" } },
-  ]);
+// These are **complexity** guards, not wall-clock budgets. Resolution is a pure
+// float/Map walk, so its absolute cost moves with the machine and with how warm
+// the JIT is: 0.033 ms per 3-deep chain on the dev box, 0.8 ms on the first CI
+// runner to run this file — 24x on identical code. The original fixed bound
+// ("100 chains in 50 ms") was therefore still a wall clock and failed on push
+// #12 with 80 ms on a cold, contended runner. So the measurement is warmed up,
+// taken as the best of several batches (noise only ever adds time), and judged
+// against a **shallower chain** first — a ratio, which is machine-relative —
+// before a fraction of one 60 Hz frame.
 
-  const runs = 100;
+const FRAME_MS = 1000 / 60;
+
+/** `depth` props, each hanging off the previous one's `line_end` socket. */
+function chainList(depth) {
+  const list = [
+    { id: "e0", def: "fishing_rod", state: "idle", rig: FIXTURE_RIG, attach: worldAttach([400, 300]) },
+  ];
+  for (let i = 1; i < depth; i += 1) {
+    list.push({
+      id: `e${i}`,
+      def: "trinket",
+      state: "idle",
+      rig: FIXTURE_RIG,
+      // The real thing: a prop on a prop on a prop, resolved through sockets.
+      attach: { parent: `entity:e${i - 1}`, socket: "line_end" },
+    });
+  }
+  return list;
+}
+
+/** ms per `entitySnapshot()` over `runs` iterations, asserting the tip resolved. */
+function msPerSnapshot(mod, runs, tipId) {
   const started = performance.now();
   for (let i = 0; i < runs; i += 1) {
     const snap = mod.entitySnapshot();
-    const deepest = snap.entities.find((entry) => entry.id === "trinket");
-    assert.ok(deepest && deepest.root, "the deepest prop must resolve every run");
+    const tip = snap.entities.find((entry) => entry.id === tipId);
+    assert.ok(tip && tip.root, `${tipId} must resolve on every run`);
   }
-  const elapsed = performance.now() - started;
-  console.log(
-    `3-deep chain: ${(elapsed / runs).toFixed(3)} ms per chain over ${runs} runs (${elapsed.toFixed(1)} ms total)`,
+  return (performance.now() - started) / runs;
+}
+
+/** Best of `batches` × `runs`: noise only ever adds time, so the minimum is the
+ * stable estimator of what the resolver actually costs. */
+function bestMsPerSnapshot(mod, tipId, { batches = 5, runs = 200 } = {}) {
+  let best = Infinity;
+  for (let i = 0; i < batches; i += 1) best = Math.min(best, msPerSnapshot(mod, runs, tipId));
+  return best;
+}
+
+/**
+ * ms per snapshot for *one* roster, warmed first, then best-of-batches.
+ *
+ * `refresh()` swaps the module's whole roster, so the list is re-served on every
+ * call: a measurement only ever describes the shape it was handed. (Measuring two
+ * shapes in one pass without re-rostering silently times the same one twice.)
+ */
+async function measureChain(list, tipId, { warm = 40, ...opts } = {}) {
+  const mod = await roster(list);
+  for (let i = 0; i < warm; i += 1) msPerSnapshot(mod, 1, tipId);
+  return bestMsPerSnapshot(mod, tipId, opts);
+}
+
+test("a deep chain resolves in linear time and well inside a frame", async () => {
+  // `entitySnapshot()` rebuilds the slot map on every call, so each snapshot
+  // re-resolves the whole chain rather than reading the memo — this is the real
+  // path the frame loop takes once per reconcile. Four times the links should
+  // cost about four times the work, which is a claim about the algorithm.
+  const shallowList = chainList(6);
+  const deepList = chainList(24);
+
+  // Each shape twice, best of the two runs: the first one measured pays for
+  // compiling the resolver, and a single pass would otherwise compare a cold
+  // 6-deep chain against a warm 24-deep one.
+  const shallowMs = Math.min(
+    await measureChain(shallowList, "e5"),
+    await measureChain(shallowList, "e5"),
   );
-  // Deliberately generous: this is a complexity guard, not a wall-clock budget,
-  // so a loaded CI runner cannot make it flake. One frame is 16.7 ms; 100 chains
-  // in 50 ms would still leave the reconcile at a third of a frame.
-  assert.ok(elapsed < 50, `100 three-deep resolutions took ${elapsed.toFixed(1)} ms`);
+  const deepMs = Math.min(
+    await measureChain(deepList, "e23"),
+    await measureChain(deepList, "e23"),
+  );
+  console.log(
+    `chain cost (best of 2×5×200, warmed): 6-deep ${shallowMs.toFixed(4)} ms, ` +
+      `24-deep ${deepMs.toFixed(4)} ms per snapshot`,
+  );
+
+  // Linear in depth: 6 → 24 links is 4x the resolutions, and the dev box measures
+  // 3.0x (fixed per-snapshot overhead takes the edge off). A resolver that walked
+  // the chain per link, or the roster per socket, is quadratic — 16x — and the
+  // loose 10x gate still leaves room for a slower machine's different constants.
+  assert.ok(
+    deepMs < shallowMs * 10 + 0.5,
+    `24-deep ${deepMs.toFixed(4)} ms is not linear against 6-deep ${shallowMs.toFixed(4)} ms`,
+  );
+
+  // Absolute ceiling, sized from the slowest runner that has run this file (0.8
+  // ms per chain cold, ~25x the dev box): one reconcile at 24 links deep must
+  // still fit inside half a 16.7 ms frame. This is the loose half of the guard —
+  // it catches "an order of magnitude slower", which is all an absolute number
+  // can honestly do across machines.
+  assert.ok(
+    deepMs < FRAME_MS / 2,
+    `a 24-deep snapshot took ${deepMs.toFixed(4)} ms, over half a frame (${(FRAME_MS / 2).toFixed(1)} ms)`,
+  );
 });
 
 /* ---------- fitting: one rule, and `attach.scale` means one thing ---------- */
