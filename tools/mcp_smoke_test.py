@@ -31,6 +31,8 @@ EXPECTED_TOOLS = {
     "avatar_wave": [],
     "avatar_pose": ["joints"],
     "avatar_get_context": [],
+    "avatar_get_history": [],
+    "avatar_get_creature": [],
     "avatar_get_clipboard": [],
     "avatar_set_clipboard": ["text"],
     "avatar_list_models": [],
@@ -38,8 +40,11 @@ EXPECTED_TOOLS = {
     "avatar_list_animations": [],
     "avatar_animate": ["name"],
     "avatar_switch_ai": ["name"],
+    "avatar_send_alert": ["source", "summary"],
+    "avatar_clear_speech": [],
+    "avatar_clear_pose": [],
 }
-EXPECTED_TOOL_COUNT = 14
+EXPECTED_TOOL_COUNT = 19
 
 failures = []
 checks = 0
@@ -218,6 +223,27 @@ def main():
         check(json.loads(text_of(bad_look))["kind"] == "invalid_arguments", "malformed look_at rejected locally")
         no_text = mcp.call("avatar_set_clipboard", {})
         check(json.loads(text_of(no_text))["kind"] == "invalid_arguments", "set_clipboard without text rejected locally")
+        long_text = mcp.call("avatar_speak", {"text": "x" * 2001})
+        check(
+            json.loads(text_of(long_text))["kind"] == "invalid_arguments",
+            "speak rejects text past the 2000-character cap locally",
+        )
+        no_source = mcp.call("avatar_send_alert", {"summary": "y"})
+        check(json.loads(text_of(no_source))["kind"] == "invalid_arguments", "alert without a source rejected locally")
+        bad_severity = mcp.call("avatar_send_alert", {"source": "smoke", "summary": "y", "severity": "critical"})
+        severity_payload = json.loads(text_of(bad_severity))
+        check(severity_payload["kind"] == "invalid_arguments", "unknown alert severity rejected locally")
+        check("warn" in json.dumps(severity_payload), "the severity error lists the accepted values", severity_payload.get("error"))
+        hwnd = mcp.call("avatar_perch", {"edge": "left", "hwnd": 1234})
+        hwnd_payload = json.loads(text_of(hwnd))
+        check(hwnd_payload["kind"] == "invalid_arguments", "perch refuses hwnd instead of silently ignoring it")
+        check("window_process" in json.dumps(hwnd_payload), "the hwnd error points at window_process", hwnd_payload.get("error"))
+        bad_arguments = mcp.request("tools/call", {"name": "avatar_wave", "arguments": "nope"})
+        check(
+            bad_arguments.get("error", {}).get("code") == -32602,
+            "non-object arguments → JSON-RPC -32602",
+            json.dumps(bad_arguments.get("error")),
+        )
 
         print("\nprotocol errors")
         unknown = mcp.call("avatar_teleport", {})
@@ -251,6 +277,14 @@ def main():
             ("avatar_list_animations", {}),
             ("avatar_animate", {"name": "stop"}),
             ("avatar_switch_ai", {"name": "hermes"}),
+            ("avatar_get_history", {}),
+            ("avatar_clear_speech", {}),
+            ("avatar_clear_pose", {}),
+            # `avatar_send_alert` is not called live: it broadcasts an `alert`
+            # frame and can wake the watcher's AI turn, which a smoke test must
+            # not do. Its local validation is covered above.
+            # `avatar_get_creature` is checked separately: it 404s when the
+            # metamorphosis guest is not built, and that is a valid answer.
         ]
         for name, arguments in cases:
             response = mcp.call(name, arguments)
@@ -267,6 +301,25 @@ def main():
                     payload.get("kind"),
                 )
                 check(bool(payload.get("hint")), f"{name} includes a hint")
+
+        print("\ncreature status (needs the metamorphosis plugin)")
+        creature = mcp.call("avatar_get_creature", {})
+        creature_body = text_of(creature)
+        if creature["result"].get("isError") is False:
+            status = json.loads(creature_body)
+            check(status.get("ok") is True, "get_creature reports ok")
+            check("stage" in status, "get_creature carries the stage", creature_body[:200])
+        else:
+            payload = json.loads(creature_body)
+            if online:
+                check(
+                    payload.get("kind") == "avatar_route_unavailable",
+                    "a missing metamorphosis plugin reports avatar_route_unavailable",
+                    creature_body[:300],
+                )
+                check("metamorphosis" in json.dumps(payload), "the hint names the plugin to build")
+            else:
+                check(payload.get("kind") == "avatar_unreachable", "offline creature status is avatar_unreachable")
 
         if online:
             print("\nclipboard write round-trip")

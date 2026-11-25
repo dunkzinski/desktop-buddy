@@ -2928,7 +2928,7 @@ see *Awareness: desktop context & the event stream* for the frame list.
 
 `src-tauri/src/bin/desktop-buddy-mcp.rs` builds a **second binary**,
 `src-tauri/target/debug/desktop-buddy-mcp.exe`, that exposes the avatar to any MCP
-client (Hermes, Claude Desktop, …) over **stdio JSON-RPC 2.0** as thirteen tools.
+client (Hermes, Claude Desktop, …) over **stdio JSON-RPC 2.0** as nineteen tools.
 It is a thin, stateless bridge: each tool call becomes one HTTP request to the
 *running* `desktop-buddy.exe`.
 
@@ -2946,7 +2946,9 @@ Base URL: `DESKTOP_BUDDY_API_URL`, default `http://127.0.0.1:8765`.
 | `avatar_perch` | `edge` (required), `window_process?`, `offset?` | `POST /perch` |
 | `avatar_wave` | — | `POST /wave` |
 | `avatar_pose` | `joints` (required; `{boneId: {rotation?, scale?, x?, y?}}`, `null` clears a bone) | `POST /pose` |
-| `avatar_get_context` | — | `GET /context` **and** `GET /state` |
+| `avatar_get_context` | — | `GET /context`, `GET /state` **and** `GET /ai-profiles` |
+| `avatar_get_history` | — | `GET /history` |
+| `avatar_get_creature` | — | `GET /creature/status` |
 | `avatar_get_clipboard` | — | `GET /clipboard` |
 | `avatar_set_clipboard` | `text` (required; `""` clears) | `POST /clipboard` |
 | `avatar_list_models` | — | `GET /models` |
@@ -2954,6 +2956,9 @@ Base URL: `DESKTOP_BUDDY_API_URL`, default `http://127.0.0.1:8765`.
 | `avatar_list_animations` | — | `GET /animations` |
 | `avatar_animate` | `name` (required), `loop?` | `POST /animate` |
 | `avatar_switch_ai` | `name` (required; an `ai_profiles` key) | `POST /ai-profile` |
+| `avatar_send_alert` | `source`, `summary` (required), `severity?` (`info`/`warn`/`error`, default `info`) | `POST /alert` |
+| `avatar_clear_speech` | — | `POST /clear_speech` |
+| `avatar_clear_pose` | — | `DELETE /pose` |
 
 `expression` accepts the same six names as the HTTP API (`neutral`, `happy`,
 `sad`, `surprised`, `thinking`, `angry`) and is validated locally before any
@@ -2964,22 +2969,69 @@ request is sent.
 of starting a clip, and `loop: true` together with a stop is rejected locally.
 
 `avatar_get_context` returns a single text block: a one-line human summary, then
-JSON with `window_title`, `process_name`, `idle_secs`, `source`, `window_rect`,
-`active_profile`, `ai_profiles`, `active_health`,
-`visible_windows`, `avatar_state`, `state_source` (`"state"` when the fresh
-`/state` read answered, `"context"` when it fell back to the copy embedded in
-`/context`) and `recent_events` (the last 15 SSE frames, oldest first). The
-summary names the focused app — e.g. `User is in "main.rs - visual-studio-code"
+JSON with `window_title`, `process_name`, `foreground_hwnd`, `idle_secs`,
+`source`, `window_rect`, `screen`, `active_profile`, `ai_profiles`,
+`active_health`, `visible_windows`, `avatar_state`, `perch_rect`, `look_at`,
+`state_source` (`"state"` when the fresh `/state` read answered, `"context"`
+when it fell back to the copy embedded in `/context`) and `recent_events` (the
+last 15 SSE frames, oldest first). `foreground_hwnd` is the focused window's
+handle (two windows of one process share a `process_name`), and `screen` is the
+virtual desktop every rect is measured in — physical origin (negative with a
+monitor left of the primary), size and CSS scale — so a secondary monitor's
+coordinates read correctly. `perch_rect` and `look_at` are lifted out of
+`avatar_state` because they are the two things an agent acts on: the window the
+avatar is bound to and the point it stares at. Every field a newer avatar build
+adds is copied through as `null` on an older one rather than guessed at.
+
+The summary names the focused app — e.g. `User is in "main.rs - visual-studio-code"
 (Code.exe), idle for 12s.` — gives the foreground rect and the visible windows
 as `Code.exe@(400, 300) 800x500 | firefox.exe@(0, 0) 1920x40`, says
-`perched on a window` while the avatar is perched, and lists the recent events as
-`type: hint` pairs.
+`perched on a window at (400, 300) 800x500` while the avatar is perched, appends
+`Gaze fixed at (1180, 640).` when a move pinned the eyes, and lists the recent
+events as `#seq type: hint` phrases (the `seq` matches the same frame in
+`GET /events`; a payload with none of the identifying fields degrades to
+`#seq type`).
 
 `avatar_perch` validates `edge` locally against the five borders before sending
 anything, so a typo comes back as an `invalid_arguments` tool result listing the
-accepted values instead of an HTTP 400. It is the spatial half of "react to what
-the user is looking at": `avatar_get_context` says which window is focused and
+accepted values instead of an HTTP 400. It picks the window by `window_process`
+only: an `hwnd` argument is **refused** with a message pointing at
+`window_process`, because `POST /perch` deserialises just
+`{edge, window_process, offset}` and would silently ignore the handle and perch
+on the *foreground* window instead. It is the spatial half of "react to what the
+user is looking at": `avatar_get_context` says which window is focused and
 where it is, then `avatar_perch` stands the avatar on it and the gaze follows.
+
+`avatar_get_history` returns `GET /history` verbatim (`{ok, messages[]}`), the
+session's actual turns including their `details` and expression — the only way
+to look further back than the 15 frames in `recent_events` or a bubble that has
+already dismissed.
+
+`avatar_get_creature` returns `GET /creature/status` (stage, XP, bond,
+archetype, `attribute_blend`, rig measurements, branches, transition history).
+The route belongs to the metamorphosis plugin, so when that guest is not loaded
+the call comes back as `isError` with `kind: "avatar_route_unavailable"`, a
+message naming `/creature/status` and a hint naming
+`./scripts/build-plugin.sh metamorphosis` — never `invalid_arguments` (the
+arguments were fine) and never an "avatar is down" error.
+
+`avatar_send_alert` takes `source`, `summary` and an optional `severity`
+(`info` default, `warn`, `error`), validates the severity locally against the
+same set `POST /alert` enforces, normalises case and surrounding whitespace, and
+forwards. The route only broadcasts an `alert` frame; whether the watcher wakes
+its AI turn for it stays the watcher's business and cooldown.
+
+`avatar_clear_speech` posts `/clear_speech` and `avatar_clear_pose` deletes
+`/pose`. They are the explicit cleanup path beside
+`avatar_animate { "name": "stop" }` (which stops a clip only), so a bubble or a
+stray per-bone override can be dropped without waiting for a timer.
+
+`avatar_speak` enforces the avatar's own caps locally: `text` is 1–2000
+characters and must not be only whitespace, `details` is at most 8000
+characters. Over-long `details` is rejected here (the route would truncate it
+silently) with a message pointing at `avatar_set_clipboard`. Keep `text` to
+about 180 characters so the bubble fits on screen; multi-line code, diffs and
+logs belong in `details` or on the clipboard.
 
 `avatar_get_clipboard` returns the `GET /clipboard` body as text:
 `{ok: true, text, truncated}`. Read it only when the trigger refers to copied
@@ -2993,6 +3045,7 @@ The process never panics and never closes the transport:
 | --- | --- |
 | avatar app not running / wrong port | `isError: true`, payload `{"ok":false,"kind":"avatar_unreachable","error":"cannot reach the desktop-buddy avatar at …","hint":"Start the desktop app first: …"}` |
 | avatar answered 4xx (validation) | `isError: true`, `kind: "avatar_rejected_request"`, message taken from the API's `error` field |
+| route belongs to a plugin that is not loaded (`/creature/status`) | `isError: true`, `kind: "avatar_route_unavailable"`, a hint naming the guest to build |
 | request exceeded 10 s | `isError: true`, `kind: "avatar_timeout"` |
 | bad argument values | `isError: true`, `kind: "invalid_arguments"` (no HTTP call made) |
 | unparseable stdin line | JSON-RPC `-32700`, loop continues |
@@ -3001,7 +3054,14 @@ The process never panics and never closes the transport:
 
 `tools/call` reports *argument* problems as `isError` tool results (so the model
 sees the reason and can retry) and only *structural* problems as JSON-RPC
-errors.
+errors — including an `arguments` value that is neither an object nor `null`,
+which is `-32602` rather than quietly treated as `{}`.
+
+Notifications are never answered: `notifications/initialized` is logged once,
+`notifications/cancelled` is acknowledged quietly (every call is answered before
+the next line is read, so there is nothing to abandon), anything else is noted
+on stderr. A frame that carries `result` or `error` and no `method` is a stray
+response — this bridge sends no requests, so it is dropped instead of answered.
 
 ### Driving it by hand
 

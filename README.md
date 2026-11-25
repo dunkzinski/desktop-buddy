@@ -224,7 +224,7 @@ There are two directions here and both are real.
 
 **1. It inherits your tools.** The `hermes_cli` profile runs an actual agent turn, so the MCP servers you already registered (filesystem, GitHub, a home IDS, whatever) are available to the gremlin mid-sentence. No extra wiring.
 
-**2. It exposes itself as tools.** `desktop-buddy-mcp.exe` is a stdio MCP server with 14 `avatar_*` tools, so any MCP client can make the creature look at something, say something, or hop onto a window. Register it in your Hermes `config.yaml`:
+**2. It exposes itself as tools.** `desktop-buddy-mcp.exe` is a stdio MCP server with 19 `avatar_*` tools, so any MCP client can make the creature look at something, say something, hop onto a window, read the session's history or check on the creature it is wearing. Register it in your Hermes `config.yaml`:
 
 ```yaml
 mcp_servers:
@@ -235,9 +235,9 @@ mcp_servers:
       DESKTOP_BUDDY_API_URL: http://127.0.0.1:8765
 ```
 
-The tools: `avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_perch`, `avatar_wave`, `avatar_pose`, `avatar_animate`, `avatar_get_context`, `avatar_get_clipboard`, `avatar_set_clipboard`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, and `avatar_switch_ai`.
+The tools: `avatar_speak`, `avatar_emote`, `avatar_move`, `avatar_perch`, `avatar_wave`, `avatar_pose`, `avatar_animate`, `avatar_get_context`, `avatar_get_history`, `avatar_get_creature`, `avatar_get_clipboard`, `avatar_set_clipboard`, `avatar_list_models`, `avatar_switch_model`, `avatar_list_animations`, `avatar_switch_ai`, `avatar_send_alert`, `avatar_clear_speech`, and `avatar_clear_pose`.
 
-Every one is a thin, honest wrapper over the HTTP API (`GET /context` + `GET /state`, `POST /pose`, `POST /clipboard`, and friends) — which means if an MCP tool can do it, `curl` can do it too.
+Every one is a thin, honest wrapper over the HTTP API (`GET /context` + `GET /state`, `POST /pose`, `POST /clipboard`, `GET /history`, `POST /alert`, and friends) — which means if an MCP tool can do it, `curl` can do it too. The one exception is deliberate: `avatar_get_creature` needs the metamorphosis plugin, and without it the call comes back as an `avatar_route_unavailable` error naming the guest to build rather than a mysterious 404.
 
 ---
 

@@ -256,8 +256,8 @@ else:
     tool_block = re.search(r"const TOOL_NAMES: \[&str; \d+\] = \[(.*?)\];", mcp_rs, re.S)
     tool_names = set(re.findall(r'"([a-z_]+)"', tool_block.group(1))) if tool_block else set()
     print(f"\nMCP tools ({len(tool_names)}): {', '.join(sorted(tool_names))}")
-    if len(tool_names) != 14:
-        problems.append(f"desktop-buddy-mcp.rs: expected 14 tools, found {len(tool_names)}")
+    if len(tool_names) != 19:
+        problems.append(f"desktop-buddy-mcp.rs: expected 19 tools, found {len(tool_names)}")
 
     # every declared tool must have a schema entry in tools()
     for name in sorted(tool_names):
@@ -288,13 +288,13 @@ else:
         print(f"expression enums match lib.rs: {mcp_expressions}")
 
     # every path the bridge calls must be a real route
-    mcp_paths = set(re.findall(r'api\.(?:get|post)\(\s*"(/[a-z_/-]+)"', mcp_rs))
+    mcp_paths = set(re.findall(r'api\.(?:get|post|delete)\(\s*"(/[a-z_/-]+)"', mcp_rs))
     print(f"paths used by the MCP bridge: {', '.join(sorted(mcp_paths))}")
     unknown_paths = {p for p in mcp_paths if p not in routes}
     if unknown_paths:
         problems.append(f"desktop-buddy-mcp.rs calls non-existent routes: {sorted(unknown_paths)}")
-    if len(mcp_paths) < 14:
-        problems.append(f"desktop-buddy-mcp.rs only maps {len(mcp_paths)} routes; expected 14")
+    if len(mcp_paths) < 19:
+        problems.append(f"desktop-buddy-mcp.rs only maps {len(mcp_paths)} routes; expected 19")
 
     # the documented Windows path must match where cargo puts the binary
     if r"src-tauri\target\debug\desktop-buddy-mcp.exe" not in readme:
