@@ -1508,10 +1508,16 @@ The test is now two-sided, and still prints the real number:
 * **Ratio first, because it is machine-relative**: 4× the links must not cost more than
   10× the time, so a resolver that walked the chain per link (quadratic, 16×) or walked
   the roster per socket cannot hide behind a slower CPU.
-* **Absolute ceiling second**: half a frame (8.3 ms) for one 24-deep reconcile. At the
-  CI runner's measured 25× penalty that is still ≈0.4 ms — twenty times inside the gate —
-  so it reacts to an order-of-magnitude regression, which is all an absolute number can
-  honestly promise across machines.
+* **Absolute ceiling second**: half a frame (8.3 ms) for one 24-deep reconcile. The
+  rewritten test's first green CI run measured 0.0183 ms (6-deep) and 0.0787 ms
+  (24-deep) — a 4.3× ratio and a hundred times inside the ceiling — so this branch reacts
+  only to an order-of-magnitude regression, which is all an absolute number can honestly
+  promise across machines.
+
+Those CI numbers are the other half of the diagnosis: warmed, the runner is **5×** slower
+than the dev box (0.0787 vs 0.0152 ms), not 24×. Most of the original 80 ms was a cold
+JIT charging the assertion for its own compilation, which is what the warm-up removes and
+what made a machine-relative ratio the right guard rather than a better constant.
 * **Warm up, then best-of-batches**: the first iterations compile the resolver, and a
   cold batch is enough to make a 6-deep chain measure *slower* than a 24-deep one. Noise
   only ever adds time, so the minimum of several batches is the stable estimator.
